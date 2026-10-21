@@ -385,6 +385,9 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 		}
 		x.Name, x.IPv4, x.IPv6, x.SSHHost, x.SSHPort, x.SSHUser = in.Name, in.IPv4, in.IPv6, in.SSHHost, in.SSHPort, in.SSHUser
 		x.Role, x.Proxy, x.Via = in.Role, in.Proxy, in.Via
+		if in.Country != "" {
+			x.Country = strings.ToUpper(in.Country)
+		}
 		if !isMasked(in.Password) {
 			x.Password = in.Password
 		}
@@ -398,6 +401,9 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dropHost(in.ID)
+	if srv := s.app.store.Server(in.ID); srv != nil {
+		go s.app.annotateGeo(srv)
+	}
 	writeJSON(w, map[string]string{"ok": "1", "id": in.ID})
 }
 
@@ -453,6 +459,7 @@ func (s *Server2) serverTest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	res := s.app.TestServer(ctx, srv)
+	go s.app.annotateGeo(srv)
 	writeJSON(w, res)
 }
 
@@ -614,6 +621,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			in.Index = s.app.store.nextIndexLocked(st)
 			in.Updated = time.Now().Unix()
 			in.Active, in.Secrets = "", nil
+			in.Shape = normalizeShape(in.Shape)
 			if in.Options == nil {
 				in.Options = map[string]map[string]string{}
 			}
@@ -628,6 +636,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("Stop the tunnel before changing its servers or address family.")
 		}
 		t.Name, t.ServerID, t.ForeignID, t.Family, t.Ports, t.Note = in.Name, in.ServerID, in.ForeignID, in.Family, in.Ports, in.Note
+		t.Shape = normalizeShape(in.Shape)
 		if in.Selected != "" {
 			t.Selected = in.Selected
 		}

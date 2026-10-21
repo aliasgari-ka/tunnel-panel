@@ -145,14 +145,15 @@ func (a *App) build(m *Method, t *Tunnel, srv *Server) (SidePlan, SidePlan, erro
 
 // teardownScript stops the tunnel's unit (its ExecStop/ExecStopPost do the cleanup) and removes it.
 func teardownScript(t *Tunnel) string {
-	u := unitName(t)
-	return fmt.Sprintf(`if [ -f /etc/systemd/system/%[1]s ]; then
-  systemctl disable --now %[1]s 2>&1 | grep -v "Removed" || true
-  rm -f /etc/systemd/system/%[1]s
-  systemctl daemon-reload
-fi
+	return fmt.Sprintf(`for u in %[1]s %[3]s; do
+  if [ -f /etc/systemd/system/$u ]; then
+    systemctl disable --now $u 2>&1 | grep -v "Removed" || true
+    rm -f /etc/systemd/system/$u
+  fi
+done
+systemctl daemon-reload 2>/dev/null || true
 rm -rf %[2]s
-`, u, tunnelDir(t))
+`, unitName(t), tunnelDir(t), shapeUnitName(t))
 }
 
 // deploy installs a side plan on one host.
@@ -262,6 +263,17 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		if err := a.deploy(ctx, j, "IR", irHost, t, irP); err != nil {
 			fail("Iran: %v", err)
 			return
+		}
+		if t.Shape.Enabled {
+			j.log("applying traffic shaping (%s) on Iran", t.Shape.Qdisc)
+			if err := a.deployShape(ctx, j, "IR", irHost, t); err != nil {
+				j.log("WARNING: shaping on Iran failed: %v", err)
+			}
+			if t.Shape.OnBoth {
+				if err := a.deployShape(ctx, j, "KH", khHost, t); err != nil {
+					j.log("WARNING: shaping on foreign failed: %v", err)
+				}
+			}
 		}
 		a.setActive(t, mid)
 		j.log("DONE — %s is active on both servers", m.Title)

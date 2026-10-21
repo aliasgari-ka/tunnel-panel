@@ -44,7 +44,17 @@ async function loadAll() {
 const iranServers = () => STATE.servers.filter(s => (s.role || 'iran') === 'iran');
 const foreignServers = () => STATE.servers.filter(s => s.role === 'foreign');
 const methodsFor = (fam) => STATE.methods.filter(m => m.families.includes(fam));
-const serverName = (id) => id ? (STATE.servers.find(s => s.id === id)?.name || '(deleted)') : 'this panel host';
+const serverById = (id) => STATE.servers.find(s => s.id === id);
+const serverName = (id) => id ? (serverById(id)?.name || '(deleted)') : 'this panel host';
+// flag emoji from an ISO-3166 alpha-2 country code (regional indicator letters)
+function flag(cc) {
+  if (!cc || cc.length !== 2) return '';
+  cc = cc.toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return '';
+  return String.fromCodePoint(...[...cc].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+}
+const serverFlag = (id) => { const s = serverById(id); return s && s.country ? flag(s.country) + ' ' : ''; };
+const serverLabel = (s) => (s.country ? flag(s.country) + ' ' : '') + s.name;
 
 /* ---------------- auth ---------------- */
 function renderAuth(mode, name) {
@@ -218,7 +228,7 @@ function serverCard(s) {
     : `<span class="pill off"><span class="led"></span>untested</span>`;
   const roleP = `<span class="pill ${s.role === 'foreign' ? 'acc' : 'neutral'}">${s.role || 'iran'}</span>`;
   return h(`<div class="card pad">
-    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><h3>${esc(s.name || '(unnamed)')}</h3><div style="display:flex;gap:6px">${roleP}${online}</div></div>
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name || '(unnamed)')}${s.city ? ` <span class="faint" style="font-weight:400;font-size:12px">${esc(s.city)}</span>` : ''}</h3><div style="display:flex;gap:6px">${roleP}${online}</div></div>
     <div class="mono muted" style="margin:8px 0;font-size:12.5px;line-height:1.7">
       ${s.ipv4 ? `v4 ${esc(s.ipv4)}<br>` : ''}${s.ipv6 ? `v6 ${esc(s.ipv6)}<br>` : ''}
       ssh ${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}
@@ -288,7 +298,7 @@ function serverModal(s) {
         <label class="f">SSH host <span class="faint">(blank=IPv4)</span><input name="sshHost" class="mono" value="${esc(s.sshHost || '')}"></label>
         <label class="f">SSH port<input name="sshPort" type="number" class="mono" value="${s.sshPort || 22}"></label>
       </div>
-      <label class="f">SSH user<input name="sshUser" class="mono" value="${esc(s.sshUser || 'root')}"></label>
+      <div class="two"><label class="f">SSH user<input name="sshUser" class="mono" value="${esc(s.sshUser || 'root')}"></label><label class="f">Country <span class="faint">(auto; 2-letter override)</span><input name="country" class="mono" maxlength="2" value="${esc(s.country || '')}" placeholder="auto"></label></div>
       <label class="f">Password <span class="faint">(leave blank to keep)</span><input name="password" type="password" value="${esc(s.password || '')}"></label>
       <label class="f">or Private key (PEM)<textarea name="privateKey" rows="2" class="mono">${esc(s.privateKey || '')}</textarea></label>
       <details><summary class="muted" style="font-size:13px;cursor:pointer">Advanced reach options</summary>
@@ -325,7 +335,7 @@ function tunnelCard(t) {
   const card = h(`<div class="card tcard" data-id="${t.id}">
     <div class="hd">
       <div><h3>${esc(t.name)}</h3>
-        <div class="route"><span class="node">${esc(serverName(t.serverId))}</span><span class="arrow">⇄</span><span class="node">${esc(serverName(t.foreignId))}</span><span class="pill ${t.family === 'v6' ? 'acc' : 'neutral'}">${t.family}</span></div></div>
+        <div class="route"><span class="node">${serverFlag(t.serverId)}${esc(serverName(t.serverId))}</span><span class="arrow">⇄</span><span class="node">${serverFlag(t.foreignId)}${esc(serverName(t.foreignId))}</span><span class="pill ${t.family === 'v6' ? 'acc' : 'neutral'}">${t.family}</span></div></div>
       <div>${active ? `<span class="pill on"><span class="led"></span>${esc(active.title)}</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     </div>
     <div class="body">
@@ -382,12 +392,13 @@ function renderOpts(box, t, mid) {
 }
 function tunnelModal(t) {
   t = t || {};
-  const foreignOpts = `<option value="">this panel host</option>` + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
+  const sh = t.shape || {};
+  const foreignOpts = `<option value="">this panel host</option>` + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
   const m = modal(`<h2>${t.id ? 'Edit tunnel' : 'New tunnel'}</h2>
     <form class="ff" id="tf">
       <label class="f">Name<input name="name" value="${esc(t.name || '')}" required></label>
       <div class="two">
-        <label class="f">Iran server<select name="serverId" required>${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>
+        <label class="f">Iran server<select name="serverId" required>${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('')}</select></label>
         <label class="f">Foreign server<select name="foreignId">${foreignOpts}</select></label>
       </div>
       <div class="two">
@@ -395,6 +406,18 @@ function tunnelModal(t) {
         <label class="f">Ports <span class="faint">443,8080=80,2000-2010</span><input name="ports" class="mono" value="${esc(t.ports || '443')}"></label>
       </div>
       <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
+      <details${sh.enabled ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Traffic shaping / link tuning</summary>
+        <div class="ff" style="margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px">
+          <label class="row f"><input type="checkbox" id="shEnabled"${sh.enabled ? ' checked' : ''}> Enable shaping on the Iran egress (CAKE/HTB/… qdisc)</label>
+          <div class="two">
+            <label class="f">Queue discipline<select id="shQdisc">${['cake', 'htb', 'tbf', 'fq_codel'].map(q => `<option${sh.qdisc === q ? ' selected' : ''}>${q}</option>`).join('')}</select></label>
+            <label class="f">MSS clamp <span class="faint">(0 = off)</span><input id="shMss" type="number" class="mono" value="${sh.mss || 0}"></label>
+          </div>
+          <label class="f">Egress interface <span class="faint">(blank = default route)</span><input id="shIface" class="mono" value="${esc(sh.iface || '')}"></label>
+          <label class="row f"><input type="checkbox" id="shJitter"${sh.jitter ? ' checked' : ''}> Add timing jitter (netem)</label>
+          <label class="row f"><input type="checkbox" id="shBoth"${sh.onBoth ? ' checked' : ''}> Also shape the foreign egress</label>
+          <div class="faint" style="font-size:12px">Applied as a separate systemd unit after the tunnel starts. Change takes effect on the next Start/Switch.</div>
+        </div></details>
       <div class="muted" style="font-size:12px">Users hit the Iran server on these ports; traffic is forwarded to the foreign server over the tunnel.</div>
       <div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" id="cancel">Cancel</button><button class="btn pri">Save</button></div>
     </form>`, true);
@@ -403,6 +426,11 @@ function tunnelModal(t) {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
     if (t.id) fd.ID = t.id;
+    fd.shape = {
+      enabled: $('#shEnabled', m).checked, qdisc: $('#shQdisc', m).value,
+      mss: parseInt($('#shMss', m).value || '0', 10), iface: $('#shIface', m).value.trim(),
+      jitter: $('#shJitter', m).checked, onBoth: $('#shBoth', m).checked,
+    };
     try { await api('/tunnels/save', fd); m.remove(); await loadAll(); renderView(); toast('Tunnel saved'); } catch (e) { alertModal('Error', e.message); }
   };
 }
@@ -413,8 +441,8 @@ function viewBench(w) {
   const card = h(`<div class="grid" style="gap:16px">
     <form class="card pad ff" id="bf" style="max-width:640px">
       <div class="two">
-        <label class="f">Iran server<select name="iran">${iranServers().map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
-        <label class="f">Foreign server<select name="foreign"><option value="">this panel host</option>${foreignServers().map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+        <label class="f">Iran server<select name="iran">${iranServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
+        <label class="f">Foreign server<select name="foreign"><option value="">this panel host</option>${foreignServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
       </div>
       <div class="two">
         <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>

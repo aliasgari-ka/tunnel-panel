@@ -48,6 +48,8 @@ type Server struct {
 	// Via, if set, is the id of another server to use as SSH jump host (blank = auto).
 	Via      string `json:"via,omitempty"`
 	LastPath string `json:"lastPath,omitempty"` // how the panel last reached it
+	Country  string `json:"country,omitempty"`  // ISO-3166 alpha-2, for the flag (auto or manual)
+	City     string `json:"city,omitempty"`
 }
 
 // Tunnel links one Iran server with this (foreign) server.
@@ -66,6 +68,18 @@ type Tunnel struct {
 	LastJob   string                       `json:"lastJob"`
 	Updated   int64                        `json:"updated"`
 	Secrets   map[string]string            `json:"secrets"` // stable per-tunnel secrets (tokens, PSKs)
+	Shape     Shape                        `json:"shape"`   // optional traffic-shaping layer
+}
+
+// Shape is an optional per-tunnel traffic-shaping layer applied with tc + iptables on the
+// Iran egress (ported from the "backhaul-dpi" tc script). It is independent of the method.
+type Shape struct {
+	Enabled bool   `json:"enabled"`
+	Qdisc   string `json:"qdisc"`  // cake | htb | tbf | fq_codel
+	Jitter  bool   `json:"jitter"` // add netem delay/jitter on top
+	MSS     int    `json:"mss"`    // TCP MSS clamp on the egress (0 = off)
+	Iface   string `json:"iface"`  // egress interface ("" = default route device)
+	OnBoth  bool   `json:"onBoth"` // also shape the foreign egress
 }
 
 // secret returns a stable random secret for the given key, creating it once.
