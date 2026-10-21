@@ -1,5 +1,7 @@
 # Tunnel Panel
 
+**[راهنمای فارسی →](README-fa.md)**
+
 A single-binary web panel + Telegram bot that runs on your **foreign (relay) server** and
 links it to one or more **Iran servers**. You create a *tunnel* (a route: Iran server ⇄ a
 foreign server, a set of ports), pick a **connection method**, and switch between methods at
