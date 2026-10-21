@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -137,10 +138,13 @@ func (s *Server2) sign(user string, exp int64) string {
 
 func (s *Server2) setCookie(w http.ResponseWriter, r *http.Request, user string) {
 	exp := time.Now().Add(72 * time.Hour).Unix()
-	val := fmt.Sprintf("%s|%d|%s", user, exp, s.sign(user, exp))
+	// base64url the payload so the cookie value has no '|' or other bytes that some
+	// browsers/proxies mangle (that was the login-loop bug on some setups).
+	raw := fmt.Sprintf("%s|%d|%s", user, exp, s.sign(user, exp))
+	val := base64.RawURLEncoding.EncodeToString([]byte(raw))
+	https := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	http.SetCookie(w, &http.Cookie{Name: "tp_session", Value: val, Path: "/", HttpOnly: true,
-		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
-		SameSite: http.SameSiteStrictMode, MaxAge: 72 * 3600})
+		Secure: https, SameSite: http.SameSiteLaxMode, MaxAge: 72 * 3600})
 }
 
 func (s *Server2) currentUser(r *http.Request) string {
@@ -148,7 +152,11 @@ func (s *Server2) currentUser(r *http.Request) string {
 	if err != nil {
 		return ""
 	}
-	parts := strings.SplitN(c.Value, "|", 3)
+	dec, err := base64.RawURLEncoding.DecodeString(c.Value)
+	if err != nil {
+		return ""
+	}
+	parts := strings.SplitN(string(dec), "|", 3)
 	if len(parts) != 3 {
 		return ""
 	}

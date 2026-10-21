@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 
 	"tunnelpanel/internal/agent"
@@ -25,6 +24,7 @@ func main() {
 	addr := flag.String("addr", envOr("TP_ADDR", "0.0.0.0:8088"), "web panel listen address")
 	agentAddr := flag.String("agent-addr", envOr("TP_AGENT_ADDR", "0.0.0.0:7020"), "agent dial-back listen address")
 	dir := flag.String("data", envOr("TP_DATA", "/etc/tunnel-panel"), "data directory")
+	tlsMode := flag.String("tls", envOr("TP_TLS", ""), "TLS: empty=http, 'self'=self-signed https, or a domain for Let's Encrypt")
 	dump := flag.Bool("dump-methods", false, "print methods JSON and exit")
 	flag.Parse()
 
@@ -62,8 +62,8 @@ func main() {
 		}
 	}()
 
-	fmt.Printf("Tunnel Panel on http://%s  (agent %s, data %s, %d methods)\n", *addr, *agentAddr, *dir, len(methods))
-	log.Fatal((&http.Server{Addr: *addr, Handler: app.routes()}).ListenAndServe())
+	fmt.Printf("Tunnel Panel (agent %s, data %s, %d methods)\n", *agentAddr, *dir, len(methods))
+	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))
 }
 
 func serverName(app *App, id string) string {

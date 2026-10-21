@@ -10,14 +10,20 @@ REPO_SLUG="${TP_REPO:-aliasgari-ka/tunnel-panel}"
 PORT=8088
 AGENT_PORT=7020
 REF=main
+TLS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="$2"; shift 2;;
     --agent-port) AGENT_PORT="$2"; shift 2;;
     --ref) REF="$2"; shift 2;;
+    --domain) TLS="$2"; shift 2;;        # Let's Encrypt cert for this domain (needs 80+443)
+    --self-signed|--https) TLS="self"; shift;;
+    --http) TLS=""; shift;;
     *) echo "unknown arg: $1"; exit 1;;
   esac
 done
+# With a real domain, the panel serves HTTPS on 443 (+80 for the ACME challenge).
+if [ -n "$TLS" ] && [ "$TLS" != "self" ]; then PORT=443; fi
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
 ARCH=amd64; case "$(uname -m)" in aarch64|arm64) ARCH=arm64;; x86_64) ARCH=amd64;; *) echo "unsupported arch $(uname -m)"; exit 1;; esac
@@ -97,7 +103,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$DEST --addr 0.0.0.0:$PORT --agent-addr 0.0.0.0:$AGENT_PORT --data $DATA
+ExecStart=$DEST --addr 0.0.0.0:$PORT --agent-addr 0.0.0.0:$AGENT_PORT --data $DATA --tls "$TLS"
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
@@ -109,11 +115,14 @@ systemctl daemon-reload
 systemctl enable --now tunnel-panel
 
 IP=$(curl -fsS4 --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+SCHEME=http; OPENHOST="${IP}:${PORT}"
+if [ "$TLS" = "self" ]; then SCHEME=https; fi
+if [ -n "$TLS" ] && [ "$TLS" != "self" ]; then SCHEME=https; OPENHOST="$TLS"; fi
 cat <<EOF
 
 ==============================================================
  Tunnel Panel is running.
-   Open:        http://${IP}:${PORT}/
+   Open:        ${SCHEME}://${OPENHOST}/
    Agent port:  ${AGENT_PORT}  (Iran servers dial back to this)
    On first visit you create the admin account.
  Service:  systemctl status tunnel-panel
