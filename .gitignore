@@ -19,3 +19,6 @@ tp-agent
 # Scratch
 *.part
 *.tp-tmp
+
+# stray go build output (binary == module name)
+/tunnelpanel
