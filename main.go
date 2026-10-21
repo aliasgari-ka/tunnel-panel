@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"tunnelpanel/internal/agent"
 )
 
@@ -19,6 +21,23 @@ func main() {
 		pin := fs.String("pin", "", "panel cert pin")
 		_ = fs.Parse(os.Args[2:])
 		log.Fatal(agent.Run(*connect, *token, *pin))
+	}
+
+	// reset-password: set or clear the admin login without touching servers/tunnels.
+	//   tunnel-panel reset-password [-data DIR] [-user NAME] [-password PASS]
+	// With -password it sets that password (creating the account if none exists);
+	// without it, it clears all accounts so the next visit shows "Create admin account".
+	if len(os.Args) > 1 && (os.Args[1] == "reset-password" || os.Args[1] == "passwd") {
+		fs := flag.NewFlagSet("reset-password", flag.ExitOnError)
+		d := fs.String("data", envOr("TP_DATA", "/etc/tunnel-panel"), "data directory")
+		user := fs.String("user", "admin", "username (when setting a password)")
+		pass := fs.String("password", "", "new password (min 8 chars); empty = clear all accounts")
+		_ = fs.Parse(os.Args[2:])
+		if err := resetPassword(*d, *user, *pass); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	addr := flag.String("addr", envOr("TP_ADDR", "0.0.0.0:8088"), "web panel listen address")
@@ -92,3 +111,40 @@ func envOr(k, def string) string {
 }
 
 func jsonMarshal(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") }
+
+func resetPassword(dir, user, pass string) error {
+	store, err := LoadStore(dir)
+	if err != nil {
+		return fmt.Errorf("open data dir %s: %w", dir, err)
+	}
+	if pass == "" {
+		if err := store.Update(func(st *State) error { st.Users = nil; return nil }); err != nil {
+			return err
+		}
+		fmt.Println("All accounts cleared. Open the panel and create a new admin account.")
+		fmt.Println("Restart the service:  systemctl restart tunnel-panel")
+		return nil
+	}
+	if len(pass) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	err = store.Update(func(st *State) error {
+		for i := range st.Users {
+			if st.Users[i].Username == user {
+				st.Users[i].Hash = string(hash)
+				return nil
+			}
+		}
+		st.Users = append(st.Users, User{Username: user, Hash: string(hash)})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Password for %q set. Restart the service:  systemctl restart tunnel-panel\n", user)
+	return nil
+}

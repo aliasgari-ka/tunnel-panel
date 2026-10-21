@@ -206,6 +206,15 @@ bash build.sh amd64 arm64      # به Go و gcc نیاز دارد؛ خروجی �
 - **سرور ایران unreachable:** روی کارت سرور **Test paths** را بزنید تا ببینید کدام مسیر کار می‌کند؛
   اگر همه قرمزند، از **Agent install** استفاده کنید.
 - **روش‌های Premium/Golden فقط amd64 هستند؛** بقیه مستقل از معماری‌اند.
+- **فراموشی رمز / تغییر رمز از داخل سرور:** روی سرور خارج:
+  ```bash
+  # تنظیم رمز جدید برای ادمین:
+  tunnel-panel reset-password -user admin -password "رمزجدید۸کاراکتری"
+  systemctl restart tunnel-panel
+  # یا پاک‌کردن همهٔ حساب‌ها تا دوباره صفحهٔ ساخت حساب بیاید (سرورها و تونل‌ها می‌مانند):
+  tunnel-panel reset-password
+  systemctl restart tunnel-panel
+  ```
 - **به‌جای `#123`** همیشه نشانی کامل گیت‌هاب را بنویسید.
 - وضعیت سرویس: `systemctl status tunnel-panel` روی سرور خارج.
 

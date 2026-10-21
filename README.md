@@ -87,6 +87,16 @@ bash build.sh amd64 arm64      # needs Go and gcc; writes dist/tunnel-panel-<arc
 `build.sh` compiles `tp-agent` (both arches) and the Golden-GRE relay
 (`third_party/golden-gre`, Apache-2.0) and embeds them in the panel binary.
 
+## Reset the admin password
+
+On the foreign server, without touching your servers or tunnels:
+
+```bash
+tunnel-panel reset-password -user admin -password 'a-new-password'   # set a password
+tunnel-panel reset-password                                          # or clear all accounts
+systemctl restart tunnel-panel
+```
+
 ## Notes & limitations
 
 - The **Backhaul Premium** core is closed source and is **not** bundled or downloaded. Upload it
