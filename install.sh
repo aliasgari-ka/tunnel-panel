@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Tunnel Panel installer — run as root on the FOREIGN (relay) server.
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/REPO_SLUG/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/aliasgari-ka/tunnel-panel/main/install.sh)
 #   bash install.sh [--port 8088] [--agent-port 7020] [--ref main]
 #
 set -euo pipefail
 
-REPO_SLUG="${TP_REPO:-REPO_SLUG}"
+REPO_SLUG="${TP_REPO:-aliasgari-ka/tunnel-panel}"
 PORT=8088
 AGENT_PORT=7020
 REF=main

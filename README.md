@@ -38,7 +38,7 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 ## Install (on the foreign server, as root)
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/REPO_SLUG/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/aliasgari-ka/tunnel-panel/main/install.sh)
 ```
 
 It installs dependencies, builds the binary (or uses a release), installs a `systemd` service,
