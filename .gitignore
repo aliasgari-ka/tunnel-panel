@@ -1,7 +1,7 @@
 # Build output
 /dist/
 /tunnel-panel
-tp-agent
+/tp-agent
 
 # Closed-source / large binaries are NOT committed. They are produced by build.sh
 # (tp-agent, golden-gre-relay) or uploaded through the panel (backhaul_premium).
