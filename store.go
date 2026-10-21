@@ -1,0 +1,225 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sync"
+)
+
+// Settings describes the foreign (local) server the panel runs on.
+type Settings struct {
+	LocalIPv4   string `json:"localIPv4"`
+	LocalIPv6   string `json:"localIPv6"`
+	PanelName   string `json:"panelName"`
+	FRPVersion  string `json:"frpVersion"`  // empty = latest
+	GitHubProxy string `json:"githubProxy"` // optional prefix, e.g. https://ghproxy.example/
+	// AgentConnect is the host:port the Iran agent dials back to (this foreign
+	// server's public address + agent port). Shown in the bootstrap command.
+	AgentConnect string `json:"agentConnect"`
+	TelegramTok  string `json:"telegramTok"`
+	TelegramAdmin string `json:"telegramAdmin"` // numeric chat id(s), comma-separated
+}
+
+// Server is a remote Iran server reached over SSH.
+type Server struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	IPv4       string `json:"ipv4"`
+	IPv6       string `json:"ipv6"`
+	SSHHost    string `json:"sshHost"` // address used for SSH (defaults to ipv4 then ipv6)
+	SSHPort    int    `json:"sshPort"`
+	SSHUser    string `json:"sshUser"`
+	Password   string `json:"password,omitempty"`
+	PrivateKey string `json:"privateKey,omitempty"`
+	HostKey    string `json:"hostKey,omitempty"` // pinned on first connect
+	Arch       string `json:"arch,omitempty"`
+	OS         string `json:"os,omitempty"`
+	Prepared   bool   `json:"prepared"`
+	CreatedAt  int64  `json:"createdAt"`
+	Role       string `json:"role"`                 // iran | foreign
+	AgentToken string `json:"agentToken,omitempty"` // dial-back agent auth
+	// Proxy routes the panel's SSH connection to this server through a SOCKS5 or
+	// HTTP CONNECT proxy, e.g. socks5://user:pass@1.2.3.4:1080 or http://1.2.3.4:3128
+	Proxy string `json:"proxy,omitempty"`
+	// Via, if set, is the id of another server to use as SSH jump host (blank = auto).
+	Via      string `json:"via,omitempty"`
+	LastPath string `json:"lastPath,omitempty"` // how the panel last reached it
+}
+
+// Tunnel links one Iran server with this (foreign) server.
+type Tunnel struct {
+	ID       string                       `json:"id"`
+	Name     string                       `json:"name"`
+	ServerID string                       `json:"serverId"`  // Iran server
+	ForeignID string                      `json:"foreignId"` // foreign server ("" = this panel host)
+	Family   string                       `json:"family"` // v4 | v6 (outer/underlay address family)
+	Ports    string                       `json:"ports"`  // e.g. "443,8080=80,2000-2010"
+	Index    int                          `json:"index"`  // unique small number used for subnets/ifnames
+	Active   string                       `json:"active"` // active method id ("" = stopped)
+	Selected string                       `json:"selected"`
+	Options  map[string]map[string]string `json:"options"` // per-method options (kept when switching)
+	Note     string                       `json:"note"`
+	LastJob  string                       `json:"lastJob"`
+	Updated  int64                        `json:"updated"`
+	Secrets  map[string]string            `json:"secrets"` // stable per-tunnel secrets (tokens, PSKs)
+}
+
+// secret returns a stable random secret for the given key, creating it once.
+// Not persisted here; the caller persists the tunnel after building.
+func (t *Tunnel) secret(key string) string {
+	if t.Secrets == nil {
+		t.Secrets = map[string]string{}
+	}
+	if v, ok := t.Secrets[key]; ok && v != "" {
+		return v
+	}
+	v := randHex(24)
+	t.Secrets[key] = v
+	return v
+}
+
+type User struct {
+	Username string `json:"username"`
+	Hash     string `json:"hash"`
+}
+
+type State struct {
+	Settings Settings  `json:"settings"`
+	Users    []User    `json:"users"`
+	Servers  []*Server `json:"servers"`
+	Tunnels  []*Tunnel `json:"tunnels"`
+	Secret   string    `json:"secret"`
+}
+
+type Store struct {
+	mu   sync.Mutex
+	path string
+	S    State
+}
+
+func newID() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func LoadStore(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	st := &Store{path: filepath.Join(dir, "state.json")}
+	data, err := os.ReadFile(st.path)
+	if err == nil {
+		if err := json.Unmarshal(data, &st.S); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if st.S.Secret == "" {
+		st.S.Secret = randHex(32)
+	}
+	if st.S.Settings.PanelName == "" {
+		st.S.Settings.PanelName = "Tunnel Panel"
+	}
+	for _, t := range st.S.Tunnels {
+		if t.Options == nil {
+			t.Options = map[string]map[string]string{}
+		}
+	}
+	return st, st.saveLocked()
+}
+
+func (s *Store) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
+}
+
+func (s *Store) saveLocked() error {
+	data, err := json.MarshalIndent(&s.S, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
+}
+
+// Server and Tunnel look up by id under the lock. Inside Update/View callbacks use
+// the *Locked variants instead (the lock is not re-entrant).
+func (s *Store) Server(id string) *Server {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serverLocked(&s.S, id)
+}
+
+func (s *Store) Tunnel(id string) *Tunnel {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tunnelLocked(&s.S, id)
+}
+
+func (s *Store) serverLocked(st *State, id string) *Server {
+	if id == "" {
+		return nil
+	}
+	for _, x := range st.Servers {
+		if x.ID == id {
+			return x
+		}
+	}
+	return nil
+}
+
+func (s *Store) tunnelLocked(st *State, id string) *Tunnel {
+	for _, x := range st.Tunnels {
+		if x.ID == id {
+			return x
+		}
+	}
+	return nil
+}
+
+// nextIndexLocked picks the smallest free tunnel index (1..249; 250+ reserved for benchmarks).
+func (s *Store) nextIndexLocked(st *State) int {
+	used := map[int]bool{}
+	for _, t := range st.Tunnels {
+		used[t.Index] = true
+	}
+	for i := 1; i < 250; i++ {
+		if !used[i] {
+			return i
+		}
+	}
+	return 249
+}
+
+// Update runs fn under the store lock and persists the result.
+func (s *Store) Update(fn func(*State) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := fn(&s.S); err != nil {
+		return err
+	}
+	return s.saveLocked()
+}
+
+// View runs fn under the store lock without saving.
+func (s *Store) View(fn func(*State)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fn(&s.S)
+}
