@@ -16,13 +16,13 @@ var methodBackpackReverse = &Method{
 	Fields: []Field{
 		{Key: "transport", Label: "Transport", Type: "select", Default: "stealth",
 			Options: []string{"tcp", "tcpmux", "stealth", "pck", "udp", "kcp", "quic", "ws", "wsmux", "wss", "wssmux", "xdi"}},
-		{Key: "tunnel_port", Label: "Tunnel port", Type: "number", Default: "3080"},
+		{Key: "tunnel_port", Label: "Tunnel port", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "preset", Label: "Preset", Type: "select", Default: "turbo", Options: []string{"balance", "turbo", "aggressive", "throughput"}},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		tr := c.Opt("transport")
-		tp := c.Opt("tunnel_port")
+		tp := portOr(c.Opt("tunnel_port"), c.D.BasePort)
 		tok := c.T.secret("bp-token")
 		bind := bracket(ipAny(c.T.Family)) + ":" + tp
 		irToml := fmt.Sprintf(`[server]
@@ -61,14 +61,14 @@ var methodBackpackL3 = &Method{
 	Encrypt:  "Noise (AEAD)",
 	Fields: []Field{
 		{Key: "carrier", Label: "Carrier", Type: "select", Default: "udp", Options: []string{"udp", "quic", "pck", "sni", "xdi"}},
-		{Key: "port", Label: "Carrier port", Type: "number", Default: "9000"},
+		{Key: "port", Label: "Carrier port", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1400"},
 		{Key: "sni_domain", Label: "SNI domain (sni carrier)", Type: "text", Default: "mci.ir"},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		carrier := c.Opt("carrier")
-		port := c.Opt("port")
+		port := portOr(c.Opt("port"), c.D.BasePort)
 		tok := c.T.secret("bp-l3-token")
 		sni := ""
 		if carrier == "sni" {

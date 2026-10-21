@@ -20,6 +20,8 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 - **Telegram bot** that does everything the panel does (start/stop/switch/status) over buttons.
 - **Persistent & supervised:** every method is a `systemd` unit, so tunnels survive reboots.
 - **SSH bridge:** expose an Iran server's SSH on a panel port so you can log in manually.
+- **Traffic shaping:** optional per-tunnel CAKE/HTB/TBF/fq_codel qdisc + jitter + MSS clamp.
+- **Country flags:** servers are geolocated by IP and shown with their flag.
 
 ## Methods
 
@@ -34,6 +36,7 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 | **Direct v6 (ip6gre)** | v6 | none | kernel only, lowest overhead |
 | **Plain GRE** | v4/v6 | none | kernel GRE / ip6gre |
 | **IPsec (strongSwan)** | v6/v4 | AES-GCM | IKEv2, route-based XFRM interface |
+| **Spoof-Tunnel** | v4 | none (spoofed) | stateless raw pipe via mutual source-IP spoofing; needs non-BCP38 providers; put an encrypted protocol inside |
 
 ## Install (on the foreign server, as root)
 

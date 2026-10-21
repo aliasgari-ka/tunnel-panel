@@ -137,7 +137,7 @@ var methodPremium = &Method{
 	Fields: []Field{
 		{Key: "mode", Label: "Mode", Type: "select", Default: "ipx", Options: []string{"ipx", "anytls", "tcpmux", "wssmux", "tcp"}},
 		{Key: "profile", Label: "IPX carrier", Type: "select", Default: "tcp", Options: []string{"tcp", "bip", "gre", "ipip", "udp", "icmp"}},
-		{Key: "port", Label: "Tunnel port (non-ipx)", Type: "number", Default: "8443"},
+		{Key: "port", Label: "Tunnel port (non-ipx)", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "sni", Label: "SNI (anytls)", Type: "text", Default: "www.digikala.com"},
 		{Key: "algorithm", Label: "IPX cipher", Type: "select", Default: "aes-256-gcm", Options: []string{"aes-256-gcm", "chacha20-poly1305", "aes-128-gcm"}},
 	},
@@ -189,7 +189,7 @@ log_level = "info"
 				ipxCommon(d.KHv4, d.IRv4)
 		} else {
 			tok := c.T.secret("premium-token")
-			port := c.Opt("port")
+			port := portOr(c.Opt("port"), d.BasePort)
 			muxBlock, tlsBlock, tlsClient := "", "", ""
 			if mode == "tcpmux" || mode == "wssmux" {
 				muxBlock = "\n[mux]\nmux_version = 2\nmux_framesize = 32768\nmux_recievebuffer = 4194304\nmux_streambuffer = 2097152\nmux_concurrency = 8\n"

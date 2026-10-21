@@ -16,7 +16,7 @@ var methodBackhaul = &Method{
 	Fields: []Field{
 		{Key: "transport", Label: "Transport", Type: "select", Default: "tcpmux",
 			Options: []string{"tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux", "udp"}},
-		{Key: "tunnel_port", Label: "Tunnel port", Type: "number", Default: "3080", Help: "control/data port on Iran"},
+		{Key: "tunnel_port", Label: "Tunnel port", Type: "number", Default: "", Help: "control/data port on Iran (blank = auto, unique per tunnel)"},
 		{Key: "mux_con", Label: "Mux concurrency", Type: "number", Default: "8"},
 		{Key: "nodelay", Label: "TCP nodelay", Type: "bool", Default: "true"},
 		{Key: "sniffer", Label: "Traffic sniffer", Type: "bool", Default: "false"},
@@ -24,7 +24,7 @@ var methodBackhaul = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		tr := c.Opt("transport")
-		tp := c.Opt("tunnel_port")
+		tp := portOr(c.Opt("tunnel_port"), c.D.BasePort)
 		tok := c.T.secret("bh-token")
 		bind := bracket(ipAny(c.T.Family)) + ":" + tp
 		isMux := tr == "tcpmux" || tr == "wsmux" || tr == "wssmux"
@@ -110,13 +110,13 @@ var methodFRP = &Method{
 	Encrypt:  "token (+TLS)",
 	Fields: []Field{
 		{Key: "protocol", Label: "Protocol", Type: "select", Default: "tcp", Options: []string{"tcp", "websocket", "quic", "kcp"}},
-		{Key: "bind_port", Label: "Bind port", Type: "number", Default: "7000"},
+		{Key: "bind_port", Label: "Bind port", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "tls", Label: "TLS", Type: "bool", Default: "true"},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		proto := c.Opt("protocol")
-		bp := c.Opt("bind_port")
+		bp := portOr(c.Opt("bind_port"), c.D.BasePort)
 		tok := c.T.secret("frp-token")
 		extra := ""
 		switch proto {

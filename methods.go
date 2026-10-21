@@ -335,3 +335,11 @@ func bracket(ip string) string {
 	}
 	return ip
 }
+
+// portOr returns v, or a per-tunnel unique port derived from base when v is blank.
+func portOr(v string, base int) string {
+	if v != "" {
+		return v
+	}
+	return fmt.Sprintf("%d", base)
+}
