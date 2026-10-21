@@ -12,12 +12,12 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"strings"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -241,12 +241,12 @@ func loadOrMakeCert(dir string) (tls.Certificate, string, error) {
 		return tls.Certificate{}, "", err
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject:      pkix.Name{CommonName: "tunnel-panel-agent"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(10, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		IsCA:         true,
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "tunnel-panel-agent"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		IsCA:                  true,
 		BasicConstraintsValid: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)

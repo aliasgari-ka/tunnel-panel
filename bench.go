@@ -21,16 +21,16 @@ type BenchRequest struct {
 
 // BenchResult is one method's measured quality on the route.
 type BenchResult struct {
-	Method     string  `json:"method"`
-	Title      string  `json:"title"`
-	OK         bool    `json:"ok"`
-	Error      string  `json:"error,omitempty"`
-	RTTms      float64 `json:"rttMs"`
-	Jitterms   float64 `json:"jitterMs"`
-	LossPct    float64 `json:"lossPct"`
-	Mbps       float64 `json:"mbps"`
-	Score      float64 `json:"score"`
-	Recommended bool   `json:"recommended"`
+	Method      string  `json:"method"`
+	Title       string  `json:"title"`
+	OK          bool    `json:"ok"`
+	Error       string  `json:"error,omitempty"`
+	RTTms       float64 `json:"rttMs"`
+	Jitterms    float64 `json:"jitterMs"`
+	LossPct     float64 `json:"lossPct"`
+	Mbps        float64 `json:"mbps"`
+	Score       float64 `json:"score"`
+	Recommended bool    `json:"recommended"`
 }
 
 func benchKey(iran, foreign, family string) string { return iran + "|" + foreign + "|" + family }

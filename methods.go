@@ -30,7 +30,7 @@ type Unit struct {
 
 // SidePlan is everything to do on one host for a method.
 type SidePlan struct {
-	Files map[string]FileSpec
+	Files     map[string]FileSpec
 	Artifacts []Artifact // binaries fetched by the panel and uploaded to this host
 	Setup     string     // one-time preparation (packages, certs) run before the unit starts
 	Unit      Unit
@@ -101,12 +101,12 @@ type Field struct {
 
 // Method is one tunnelling technique.
 type Method struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Desc     string   `json:"desc"`
-	Families []string `json:"families"` // v4, v6
-	Encrypt  string   `json:"encrypt"`  // short note shown as a badge
-	Fields   []Field  `json:"fields"`
+	ID       string                                         `json:"id"`
+	Title    string                                         `json:"title"`
+	Desc     string                                         `json:"desc"`
+	Families []string                                       `json:"families"` // v4, v6
+	Encrypt  string                                         `json:"encrypt"`  // short note shown as a badge
+	Fields   []Field                                        `json:"fields"`
 	Build    func(c *buildCtx) (ir, kh SidePlan, err error) `json:"-"`
 }
 

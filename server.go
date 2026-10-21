@@ -138,7 +138,7 @@ func (s *Server2) setCookie(w http.ResponseWriter, r *http.Request, user string)
 	exp := time.Now().Add(72 * time.Hour).Unix()
 	val := fmt.Sprintf("%s|%d|%s", user, exp, s.sign(user, exp))
 	http.SetCookie(w, &http.Cookie{Name: "tp_session", Value: val, Path: "/", HttpOnly: true,
-		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 		SameSite: http.SameSiteStrictMode, MaxAge: 72 * 3600})
 }
 

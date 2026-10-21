@@ -76,7 +76,9 @@ func (b *Bot) Run() {
 		fmt.Printf("telegram bot: %v\n", err)
 		return
 	}
-	var who struct{ Username string `json:"username"` }
+	var who struct {
+		Username string `json:"username"`
+	}
 	_ = json.Unmarshal(me, &who)
 	fmt.Printf("telegram bot @%s started\n", who.Username)
 	offset := 0
@@ -95,12 +97,18 @@ func (b *Bot) Run() {
 			UpdateID int `json:"update_id"`
 			Message  *struct {
 				Text string `json:"text"`
-				Chat struct{ ID int64 `json:"id"` } `json:"chat"`
+				Chat struct {
+					ID int64 `json:"id"`
+				} `json:"chat"`
 			} `json:"message"`
 			Callback *struct {
 				ID   string `json:"id"`
 				Data string `json:"data"`
-				Msg  struct{ Chat struct{ ID int64 `json:"id"` } `json:"chat"` } `json:"message"`
+				Msg  struct {
+					Chat struct {
+						ID int64 `json:"id"`
+					} `json:"chat"`
+				} `json:"message"`
 			} `json:"callback_query"`
 		}
 		if err := json.Unmarshal(res, &updates); err != nil {

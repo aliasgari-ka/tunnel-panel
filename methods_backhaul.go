@@ -154,10 +154,10 @@ transport.dialServerKeepalive = 120
 		irCfg, khCfg := dir+"/frps.toml", dir+"/frpc.toml"
 		ir = SidePlan{Files: map[string]FileSpec{irCfg: {Content: []byte(irToml), Mode: 0o600}},
 			Artifacts: []Artifact{artFRP(c.Set, "frps")},
-			Unit:  Unit{Desc: "FRP server " + c.T.Name, ExecStart: "/opt/frp/frps -c " + irCfg}}
+			Unit:      Unit{Desc: "FRP server " + c.T.Name, ExecStart: "/opt/frp/frps -c " + irCfg}}
 		kh = SidePlan{Files: map[string]FileSpec{khCfg: {Content: []byte(khToml), Mode: 0o600}},
 			Artifacts: []Artifact{artFRP(c.Set, "frpc")},
-			Unit:  Unit{Desc: "FRP client " + c.T.Name, ExecStart: "/opt/frp/frpc -c " + khCfg}}
+			Unit:      Unit{Desc: "FRP client " + c.T.Name, ExecStart: "/opt/frp/frpc -c " + khCfg}}
 		return ir, kh, nil
 	},
 }

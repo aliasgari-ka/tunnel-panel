@@ -19,8 +19,8 @@ type Settings struct {
 	GitHubProxy string `json:"githubProxy"` // optional prefix, e.g. https://ghproxy.example/
 	// AgentConnect is the host:port the Iran agent dials back to (this foreign
 	// server's public address + agent port). Shown in the bootstrap command.
-	AgentConnect string `json:"agentConnect"`
-	TelegramTok  string `json:"telegramTok"`
+	AgentConnect  string `json:"agentConnect"`
+	TelegramTok   string `json:"telegramTok"`
 	TelegramAdmin string `json:"telegramAdmin"` // numeric chat id(s), comma-separated
 }
 
@@ -52,20 +52,20 @@ type Server struct {
 
 // Tunnel links one Iran server with this (foreign) server.
 type Tunnel struct {
-	ID       string                       `json:"id"`
-	Name     string                       `json:"name"`
-	ServerID string                       `json:"serverId"`  // Iran server
-	ForeignID string                      `json:"foreignId"` // foreign server ("" = this panel host)
-	Family   string                       `json:"family"` // v4 | v6 (outer/underlay address family)
-	Ports    string                       `json:"ports"`  // e.g. "443,8080=80,2000-2010"
-	Index    int                          `json:"index"`  // unique small number used for subnets/ifnames
-	Active   string                       `json:"active"` // active method id ("" = stopped)
-	Selected string                       `json:"selected"`
-	Options  map[string]map[string]string `json:"options"` // per-method options (kept when switching)
-	Note     string                       `json:"note"`
-	LastJob  string                       `json:"lastJob"`
-	Updated  int64                        `json:"updated"`
-	Secrets  map[string]string            `json:"secrets"` // stable per-tunnel secrets (tokens, PSKs)
+	ID        string                       `json:"id"`
+	Name      string                       `json:"name"`
+	ServerID  string                       `json:"serverId"`  // Iran server
+	ForeignID string                       `json:"foreignId"` // foreign server ("" = this panel host)
+	Family    string                       `json:"family"`    // v4 | v6 (outer/underlay address family)
+	Ports     string                       `json:"ports"`     // e.g. "443,8080=80,2000-2010"
+	Index     int                          `json:"index"`     // unique small number used for subnets/ifnames
+	Active    string                       `json:"active"`    // active method id ("" = stopped)
+	Selected  string                       `json:"selected"`
+	Options   map[string]map[string]string `json:"options"` // per-method options (kept when switching)
+	Note      string                       `json:"note"`
+	LastJob   string                       `json:"lastJob"`
+	Updated   int64                        `json:"updated"`
+	Secrets   map[string]string            `json:"secrets"` // stable per-tunnel secrets (tokens, PSKs)
 }
 
 // secret returns a stable random secret for the given key, creating it once.
