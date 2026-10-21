@@ -35,25 +35,58 @@ if have apt-get; then
   apt-get install -y -qq git curl iproute2 iptables ethtool openssl ca-certificates gcc >/dev/null 2>&1 || true
 fi
 
-# 2. prefer a binary shipped next to this script (release tarball)
+# 2. get the binary: next to this script → GitHub release → build from source
 SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo /tmp)"
+GOV=1.24.7   # must satisfy go.mod (go 1.24)
+
+fetch_release() {
+  local base="https://github.com/$REPO_SLUG/releases/latest/download"
+  local tmp; tmp=$(mktemp -d)
+  echo "==> downloading prebuilt release ($ARCH)"
+  curl -fsSL --retry 3 --max-time 300 -o "$tmp/tunnel-panel" "$base/tunnel-panel-$ARCH" || { rm -rf "$tmp"; return 1; }
+  if curl -fsSL --retry 2 --max-time 30 -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"; then
+    want=$(awk -v f="tunnel-panel-$ARCH" '$2==f{print $1}' "$tmp/SHA256SUMS")
+    got=$(sha256sum "$tmp/tunnel-panel" | awk '{print $1}')
+    if [ -n "$want" ] && [ "$want" != "$got" ]; then echo "checksum mismatch — refusing"; rm -rf "$tmp"; return 1; fi
+  fi
+  install -m0755 "$tmp/tunnel-panel" "$DEST"
+  rm -rf "$tmp"
+}
+
+go_ok() { have go && go version | grep -qE 'go1\.(2[4-9]|[3-9][0-9])'; }
+
+install_go() {
+  echo "==> installing Go $GOV"
+  local f="go${GOV}.linux-${ARCH}.tar.gz"
+  for m in https://go.dev/dl https://dl.google.com/go https://golang.google.cn/dl \
+           https://mirrors.aliyun.com/golang https://mirrors.ustc.edu.cn/golang; do
+    echo "   trying $m"
+    if curl -fsSL --retry 2 --max-time 600 -o /tmp/go.tgz "$m/$f" && tar -tzf /tmp/go.tgz >/dev/null 2>&1; then
+      rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz && rm -f /tmp/go.tgz
+      export PATH=/usr/local/go/bin:$PATH
+      return 0
+    fi
+  done
+  echo "could not download Go from any mirror"; return 1
+}
+
 if [ -f "$SELF_DIR/dist/tunnel-panel-$ARCH" ]; then
   install -m0755 "$SELF_DIR/dist/tunnel-panel-$ARCH" "$DEST"
 elif [ -f "$SELF_DIR/tunnel-panel-$ARCH" ]; then
   install -m0755 "$SELF_DIR/tunnel-panel-$ARCH" "$DEST"
+elif [ "${TP_BUILD:-}" != 1 ] && fetch_release; then
+  echo "   installed release binary"
 else
-  # 3. build from source
-  echo "==> fetching source ($REPO_SLUG@$REF)"
+  echo "==> building from source ($REPO_SLUG@$REF)"
   rm -rf "$SRC"
   git clone --depth 1 -b "$REF" "https://github.com/$REPO_SLUG" "$SRC"
-  if ! have go; then
-    echo "==> installing Go toolchain"
-    GOV=1.23.6
-    curl -fsSL "https://go.dev/dl/go${GOV}.linux-${ARCH}.tar.gz" -o /tmp/go.tgz
-    rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
-    export PATH=$PATH:/usr/local/go/bin
-  fi
-  ( cd "$SRC" && bash build.sh "$ARCH" )
+  [ -x /usr/local/go/bin/go ] && export PATH=/usr/local/go/bin:$PATH
+  go_ok || install_go
+  # module downloads: fall back to public mirrors if proxy.golang.org is blocked
+  export GOTOOLCHAIN=local
+  export GOPROXY="${GOPROXY:-https://proxy.golang.org,https://goproxy.cn,https://goproxy.io,direct}"
+  export GOSUMDB="${GOSUMDB:-sum.golang.org}"
+  ( cd "$SRC" && bash build.sh "$ARCH" ) || { echo "build failed"; exit 1; }
   install -m0755 "$SRC/dist/tunnel-panel-$ARCH" "$DEST"
 fi
 

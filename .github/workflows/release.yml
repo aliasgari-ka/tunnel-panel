@@ -1,0 +1,33 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install gcc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc
+      - name: Build
+        run: |
+          bash build.sh amd64 arm64
+          cd dist && sha256sum tunnel-panel-amd64 tunnel-panel-arm64 > SHA256SUMS && cat SHA256SUMS
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          make_latest: true
+          files: |
+            dist/tunnel-panel-amd64
+            dist/tunnel-panel-arm64
+            dist/SHA256SUMS
