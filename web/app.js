@@ -221,6 +221,37 @@ function viewServers(w) {
   $$('[data-test]', wrap).forEach(b => b.onclick = () => testServer(b.dataset.test, b));
   $$('[data-agent]', wrap).forEach(b => b.onclick = () => agentModal(b.dataset.agent));
   $$('[data-bridge]', wrap).forEach(b => b.onclick = () => bridgeModal(b.dataset.bridge));
+  $$('[data-optz]', wrap).forEach(b => b.onclick = () => optimizeModal(b.dataset.optz));
+}
+function optimizeModal(id) {
+  const m = modal(`<h2>Optimize kernel</h2>
+    <p class="muted" style="font-size:13px">Detects this server and recommends sysctl tuning (BBR, buffers, forwarding, file limits) scaled to its RAM and kernel. Applies it over the active path, or gives you the command to run by hand.</p>
+    <div id="ozbody" style="margin-top:12px"><div class="muted">Detecting…</div></div>`, true);
+  const render = (r, applied) => {
+    if (r.error) { $('#ozbody', m).innerHTML = `<div style="color:var(--crit)">${esc(r.error)}</div>`; return; }
+    const info = [['Kernel', r.kernel], ['Virtualization', r.virt], ['RAM', r.ramMB + ' MB'], ['CPUs', r.cpus], ['Current', (r.cc || '?') + ' / ' + (r.qdisc || '?')], ['BBR', r.bbr ? 'available' : 'not available']];
+    $('#ozbody', m).innerHTML = `
+      <table class="tbl">${info.map(x => `<tr><td class="faint">${x[0]}</td><td class="mono">${esc(String(x[1]))}</td></tr>`).join('')}</table>
+      ${(r.notes || []).map(n => `<div class="mdesc" style="margin-top:8px">${esc(n)}</div>`).join('')}
+      ${applied ? `<div class="mdesc" style="border-color:var(--good);margin-top:8px"><b>${r.applied ? '✓ Applied' : '⚠ Apply failed'}</b>${r.output ? '\n' + esc(r.output) : ''}</div>` : ''}
+      <h3 style="margin-top:14px">Recommended /etc/sysctl.d/99-tunnel-panel-optz.conf</h3>
+      <div class="codebox" style="margin-top:6px"><code>${esc(r.sysctlConf)}</code></div>
+      <h3 style="margin-top:14px">Run it manually (as root)</h3>
+      <div class="codebox" style="margin-top:6px"><code id="ozman">${esc(r.manual)}</code></div>
+      <div class="actions" style="justify-content:space-between;margin-top:14px">
+        <button class="btn sm" id="ozcopy">Copy manual command</button>
+        <div><button class="btn ghost" id="ozclose">Close</button><button class="btn pri" id="ozapply">${applied ? 'Re-apply' : 'Apply now'}</button></div>
+      </div>`;
+    $('#ozcopy', m).onclick = (e) => copy(r.manual, e.target);
+    $('#ozclose', m).onclick = () => m.remove();
+    $('#ozapply', m).onclick = () => run(true);
+  };
+  const run = async (apply) => {
+    $('#ozbody', m).innerHTML = `<div class="muted">${apply ? 'Applying…' : 'Detecting…'}</div>`;
+    try { const r = await api('/servers/optimize', { ID: id, Apply: !!apply }); render(r, apply); if (apply && r.applied) { toast('Kernel optimized'); loadAll(); } }
+    catch (e) { $('#ozbody', m).innerHTML = `<div style="color:var(--crit)">${esc(e.message)}</div>`; }
+  };
+  run(false);
 }
 function serverCard(s) {
   const online = s.agentOnline ? `<span class="pill on"><span class="led"></span>agent online</span>`
@@ -235,6 +266,7 @@ function serverCard(s) {
       ${s.proxy ? `<br>proxy ${esc(s.proxy)}` : ''}${s.lastPath ? `<br>last path: ${esc(s.lastPath)}` : ''}${s.arch ? `<br>${esc(s.os || '')} ${esc(s.arch)}` : ''}</div>
     <div class="actions">
       <button class="btn sm" data-test="${s.id}">Test paths</button>
+      <button class="btn sm" data-optz="${s.id}">Optimize</button>
       <button class="btn sm" data-agent="${s.id}">Agent install</button>
       <button class="btn sm" data-bridge="${s.id}">SSH bridge</button>
       <button class="btn sm" data-edit="${s.id}">Edit</button>

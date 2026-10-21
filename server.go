@@ -60,6 +60,7 @@ func (a *App) routes() http.Handler {
 	p("/api/servers/agent", s.serverAgent)
 	p("/api/servers/resetkey", s.serverResetKey)
 	p("/api/servers/bridge", s.serverBridge)
+	p("/api/servers/optimize", s.serverOptimize)
 	p("/api/tunnels", s.tunnels)
 	p("/api/tunnels/save", s.tunnelSave)
 	p("/api/tunnels/delete", s.tunnelDelete)
@@ -527,6 +528,23 @@ func (s *Server2) serverBridge(w http.ResponseWriter, r *http.Request) {
 		"command": fmt.Sprintf("ssh -p %d %s@%s", b.Port, user, host),
 		"note":    "Open for 30 minutes. Each new SSH connection is proxied to the Iran server over the active path.",
 	})
+}
+
+// serverOptimize detects a server and recommends/applies kernel tuning.
+func (s *Server2) serverOptimize(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID    string
+		Apply bool
+	}
+	_ = readJSON(r, &in)
+	srv := s.app.store.Server(in.ID)
+	if srv == nil {
+		httpErr(w, 404, "server not found")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	writeJSON(w, s.app.Optimize(ctx, srv, in.Apply))
 }
 
 func maskStr(s string) string {
