@@ -36,6 +36,10 @@ else
   : > assets/golden-gre-relay-arm64
 fi
 
+echo "==> unpacking Backhaul Premium v1.0.2 (arm64, the vendor's archive)"
+tar -xzOf third_party/backhaul-premium-v1/backhaul_premium_linux_arm64.tar.gz backhaul_premium > assets/backhaul_premium_v1-arm64
+echo "a23ccdc3cf1d605951be70bab95be4782b6125444389e5e37b8f3f7d5496027f  assets/backhaul_premium_v1-arm64" | sha256sum -c -
+
 for arch in $ARCHES; do
   echo "==> building tunnel-panel for $arch"
   CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "dist/tunnel-panel-$arch" .

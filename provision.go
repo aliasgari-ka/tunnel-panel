@@ -43,6 +43,22 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 			j.log("[%s] %s already installed (amd64 core under emulation, up to date)", label, art.Dest)
 			continue
 		}
+		if err != nil && art.Asset == "backhaul_premium_v1" && arch != "arm64" {
+			// the v1 core exists for arm64 only: run that static binary under qemu-aarch64
+			if eerr := premiumV1Emulated(ctx, j, label, h, art); eerr != nil {
+				return fmt.Errorf("Backhaul Premium v1 on this %s server: %v", arch, eerr)
+			}
+			continue
+		}
+		if err != nil && art.Asset == "backhaul_premium" && arch != "amd64" {
+			// the vendor's arm64 download is v1.0.2, which can't talk to the v2 core: go
+			// straight to the amd64 v2 core under emulation (or use the v1 method on both ends)
+			j.log("[%s] no v2 Backhaul Premium core for %s — running the amd64 core under emulation", label, arch)
+			if eerr := premiumEmulated(ctx, j, label, h, art); eerr != nil {
+				return fmt.Errorf("%v; emulation fallback failed: %v", err, eerr)
+			}
+			continue
+		}
 		if err != nil && art.Asset != "" && vendorHelpers[art.Asset] != nil {
 			// no copy on the panel: get the vendor's build for this arch automatically
 			j.log("[%s] %s-%s is not on the panel yet — downloading the vendor's build", label, art.Asset, arch)
@@ -309,6 +325,39 @@ func premiumEmulatedInPlace(ctx context.Context, h Host, art Artifact) bool {
 	sum := sha256.Sum256(core)
 	out, _ := h.Run(ctx, fmt.Sprintf("sha256sum %s.amd64 2>/dev/null; grep -q 'under emulation' %s 2>/dev/null && echo wrapper-ok", shq(art.Dest), shq(art.Dest)), nil)
 	return strings.Contains(out, hex.EncodeToString(sum[:])) && strings.Contains(out, "wrapper-ok")
+}
+
+// premiumV1Emulated installs the arm64 Premium v1 core on a non-arm64 host behind a
+// wrapper that runs it under qemu-aarch64 (the binary is static: no sysroot needed).
+func premiumV1Emulated(ctx context.Context, j *Job, label string, h Host, art Artifact) error {
+	core, err := helperBytes("backhaul_premium_v1", "arm64")
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(core)
+	out, _ := h.Run(ctx, fmt.Sprintf("sha256sum %s.arm64 2>/dev/null; grep -q qemu-aarch64 %s 2>/dev/null && echo wrapper-ok", shq(art.Dest), shq(art.Dest)), nil)
+	if strings.Contains(out, hex.EncodeToString(sum[:])) && strings.Contains(out, "wrapper-ok") {
+		j.log("[%s] %s already installed (arm64 v1 core under qemu-aarch64, up to date)", label, art.Dest)
+		return nil
+	}
+	out, err = h.Run(ctx, `if ! command -v qemu-aarch64-static >/dev/null 2>&1 && ! command -v qemu-aarch64 >/dev/null 2>&1; then
+  (apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq qemu-user-static >/dev/null 2>&1) || apt-get install -y -qq qemu-user >/dev/null 2>&1 || dnf install -y qemu-user-static >/dev/null 2>&1 || true
+fi
+command -v qemu-aarch64-static >/dev/null 2>&1 || command -v qemu-aarch64 >/dev/null 2>&1 || { echo "could not install qemu-user-static (qemu-aarch64)"; exit 1; }`, nil)
+	if err != nil {
+		return fmt.Errorf("%s", lastLine(out))
+	}
+	wrapper := fmt.Sprintf(`#!/bin/sh
+# Backhaul Premium v1 exists for arm64 only: run it under qemu-aarch64 on this CPU.
+Q=$(command -v qemu-aarch64-static || command -v qemu-aarch64)
+[ -n "$Q" ] || { echo "no arm64 emulator: apt install qemu-user-static"; exit 1; }
+exec "$Q" %[1]s.arm64 "$@"
+`, shq(art.Dest))
+	if err := pushBlobs(ctx, j, label, h, []blob{{art.Dest + ".arm64", core, 0o755}, {art.Dest, []byte(wrapper), 0o755}}); err != nil {
+		return err
+	}
+	j.log("[%s] Backhaul Premium v1 runs under qemu-aarch64 on this server (expect more CPU use than native)", label)
+	return nil
 }
 
 type blob struct {

@@ -461,7 +461,9 @@ async function loadHelpers(card) {
     try {
       const r = await fetch('/api/helpers/upload?name=' + encodeURIComponent(name), { method: 'POST', headers: { 'X-TP-Upload': '1' }, body: chosen });
       if (!r.ok) throw new Error(await r.text());
-      toast('Uploaded'); loadHelpers(card);
+      const j = await r.json().catch(() => ({}));
+      if (j.note) alertModal('Uploaded', j.note); else toast('Uploaded');
+      loadHelpers(card);
     } catch (e) { alertModal('Upload failed', e.message); $('#hup', card).disabled = false; }
   };
 }
@@ -482,6 +484,7 @@ function viewServers(w) {
   fgList.appendChild(panelHostCard());
   fg.forEach(x => fgList.appendChild(serverCard(x)));
   w.appendChild(irSec); w.appendChild(fgSec);
+  w.appendChild(outageSection());
   $$('[data-add]', w).forEach(b => b.onclick = () => serverModal({ role: b.dataset.add }));
   $$('[data-edit]', w).forEach(b => b.onclick = () => serverModal(STATE.servers.find(x => x.id === b.dataset.edit)));
   $$('[data-del]', w).forEach(b => b.onclick = async () => { if (!confirmInline(b, 'Click again to delete')) return; try { await api('/servers/delete', { ID: b.dataset.del }); await loadAll(); renderView(); } catch (e) { alertModal('Error', e.message); } });
@@ -490,6 +493,30 @@ function viewServers(w) {
   $$('[data-bridge]', w).forEach(b => b.onclick = () => bridgeModal(b.dataset.bridge));
   $$('[data-optz]', w).forEach(b => b.onclick = () => optimizeModal(b.dataset.optz));
   $$('[data-prep]', w).forEach(b => b.onclick = () => prepareServer(b.dataset.prep));
+}
+// Outage log: every server (SSH port checked every few seconds) and tunnel outage, with
+// exact times in Tehran time and, for tunnels, whether their servers answered.
+const tehranTime = (u) => new Date(u * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const durTxt = (s) => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${Math.floor(s / 3600)}h${String(Math.floor(s / 60) % 60).padStart(2, '0')}m`;
+function outageSection() {
+  const sec = h(`<section class="group"><div class="ghd"><div><h2>📉 Outage log</h2><p>Every server's SSH port is checked every few seconds (a miss is retried twice), so short drops show up too; tunnel outages say whether their servers answered at the time — the tunnel or the server. Times are Tehran time.</p></div>
+    <div><button class="btn sm" data-oref>⟳</button> <button class="btn sm ghost" data-oclr>Clear</button></div></div><div class="card" style="padding:0;overflow-x:auto" data-olist><div class="muted" style="padding:14px">loading…</div></div></section>`);
+  const load = async () => {
+    try {
+      const r = await api('/outages'); const list = $('[data-olist]', sec);
+      if (!r.outages.length) { list.innerHTML = '<div class="muted" style="padding:14px">No outage recorded yet. ✅</div>'; return; }
+      list.innerHTML = `<table class="otab"><thead><tr><th>Start</th><th>Duration</th><th>What</th><th>Reason</th></tr></thead><tbody>${r.outages.slice(0, 100).map(o => {
+        const open = !o.end, d = (o.end || r.now) - o.start;
+        const icon = o.kind === 'tunnel' ? '🛰' : o.kind === 'panel' ? '🖥' : '🖧';
+        return `<tr class="${open ? 'open' : ''}"><td class="mono">${tehranTime(o.start)}</td><td>${open ? `<b>ongoing</b> · ${durTxt(d)}` : `${durTxt(d)}<div class="faint mono" style="font-size:11px">→ ${tehranTime(o.end).split(', ')[1] || ''}</div>`}</td>
+          <td>${icon} ${esc(o.name)}<div class="faint" style="font-size:11px">${o.kind}</div></td><td>${esc(o.reason)}${o.cause ? `<div class="faint" style="font-size:12px">${esc(o.cause)}</div>` : ''}</td></tr>`;
+      }).join('')}</tbody></table>`;
+    } catch (e) { $('[data-olist]', sec).innerHTML = `<div style="padding:14px;color:var(--crit)">${esc(e.message)}</div>`; }
+  };
+  $('[data-oref]', sec).onclick = load;
+  $('[data-oclr]', sec).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; await api('/outages', { Clear: true }); load(); };
+  load();
+  return sec;
 }
 // the panel's own machine, shown as the first foreign server
 function panelHostCard() {

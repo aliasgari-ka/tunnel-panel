@@ -87,6 +87,7 @@ func (a *App) routes() http.Handler {
 	p("/api/bench/results", s.benchResults)
 	p("/api/bench/active", s.benchActive)
 	p("/api/bench/history", s.benchHistory)
+	p("/api/outages", s.outages)
 	p("/api/helpers", s.helpers)
 	mux.HandleFunc("/api/helpers/upload", s.auth(s.helperUpload)) // multipart, not JSON
 	p("/api/helpers/fetch", s.helperFetch)
@@ -970,6 +971,33 @@ func (s *Server2) benchStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // benchHistory lists saved benchmark runs, newest first (DELETE-style ?clear=1 empties it).
+// outages: the server/tunnel outage log, newest first (POST {Clear:true} empties it).
+func (s *Server2) outages(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var in struct{ Clear bool }
+		_ = readJSON(r, &in)
+		if in.Clear {
+			_ = s.app.store.Update(func(st *State) error {
+				var open []Outage // keep the ones still going on
+				for _, o := range st.Outages {
+					if o.End == 0 {
+						open = append(open, o)
+					}
+				}
+				st.Outages = open
+				return nil
+			})
+		}
+	}
+	out := []Outage{}
+	s.app.store.View(func(st *State) {
+		for i := len(st.Outages) - 1; i >= 0; i-- {
+			out = append(out, st.Outages[i])
+		}
+	})
+	writeJSON(w, map[string]any{"outages": out, "now": time.Now().Unix(), "every": int(serverEvery.Seconds())})
+}
+
 func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		var in struct{ Clear bool }
@@ -1100,11 +1128,19 @@ func (s *Server2) helperUpload(w http.ResponseWriter, r *http.Request) {
 	if st, err := os.Stat(tmp); err == nil {
 		n = st.Size()
 	}
+	note := ""
+	if strings.HasPrefix(name, "backhaul_premium-") {
+		// a v1.x core (the vendor's arm64 build) belongs to the v1 method, not the v2 one
+		if b, err := os.ReadFile(tmp); err == nil && !bytes.Contains(b, []byte("anytls")) {
+			name = "backhaul_premium_v1-" + strings.TrimPrefix(name, "backhaul_premium-")
+			note = "This is a Backhaul Premium v1.x core: saved as " + name + " for the \"Backhaul Premium v1 (legacy)\" method (it can't talk to the v2 core)."
+		}
+	}
 	if err := os.Rename(tmp, filepath.Join(helpersDir(), name)); err != nil {
 		httpErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "size": n})
+	writeJSON(w, map[string]any{"ok": true, "size": n, "name": name, "note": note})
 }
 
 // normalizeHelper unpacks an uploaded .tar.gz (the first ELF inside wins) and checks

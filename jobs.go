@@ -173,6 +173,7 @@ type App struct {
 	// hostFor, when set (tests only), supplies the Host for a server instead of agent/SSH.
 	hostFor func(*Server) Host
 
+	srvMon      *serverMon // the SSH-port server monitor (nil until it runs)
 	healthMu    sync.Mutex
 	healthCache map[string]string    // tunnel id -> "" healthy / reason, from the monitor
 	foNext      map[string]time.Time // tunnel id -> next automatic failover allowed

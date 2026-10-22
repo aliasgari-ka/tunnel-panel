@@ -8,6 +8,7 @@ import (
 
 func init() {
 	register(methodBackhaul)
+	register(methodPremiumV1)
 	register(methodFRP)
 }
 
@@ -26,6 +27,29 @@ var methodBackhaul = &Method{
 		{Key: "sniffer", Label: "Traffic sniffer", Type: "bool", Default: "false"},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
+		return backhaulPlans(c, "/opt/backhaul/backhaul", artBackhaul(c.Set), "Backhaul", "/opt/backhaul")
+	},
+}
+
+// Backhaul Premium v1.0.2: the vendor's only arm64 build. Same config format as open
+// Backhaul, but it doesn't talk to the v2 core, so it runs on both ends: natively on arm64,
+// and the same static binary under qemu-aarch64 on amd64 (see v1Emulated).
+var methodPremiumV1 = &Method{
+	ID:       "premium1",
+	Title:    "Backhaul Premium v1 (legacy)",
+	Desc:     "Backhaul Premium v1.0.2 — the vendor's arm64 build (shipped with the panel, WTFPL). Native on arm64, emulated on amd64; both servers run v1 (it can't talk to the v2 core). tcp/tcpmux/ws/wss/wsmux/wssmux/udp.",
+	Families: []string{"v4", "v6"},
+	Encrypt:  "token / wss",
+	Fields:   methodBackhaul.Fields,
+	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
+		art := Artifact{Name: "backhaul_premium_v1", Asset: "backhaul_premium_v1", Dest: "/opt/backhaul-premium-v1/backhaul_premium", Mode: 0o755}
+		return backhaulPlans(c, art.Dest, art, "Backhaul Premium v1", "/opt/backhaul-premium-v1")
+	},
+}
+
+// backhaulPlans: open Backhaul's [server]/[client] format, shared with Premium v1.
+func backhaulPlans(c *buildCtx, bin string, art Artifact, title, certDir string) (ir, kh SidePlan, err error) {
+	{
 		d := c.D
 		tr := c.Opt("transport")
 		tp := portOr(c.Opt("tunnel_port"), c.D.BasePort)
@@ -39,7 +63,7 @@ var methodBackhaul = &Method{
 		}
 		tlsSrv := ""
 		if isTLS {
-			tlsSrv = "tls_cert = \"/opt/backhaul/server.crt\"\ntls_key = \"/opt/backhaul/server.key\"\n"
+			tlsSrv = "tls_cert = \"" + certDir + "/server.crt\"\ntls_key = \"" + certDir + "/server.key\"\n"
 		}
 		// server (Iran): exposes mapped ports; targets default to foreign 127.0.0.1
 		irToml := fmt.Sprintf(`[server]
@@ -72,14 +96,14 @@ log_level = "info"
 		irCfg, khCfg := dir+"/backhaul.toml", dir+"/backhaul.toml"
 		certGen := ""
 		if isTLS {
-			certGen = "[ -f /opt/backhaul/server.crt ] || openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj \"/CN=cdn.example.com\" -keyout /opt/backhaul/server.key -out /opt/backhaul/server.crt\n"
+			certGen = fmt.Sprintf("mkdir -p %[1]s; [ -f %[1]s/server.crt ] || openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj \"/CN=cdn.example.com\" -keyout %[1]s/server.key -out %[1]s/server.crt\n", certDir)
 		}
-		ir = SidePlan{Files: map[string]FileSpec{irCfg: {Content: []byte(irToml), Mode: 0o600}}, Setup: certGen, Artifacts: []Artifact{artBackhaul(c.Set)},
-			Unit: Unit{Desc: "Backhaul Iran " + c.T.Name, ExecStart: "/opt/backhaul/backhaul -c " + irCfg}}
-		kh = SidePlan{Files: map[string]FileSpec{khCfg: {Content: []byte(khToml), Mode: 0o600}}, Artifacts: []Artifact{artBackhaul(c.Set)},
-			Unit: Unit{Desc: "Backhaul foreign " + c.T.Name, ExecStart: "/opt/backhaul/backhaul -c " + khCfg}}
+		ir = SidePlan{Files: map[string]FileSpec{irCfg: {Content: []byte(irToml), Mode: 0o600}}, Setup: certGen, Artifacts: []Artifact{art},
+			Unit: Unit{Desc: title + " Iran " + c.T.Name, ExecStart: bin + " -c " + irCfg}}
+		kh = SidePlan{Files: map[string]FileSpec{khCfg: {Content: []byte(khToml), Mode: 0o600}}, Artifacts: []Artifact{art},
+			Unit: Unit{Desc: title + " foreign " + c.T.Name, ExecStart: bin + " -c " + khCfg}}
 		return ir, kh, nil
-	},
+	}
 }
 
 func ipAny(fam string) string {

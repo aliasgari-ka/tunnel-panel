@@ -30,6 +30,10 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
   or the other address family (IPv4 ⇄ IPv6), verified by a real connection through the
   forwarded port to the foreign service; the original path is re-tested hourly (on a spare
   slot, without touching the live tunnel) and restored when it works. Per-tunnel switch.
+- **Outage log:** every server's SSH port is checked every 10 s (a miss is retried twice, so a
+  lost packet isn't an outage but a 10-second drop is); each server/tunnel outage is kept with
+  its exact start and end (Tehran time), tunnel outages say whether their servers answered —
+  the tunnel or the server — and Telegram gets a message when it starts and when it's over.
 - **Health & alerts:** live health on every card (red when down); Telegram 🔴/🟢/🔁 messages.
 - **Diagnose / Trace / Speed test:** Diagnose checks every hop and names the problem (a server
   that drops ping is not reported as a dead tunnel when TCP gets through); Trace
@@ -54,6 +58,7 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 | **Backhaul reverse** | v4/v6 | token / wss | tcp, tcpmux, ws, wss, wsmux, wssmux, udp |
 | **FRP reverse** | v4/v6 | token (+TLS) | tcp, websocket, quic, kcp |
 | **Backhaul Premium** | v4 | AEAD (ipx) / TLS | `tun` + `ipx` raw carrier (icmp/ipip/udp/tcp/gre/bip), `anytls`. amd64, upload the core |
+| **Backhaul Premium v1 (legacy)** | v4/v6 | token / wss | the vendor's v1.0.2 arm64 core, shipped with the panel (WTFPL); native on arm64, qemu-aarch64 on amd64; both ends run v1 |
 | **Golden-GRE** | v4 | optional XChaCha20 | GRE-in-FOU disguised as DNS or ICMP; several tunnels can share one server's port 53 |
 | **Direct v6 (ip6gre)** | v6 | none | kernel only, lowest overhead; Carrier `udp` = GRE inside UDP where protocol 47 is filtered |
 | **Plain GRE** | v4/v6 | none | kernel GRE / ip6gre |

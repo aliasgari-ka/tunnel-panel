@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -87,11 +88,17 @@ func ensureArtifact(ctx context.Context, j *Job, a Artifact, arch string) ([]byt
 // helperBytes loads a helper binary: an uploaded one in the data dir wins over the embedded one.
 func helperBytes(name, arch string) ([]byte, error) {
 	file := name + "-" + arch
-	if b, err := os.ReadFile(filepath.Join(helpersDir(), file)); err == nil && len(b) > 0 {
-		return b, nil
-	}
-	if b, err := assetBytes(file); err == nil && len(b) > 0 {
-		return b, nil
+	for _, get := range []func() ([]byte, error){
+		func() ([]byte, error) { return os.ReadFile(filepath.Join(helpersDir(), file)) },
+		func() ([]byte, error) { return assetBytes(file) },
+	} {
+		if b, err := get(); err == nil && len(b) > 0 {
+			// a v1.x Premium core (old [server]/[client] format) can't run the v2 method
+			if name == "backhaul_premium" && !bytes.Contains(b, []byte("anytls")) {
+				return nil, fmt.Errorf("%s is a Backhaul Premium v1.x core (it can't talk to v2): use the \"Backhaul Premium v1 (legacy)\" method on both servers, or upload a v2 core", file)
+			}
+			return b, nil
+		}
 	}
 	hint := ""
 	if name == "backhaul_premium" {

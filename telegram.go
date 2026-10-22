@@ -417,7 +417,7 @@ func (b *Bot) tunnelIcon(t *Tunnel) string {
 }
 
 func shortMethod(id string) string {
-	return map[string]string{"golden": "Golden", "premium": "Premium", "backhaul": "Backhaul", "frp": "FRP",
+	return map[string]string{"golden": "Golden", "premium": "Premium", "premium1": "Premium v1", "backhaul": "Backhaul", "frp": "FRP",
 		"bp_reverse": "BackPack", "bp_l3": "BackPack L3", "direct6": "ip6gre", "ipsec6": "IPsec", "gre": "GRE", "spoof": "Spoof"}[id]
 }
 
@@ -435,7 +435,8 @@ func (b *Bot) tunnelList() string {
 	if len(rows) == 0 {
 		rows = [][]ikey{{{Text: "no tunnels yet — create one in the panel", Data: "noop"}}}
 	}
-	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "📊 Bench history", Data: "home:bh"}, {Text: "🔄", Data: "home"}})
+	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "📉 Outages", Data: "home:out"}})
+	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "🔄", Data: "home"}})
 	return b.keyboard(rows)
 }
 
@@ -465,6 +466,33 @@ func (b *Bot) dashboard() string {
 		s += fmt.Sprintf("  ·  🔁 %d on backup", fo)
 	}
 	return s + "\n<i>tap a tunnel</i>"
+}
+
+func (b *Bot) outagesText() string {
+	var os []Outage
+	b.app.store.View(func(st *State) { os = append(os, st.Outages...) })
+	if len(os) == 0 {
+		return "📉 No outage recorded yet ✅\n<i>servers are checked on their SSH port every 10 s</i>"
+	}
+	var sb strings.Builder
+	sb.WriteString("<b>📉 Outages</b> (Tehran time, newest first)\n")
+	now := time.Now().Unix()
+	for i, n := len(os)-1, 0; i >= 0 && n < 15; i, n = i-1, n+1 {
+		o := os[i]
+		icon := map[string]string{"server": "🖧", "tunnel": "🛰", "panel": "🖥"}[o.Kind]
+		end := now
+		state := "🔴 ongoing"
+		if o.End != 0 {
+			end = o.End
+			state = "→ " + time.Unix(o.End, 0).In(tehran).Format("15:04:05")
+		}
+		fmt.Fprintf(&sb, "\n%s <b>%s</b> · %s\n  %s %s · <b>%s</b>\n  %s", icon, esc(o.Name), o.Kind, clock(time.Unix(o.Start, 0)), state, shortDur(time.Duration(end-o.Start)*time.Second), esc(o.Reason))
+		if o.Cause != "" {
+			fmt.Fprintf(&sb, "\n  <i>%s</i>", esc(o.Cause))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 func (b *Bot) benchHistoryText() string {
@@ -727,6 +755,9 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		return
 	case "home:bh":
 		b.sendMsg(chat, b.benchHistoryText(), "")
+		return
+	case "home:out":
+		b.sendMsg(chat, b.outagesText(), "")
 		return
 	}
 	parts := strings.SplitN(data, ":", 4)

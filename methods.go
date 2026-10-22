@@ -256,7 +256,7 @@ func buildPlans(m *Method, t *Tunnel, srv, fsrv *Server, set Settings) (SidePlan
 // tunnelListenPort is the port each side listens on for the tunnel itself ("" = none).
 func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) (ir, kh string) {
 	switch m.ID {
-	case "backhaul", "bp_reverse":
+	case "backhaul", "bp_reverse", "premium1":
 		return portOr(get("tunnel_port"), d.BasePort), ""
 	case "frp":
 		return portOr(get("bind_port"), d.BasePort), ""

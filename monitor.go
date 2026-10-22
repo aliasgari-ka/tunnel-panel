@@ -17,6 +17,7 @@ const (
 )
 
 type tunnelHealth struct {
+	outageID        string
 	fails           int
 	alerted         bool
 	downSince       time.Time
@@ -119,9 +120,17 @@ func (a *App) healthMonitor() {
 					if !t.NoFailover {
 						extra = fmt.Sprintf("\nAutomatic failover starts if it is still down after %s.", failoverAfter)
 					}
-					a.push(fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)%s", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t), extra))
+					cause := a.tunnelCause(t)
+					h.outageID = newID()
+					a.addOutage(Outage{ID: h.outageID, Kind: "tunnel", Target: t.ID, Name: t.Name, Start: h.downSince.Unix(), Reason: reason, Cause: cause})
+					a.push(fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)\nsince %s (Tehran)\n%s%s", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t), clock(h.downSince), cause, extra))
 				case "up":
-					a.push(fmt.Sprintf("🟢 Tunnel back up: %s (was down %s)", t.Name, h.lastOutage.Round(time.Minute)))
+					now := time.Now()
+					if h.outageID != "" {
+						a.endOutage(h.outageID, now)
+						h.outageID = ""
+					}
+					a.push(fmt.Sprintf("🟢 Tunnel back up: %s\ndown %s\n%s → %s (Tehran)", t.Name, shortDur(h.lastOutage), clock(now.Add(-h.lastOutage)), clock(now)))
 				}
 				switch {
 				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter && time.Now().After(a.failoverNotBefore(t.ID)):
@@ -136,6 +145,9 @@ func (a *App) healthMonitor() {
 		mu.Lock()
 		for id := range state {
 			if !live[id] {
+				if h := state[id]; h.outageID != "" {
+					a.endOutage(h.outageID, time.Now()) // stopped by hand while down
+				}
 				delete(state, id) // stopped or deleted: no alerts
 			}
 		}

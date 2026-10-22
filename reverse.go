@@ -20,7 +20,7 @@ import (
 func reverseTCPPort(m *Method, t *Tunnel) (key string, ok bool) {
 	get, _ := resolveOptions(m, t.Options[m.ID])
 	switch m.ID {
-	case "backhaul":
+	case "backhaul", "premium1":
 		return "tunnel_port", get("transport") != "udp"
 	case "bp_reverse":
 		switch get("transport") {

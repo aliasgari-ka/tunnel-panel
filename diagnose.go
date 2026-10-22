@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -143,7 +144,29 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 					if bget("dialer") == "foreign" {
 						who = "the foreign server dials Iran"
 					}
-					hint("the BackPack link isn't up: %s on %s port %s — a provider/cloud firewall blocking that port is the usual cause; try Carrier = quic or sni, or switch \"Who connects\"", who, map[string]string{"udp": "UDP", "quic": "UDP (QUIC)"}[bget("carrier")]+orStr(map[string]string{"pck": "raw", "sni": "TCP", "xdi": "raw"}[bget("carrier")], ""), port)
+					proto := map[string]string{"udp": "udp", "quic": "udp", "sni": "tcp"}[bget("carrier")]
+					listener, dialer, lName, dName, dialerPub := kh, ir, "foreign", "Iran", d.IRPub
+					if bget("dialer") == "foreign" {
+						listener, dialer, lName, dName, dialerPub = ir, kh, "Iran", "foreign", d.KHPub
+					}
+					if proto == "" {
+						hint("the BackPack link isn't up: %s on port %s — try Carrier = udp, quic or sni, or switch \"Who connects\"", who, port)
+						break
+					}
+					// measure instead of guessing: do the dialer's carrier packets reach the
+					// listener, and does anything come back?
+					arrive, back := carrierCount(ctx, listener, dialer, proto, port, dialerPub, map[bool]string{true: d.KHPub, false: d.IRPub}[lName == "foreign"])
+					switch {
+					case arrive == 0:
+						bad("%s's carrier packets (%s %s) never arrive at the %s server", dName, strings.ToUpper(proto), port, lName)
+						hint("they are dropped on the way: the %s provider's firewall / anti-DDoS (cloud panel) or filtering on the path — allow %s %s there, or try Carrier = %s, or set \"Who connects\" = %s",
+							lName, strings.ToUpper(proto), port, map[string]string{"udp": "sni (TCP)", "tcp": "udp or quic"}[proto], map[string]string{"Iran": "iran", "foreign": "foreign"}[lName])
+					case back == 0:
+						bad("%s's carrier packets arrive at the %s server (%d in 6 s) but nothing comes back to %s", dName, lName, arrive, dName)
+						hint("the %s side's BackPack doesn't answer (wrong token/version — Re-apply updates both), or its replies are dropped on the way back (the %s provider's firewall for outgoing traffic, or filtering towards %s)", lName, lName, dName)
+					default:
+						j.log("  ⚠ carrier packets flow both ways (%d in, %d back in 6 s) but the tunnel carries nothing — check the BackPack logs on both servers", arrive, back)
+					}
 				case m.ID == "gre":
 					hint("GRE (protocol 47) is probably dropped on the path or by a provider/cloud firewall — allow GRE there, or use %s", map[string]string{"v6": "Direct v6 with Carrier = udp, IPsec, BackPack or Backhaul", "v4": "Golden-GRE (looks like DNS), IPsec, BackPack or Backhaul"}[t.Family])
 				}
@@ -370,4 +393,33 @@ func probePortOf(t *Tunnel) string {
 		return d
 	}
 	return "22"
+}
+
+// carrierCount counts, for 6 s, the dialer's carrier packets arriving at the listener and
+// the listener's packets arriving back at the dialer (temporary counting rules, no target).
+func carrierCount(ctx context.Context, listener, dialer Host, proto, port, dialerPub, listenerPub string) (arrive, back int64) {
+	ipt := "iptables"
+	if strings.Contains(dialerPub, ":") {
+		ipt = "ip6tables"
+	}
+	in := fmt.Sprintf("PREROUTING -p %s -s %s --dport %s -m comment --comment tp-diag-carrier", proto, dialerPub, port)
+	out := fmt.Sprintf("PREROUTING -p %s -s %s --sport %s -m comment --comment tp-diag-carrier", proto, listenerPub, port)
+	add := func(h Host, r string) { _, _ = h.Run(ctx, ipt+" -w -t mangle -I "+r+" 2>/dev/null; true", nil) }
+	del := func(h Host, r string) {
+		_, _ = h.Run(context.Background(), "while "+ipt+" -w -t mangle -D "+r+" 2>/dev/null; do :; done; true", nil)
+	}
+	read := func(h Host) int64 {
+		o, _ := h.Run(ctx, ipt+" -w -t mangle -nvxL PREROUTING 2>/dev/null | awk '/tp-diag-carrier/ {s+=$1} END {print s+0}'", nil)
+		n, _ := strconv.ParseInt(strings.TrimSpace(lastLine(o)), 10, 64)
+		return n
+	}
+	add(listener, in)
+	add(dialer, out)
+	defer del(listener, in)
+	defer del(dialer, out)
+	select {
+	case <-ctx.Done():
+	case <-time.After(6 * time.Second):
+	}
+	return read(listener), read(dialer)
 }

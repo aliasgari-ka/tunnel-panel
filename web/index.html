@@ -143,6 +143,10 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .seg button{background:transparent;border:0;color:var(--muted);padding:8px 18px;font-weight:650;font-size:13px;cursor:pointer}
 .seg button+button{border-inline-start:1px solid var(--line)}
 .seg button.on{background:var(--accent);color:var(--accent-fg)}
+.otab{width:100%;border-collapse:collapse;font-size:13px}
+.otab th,.otab td{text-align:start;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.otab th{color:var(--faint);font-weight:600;font-size:12px}
+.otab tr.open td{background:color-mix(in srgb,var(--crit) 9%,transparent)}
 details.more{position:relative}
 .card.raised,.card:has(details.more[open]){position:relative;z-index:35}
 details.more>summary{list-style:none}

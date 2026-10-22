@@ -8,6 +8,7 @@
 /assets/tp-agent-*
 /assets/golden-gre-relay-*
 /assets/backhaul_premium-*
+/assets/backhaul_premium_v1-*
 /assets/jq-*
 
 # Local data / secrets
