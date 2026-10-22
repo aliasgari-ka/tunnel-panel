@@ -294,6 +294,29 @@ func portForwardV4(ports, targetIP, iface, tag string) string {
 	return b.String()
 }
 
+// tunFwdRules accepts forwarded traffic on a daemon-made TUN and clamps the TCP MSS to
+// its MTU, in per-tunnel chains (the interface may not exist yet; iptables matches by name).
+func tunFwdRules(iface, tag string) (up, down string) {
+	fwd, mss := "TPF_"+tag, "TPM_"+tag
+	up = fmt.Sprintf(`iptables -w -N %[1]s 2>/dev/null || iptables -w -F %[1]s
+iptables -w -A %[1]s -o %[3]s -j ACCEPT
+iptables -w -A %[1]s -i %[3]s -j ACCEPT
+iptables -w -C FORWARD -j %[1]s 2>/dev/null || iptables -w -I FORWARD -j %[1]s
+iptables -w -t mangle -N %[2]s 2>/dev/null || iptables -w -t mangle -F %[2]s
+iptables -w -t mangle -A %[2]s -o %[3]s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+iptables -w -t mangle -A %[2]s -i %[3]s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+iptables -w -t mangle -C FORWARD -j %[2]s 2>/dev/null || iptables -w -t mangle -I FORWARD -j %[2]s
+iptables -w -t mangle -C OUTPUT -o %[3]s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -w -t mangle -A OUTPUT -o %[3]s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+exit 0
+`, fwd, mss, iface)
+	down = fmt.Sprintf(`iptables -w -D FORWARD -j %[1]s 2>/dev/null; iptables -w -F %[1]s 2>/dev/null; iptables -w -X %[1]s 2>/dev/null
+iptables -w -t mangle -D FORWARD -j %[2]s 2>/dev/null; iptables -w -t mangle -F %[2]s 2>/dev/null; iptables -w -t mangle -X %[2]s 2>/dev/null
+iptables -w -t mangle -D OUTPUT -o %[3]s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+exit 0
+`, fwd, mss, iface)
+	return up, down
+}
+
 func portForwardDownV4(tag string) string {
 	nat, post, fwd, mss := "TP_"+tag, "TP_"+tag+"_P", "TPF_"+tag, "TPM_"+tag
 	return fmt.Sprintf(`iptables -t nat -D PREROUTING -j %[1]s 2>/dev/null; iptables -t nat -F %[1]s 2>/dev/null; iptables -t nat -X %[1]s 2>/dev/null

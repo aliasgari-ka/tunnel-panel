@@ -494,6 +494,9 @@ func (a *App) SpeedTest(t *Tunnel, secs int) (*Job, error) {
 		} else {
 			j.log("upload test failed: %v", err)
 		}
+		if res.DownMbps > 0 && res.UpMbps == 0 {
+			j.log("WARNING: download works but upload stalls — big packets from Iran are dropped inside the tunnel (MTU). Press Diagnose; it measures the path MTU and suggests a value.")
+		}
 		res.OK = true
 		a.speedMu.Lock()
 		a.speedRes[t.ID] = res

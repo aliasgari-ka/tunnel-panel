@@ -74,6 +74,7 @@ func (a *App) routes() http.Handler {
 	p("/api/tunnels/status", s.tunnelStatus)
 	p("/api/tunnels/lastjob", s.tunnelLastJob)
 	p("/api/tunnels/speedtest", s.tunnelSpeedTest)
+	p("/api/tunnels/diagnose", s.tunnelDiagnose)
 	p("/api/traffic", s.trafficGet)
 	p("/api/jobs", s.job)
 	p("/api/bench/start", s.benchStart)
@@ -802,6 +803,22 @@ func (s *Server2) tunnelSpeedTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	j, err := s.app.SpeedTest(t, in.Seconds)
+	if err != nil {
+		httpErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"job": j.ID})
+}
+
+func (s *Server2) tunnelDiagnose(w http.ResponseWriter, r *http.Request) {
+	var in struct{ ID string }
+	_ = readJSON(r, &in)
+	t := s.app.store.Tunnel(in.ID)
+	if t == nil {
+		httpErr(w, 404, "tunnel not found")
+		return
+	}
+	j, err := s.app.Diagnose(t)
 	if err != nil {
 		httpErr(w, 409, err.Error())
 		return

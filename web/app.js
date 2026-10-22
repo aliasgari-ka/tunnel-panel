@@ -444,6 +444,7 @@ function tunnelCard(t) {
         <button class="btn sm" data-stop ${t.active ? '' : 'disabled'}>Stop</button>
         <button class="btn sm" data-log>Logs</button>
         <button class="btn sm" data-speedtest ${t.active ? '' : 'disabled'} title="Measure RTT, download and upload through the running tunnel">Speed test</button>
+        <button class="btn sm" data-diag ${t.active ? '' : 'disabled'} title="Check every hop and explain why traffic doesn't pass">Diagnose</button>
         <button class="btn ghost sm" data-edit>Edit</button>
         <button class="btn ghost sm danger" data-del>Delete</button>
       </div></div></div>`);
@@ -455,6 +456,7 @@ function tunnelCard(t) {
   applyBtn.onclick = async () => { applyBtn.disabled = true; try { const r = await api('/tunnels/apply', { ID: t.id, Method: selEl.value }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); applyBtn.disabled = false; } };
   $('[data-stop]', card).onclick = async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } };
   $('[data-log]', card).onclick = () => openLog(t, null);
+  $('[data-diag]', card).onclick = async () => { try { const r = await api('/tunnels/diagnose', { ID: t.id }); openLog({ id: t.id, name: 'Diagnose · ' + t.name }, r.job); } catch (e) { alertModal('Diagnose', e.message); } };
   $('[data-speedtest]', card).onclick = async () => { try { const r = await api('/tunnels/speedtest', { ID: t.id }); openLog({ id: t.id, name: 'Speed test · ' + t.name }, r.job); } catch (e) { alertModal('Speed test', e.message); } };
   $('[data-edit]', card).onclick = () => tunnelModal(t);
   $('[data-del]', card).onclick = async (e) => { if (!confirmInline(e.target, 'Confirm delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } };
@@ -646,7 +648,7 @@ async function pollJob(jobId, tunnelId) {
   const tick = async () => {
     try {
       const j = await api(url);
-      box.innerHTML = j.lines.map(l => { let c = /ERROR|failed/.test(l) ? 'err' : /DONE|is active|unit .*active/.test(l) ? 'ok' : /\[IR\]/.test(l) ? 'ir' : ''; return `<div class="ln ${c}">${esc(l)}</div>`; }).join('');
+      box.innerHTML = j.lines.map(l => { let c = /ERROR|failed| ✕ |WARNING/.test(l) ? 'err' : /DONE|is active|unit .*active| ✓ /.test(l) ? 'ok' : /\[IR\]/.test(l) ? 'ir' : ''; return `<div class="ln ${c}">${esc(l)}</div>`; }).join('');
       box.scrollTop = box.scrollHeight;
       if (stat) stat.textContent = j.status === 'running' ? 'running…' : (j.status === 'ok' ? 'completed' : 'error');
       if (j.status !== 'running') { clearInterval(logTimer); logTimer = null; await loadAll(); if (STATE.view === 'tunnels') { const w = $('#work'); if (w && $('.drawer')) { /* keep drawer, repaint behind */ viewTunnels(w); } } }

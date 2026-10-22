@@ -140,6 +140,8 @@ var methodPremium = &Method{
 		{Key: "port", Label: "Tunnel port (non-ipx)", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "sni", Label: "SNI (anytls)", Type: "text", Default: "www.digikala.com"},
 		{Key: "algorithm", Label: "IPX cipher", Type: "select", Default: "aes-256-gcm", Options: []string{"aes-256-gcm", "chacha20-poly1305", "aes-128-gcm"}},
+		{Key: "mtu", Label: "TUN MTU (ipx)", Type: "number", Default: "1280",
+			Help: "lower it (1200, 1100) if download works but upload/handshakes stall — the Iran→foreign path drops big packets"},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
@@ -166,7 +168,7 @@ name = "bhp%d"
 local_addr = "%s/30"
 remote_addr = "%s/30"
 health_port = %d
-mtu = 1320
+mtu = %s
 
 [security]
 enable_encryption = true
@@ -184,7 +186,7 @@ so_sndbuf = 0
 
 [logging]
 log_level = "info"
-`, d.Idx, self, peer, d.BasePort, alg, psk)
+`, d.Idx, self, peer, d.BasePort, c.Opt("mtu"), alg, psk)
 			}
 			irToml = fmt.Sprintf("[ipx]\nmode = \"server\"\nprofile = %q\nlisten_ip = %q\ndst_ip = %q\ninterface = \"IFACE\"\n\n", prof, d.IRPub, d.KHPub) +
 				ipxCommon(d.IRv4, d.KHv4) + fmt.Sprintf("\n[ports]\nforwarder = \"iptables\"\nmapping = [%s]\n", portsTOML(c.T.Ports))
@@ -261,12 +263,24 @@ log_level = "info"
 			return "sed -i \"s/IFACE/$(ip route show default | awk '{print $5; exit}')/\" " + cfg + " 2>/dev/null || true\n"
 		}
 		mk := func(toml, cfg, side string) SidePlan {
-			return SidePlan{
+			sp := SidePlan{
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
 				Setup:     sysctlBBR + certGen + fixIface(cfg),
 				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg},
 			}
+			if mode == "ipx" {
+				// The core DNATs the mapped ports into the TUN but neither accepts them in
+				// FORWARD (dropped when ufw/docker set the policy to DROP) nor clamps the TCP
+				// MSS (users' full-size packets don't fit the TUN MTU, handshakes stall).
+				ifc := fmt.Sprintf("bhp%d", d.Idx)
+				up, down := tunFwdRules(ifc, fwdTag(d))
+				sp.Files[dir+"/fw-up.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + up), Mode: 0o755}
+				sp.Files[dir+"/fw-down.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + down), Mode: 0o755}
+				sp.Unit.ExecStartPre = dir + "/fw-up.sh"
+				sp.Unit.ExecStopPost = dir + "/fw-down.sh"
+			}
+			return sp
 		}
 		return mk(irToml, irCfg, "Iran"), mk(khToml, khCfg, "foreign"), nil
 	},

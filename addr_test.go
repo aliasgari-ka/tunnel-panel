@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -102,5 +103,29 @@ func TestWithProbePort(t *testing.T) {
 	tn.Ports = "40010"
 	if got := withProbePort(methodByID["frp"], tn); got != "40010" {
 		t.Fatalf("dedupe: %q", got)
+	}
+}
+
+func TestPMTU(t *testing.T) {
+	limit := 1372 // largest IP packet that passes
+	run := func(_ Host, sh string) string {
+		var s int
+		if i := strings.Index(sh, "-s "); i >= 0 {
+			fmt.Sscanf(sh[i+3:], "%d", &s)
+		}
+		if s+28 <= limit {
+			return "y"
+		}
+		return ""
+	}
+	got := pmtu(run, nil, "10.0.0.2", 1400)
+	if got > limit || got < limit-8 {
+		t.Fatalf("pmtu = %d, want ~%d", got, limit)
+	}
+	if pmtu(run, nil, "x", 1300) != 1300 {
+		t.Fatal("full size should pass")
+	}
+	if fp := firstPorts("443,2000-2010=3000-3010,127.0.0.1:8443=9000", 5); len(fp) != 3 || fp[1].listen != "2000" || fp[1].dst != "3000" || fp[2].listen != "8443" || fp[2].dst != "9000" {
+		t.Fatalf("firstPorts: %+v", fp)
 	}
 }
