@@ -87,6 +87,7 @@ func (a *App) routes() http.Handler {
 	p("/api/bench/active", s.benchActive)
 	p("/api/helpers", s.helpers)
 	mux.HandleFunc("/api/helpers/upload", s.auth(s.helperUpload)) // multipart, not JSON
+	p("/api/helpers/fetch", s.helperFetch)
 	return securityHeaders(mux)
 }
 
@@ -781,8 +782,8 @@ func (s *Server2) tunnelStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
-	ir, kh := s.app.Status(ctx, t)
-	writeJSON(w, map[string]string{"active": t.Active, "iran": ir, "foreign": kh})
+	ir, kh, link := s.app.Health(ctx, t)
+	writeJSON(w, map[string]string{"active": t.Active, "iran": ir, "foreign": kh, "link": link})
 }
 
 // trafficGet returns live traffic (starting the collector) plus the last speed tests.
@@ -1050,4 +1051,99 @@ func normalizeHelper(path, name string) error {
 		return fmt.Errorf("this binary is for %s but the name says %s — rename it to %s-%s", got, name[strings.LastIndex(name, "-")+1:], name[:strings.LastIndex(name, "-")], got)
 	}
 	return nil
+}
+
+// vendorHelpers are closed helpers the vendor publishes for download. Their servers
+// only speak plain HTTP (the vendor's own installer uses the same URLs, unchecked), so
+// the panel fetches from both mirrors and reports whether the two copies agree.
+var vendorHelpers = map[string][]string{
+	"backhaul_premium": {
+		"http://script.backhaul.top:2095/backhaul_premium_%s.tar.gz",
+		"http://79.175.167.114:2095/backhaul_premium_%s.tar.gz",
+	},
+}
+
+func (s *Server2) helperFetch(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Name string }
+	if err := readJSON(r, &in); err != nil || !helperNameRe.MatchString(in.Name) {
+		httpErr(w, 400, "name must look like backhaul_premium-arm64")
+		return
+	}
+	i := strings.LastIndex(in.Name, "-")
+	base, arch := in.Name[:i], in.Name[i+1:]
+	urls := vendorHelpers[base]
+	if urls == nil {
+		httpErr(w, 400, base+" has no vendor download — upload it instead")
+		return
+	}
+	if err := os.MkdirAll(helpersDir(), 0o700); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	cli := &http.Client{Timeout: 90 * time.Second}
+	type got struct {
+		url, sum string
+		path     string
+	}
+	var ok []got
+	var errs []string
+	for k, u := range urls {
+		u = fmt.Sprintf(u, arch)
+		tmp := filepath.Join(helpersDir(), fmt.Sprintf("%s.fetch%d.part", in.Name, k))
+		err := func() error {
+			resp, err := cli.Get(u)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				return fmt.Errorf("HTTP %d", resp.StatusCode)
+			}
+			f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o700)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(f, io.LimitReader(resp.Body, 200<<20))
+			f.Close()
+			if err != nil {
+				return err
+			}
+			return normalizeHelper(tmp, in.Name)
+		}()
+		if err != nil {
+			os.Remove(tmp)
+			errs = append(errs, fmt.Sprintf("%s: %v", u, err))
+			continue
+		}
+		b, _ := os.ReadFile(tmp)
+		sum := sha256.Sum256(b)
+		ok = append(ok, got{u, hex.EncodeToString(sum[:]), tmp})
+	}
+	defer func() {
+		for _, g := range ok {
+			os.Remove(g.path)
+		}
+	}()
+	if len(ok) == 0 {
+		httpErr(w, 502, "could not download from the vendor: "+strings.Join(errs, "; "))
+		return
+	}
+	note := "only one mirror answered, so the copy could not be cross-checked"
+	if len(ok) > 1 {
+		if ok[0].sum != ok[1].sum {
+			httpErr(w, 502, "the two vendor mirrors served different files ("+ok[0].sum[:12]+" vs "+ok[1].sum[:12]+") — refusing; upload a copy you trust instead")
+			return
+		}
+		note = "both vendor mirrors served the identical file"
+	}
+	if err := os.Rename(ok[0].path, filepath.Join(helpersDir(), in.Name)); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	st, _ := os.Stat(filepath.Join(helpersDir(), in.Name))
+	var size int64
+	if st != nil {
+		size = st.Size()
+	}
+	writeJSON(w, map[string]any{"ok": true, "source": ok[0].url, "sha256": ok[0].sum, "size": size, "note": note})
 }

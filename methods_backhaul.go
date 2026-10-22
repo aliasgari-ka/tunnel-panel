@@ -112,6 +112,7 @@ var methodFRP = &Method{
 		{Key: "protocol", Label: "Protocol", Type: "select", Default: "tcp", Options: []string{"tcp", "websocket", "quic", "kcp"}},
 		{Key: "bind_port", Label: "Bind port", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "tls", Label: "TLS", Type: "bool", Default: "true"},
+		{Key: "udp", Label: "Forward UDP too", Type: "bool", Default: "false", Help: "adds a udp proxy per port (Hysteria, WireGuard, QUIC)"},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
@@ -138,6 +139,9 @@ auth.token = "%s"
 			lp := p.dst
 			rp := p.listen
 			proxies += fmt.Sprintf("\n[[proxies]]\nname = \"p-%s\"\ntype = \"tcp\"\nlocalIP = \"127.0.0.1\"\nlocalPort = %s\nremotePort = %s\ntransport.useEncryption = true\ntransport.useCompression = false\n", rp, lp, rp)
+			if c.OptB("udp") {
+				proxies += fmt.Sprintf("\n[[proxies]]\nname = \"u-%s\"\ntype = \"udp\"\nlocalIP = \"127.0.0.1\"\nlocalPort = %s\nremotePort = %s\n", rp, lp, rp)
+			}
 		}
 		khToml := fmt.Sprintf(`serverAddr = "%s"
 serverPort = %s

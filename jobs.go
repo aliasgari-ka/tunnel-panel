@@ -394,6 +394,62 @@ func (a *App) Status(ctx context.Context, t *Tunnel) (ir, kh string) {
 	return lastLine(out), kh
 }
 
+// Health is Status plus whether the tunnel link itself carries traffic: "up", "down",
+// or "" when it can't be judged (e.g. Spoof-Tunnel). L3 methods ping the peer's tunnel
+// address; reverse/port-forward methods look for the peer's established connection on
+// the Iran tunnel port.
+func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
+	cmd := "systemctl is-active " + unitName(t) + " 2>/dev/null || true"
+	if kHost, _, err := a.foreignHost(ctx, t, nil); err == nil {
+		out, _ := kHost.Run(ctx, cmd, nil)
+		kh = lastLine(out)
+	} else {
+		kh = "unreachable"
+	}
+	srv := a.store.Server(t.ServerID)
+	if srv == nil {
+		return "no server", kh, ""
+	}
+	h, _, err := a.reach(ctx, srv, nil)
+	if err != nil {
+		return "unreachable", kh, ""
+	}
+	chk := linkCheck(t, srv, a.store.Server(t.ForeignID), a.settings())
+	out, _ := h.Run(ctx, cmd+"\n"+chk, nil)
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		switch {
+		case strings.HasPrefix(l, "LINK "):
+			link = strings.TrimPrefix(l, "LINK ")
+		case l != "" && ir == "":
+			ir = l
+		}
+	}
+	if ir == "" {
+		ir = "unknown"
+	}
+	return ir, kh, link
+}
+
+// linkCheck is the shell that prints "LINK up|down" on the Iran side.
+func linkCheck(t *Tunnel, srv, fsrv *Server, set Settings) string {
+	m := methodByID[t.Active]
+	if m == nil || m.ID == "spoof" {
+		return ""
+	}
+	d := deriveFor(t, srv, fsrv, set)
+	if benchIsL3(m, t.Options[m.ID]) {
+		return fmt.Sprintf("ping -n -c 2 -i 0.3 -W 2 %s >/dev/null 2>&1 && echo 'LINK up' || echo 'LINK down'", d.KHv4)
+	}
+	get, _ := resolveOptions(m, t.Options[m.ID])
+	key := map[string]string{"backhaul": "tunnel_port", "bp_reverse": "tunnel_port", "frp": "bind_port", "premium": "port"}[m.ID]
+	if key == "" {
+		return ""
+	}
+	p := portOr(get(key), d.BasePort)
+	return fmt.Sprintf(`if ss -Htn state established "( sport = :%s )" 2>/dev/null | grep -q .; then echo 'LINK up'; else echo 'LINK down'; fi`, p)
+}
+
 func lastLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.LastIndex(s, "\n"); i >= 0 {

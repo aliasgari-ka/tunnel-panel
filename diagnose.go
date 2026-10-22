@@ -160,15 +160,36 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 				dst = dst[i+1:]
 			}
 			ls := run(kh, "ss -Hltn 'sport = :"+dst+"' 2>/dev/null | awk '{print $4}' | sort -u | tr '\\n' ' '")
+			lsu := run(kh, "ss -Hlun 'sport = :"+dst+"' 2>/dev/null | awk '{print $4}' | sort -u | tr '\\n' ' '")
+			anyAddr := strings.Contains(ls, "0.0.0.0:") || strings.Contains(ls, "*:") || strings.Contains(ls, "[::]:")
 			switch {
+			case ls == "" && lsu != "":
+				if l3 {
+					ok("foreign UDP service on port %s (%s)", dst, strings.TrimSpace(lsu))
+				} else {
+					bad("the foreign service on port %s is UDP-only (%s), but this tunnel forwards TCP", dst, strings.TrimSpace(lsu))
+					hint("enable the method's \"forward UDP\" option and Re-apply, or pick an L3 method (GRE, BackPack L3, Golden-GRE) that carries UDP")
+				}
 			case ls == "":
 				bad("nothing listens on foreign port %s", dst)
 				hint("the tunnel only carries traffic to a service — start your xray/v2ray/… inbound on port %s on the foreign server", dst)
+			case !l3 && !anyAddr && !strings.Contains(ls, "127.0.0.1:") && !strings.Contains(ls, "[::1]:"):
+				bad("foreign port %s listens only on %s", dst, strings.TrimSpace(ls))
+				hint("%s delivers to 127.0.0.1:%s on the foreign server — make the service listen on 0.0.0.0 (or 127.0.0.1)", m.Title, dst)
 			case l3 && !strings.Contains(ls, "0.0.0.0:") && !strings.Contains(ls, "*:") && !strings.Contains(ls, "[::]:") && !strings.Contains(ls, d.KHv4+":"):
 				bad("foreign port %s listens only on %s", dst, ls)
 				hint("L3 tunnels deliver to %s:%s — make the service listen on 0.0.0.0, or use a port-forward method (Backhaul/FRP)", d.KHv4, dst)
 			default:
 				ok("foreign service on port %s (%s)", dst, strings.TrimSpace(ls))
+			}
+			if !l3 && ls != "" {
+				// a reverse tunnel accepts on Iran before it knows the backend works, so test
+				// the hop it actually makes on the foreign side
+				if run(kh, fmt.Sprintf("timeout 4 bash -c '</dev/tcp/127.0.0.1/%s' 2>/dev/null && echo open", dst)) == "open" {
+					ok("foreign 127.0.0.1:%s accepts connections (where the tunnel delivers)", dst)
+				} else {
+					bad("foreign 127.0.0.1:%s refuses connections — the tunnel delivers there", dst)
+				}
 			}
 		}
 

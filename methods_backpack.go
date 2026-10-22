@@ -18,6 +18,7 @@ var methodBackpackReverse = &Method{
 			Options: []string{"tcp", "tcpmux", "stealth", "pck", "udp", "kcp", "quic", "ws", "wsmux", "wss", "wssmux", "xdi"}},
 		{Key: "tunnel_port", Label: "Tunnel port", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "preset", Label: "Preset", Type: "select", Default: "turbo", Options: []string{"balance", "turbo", "aggressive", "throughput"}},
+		{Key: "accept_udp", Label: "Forward UDP too", Type: "bool", Default: "false", Help: "needed for UDP services (Hysteria, WireGuard, QUIC)"},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
@@ -35,8 +36,9 @@ heartbeat = 40
 channel_size = 4096
 preset = "%s"
 log_level = "info"
+accept_udp = %v
 ports = [%s]
-`, bind, tr, tok, c.Opt("preset"), portsTOML(c.T.Ports))
+`, bind, tr, tok, c.Opt("preset"), c.OptB("accept_udp"), portsTOML(c.T.Ports))
 		khToml := fmt.Sprintf(`[client]
 remote_addr = "%s:%s"
 transport = "%s"

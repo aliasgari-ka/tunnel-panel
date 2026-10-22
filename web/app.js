@@ -82,6 +82,7 @@ function renderAuth(mode, name) {
       <div id="aerr" style="color:var(--crit);min-height:16px;font-size:13px"></div>
     </form></div></div>`);
   document.body.appendChild(el);
+  quantumBg.start();
   $('#af').onsubmit = async (ev) => {
     ev.preventDefault();
     try { await api(reg ? '/register' : '/login', { username: ev.target.u.value, password: ev.target.p.value }); location.reload(); }
@@ -89,16 +90,83 @@ function renderAuth(mode, name) {
   };
 }
 
+/* ---------------- live "quantum" background ---------------- */
+// Drifting particles that flicker like superposed states, faint "entanglement" lines
+// between near neighbours and slow probability-wave pulses. ~45 particles at ≤30 fps,
+// paused while the tab is hidden, static for prefers-reduced-motion, off via the sidebar.
+const quantumBg = (() => {
+  let cv, ctx, raf = 0, last = 0, W = 0, H = 0, dpr = 1, P = [], waves = [], on = true;
+  try { on = localStorage.getItem('tp-bg') !== 'off'; } catch (e) {}
+  const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const col = () => { const cs = getComputedStyle(document.documentElement); return [cs.getPropertyValue('--accent').trim() || '#34c3e8', '#8b6cff']; };
+  const hex = (c, a) => { const m = /^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(c); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : c; };
+  function size() {
+    dpr = Math.min(2, window.devicePixelRatio || 1); W = innerWidth; H = innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const n = Math.round(Math.min(55, Math.max(18, W * H / 26000)));
+    P = Array.from({ length: n }, () => ({ x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - .5) * .25, vy: (Math.random() - .5) * .25, ph: Math.random() * 6.28, sp: .6 + Math.random() * 1.4, k: Math.random() < .3 ? 1 : 0 }));
+  }
+  function frame(ts) {
+    raf = requestAnimationFrame(frame);
+    if (document.hidden || ts - last < 33) return;
+    const dt = Math.min(3, (ts - last) / 16.7); last = ts;
+    draw(ts, dt);
+  }
+  function draw(ts, dt) {
+    const [c1, c2] = col(), dark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+    const A = dark ? 1 : .55;
+    ctx.clearRect(0, 0, W, H);
+    if (!reduce && Math.random() < .006 * dt && waves.length < 3) waves.push({ x: Math.random() * W, y: Math.random() * H, r: 0 });
+    waves = waves.filter(w => w.r < 420);
+    for (const w of waves) {
+      w.r += 1.3 * dt;
+      ctx.strokeStyle = hex(c2, (1 - w.r / 420) * .12 * A); ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, 6.283); ctx.stroke();
+    }
+    for (const p of P) {
+      if (!reduce) { p.x += p.vx * dt; p.y += p.vy * dt; p.ph += .02 * p.sp * dt; }
+      if (p.x < -20) p.x = W + 20; if (p.x > W + 20) p.x = -20; if (p.y < -20) p.y = H + 20; if (p.y > H + 20) p.y = -20;
+    }
+    ctx.lineWidth = 1;
+    for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) {
+      const a = P[i], b = P[j], dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy;
+      if (d2 > 150 * 150) continue;
+      const al = (1 - Math.sqrt(d2) / 150) * .24 * A * (.6 + .4 * Math.sin(a.ph + b.ph));
+      ctx.strokeStyle = hex(a.k || b.k ? c2 : c1, Math.max(0, al));
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    for (const p of P) {
+      const s = .5 + .5 * Math.sin(p.ph), c = p.k ? c2 : c1, r = 1.2 + s * 1.8;
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 6);
+      g.addColorStop(0, hex(c, .5 * A * (.35 + .65 * s))); g.addColorStop(1, hex(c, 0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r * 6, 0, 6.283); ctx.fill();
+      ctx.fillStyle = hex(c, .85 * A * (.4 + .6 * s)); ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.283); ctx.fill();
+    }
+  }
+  function start() {
+    if (!on) return;
+    if (!cv) { cv = document.createElement('canvas'); cv.id = 'qbg'; cv.setAttribute('aria-hidden', 'true'); ctx = cv.getContext('2d'); addEventListener('resize', () => { if (cv.isConnected) size(); }); }
+    if (!cv.isConnected) document.body.prepend(cv);
+    size();
+    cancelAnimationFrame(raf);
+    if (reduce) draw(0, 0); else raf = requestAnimationFrame(frame);
+  }
+  function stop() { cancelAnimationFrame(raf); raf = 0; if (cv) cv.remove(); }
+  function toggle() { on = !on; try { localStorage.setItem('tp-bg', on ? 'on' : 'off'); } catch (e) {} on ? start() : stop(); toast(on ? 'Live background on' : 'Live background off'); }
+  return { start, stop, toggle };
+})();
+
 /* ---------------- shell ---------------- */
 function renderShell() {
   document.body.innerHTML = '';
-  const nav = [['tunnels', 'Tunnels', '🛰'], ['servers', 'Servers', '🖥'], ['bench', 'Benchmark', '📊'], ['settings', 'Settings', '⚙']];
+  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['bench', 'Benchmark', '📊'], ['settings', 'Settings', '⚙']];
   const shell = h(`<div class="shell">
     <aside class="side" id="side">
       <div class="brand"><div class="dot"></div><div><b>${esc(STATE.settings.panelName || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
       <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span>${n[2]}</span>${n[1]}</button>`).join('')}</nav>
       <div class="foot">
         <button class="btn ghost sm" id="themeBtn">◐ Theme</button>
+        <button class="btn ghost sm" id="bgBtn" title="Animated background on/off">✦ Live background</button>
         <div class="faint" style="font-size:11px;padding:0 8px">Signed in as <b>${esc(STATE.user)}</b>${STATE.version ? `<br>version <span class="mono">${esc(STATE.version)}</span>` : ''}</div>
         <button class="btn ghost sm" id="logout">Sign out</button>
       </div></aside>
@@ -107,6 +175,8 @@ function renderShell() {
   $$('.nav button', shell).forEach(b => b.onclick = () => { STATE.view = b.dataset.v; paintNav(); renderView(); $('#side').classList.remove('open'); });
   $('#logout').onclick = async () => { await api('/logout', {}); location.reload(); };
   $('#themeBtn').onclick = toggleTheme;
+  $('#bgBtn').onclick = () => quantumBg.toggle();
+  quantumBg.start();
   paintNav(); renderView();
 }
 function paintNav() { $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.v === STATE.view)); }
@@ -121,6 +191,7 @@ function renderView() {
   const w = $('#work'); w.innerHTML = '';
   ({ tunnels: viewTunnels, servers: viewServers, bench: viewBench, settings: viewSettings }[STATE.view])(w);
   trafficWatch();
+  healthWatch();
 }
 
 /* ---------------- live traffic ---------------- */
@@ -255,11 +326,15 @@ async function loadHelpers(card) {
     <table class="tbl"><thead><tr><th>name</th><th>source</th><th>size</th></tr></thead><tbody>
     ${list.map(x => `<tr><td class="mono">${esc(x.name)}</td><td>${esc(x.source)}</td><td>${(x.size / 1048576).toFixed(1)} MB</td></tr>`).join('') || '<tr><td colspan=3 class="muted">none</td></tr>'}
     </tbody></table>
+    <div class="actions" style="margin-top:12px;align-items:center"><span class="muted" style="font-size:12.5px">Backhaul Premium from the vendor:</span>
+      <button class="btn sm" data-fetch="backhaul_premium-amd64">⬇ amd64</button><button class="btn sm" data-fetch="backhaul_premium-arm64">⬇ arm64</button>
+      <span class="faint" style="font-size:11.5px">plain HTTP like the vendor's installer; both mirrors are compared</span></div>
     <div class="actions" style="margin-top:12px">
       <input type="text" id="hname" class="inp mono" placeholder="backhaul_premium-amd64" style="flex:1">
       <input type="file" id="hfile" hidden><button class="btn" id="hpick">Choose file</button>
       <button class="btn pri" id="hup" disabled>Upload</button>
     </div><div class="faint" id="hstat" style="font-size:12px;margin-top:6px"></div>`;
+  $$('[data-fetch]', card).forEach(b => b.onclick = () => fetchHelper(b.dataset.fetch, b, () => loadHelpers(card)));
   const file = $('#hfile', card); let chosen = null;
   $('#hpick', card).onclick = () => file.click();
   file.onchange = () => { chosen = file.files[0]; if (chosen) { $('#hstat', card).textContent = chosen.name + ' (' + (chosen.size / 1048576).toFixed(1) + ' MB)'; $('#hup', card).disabled = false; if (!$('#hname', card).value) $('#hname', card).value = chosen.name.replace(/\.(tar\.gz|tgz)$/i, '').replace(/_(amd64|arm64)$/i, '-$1').replace(/[^a-z0-9_.-]/gi, '').toLowerCase(); } };
@@ -471,7 +546,7 @@ function viewTunnels(w) {
     `<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
   const run = STATE.tunnels.filter(t => t.active).length;
   w.appendChild(h(`<div class="summary">
-    <div class="stat"><small>Running tunnels</small><b>${run}<span> / ${STATE.tunnels.length}</span></b></div>
+    <div class="stat"><small>Running tunnels</small><b>${run}<span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
     <div class="stat"><small>Live download ↓</small><b class="dn" data-sum-dn>—</b></div>
     <div class="stat"><small>Live upload ↑</small><b class="up" data-sum-up>—</b></div>
     <div class="stat"><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + 1}<span> foreign</span></b></div>
@@ -492,63 +567,109 @@ function viewTunnels(w) {
   });
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
 }
+// Compact card: who ⇄ who, state, live traffic and the three everyday buttons.
+// Everything else (method, options, tests) lives in the Manage window.
 function tunnelCard(t) {
   const avail = methodsFor(t.family);
   const active = STATE.methods.find(m => m.id === t.active);
-  const sel = (t.selected && avail.find(m => m.id === t.selected)) ? t.selected : (t.active || avail[0]?.id || '');
+  const selId = (t.selected && avail.find(m => m.id === t.selected)) ? t.selected : (t.active || avail[0]?.id || '');
+  const selM = STATE.methods.find(m => m.id === selId);
   const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
-  const end = (side, s, name, fallbackFlag) => `<div class="end ${side}"><span class="sd" data-${side === 'a' ? 'ir' : 'fg'} title="not running"></span>
-    <div><small>${side === 'a' ? 'Iran · entry' : 'Foreign · exit'}</small><b>${s && s.country ? flag(s.country) : fallbackFlag} ${esc(name)}</b></div></div>`;
-  const card = h(`<div class="card tcard${t.active ? ' live' : ''}" data-id="${t.id}">
-    <div class="thd">
-      <div><h3>${esc(t.name)}</h3>${t.note ? `<div class="faint" style="font-size:12px">${esc(t.note)}</div>` : ''}</div>
-      ${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}
+  const fl = (s, d) => s && s.country ? flag(s.country) : d;
+  const miss = methodMissing(active || selM, t);
+  const card = h(`<div class="card tc${t.active ? ' live' : ''}" data-id="${t.id}">
+    <div class="tc-h"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
+    <div class="tc-r" title="${esc(serverName(t.serverId))} → ${esc(fg ? fg.name : 'this panel host')}">
+      <span class="sd" data-ir></span><span class="nm">${fl(ir, '🇮🇷')} ${esc(serverName(t.serverId))}</span>
+      <span class="ln${t.active ? ' on' : ''}"></span>
+      <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
-    <div class="route2">
-      ${end('a', ir, serverName(t.serverId), '🇮🇷')}
-      <div class="link${t.active ? ' on' : ''}"><span>${active ? esc(active.title) : 'not connected'}</span></div>
-      ${end('b', fg, fg ? fg.name : 'this panel host', fg ? '🌍' : '🖥')}
-    </div>
-    <div class="chips"><span class="chip">Ports <b class="mono">${esc(t.ports)}</b></span><span class="chip">${t.family === 'v6' ? 'IPv6' : 'IPv4'} underlay</span>${t.shape && t.shape.enabled ? `<span class="chip">shaping: ${esc(t.shape.qdisc)}</span>` : ''}</div>
-    ${t.active ? `<div class="traf" data-traf="${t.id}">
-      <div class="rates"><span class="dn" title="foreign → Iran (users downloading)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (users uploading)">↑ <b data-ru>…</b></span><span class="faint" style="font-size:11.5px" data-src></span></div>
+    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span>${t.family === 'v6' ? '<span class="chip">v6</span>' : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}</div>
+    ${t.active ? `<div class="traf mini" data-traf="${t.id}">
+      <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
-      <div class="meta"><span data-tot>total —</span><span data-speed></span></div></div>` : ''}
-    <div class="msec">
-      <div class="lbl">Connection method</div>
-      <div class="method-row"><select data-method>${avail.map(m => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.title)} · ${esc(m.encrypt)}${methodMissing(m, t) ? ' ⚠ needs upload' : ''}</option>`).join('')}</select><button class="btn sm" data-opts title="Method options">⚙ Options</button></div>
-      <div class="mdesc" data-desc></div>
-      <div class="mwarn" data-warn hidden></div>
-      <div data-optbox hidden></div>
-      <div class="actions"><button class="btn pri" data-apply></button><button class="btn" data-stop ${t.active ? '' : 'disabled'}>■ Stop</button></div>
-    </div>
-    <div class="tfoot">
-      <button class="btn sm ghost" data-log>📜 Logs</button>
-      <button class="btn sm ghost" data-speedtest ${t.active ? '' : 'disabled'} title="Measure RTT, download and upload through the running tunnel">🚀 Speed test</button>
-      <button class="btn sm ghost" data-diag ${t.active ? '' : 'disabled'} title="Check every hop and explain why traffic doesn't pass">🩺 Diagnose</button>
+      <div class="meta"><span data-tot></span><span data-src></span></div><div class="meta" data-speed></div></div>`
+      : `<div class="tc-idle">Not running${selM ? ` · selected: <b>${esc(selM.title)}</b>` : ''}</div>`}
+    <div class="tc-f">
+      <button class="btn sm pri" data-manage>⚙ Manage</button>
+      ${t.active ? `<button class="btn sm" data-stop>■ Stop</button>` : `<button class="btn sm" data-start>▶ Start</button>`}
+      <button class="btn sm ghost" data-log>Logs</button>
       <span class="grow"></span>
-      ${moreMenu([{ label: '✎ Edit tunnel', attr: 'data-edit' }, { label: '🗑 Delete tunnel', attr: 'data-del', danger: true }])}
+      ${moreMenu([
+        t.active ? { label: '🚀 Speed test', attr: 'data-speedtest' } : null,
+        t.active ? { label: '🩺 Diagnose', attr: 'data-diag' } : null,
+        { label: '✎ Edit tunnel', attr: 'data-edit' },
+        { label: '🗑 Delete tunnel', attr: 'data-del', danger: true }])}
     </div></div>`);
-  const selEl = $('[data-method]', card), descEl = $('[data-desc]', card), optBox = $('[data-optbox]', card), applyBtn = $('[data-apply]', card);
-  const warnEl = $('[data-warn]', card);
-  const refresh = () => {
-    const m = STATE.methods.find(x => x.id === selEl.value); descEl.textContent = m ? m.desc : '';
-    const miss = methodMissing(m, t);
-    warnEl.hidden = !miss;
-    if (miss) warnEl.innerHTML = `⚠ This method needs <b class="mono">${esc(miss)}</b> for this tunnel's servers. Upload it under <a href="#" data-goset>Settings → Helper binaries</a>${m.helper === 'backhaul_premium' ? ' — the vendor\'s <span class="mono">backhaul_premium_&lt;arch&gt;.tar.gz</span> can be uploaded as is' : ''}.`;
-    const gs = $('[data-goset]', warnEl); if (gs) gs.onclick = (e) => { e.preventDefault(); STATE.view = 'settings'; paintNav(); renderView(); }; applyBtn.textContent = (t.active === selEl.value) ? '↻ Re-apply' : (t.active ? '⇄ Switch to this method' : '▶ Start'); };
-  selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: selEl.value }); };
-  refresh();
-  $('[data-opts]', card).onclick = () => { if (!optBox.hidden) { optBox.hidden = true; return; } renderOpts(optBox, t, selEl.value); optBox.hidden = false; };
-  applyBtn.onclick = async () => { applyBtn.disabled = true; try { const r = await api('/tunnels/apply', { ID: t.id, Method: selEl.value }); openLog(t, r.job); } catch (e) { busyOrError(t, e); applyBtn.disabled = false; } };
-  $('[data-stop]', card).onclick = async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } };
-  $('[data-log]', card).onclick = () => openLog(t, null);
-  $('[data-diag]', card).onclick = async () => { try { const r = await api('/tunnels/diagnose', { ID: t.id }); openLog({ id: t.id, name: 'Diagnose · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); } };
-  $('[data-speedtest]', card).onclick = async () => { try { const r = await api('/tunnels/speedtest', { ID: t.id }); openLog({ id: t.id, name: 'Speed test · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); } };
-  $('[data-edit]', card).onclick = () => tunnelModal(t);
-  $('[data-del]', card).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } };
+  const on = (sel, fn) => { const el = $(sel, card); if (el) el.onclick = fn; };
+  on('[data-manage]', () => manageTunnel(t));
+  on('[data-start]', () => { if (!selM || miss) { manageTunnel(t); return; } applyMethod(t, selM.id); });
+  on('[data-stop]', async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } });
+  on('[data-log]', () => openLog(t, null));
+  on('[data-speedtest]', () => tunnelJob(t, '/tunnels/speedtest', 'Speed test'));
+  on('[data-diag]', () => tunnelJob(t, '/tunnels/diagnose', 'Diagnose'));
+  on('[data-edit]', () => tunnelModal(t));
+  on('[data-del]', async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } });
   refreshStatus(t, card);
   return card;
+}
+async function applyMethod(t, mid) {
+  try { const r = await api('/tunnels/apply', { ID: t.id, Method: mid }); openLog(t, r.job); return true; }
+  catch (e) { busyOrError(t, e); return false; }
+}
+async function tunnelJob(t, path, label) {
+  try { const r = await api(path, { ID: t.id }); openLog({ id: t.id, name: label + ' · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); }
+}
+// The full controls for one tunnel: method, its options, start/switch/stop and tests.
+function manageTunnel(t) {
+  const avail = methodsFor(t.family);
+  const sel = (t.selected && avail.find(m => m.id === t.selected)) ? t.selected : (t.active || avail[0]?.id || '');
+  const active = STATE.methods.find(m => m.id === t.active);
+  const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
+  const m = modal(`<div class="mg">
+    <div class="mg-h"><div><h2 style="margin:0">${esc(t.name)}</h2><div class="faint" style="font-size:12.5px">${(ir && ir.country) ? flag(ir.country) : '🇮🇷'} ${esc(serverName(t.serverId))} → ${fg && fg.country ? flag(fg.country) : (fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'this panel host')} · ports <span class="mono">${esc(t.ports)}</span></div></div>
+      ${active ? `<span class="pill on"><span class="led"></span>${esc(active.title)}</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
+    <div class="lbl">Connection method</div>
+    <div class="method-row"><select data-method>${avail.map(x => `<option value="${x.id}"${x.id === sel ? ' selected' : ''}>${esc(x.title)} · ${esc(x.encrypt)}${methodMissing(x, t) ? ' ⚠ needs upload' : ''}</option>`).join('')}</select><button class="btn sm" data-opts>⚙ Options</button></div>
+    <div class="mdesc" data-desc></div>
+    <div class="mwarn" data-warn hidden></div>
+    <div data-optbox hidden></div>
+    <div class="actions"><button class="btn pri" data-apply></button>${t.active ? '<button class="btn" data-stop>■ Stop</button>' : ''}<span class="grow"></span>
+      ${t.active ? '<button class="btn ghost" data-speedtest>🚀 Speed test</button><button class="btn ghost" data-diag>🩺 Diagnose</button>' : ''}<button class="btn ghost" data-x>Close</button></div>
+  </div>`, true);
+  const selEl = $('[data-method]', m), descEl = $('[data-desc]', m), warnEl = $('[data-warn]', m), optBox = $('[data-optbox]', m), applyBtn = $('[data-apply]', m);
+  const refresh = () => {
+    const x = STATE.methods.find(y => y.id === selEl.value); descEl.textContent = x ? x.desc : '';
+    const miss = methodMissing(x, t);
+    warnEl.hidden = !miss;
+    if (miss) {
+      warnEl.innerHTML = `⚠ This method needs <b class="mono">${esc(miss)}</b> for this tunnel's servers.
+        ${x.helper === 'backhaul_premium' ? miss.split(', ').map(n => `<button class="btn sm" data-fetch="${esc(n)}">⬇ Fetch ${esc(n)} from the vendor</button>`).join(' ') + ' or ' : ''}upload it under <a href="#" data-goset>Settings → Helper binaries</a>.`;
+      $$('[data-fetch]', warnEl).forEach(b => b.onclick = () => fetchHelper(b.dataset.fetch, b, () => { m.remove(); manageTunnel(t); }));
+      const gs = $('[data-goset]', warnEl); if (gs) gs.onclick = (e) => { e.preventDefault(); m.remove(); STATE.view = 'settings'; paintNav(); renderView(); };
+    }
+    applyBtn.textContent = (t.active === selEl.value) ? '↻ Re-apply' : (t.active ? '⇄ Switch to this method' : '▶ Start');
+  };
+  selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: selEl.value }); };
+  refresh();
+  $('[data-opts]', m).onclick = () => { if (!optBox.hidden) { optBox.hidden = true; return; } renderOpts(optBox, t, selEl.value); optBox.hidden = false; };
+  applyBtn.onclick = async () => { applyBtn.disabled = true; if (await applyMethod(t, selEl.value)) m.remove(); else applyBtn.disabled = false; };
+  const on = (sel, fn) => { const el = $(sel, m); if (el) el.onclick = fn; };
+  on('[data-stop]', async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); m.remove(); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } });
+  on('[data-speedtest]', () => { m.remove(); tunnelJob(t, '/tunnels/speedtest', 'Speed test'); });
+  on('[data-diag]', () => { m.remove(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); });
+  on('[data-x]', () => m.remove());
+}
+// Download a vendor helper (Backhaul Premium core) on the panel host.
+async function fetchHelper(name, btn, done) {
+  const o = btn.textContent; btn.disabled = true; btn.textContent = 'Downloading…';
+  try {
+    const r = await api('/helpers/fetch', { Name: name });
+    await loadAll();
+    alertModal('Downloaded ' + name, `${(r.size / 1048576).toFixed(1)} MB from ${r.source}\nsha256 ${r.sha256}\n${r.note}`);
+    if (done) done();
+  } catch (e) { alertModal('Download failed', e.message + '\n\nYou can also download it yourself and upload it under Settings → Helper binaries.'); }
+  btn.disabled = false; btn.textContent = o;
 }
 // A tunnel runs one job at a time. When another one is still going, offer to watch or cancel it.
 function busyOrError(t, e) {
@@ -560,14 +681,38 @@ function busyOrError(t, e) {
   $('[data-w]', m).onclick = () => { m.remove(); openLog(t, mm[1]); };
   $('[data-c]', m).onclick = async () => { try { await api('/jobs/cancel', { ID: mm[1] }); m.remove(); toast('Cancelled — you can run it again now'); } catch (er) { alertModal('Cancel', er.message); } };
 }
+// Live health: both units active and the tunnel link up → green; anything else → red card.
 async function refreshStatus(t, card) {
   const paint = (el, v) => { if (!el) return; el.className = 'sd ' + (v === 'active' ? 'ok' : (!v || v === 'stopped' || v === '—') ? '' : 'bad'); el.title = v || 'not running'; };
   if (!t.active) { paint($('[data-ir]', card), ''); paint($('[data-fg]', card), ''); return; }
-  $('[data-ir]', card).className = 'sd wait'; $('[data-fg]', card).className = 'sd wait';
+  if (card._busy) return;
+  card._busy = true;
   try {
     const r = await api('/tunnels/status?id=' + t.id);
     paint($('[data-ir]', card), r.iran); paint($('[data-fg]', card), r.foreign);
-  } catch (e) {}
+    const why = r.iran !== 'active' ? `Iran service: ${r.iran}` : r.foreign !== 'active' ? `foreign service: ${r.foreign}` : r.link === 'down' ? 'tunnel link is down — no traffic between the servers' : '';
+    card.classList.toggle('down', !!why);
+    const pill = $('.tc-h .pill', card);
+    if (pill) pill.outerHTML = why ? `<span class="pill bad" title="${esc(why)}"><span class="led"></span>down</span>` : `<span class="pill on"><span class="led"></span>running</span>`;
+    let bar = $('.downbar', card);
+    if (why && !bar) { bar = h(`<div class="downbar"></div>`); $('.tc-r', card).after(bar); }
+    if (bar) { if (why) bar.innerHTML = `⚠ ${esc(why)} <a href="#" data-dg>Diagnose</a>`; else bar.remove(); }
+    const dg = $('[data-dg]', card); if (dg) dg.onclick = (e) => { e.preventDefault(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); };
+    t._down = !!why;
+    const n = STATE.tunnels.filter(x => x._down).length, el = $('[data-sum-down]');
+    if (el) { el.textContent = n ? `· ${n} down` : ''; }
+  } catch (e) {} finally { card._busy = false; }
+}
+let healthTimer = null;
+function healthWatch() {
+  if (healthTimer) clearInterval(healthTimer);
+  healthTimer = null;
+  if (STATE.view !== 'tunnels') return;
+  healthTimer = setInterval(() => {
+    if (STATE.view !== 'tunnels') { clearInterval(healthTimer); healthTimer = null; return; }
+    if (document.hidden) return;
+    $$('.tc.live').forEach(card => { const t = STATE.tunnels.find(x => x.id === card.dataset.id); if (t) refreshStatus(t, card); });
+  }, 15000);
 }
 async function saveTunnel(t, patch) {
   const body = { ID: t.id, name: t.name, serverId: t.serverId, foreignId: t.foreignId, family: t.family, ports: t.ports, note: t.note, ...patch };

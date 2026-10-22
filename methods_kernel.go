@@ -137,7 +137,14 @@ ip link set %[1]s mtu %[3]s up
 # charon must be up (its vici socket) before swanctl can load the connection
 systemctl start strongswan 2>/dev/null || systemctl start strongswan-starter 2>/dev/null || true
 for i in $(seq 1 30); do [ -S /var/run/charon.vici ] || [ -S /run/charon.vici ] && break; sleep 0.5; done
-swanctl --load-all --noprompt >/tmp/tp-swanctl.log 2>&1 || { cat /tmp/tp-swanctl.log; exit 1; }
+if [ ! -S /var/run/charon.vici ] && [ ! -S /run/charon.vici ]; then
+  echo "strongSwan daemon (charon) is not running: no vici socket (strongswan: $(systemctl is-active strongswan 2>&1), strongswan-starter: $(systemctl is-active strongswan-starter 2>&1)) — run: apt install charon-systemd && systemctl enable --now strongswan"
+  exit 1
+fi
+if ! swanctl --load-all --noprompt >/tmp/tp-swanctl.log 2>&1; then
+  grep -v -e '^usage' -e '^ ' /tmp/tp-swanctl.log | head -4
+  exit 1
+fi
 `, d.Iface, d.IfID, c.Opt("mtu"))
 		}
 		down := fmt.Sprintf("swanctl --terminate --ike %s >/dev/null 2>&1 || true\n", conn)
