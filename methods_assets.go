@@ -155,9 +155,18 @@ func ipxEmuCheck(mode string) string {
 		return ""
 	}
 	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ] && ! command -v box64 >/dev/null 2>&1; then
-  echo "ipx on $(uname -m) needs box64 — installing it"
-  { apt-get install -y -qq box64 || { apt-get update -qq && apt-get install -y -qq box64; } || dnf install -y box64; } >/dev/null 2>&1
-  command -v box64 >/dev/null 2>&1 || { echo "Premium ipx can't run on this $(uname -m) server: the amd64 core runs under qemu-user, which can't open ipx's packet socket, and this distro has no box64 package — in Options set Mode to tcpmux, wssmux or anytls and Apply again (or install box64 by hand)"; exit 1; }
+  echo "ipx on $(uname -m) needs box64 — trying the distro's package"
+  # (setup runs with set -e: every try must be allowed to fail, the check below decides)
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y -qq box64 >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq box64 >/dev/null 2>&1; } || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y box64 >/dev/null 2>&1 || true
+  fi
+  if ! command -v box64 >/dev/null 2>&1; then
+    echo "Premium ipx can't run on this $(uname -m) server: there is no arm64 v2 core, the amd64 core runs under qemu-user (which can't open ipx's packet socket), and this distro has no box64 package ($(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}"))."
+    echo "→ in Options set Mode to tcpmux, wssmux or anytls and Apply again (they work under emulation), or use Backhaul Premium v1 (native arm64), or install box64 by hand"
+    exit 1
+  fi
 fi
 `
 }
