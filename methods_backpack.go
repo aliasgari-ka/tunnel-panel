@@ -23,6 +23,9 @@ var methodBackpackReverse = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		tr := c.Opt("transport")
+		if c.T.Family == "v6" && (tr == "pck" || tr == "xdi") {
+			return ir, kh, fmt.Errorf("BackPack %s is IPv4-only — pick another transport for an IPv6 tunnel", tr)
+		}
 		tp := portOr(c.Opt("tunnel_port"), c.D.BasePort)
 		tok := c.T.secret("bp-token")
 		bind := bracket(ipAny(c.T.Family)) + ":" + tp
@@ -58,10 +61,12 @@ log_level = "info"
 var methodBackpackL3 = &Method{
 	ID:       "bp_l3",
 	Title:    "BackPack L3 (TUN)",
-	Desc:     "BackPack direct L3 TUN tunnel. GRE inside Noise (encrypted). Iran dials out, so it works when Iran has no open inbound port.",
+	Desc:     "BackPack L3 TUN tunnel (GRE inside Noise, encrypted). Normally Iran dials out, so Iran needs no open inbound port; set \"Who connects\" to foreign for the reverse direction (the foreign server dials Iran).",
 	Families: []string{"v4", "v6"},
 	Encrypt:  "Noise (AEAD)",
 	Fields: []Field{
+		{Key: "dialer", Label: "Who connects", Type: "select", Default: "iran", Options: []string{"iran", "foreign"},
+			Help: "iran = Iran dials the foreign server (Iran needs no inbound port); foreign = reverse: the foreign server dials Iran (foreign needs no inbound port)"},
 		{Key: "carrier", Label: "Carrier", Type: "select", Default: "udp", Options: []string{"udp", "quic", "pck", "sni", "xdi"}},
 		{Key: "port", Label: "Carrier port", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1400"},
@@ -70,16 +75,25 @@ var methodBackpackL3 = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		carrier := c.Opt("carrier")
+		if c.T.Family == "v6" && (carrier == "pck" || carrier == "sni" || carrier == "xdi") {
+			return ir, kh, fmt.Errorf("BackPack L3 carrier %s is IPv4-only — use udp or quic for an IPv6 tunnel", carrier)
+		}
 		port := portOr(c.Opt("port"), c.D.BasePort)
 		tok := c.T.secret("bp-l3-token")
 		sni := ""
 		if carrier == "sni" {
 			sni = "sni_domain = \"" + c.Opt("sni_domain") + "\"\n"
 		}
-		// Iran dials the foreign listener.
+		// Default: Iran dials the foreign listener. Reverse: Iran listens, foreign dials.
+		irMode, irAddr := "dial", bracket(d.KHPub)+":"+port
+		khMode, khAddr := "listen", bracket(ipAny(c.T.Family))+":"+port
+		if c.Opt("dialer") == "foreign" {
+			irMode, irAddr = "listen", bracket(ipAny(c.T.Family))+":"+port
+			khMode, khAddr = "dial", bracket(d.IRPub)+":"+port
+		}
 		irToml := fmt.Sprintf(`[l3]
-mode = "dial"
-addr = "%s:%s"
+mode = "%s"
+addr = "%s"
 token = "%s"
 carrier = "%s"
 local_ip = "%s/30"
@@ -88,26 +102,31 @@ iface = "%s"
 mtu = %s
 %sports = [%s]
 accept_udp = true
-`, bracket(d.KHPub), port, tok, carrier, d.IRv4, d.KHv4, d.Iface, c.Opt("mtu"), sni, portsTOML(c.T.Ports))
+`, irMode, irAddr, tok, carrier, d.IRv4, d.KHv4, d.Iface, c.Opt("mtu"), sni, portsTOML(c.T.Ports))
 		khToml := fmt.Sprintf(`[l3]
-mode = "listen"
-addr = "%s:%s"
+mode = "%s"
+addr = "%s"
 token = "%s"
 carrier = "%s"
 local_ip = "%s/30"
 peer_ip = "%s"
 iface = "%s"
 mtu = %s
-%s`, bracket(ipAny(c.T.Family)), port, tok, carrier, d.KHv4, d.IRv4, d.Iface, c.Opt("mtu"), sni)
+%s`, khMode, khAddr, tok, carrier, d.KHv4, d.IRv4, d.Iface, c.Opt("mtu"), sni)
 		return backpackPlans(c, irToml, khToml)
 	},
 }
 
 func backpackPlans(c *buildCtx, irToml, khToml string) (SidePlan, SidePlan, error) {
-	cfg := tunnelDir(c.T) + "/backpack.toml"
+	// BackPack names a tunnel after its config file (metrics snapshot, usage totals in
+	// /etc/backpack/<name>.*), so every tunnel needs its own basename or two tunnels on
+	// one host — or a benchmark next to a live tunnel — overwrite each other's state.
+	cfg := tunnelDir(c.T) + "/tp-" + c.T.ID + ".toml"
 	mk := func(toml, side string) SidePlan {
 		return SidePlan{Files: map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}}, Artifacts: []Artifact{artBackpack(c.Set)},
-			Unit: Unit{Desc: "BackPack " + side + " " + c.T.Name, ExecStart: "/usr/local/bin/backpack -c " + cfg}}
+			// validate before starting, so a bad option is reported by name instead of a crash loop
+			Setup: "mkdir -p /etc/backpack\n/usr/local/bin/backpack check -c " + cfg + " 2>&1 | tail -5 || exit 1\n",
+			Unit:  Unit{Desc: "BackPack " + side + " " + c.T.Name, ExecStart: "/usr/local/bin/backpack -c " + cfg}}
 	}
 	return mk(irToml, "Iran"), mk(khToml, "foreign"), nil
 }

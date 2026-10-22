@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Artifact is a binary the foreign (panel) server fetches once and then uploads to a host.
@@ -55,8 +56,13 @@ func ensureArtifact(ctx context.Context, j *Job, a Artifact, arch string) ([]byt
 	fetchMu.Lock()
 	defer fetchMu.Unlock()
 	out := filepath.Join(cacheDir, a.Name+"-"+arch)
-	if b, err := os.ReadFile(out); err == nil && len(b) > 0 {
-		return b, nil
+	cached, cerr := os.ReadFile(out)
+	fresh := true
+	if st, err := os.Stat(out); err == nil && strings.Contains(a.Name, "latest") && time.Since(st.ModTime()) > 7*24*time.Hour {
+		fresh = false // "latest" pins are re-resolved weekly so new upstream releases arrive
+	}
+	if cerr == nil && len(cached) > 0 && fresh {
+		return cached, nil
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, err
@@ -64,6 +70,11 @@ func ensureArtifact(ctx context.Context, j *Job, a Artifact, arch string) ([]byt
 	j.log("[KH] fetching %s for %s", a.Name, arch)
 	script := fmt.Sprintf("ARCH=%s\nOUT=%s\nTMP=$(mktemp -d)\ntrap 'rm -rf $TMP' EXIT\ncd $TMP\n%s\n", arch, shq(out+".part"), a.Fetch)
 	if _, err := (LocalHost{}).Run(ctx, script, func(l string) { j.log("[KH] %s", l) }); err != nil {
+		if len(cached) > 0 {
+			j.log("[KH] refresh of %s failed, keeping the cached copy", a.Name)
+			_ = os.Chtimes(out, time.Now(), time.Now())
+			return cached, nil
+		}
 		return nil, fmt.Errorf("fetch %s: %w", a.Name, err)
 	}
 	if err := os.Rename(out+".part", out); err != nil {

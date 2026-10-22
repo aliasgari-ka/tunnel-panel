@@ -34,6 +34,22 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 	var check strings.Builder
 	for _, art := range arts {
 		data, err := ensureArtifact(ctx, j, art, arch)
+		if err != nil && art.Asset != "" && vendorHelpers[art.Asset] != nil {
+			// no copy on the panel: get the vendor's build for this arch automatically
+			j.log("[%s] %s-%s is not on the panel yet — downloading the vendor's build", label, art.Asset, arch)
+			if res, ferr := fetchVendorHelper(art.Asset + "-" + arch); ferr == nil {
+				j.log("[%s] got %s-%s (%d KB, sha256 %s…, %s)", label, art.Asset, arch, res.Size/1024, res.SHA256[:12], res.Note)
+				data, err = ensureArtifact(ctx, j, art, arch)
+			} else {
+				j.log("[%s] panel cannot reach the vendor (%v) — trying from the server itself", label, ferr)
+				out, rerr := h.Run(ctx, vendorOnHostScript(art.Asset, arch, art.Dest), nil)
+				if rerr == nil {
+					j.log("[%s] %s", label, lastLine(out))
+					continue // installed directly on the host
+				}
+				return fmt.Errorf("%v; the server's own download failed too: %s", err, lastLine(out))
+			}
+		}
 		if err != nil {
 			return err
 		}

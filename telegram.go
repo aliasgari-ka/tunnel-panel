@@ -166,6 +166,8 @@ func (b *Bot) helpText() string {
 		"/status — all tunnels and their state",
 		"/servers — servers and reachability",
 		"/traffic — live traffic of every running tunnel",
+		"",
+		"🔔 You get a message here when a tunnel goes down and when it comes back.",
 		"/menu — buttons to start, stop and switch methods",
 		"",
 		"Tap a tunnel to pick its connection method (Backhaul tcp, ipx, tun, …) and apply it.",

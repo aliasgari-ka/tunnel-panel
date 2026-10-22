@@ -180,3 +180,19 @@ func TestJobCancel(t *testing.T) {
 		t.Fatal("old job's done() released the new job")
 	}
 }
+
+func TestMonitorStep(t *testing.T) {
+	h := &tunnelHealth{}
+	t0 := time.Now()
+	seq := []struct {
+		reason, want string
+	}{{"", ""}, {"link down", ""}, {"", ""}, {"link down", ""}, {"link down", "down"}, {"link down", ""}, {"", "up"}, {"", ""}}
+	for i, s := range seq {
+		if got := h.step(s.reason, t0.Add(time.Duration(i)*time.Minute)); got != s.want {
+			t.Fatalf("step %d (%q): got %q want %q", i, s.reason, got, s.want)
+		}
+	}
+	if h.lastOutage != 3*time.Minute {
+		t.Fatalf("outage = %v", h.lastOutage)
+	}
+}

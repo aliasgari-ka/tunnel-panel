@@ -90,66 +90,182 @@ function renderAuth(mode, name) {
   };
 }
 
-/* ---------------- live "quantum" background ---------------- */
-// Drifting particles that flicker like superposed states, faint "entanglement" lines
-// between near neighbours and slow probability-wave pulses. ~45 particles at ≤30 fps,
-// paused while the tab is hidden, static for prefers-reduced-motion, off via the sidebar.
+/* ---------------- live background: molten core + quantum orbits ---------------- */
+// A slowly turning molten globe (an Earth's-core lava texture, rendered per pixel at low
+// resolution and scaled up), electron-like quanta on tilted orbits around it that pass
+// behind and in front of it, rising embers and faint drifting particles. ≤30 fps,
+// paused while the tab is hidden, a still frame for prefers-reduced-motion, toggle in
+// the sidebar.
 const quantumBg = (() => {
-  let cv, ctx, raf = 0, last = 0, W = 0, H = 0, dpr = 1, P = [], waves = [], on = true;
+  let cv, ctx, raf = 0, last = 0, W = 0, H = 0, dpr = 1, on = true, time = 0;
   try { on = localStorage.getItem('tp-bg') !== 'off'; } catch (e) {}
   const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const col = () => { const cs = getComputedStyle(document.documentElement); return [cs.getPropertyValue('--accent').trim() || '#34c3e8', '#8b6cff']; };
-  const hex = (c, a) => { const m = /^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(c); return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : c; };
-  function size() {
+  // ---- molten texture (equirectangular, seamless in longitude) ----
+  const TW = 512, TH = 256;
+  let tex = null, pal = null;
+  const hash = (x, y, s) => { let h = (x * 374761393 + y * 668265263 + s * 982451653) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
+  const sm = (t) => t * t * (3 - 2 * t);
+  function noise(x, y, per, s) {
+    const xi = Math.floor(x), yi = Math.floor(y), u = sm(x - xi), v = sm(y - yi), w = (k) => ((k % per) + per) % per;
+    const a = hash(w(xi), yi, s), b = hash(w(xi + 1), yi, s), c = hash(w(xi), yi + 1, s), d = hash(w(xi + 1), yi + 1, s);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  }
+  function fbm(x, y, per, s) { let t = 0, amp = .5, f = 1; for (let o = 0; o < 5; o++) { t += amp * noise(x * f, y * f, per * f, s + o); amp *= .5; f *= 2; } return t; }
+  function buildTex() {
+    tex = new Float32Array(TW * TH);
+    for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) {
+      const x = i / TW, y = j / TH;
+      const base = fbm(x * 6, y * 3, 6, 1);
+      const r = 1 - Math.abs(2 * fbm(x * 12 + .3, y * 6 + 2, 12, 7) - 1);   // ridges → glowing cracks
+      const veins = Math.pow(r, 7);
+      // "continents": cooled dark crust plates with glowing cracks, in oceans of lava
+      const k = fbm(x * 3, y * 1.5 + 20, 3, 11), cont = sm(Math.min(1, Math.max(0, (k - .47) / .08)));
+      const lava = .42 + .42 * base + .45 * veins, crust = .04 + .12 * base + .95 * Math.pow(veins, 1.3);
+      const polar = Math.pow(Math.abs(y - .5) * 2, 6) * .25;                  // slightly cooler poles
+      tex[j * TW + i] = Math.min(1, Math.max(0, lava + (crust - lava) * cont - polar));
+    }
+    // black → deep red → orange → gold → white-hot
+    const stops = [[0, 8, 2, 0], [.25, 70, 6, 0], [.45, 170, 28, 0], [.62, 240, 90, 8], [.78, 255, 160, 40], [.9, 255, 215, 110], [1, 255, 250, 225]];
+    pal = new Uint8ClampedArray(256 * 3);
+    for (let k = 0; k < 256; k++) {
+      const t = k / 255; let i = 0; while (i < stops.length - 2 && t > stops[i + 1][0]) i++;
+      const A = stops[i], B = stops[i + 1], f = (t - A[0]) / (B[0] - A[0]);
+      for (let c = 0; c < 3; c++) pal[k * 3 + c] = A[c + 1] + (B[c + 1] - A[c + 1]) * f;
+    }
+  }
+  // ---- globe buffer + per-pixel sphere lookup ----
+  let G, g, GS = 0, img, lut, R = 0, cx = 0, cy = 0, rotA = 0, rotB = 0;
+  function buildGlobe() {
+    GS = W < 700 ? 170 : 240;
+    G = document.createElement('canvas'); G.width = G.height = GS; g = G.getContext('2d');
+    img = g.createImageData(GS, GS);
+    const tilt = -0.41, ct = Math.cos(tilt), st = Math.sin(tilt), L = [];
+    for (let py = 0; py < GS; py++) for (let px = 0; px < GS; px++) {
+      const nx = (px + .5) / GS * 2 - 1, ny = (py + .5) / GS * 2 - 1, d2 = nx * nx + ny * ny;
+      if (d2 >= 1) continue;
+      const nz = Math.sqrt(1 - d2), rx = nx * ct - ny * st, ry = nx * st + ny * ct;
+      const u = (Math.atan2(rx, nz) / (2 * Math.PI) + .5) * TW, v = (Math.asin(ry) / Math.PI + .5) * (TH - 1);
+      const edge = Math.min(1, (1 - Math.sqrt(d2)) * 18);           // anti-aliased rim
+      L.push(py * GS + px, u, v, .38 + .62 * Math.pow(nz, .55), edge);
+    }
+    lut = new Float32Array(L);
+  }
+  function renderGlobe() {
+    const d = img.data, n = lut.length, pulse = .92 + .08 * Math.sin(time * .0011);
+    // bilinear sample, wrapping in longitude
+    const samp = (u, v) => {
+      const x0 = Math.floor(u), y0 = Math.min(TH - 2, Math.floor(v)), fx = u - x0, fy = v - y0;
+      const a = ((x0 % TW) + TW) % TW, b = (a + 1) % TW, r0 = y0 * TW, r1 = r0 + TW;
+      const t0 = tex[r0 + a] + (tex[r0 + b] - tex[r0 + a]) * fx, t1 = tex[r1 + a] + (tex[r1 + b] - tex[r1 + a]) * fx;
+      return t0 + (t1 - t0) * fy;
+    };
+    for (let k = 0; k < n; k += 5) {
+      const p = lut[k] * 4, u = lut[k + 1], v = lut[k + 2], sh = lut[k + 3];
+      // the crust drifts with the rotation; a second, faster lava layer churns underneath
+      const i1 = samp(u + rotA, v);
+      const i2 = samp(u + rotB + TW / 2, TH - 1.001 - v);
+      const I = Math.max(i1, i2 * .55 + .1 * i1) * sh * pulse;
+      const c = Math.min(255, (I * 255) | 0) * 3;
+      d[p] = pal[c]; d[p + 1] = pal[c + 1]; d[p + 2] = pal[c + 2]; d[p + 3] = 255 * lut[k + 4];
+    }
+    g.putImageData(img, 0, 0);
+  }
+  // ---- scene objects ----
+  let orbits = [], embers = [], dust = [];
+  function layout() {
     dpr = Math.min(2, window.devicePixelRatio || 1); W = innerWidth; H = innerHeight;
     cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const n = Math.round(Math.min(55, Math.max(18, W * H / 26000)));
-    P = Array.from({ length: n }, () => ({ x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - .5) * .25, vy: (Math.random() - .5) * .25, ph: Math.random() * 6.28, sp: .6 + Math.random() * 1.4, k: Math.random() < .3 ? 1 : 0 }));
+    const narrow = W < 860;
+    R = Math.min(W, H) * (narrow ? .3 : .25);
+    cx = narrow ? W * .5 : 232 + (W - 232) * .7; cy = H * (narrow ? .64 : .56);
+    buildGlobe();
+    orbits = [[1.55, .36, -.42, 3, 1], [1.85, .52, .55, 2, -.7], [1.3, .3, 1.32, 2, 1.3]].map(([a, b, tilt, n, sp]) => ({
+      a: R * a, b: R * a * b, tilt, sp: sp * .006, q: Array.from({ length: n }, (_, i) => ({ th: i * 6.283 / n + Math.random(), trail: [] })) }));
+    dust = Array.from({ length: Math.round(Math.min(40, W * H / 40000)) }, () => ({ x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - .5) * .2, vy: (Math.random() - .5) * .2, ph: Math.random() * 6.3 }));
+    embers = [];
   }
+  const dark = () => { const t = document.documentElement.getAttribute('data-theme'); return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; };
   function frame(ts) {
     raf = requestAnimationFrame(frame);
     if (document.hidden || ts - last < 33) return;
-    const dt = Math.min(3, (ts - last) / 16.7); last = ts;
-    draw(ts, dt);
+    const dt = Math.min(3, (ts - last) / 16.7); last = ts; time = ts;
+    step(dt); draw();
   }
-  function draw(ts, dt) {
-    const [c1, c2] = col(), dark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
-    const A = dark ? 1 : .55;
+  function step(dt) {
+    rotA = (rotA + .2 * dt) % TW; rotB = (rotB + .34 * dt) % TW;
+    for (const o of orbits) for (const q of o.q) {
+      q.th = (q.th + o.sp * dt * (1 + .4 * Math.sin(q.th * 2))) % 6.2832;
+      q.trail.unshift(q.th); if (q.trail.length > 14) q.trail.pop();
+    }
+    if (embers.length < 46 && Math.random() < .5 * dt) {
+      const an = Math.random() * 6.283, r0 = R * (.98 + Math.random() * .05);
+      embers.push({ x: cx + Math.cos(an) * r0, y: cy + Math.sin(an) * r0, vx: Math.cos(an) * .35, vy: Math.sin(an) * .35 - .25, life: 1, s: .8 + Math.random() * 1.6 });
+    }
+    for (const e of embers) { e.x += e.vx * dt; e.y += e.vy * dt; e.vy -= .004 * dt; e.life -= .009 * dt; }
+    embers = embers.filter(e => e.life > 0);
+    for (const p of dust) { p.x += p.vx * dt; p.y += p.vy * dt; p.ph += .03 * dt; if (p.x < 0) p.x = W; if (p.x > W) p.x = 0; if (p.y < 0) p.y = H; if (p.y > H) p.y = 0; }
+  }
+  const qpos = (o, th) => { const x = o.a * Math.cos(th), y = o.b * Math.sin(th), c = Math.cos(o.tilt), s = Math.sin(o.tilt); return [cx + x * c - y * s, cy + x * s + y * c, Math.sin(th)]; };
+  function drawOrbits(front) {
+    ctx.lineWidth = 1.1;
+    for (const o of orbits) {
+      ctx.strokeStyle = front ? 'rgba(130,200,255,.38)' : 'rgba(130,200,255,.14)';
+      ctx.beginPath(); ctx.ellipse(cx, cy, o.a, o.b, o.tilt, front ? 0 : Math.PI, front ? Math.PI : 2 * Math.PI); ctx.stroke();
+      for (const q of o.q) {
+        const [x, y, z] = qpos(o, q.th);
+        if ((z > 0) !== front) continue;
+        // probability smear: fading copies along the recent path
+        q.trail.forEach((th, i) => {
+          const [tx, ty] = qpos(o, th), al = (1 - i / q.trail.length) * .35;
+          ctx.fillStyle = `rgba(150,170,255,${al})`; ctx.beginPath(); ctx.arc(tx, ty, 2.4 * (1 - i / q.trail.length) + .6, 0, 6.283); ctx.fill();
+        });
+        const gr = ctx.createRadialGradient(x, y, 0, x, y, 16);
+        gr.addColorStop(0, 'rgba(220,240,255,.95)'); gr.addColorStop(.25, 'rgba(120,190,255,.6)'); gr.addColorStop(1, 'rgba(140,110,255,0)');
+        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, 16, 0, 6.283); ctx.fill();
+      }
+    }
+  }
+  function draw() {
+    const A = dark() ? 1 : .62;
     ctx.clearRect(0, 0, W, H);
-    if (!reduce && Math.random() < .006 * dt && waves.length < 3) waves.push({ x: Math.random() * W, y: Math.random() * H, r: 0 });
-    waves = waves.filter(w => w.r < 420);
-    for (const w of waves) {
-      w.r += 1.3 * dt;
-      ctx.strokeStyle = hex(c2, (1 - w.r / 420) * .12 * A); ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, 6.283); ctx.stroke();
+    ctx.globalAlpha = A;
+    // drifting dust, faint links
+    for (let i = 0; i < dust.length; i++) {
+      const p = dust[i];
+      ctx.fillStyle = `rgba(255,150,70,${.18 + .2 * Math.sin(p.ph)})`; ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 6.283); ctx.fill();
+      for (let j = i + 1; j < dust.length; j++) { const q = dust[j], dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy; if (d2 < 120 * 120) { ctx.strokeStyle = `rgba(255,140,60,${(1 - Math.sqrt(d2) / 120) * .12})`; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); } }
     }
-    for (const p of P) {
-      if (!reduce) { p.x += p.vx * dt; p.y += p.vy * dt; p.ph += .02 * p.sp * dt; }
-      if (p.x < -20) p.x = W + 20; if (p.x > W + 20) p.x = -20; if (p.y < -20) p.y = H + 20; if (p.y > H + 20) p.y = -20;
+    // heat haze around the core
+    let gr = ctx.createRadialGradient(cx, cy, R * .6, cx, cy, R * 2.3);
+    gr.addColorStop(0, 'rgba(255,110,20,.34)'); gr.addColorStop(.45, 'rgba(200,40,0,.12)'); gr.addColorStop(1, 'rgba(120,0,0,0)');
+    ctx.fillStyle = gr; ctx.fillRect(cx - R * 2.4, cy - R * 2.4, R * 4.8, R * 4.8);
+    drawOrbits(false);
+    renderGlobe();
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(G, cx - R, cy - R, R * 2, R * 2);
+    // glowing rim (corona)
+    gr = ctx.createRadialGradient(cx, cy, R * .86, cx, cy, R * 1.12);
+    gr.addColorStop(0, 'rgba(255,170,60,0)'); gr.addColorStop(.55, 'rgba(255,170,60,.38)'); gr.addColorStop(1, 'rgba(255,90,0,0)');
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, R * 1.12, 0, 6.283); ctx.fill();
+    // embers
+    for (const e of embers) {
+      ctx.fillStyle = `rgba(255,${120 + 100 * e.life | 0},40,${e.life * .8})`;
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.s * e.life + .3, 0, 6.283); ctx.fill();
     }
-    ctx.lineWidth = 1;
-    for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) {
-      const a = P[i], b = P[j], dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy;
-      if (d2 > 150 * 150) continue;
-      const al = (1 - Math.sqrt(d2) / 150) * .24 * A * (.6 + .4 * Math.sin(a.ph + b.ph));
-      ctx.strokeStyle = hex(a.k || b.k ? c2 : c1, Math.max(0, al));
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-    }
-    for (const p of P) {
-      const s = .5 + .5 * Math.sin(p.ph), c = p.k ? c2 : c1, r = 1.2 + s * 1.8;
-      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 6);
-      g.addColorStop(0, hex(c, .5 * A * (.35 + .65 * s))); g.addColorStop(1, hex(c, 0));
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r * 6, 0, 6.283); ctx.fill();
-      ctx.fillStyle = hex(c, .85 * A * (.4 + .6 * s)); ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.283); ctx.fill();
-    }
+    drawOrbits(true);
+    ctx.globalAlpha = 1;
   }
   function start() {
     if (!on) return;
-    if (!cv) { cv = document.createElement('canvas'); cv.id = 'qbg'; cv.setAttribute('aria-hidden', 'true'); ctx = cv.getContext('2d'); addEventListener('resize', () => { if (cv.isConnected) size(); }); }
+    if (!cv) {
+      cv = document.createElement('canvas'); cv.id = 'qbg'; cv.setAttribute('aria-hidden', 'true'); ctx = cv.getContext('2d');
+      buildTex();
+      addEventListener('resize', () => { if (cv.isConnected) { layout(); if (reduce) draw(); } });
+    }
     if (!cv.isConnected) document.body.prepend(cv);
-    size();
+    layout();
     cancelAnimationFrame(raf);
-    if (reduce) draw(0, 0); else raf = requestAnimationFrame(frame);
+    if (reduce) { step(0); draw(); } else raf = requestAnimationFrame(frame);
   }
   function stop() { cancelAnimationFrame(raf); raf = 0; if (cv) cv.remove(); }
   function toggle() { on = !on; try { localStorage.setItem('tp-bg', on ? 'on' : 'off'); } catch (e) {} on ? start() : stop(); toast(on ? 'Live background on' : 'Live background off'); }
@@ -554,17 +670,26 @@ function viewTunnels(w) {
   if (!STATE.tunnels.length) {
     w.appendChild(h(`<div class="card empty"><div class="big">🛰</div>${iranServers().length ? 'No tunnels yet — press <b>+ New tunnel</b>.' : 'Start on the <b>Servers</b> page: add an Iran server, then create a tunnel here.'}</div>`));
   }
-  const groups = {};
-  STATE.tunnels.forEach(t => (groups[t.serverId] = groups[t.serverId] || []).push(t));
-  Object.keys(groups).sort((x, y) => serverName(x).localeCompare(serverName(y))).forEach(id => {
-    const ts = groups[id], srv = serverById(id);
-    const g = h(`<section class="group">
-      <div class="ghd"><div><h2>${srv && srv.country ? flag(srv.country) : '🇮🇷'} ${esc(serverName(id))} <span class="count">${ts.length} tunnel${ts.length > 1 ? 's' : ''}</span></h2>
-      <p>Iran entry${srv && srv.ipv4 ? ' · ' + esc(srv.ipv4) : ''}</p></div></div>
-      <div class="grid tgrid"></div></section>`);
-    ts.forEach(t => $('.tgrid', g).appendChild(tunnelCard(t)));
-    w.appendChild(g);
-  });
+  // one dense grid; filter chips per Iran server instead of separate sections
+  if (STATE.tunnels.length) {
+    const counts = {};
+    STATE.tunnels.forEach(t => counts[t.serverId] = (counts[t.serverId] || 0) + 1);
+    const ids = Object.keys(counts).sort((x, y) => serverName(x).localeCompare(serverName(y)));
+    if (STATE.tunFilter && !counts[STATE.tunFilter]) STATE.tunFilter = '';
+    if (ids.length > 1) {
+      const bar = h(`<div class="filters"><button class="fchip${!STATE.tunFilter ? ' on' : ''}" data-f="">All <b>${STATE.tunnels.length}</b></button>${ids.map(id => {
+        const sv = serverById(id);
+        return `<button class="fchip${STATE.tunFilter === id ? ' on' : ''}" data-f="${id}">${sv && sv.country ? flag(sv.country) : '🇮🇷'} ${esc(serverName(id))} <b>${counts[id]}</b></button>`;
+      }).join('')}</div>`);
+      $$('[data-f]', bar).forEach(b => b.onclick = () => { STATE.tunFilter = b.dataset.f; renderView(); });
+      w.appendChild(bar);
+    }
+    const grid = h(`<div class="grid tgrid"></div>`);
+    STATE.tunnels.filter(t => !STATE.tunFilter || t.serverId === STATE.tunFilter)
+      .sort((x, y) => (!!y.active - !!x.active) || x.name.localeCompare(y.name))
+      .forEach(t => grid.appendChild(tunnelCard(t)));
+    w.appendChild(grid);
+  }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
 }
 // Compact card: who ⇄ who, state, live traffic and the three everyday buttons.

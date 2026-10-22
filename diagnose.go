@@ -119,7 +119,8 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 
 		// 3. Iran side: how users get in
 		j.log("3. Iran entry (ports %s)", t.Ports)
-		if l3 {
+		dnat := l3 && m.ID != "bp_l3" // BackPack L3 forwards ports with a userspace listener
+		if dnat {
 			if v := run(ir, "cat /proc/sys/net/ipv4/ip_forward"); v == "1" {
 				ok("ip_forward = 1")
 			} else {
@@ -139,7 +140,7 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 			}
 		}
 		for _, p := range firstPorts(t.Ports, 3) {
-			if l3 {
+			if dnat {
 				if run(ir, "iptables -w -t nat -S 2>/dev/null | grep -c -- '--dport "+p.listen+" '") != "0" {
 					ok("DNAT rule for port %s present", p.listen)
 				} else {

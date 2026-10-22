@@ -99,6 +99,7 @@ func main() {
 	}()
 
 	go func() { time.Sleep(10 * time.Second); app.autoSetupLocal() }()
+	go app.healthMonitor()
 
 	fmt.Printf("Tunnel Panel %s (agent %s, data %s, %d methods)\n", version, *agentAddr, *dir, len(methods))
 	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))
