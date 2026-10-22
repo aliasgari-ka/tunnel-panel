@@ -207,6 +207,9 @@ func (a *App) autoSetup(ctx context.Context, srv *Server, h Host) {
 			return nil
 		})
 	}
+	if cur := a.store.Server(srv.ID); cur != nil {
+		_ = a.fixIPv6(ctx, h, srv.ID, cur.IPv6)
+	}
 	if cur := a.store.Server(srv.ID); cur != nil && cur.Provisioned == 0 {
 		_, _ = a.Prepare(cur)
 	}
@@ -231,4 +234,36 @@ func (a *App) autoSetupLocal() {
 		})
 	}
 	_, _ = a.Prepare(nil)
+}
+
+// fixIPv6 corrects a saved IPv6 that the server doesn't actually have (a typo, or an
+// address the provider changed): kernel tunnels and IPsec can only use the server's own
+// address, and the peer must be told the right one. srvID "" is the panel host (Settings).
+// Returns a note for the log when it changed something.
+func (a *App) fixIPv6(ctx context.Context, h Host, srvID, saved string) string {
+	if saved == "" {
+		return ""
+	}
+	out, err := h.Run(ctx, "ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1", nil)
+	if err != nil {
+		return ""
+	}
+	for _, f := range strings.Fields(out) {
+		if ip := net.ParseIP(f); ip != nil && ip.String() == saved {
+			return ""
+		}
+	}
+	_, v6 := detectAddrs(ctx, h)
+	if v6 == "" || v6 == saved {
+		return ""
+	}
+	_ = a.store.Update(func(st *State) error {
+		if srvID == "" {
+			st.Settings.LocalIPv6 = v6
+		} else if x := a.store.serverLocked(st, srvID); x != nil {
+			x.IPv6 = v6
+		}
+		return nil
+	})
+	return fmt.Sprintf("the saved IPv6 %s is not on this server — it has %s; corrected", saved, v6)
 }

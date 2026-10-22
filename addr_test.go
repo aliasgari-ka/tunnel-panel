@@ -286,3 +286,23 @@ func TestPortClash(t *testing.T) {
 		}
 	}
 }
+
+func TestFixIPv6(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{{ID: "ir", IPv6: "a05:9080:0:308:216:3eff:fe19:31d8"}} // first digit lost
+		return nil
+	})
+	a := &App{store: st}
+	h := fakeHost{"2a05:9080:0:308:216:3eff:fe19:31d8\nfd42:5::1\nV4=\nV6=2a05:9080:0:308:216:3eff:fe19:31d8\n"}
+	if n := a.fixIPv6(context.Background(), h, "ir", "a05:9080:0:308:216:3eff:fe19:31d8"); n == "" {
+		t.Fatal("not corrected")
+	}
+	if got := st.Server("ir").IPv6; got != "2a05:9080:0:308:216:3eff:fe19:31d8" {
+		t.Fatalf("IPv6 now %q", got)
+	}
+	if n := a.fixIPv6(context.Background(), h, "ir", "2a05:9080:0:308:216:3eff:fe19:31d8"); n != "" {
+		t.Fatalf("a correct address was changed: %s", n)
+	}
+}

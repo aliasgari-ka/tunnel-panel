@@ -303,6 +303,19 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 			return
 		}
 		j.log("foreign side: %s", kpath)
+		if t.Family == "v6" {
+			if n := a.fixIPv6(ctx, irHost, srv.ID, srv.IPv6); n != "" {
+				j.log("[IR] %s", n)
+			}
+			if f := a.store.Server(t.ForeignID); f != nil {
+				if n := a.fixIPv6(ctx, khHost, f.ID, f.IPv6); n != "" {
+					j.log("[KH] %s", n)
+				}
+			} else if n := a.fixIPv6(ctx, khHost, "", a.settings().LocalIPv6); n != "" {
+				j.log("[KH] %s", n)
+			}
+			srv = a.store.Server(t.ServerID)
+		}
 
 		j.log("building %s config", m.Title)
 		irP, khP, err := a.build(m, t, srv)
