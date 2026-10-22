@@ -360,17 +360,32 @@ func methodsForFamily(fam string) []*Method {
 
 // common helpers used by method scripts -------------------------------------
 
-// sysctlBBR is a portable snippet enabling forwarding + BBR, idempotent.
+// sysctlBBR is a portable snippet enabling IPv4 forwarding + BBR, idempotent. The tunnels
+// carry IPv4 inside, so IPv6 forwarding stays as the server had it (see ipv6RAFix).
 const sysctlBBR = `
 cat >/etc/sysctl.d/98-tunnel-panel.conf <<'SYSCTL'
 net.ipv4.ip_forward=1
-net.ipv6.conf.all.forwarding=1
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
 SYSCTL
 sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/98-tunnel-panel.conf >/dev/null 2>&1 || true
+` + ipv6RAFix
+
+// ipv6RAFix repairs what earlier versions did: they turned IPv6 forwarding on, and with
+// forwarding on Linux ignores router advertisements, so a server that learns its IPv6
+// default route from them lost IPv6 once that route expired. The setting is dropped from
+// the panel's files; while forwarding is still on (until a reboot, or because something
+// else wants it), accept_ra=2 keeps the interfaces taking RAs anyway.
+const ipv6RAFix = `if [ -f /etc/sysctl.d/99-tunnel-panel-optz.conf ]; then sed -i '/^net\.ipv6\.conf\.all\.forwarding=1$/d' /etc/sysctl.d/99-tunnel-panel-optz.conf 2>/dev/null || true; fi
+if [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)" = 1 ]; then
+  for f in /proc/sys/net/ipv6/conf/*/accept_ra; do
+    i=${f%/accept_ra}; i=${i##*/}
+    case $i in all|default|lo) continue;; esac
+    if [ "$(cat "$f" 2>/dev/null)" = 1 ]; then echo 2 > "$f" 2>/dev/null || true; fi
+  done
+fi
 `
 
 // portForwardV4 builds iptables rules on the Iran side that DNAT public ports to the

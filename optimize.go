@@ -77,10 +77,11 @@ cat >/etc/sysctl.d/99-tunnel-panel-optz.conf <<'SYSCTL'
 SYSCTL
 %s
 sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-tunnel-panel-optz.conf
+%s
 mkdir -p /etc/security/limits.d
 printf '* soft nofile 1048576\n* hard nofile 1048576\nroot soft nofile 1048576\nroot hard nofile 1048576\n' >/etc/security/limits.d/99-tunnel-panel.conf
 echo APPLIED_OK
-`, r.SysctlConf, bbrLoad(r.BBR))
+`, r.SysctlConf, bbrLoad(r.BBR), ipv6RAFix)
 		o, err := host.Run(ctx, applyScript, nil)
 		r.Output = strings.TrimSpace(o)
 		r.Applied = err == nil && strings.Contains(o, "APPLIED_OK")
@@ -150,7 +151,6 @@ net.ipv4.ip_local_port_range=1024 65535
 net.ipv4.udp_rmem_min=16384
 net.ipv4.udp_wmem_min=16384
 net.ipv4.ip_forward=1
-net.ipv6.conf.all.forwarding=1
 fs.file-max=1048576
 `, r.Virt, r.RAMMB, r.CPUs, cc, cc, maxBuf, maxBuf, maxBuf/4, maxBuf/4, maxBuf, wmemHi, backlog, somax, backlog)
 	return strings.TrimRight(conf, "\n"), notes

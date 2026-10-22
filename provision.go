@@ -158,7 +158,7 @@ func (a *App) sideArtifacts(iran bool) []Artifact {
 
 // prepScript installs the distro packages methods rely on, once, so a later method
 // switch never waits on apt.
-const prepScript = `pk=""
+const prepScript = ipv6RAFix + `pk=""
 command -v swanctl >/dev/null 2>&1 || pk="$pk strongswan-swanctl charon-systemd libcharon-extra-plugins"
 command -v swanctl >/dev/null 2>&1 && ! systemctl cat strongswan.service >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1 && pk="$pk charon-systemd"
 command -v ethtool >/dev/null 2>&1 || pk="$pk ethtool"

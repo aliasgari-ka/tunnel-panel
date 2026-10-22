@@ -5,8 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -223,7 +226,47 @@ func LoadStore(dir string) (*Store, error) {
 			t.Options = map[string]map[string]string{}
 		}
 	}
+	// addresses typed before they were validated ("2a01:..::1/64", "[..]", upper case) would
+	// never match the host's own address in the tunnel scripts
+	if v, err := normIP(st.S.Settings.LocalIPv4, false); err == nil {
+		st.S.Settings.LocalIPv4 = v
+	}
+	if v, err := normIP(st.S.Settings.LocalIPv6, true); err == nil {
+		st.S.Settings.LocalIPv6 = v
+	}
+	for _, sv := range st.S.Servers {
+		if v, err := normIP(sv.IPv4, false); err == nil {
+			sv.IPv4 = v
+		}
+		if v, err := normIP(sv.IPv6, true); err == nil {
+			sv.IPv6 = v
+		}
+	}
 	return st, st.saveLocked()
+}
+
+// normIP cleans up an address as typed (spaces, brackets, a /prefix or %zone) and checks
+// its family; "" stays "".
+func normIP(s string, v6 bool) (string, error) {
+	s = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(s), "["), "]")
+	if i := strings.IndexAny(s, "/%"); i >= 0 {
+		s = s[:i]
+	}
+	if s == "" {
+		return "", nil
+	}
+	ip := net.ParseIP(s)
+	switch {
+	case ip == nil:
+		return "", fmt.Errorf("%q is not an IP address", s)
+	case v6 && ip.To4() != nil:
+		return "", fmt.Errorf("%s is an IPv4 address — put it in the IPv4 field", s)
+	case !v6 && ip.To4() == nil:
+		return "", fmt.Errorf("%s is an IPv6 address — put it in the IPv6 field", s)
+	case ip.IsLinkLocalUnicast() || ip.IsLoopback() || ip.IsUnspecified():
+		return "", fmt.Errorf("%s can't be reached from another server — use the server's public address", s)
+	}
+	return ip.String(), nil
 }
 
 func (s *Store) Save() error {

@@ -54,7 +54,7 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 | **FRP reverse** | v4/v6 | token (+TLS) | tcp, websocket, quic, kcp |
 | **Backhaul Premium** | v4 | AEAD (ipx) / TLS | `tun` + `ipx` raw carrier (icmp/ipip/udp/tcp/gre/bip), `anytls`. amd64, upload the core |
 | **Golden-GRE** | v4 | optional XChaCha20 | GRE-in-FOU disguised as DNS or ICMP; several tunnels can share one server's port 53 |
-| **Direct v6 (ip6gre)** | v6 | none | kernel only, lowest overhead |
+| **Direct v6 (ip6gre)** | v6 | none | kernel only, lowest overhead; Carrier `udp` = GRE inside UDP where protocol 47 is filtered |
 | **Plain GRE** | v4/v6 | none | kernel GRE / ip6gre |
 | **IPsec (strongSwan)** | v6/v4 | AES-GCM | IKEv2, route-based XFRM interface |
 | **Spoof-Tunnel** | v4 | none (spoofed) | stateless raw pipe via mutual source-IP spoofing; needs non-BCP38 providers; put an encrypted protocol inside |
@@ -128,6 +128,11 @@ systemctl restart tunnel-panel
   amd64 only, and the vendor's own installer (plain HTTP) is avoided.
 - **Golden-GRE**'s relay is built for amd64 and arm64; **Premium**'s core is amd64 (arm64 via the
   vendor build or emulation, see above). Every other method is architecture-independent.
+- **IPv6:** the panel never turns IPv6 forwarding on (the tunnels carry IPv4 inside). Earlier
+  versions did, and with forwarding on Linux ignores router advertisements, so servers that learn
+  their IPv6 default route from RA lost IPv6 after a while; every tunnel start now repairs that
+  (`accept_ra=2` while forwarding is still on). Server addresses are validated and normalized, and
+  kernel tunnels refuse to start with an IPv6 address the server doesn't have.
 - **Golden-GRE (DNS)** relays receive on a per-tunnel port; an iptables TPROXY rule per peer hands
   each relay its peer's port-53 packets, so one server can run Golden tunnels to several servers.
   Two Golden tunnels between the *same* two servers need different "DNS port" options.

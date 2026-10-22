@@ -231,3 +231,27 @@ func TestFailoverCandidates(t *testing.T) {
 		}
 	}
 }
+
+func TestNormIP(t *testing.T) {
+	cases := []struct {
+		in   string
+		v6   bool
+		want string
+		bad  bool
+	}{
+		{" 2A01:4F8:0:1::0001/64 ", true, "2a01:4f8:0:1::1", false},
+		{"[2001:db8::5]", true, "2001:db8::5", false},
+		{"fe80::1%eth0", true, "", true},
+		{"185.1.2.3", true, "", true},
+		{"185.1.2.3/32", false, "185.1.2.3", false},
+		{"2001:db8::1", false, "", true},
+		{"", true, "", false},
+		{"not-an-ip", false, "", true},
+	}
+	for _, c := range cases {
+		got, err := normIP(c.in, c.v6)
+		if (err != nil) != c.bad || got != c.want {
+			t.Errorf("normIP(%q, v6=%v) = %q, %v", c.in, c.v6, got, err)
+		}
+	}
+}

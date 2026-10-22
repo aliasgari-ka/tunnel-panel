@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 func init() {
 	register(methodDirectV6)
@@ -9,6 +13,28 @@ func init() {
 }
 
 func fwdTag(d derived) string { return fmt.Sprintf("tp%d", d.Idx) }
+
+// localAddr sets $TPL to the address a kernel tunnel uses as its local end: the server's
+// public address when it is on the server, else (IPv4 behind 1:1 NAT) the source the
+// server uses towards the peer. An IPv6 address the server doesn't have is a config error:
+// the peer would get packets from another address and drop them all.
+func localAddr(self, peer string) string {
+	if strings.Contains(self, ":") {
+		return fmt.Sprintf(`TPL=%[1]s
+if ! ip -6 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF %[1]s; then
+  echo "IPv6 %[1]s is not on this server (it has: $(ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')) — correct the server's IPv6 on the Servers page, or clear it and run Test connection"
+  exit 1
+fi
+`, self)
+	}
+	return fmt.Sprintf(`TPL=%[1]s
+if ! ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF %[1]s; then
+  TPL=$(ip -4 route get %[2]s 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+  [ -n "$TPL" ] || { echo "no IPv4 route to %[2]s"; exit 1; }
+  echo "note: %[1]s is not on this server (NAT) — the tunnel's local end is $TPL"
+fi
+`, self, peer)
+}
 
 // kernelTunnel builds the two oneshot plans for a kernel tunnel interface.
 // ifaceUp creates the interface on one host given (selfPub, peerPub).
@@ -36,19 +62,40 @@ func kernelTunnel(c *buildCtx, desc string, ifaceUp func(selfPub, peerPub string
 var methodDirectV6 = &Method{
 	ID:       "direct6",
 	Title:    "Direct v6 (ip6gre)",
-	Desc:     "Kernel ip6gre tunnel between two native-IPv6 servers. Lowest overhead, no daemon. Unencrypted.",
+	Desc:     "Kernel ip6gre tunnel between two native-IPv6 servers. Lowest overhead, no daemon. Unencrypted. Carrier \"udp\" puts the GRE packets inside UDP for paths that drop protocol 47.",
 	Families: []string{"v6"},
 	Encrypt:  "none",
 	Fields: []Field{
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1420"},
+		{Key: "carrier", Label: "Carrier (udp = GRE inside UDP, when GRE/protocol 47 is filtered)", Type: "select", Default: "gre", Options: []string{"gre", "udp"}},
+		{Key: "udpport", Label: "UDP port (carrier udp; blank = per-tunnel default)", Type: "number", Default: ""},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
-		up := func(self, peer string) string {
-			return fmt.Sprintf("ip link add %s type ip6gre local %s remote %s ttl 255 key %d encaplimit none\nip link set %s mtu %s up\n",
-				d.Iface, self, peer, d.GREKey, d.Iface, c.Opt("mtu"))
+		encap, extraDown := "", ""
+		port := d.BasePort + 3
+		if p := c.Opt("udpport"); p != "" {
+			if port, err = strconv.Atoi(p); err != nil || port < 1 || port > 65535 {
+				return ir, kh, fmt.Errorf("Direct v6: UDP port must be 1..65535")
+			}
 		}
-		ir, kh = kernelTunnel(c, "ip6gre "+c.T.Name, up, "")
+		if c.Opt("carrier") == "udp" {
+			// FOU over IPv6: the kernel listens on the UDP port and hands what arrives to ip6gre
+			encap = fmt.Sprintf(" encap fou encap-sport auto encap-dport %d", port)
+			extraDown = fmt.Sprintf("ip fou del port %d -6 2>/dev/null || true\n", port)
+		}
+		up := func(self, peer string) string {
+			s := localAddr(self, peer)
+			if encap != "" {
+				s += fmt.Sprintf(`modprobe fou6 2>/dev/null || modprobe fou 2>/dev/null || true
+ip fou del port %[1]d -6 2>/dev/null || true
+ip fou add port %[1]d ipproto 47 -6 || { echo "this kernel can't carry GRE inside UDP over IPv6 (fou6 module missing) — use carrier gre"; exit 1; }
+`, port)
+			}
+			return s + fmt.Sprintf("ip link add %s type ip6gre local $TPL remote %s ttl 255 key %d encaplimit none%s\nip link set %s mtu %s up\n",
+				d.Iface, peer, d.GREKey, encap, d.Iface, c.Opt("mtu"))
+		}
+		ir, kh = kernelTunnel(c, "ip6gre "+c.T.Name, up, extraDown)
 		return ir, kh, nil
 	},
 }
@@ -71,8 +118,8 @@ var methodGRE = &Method{
 			typ, extra = "ip6gre", " encaplimit none"
 		}
 		up := func(self, peer string) string {
-			return fmt.Sprintf("ip link add %s type %s local %s remote %s ttl 255 key %d%s\nip link set %s mtu %s up\n",
-				d.Iface, typ, self, peer, d.GREKey, extra, d.Iface, c.Opt("mtu"))
+			return localAddr(self, peer) + fmt.Sprintf("ip link add %s type %s local $TPL remote %s ttl 255 key %d%s\nip link set %s mtu %s up\n",
+				d.Iface, typ, peer, d.GREKey, extra, d.Iface, c.Opt("mtu"))
 		}
 		ir, kh = kernelTunnel(c, "GRE "+c.T.Name, up, "")
 		return ir, kh, nil

@@ -155,7 +155,8 @@ func TestE2EMethods(t *testing.T) {
 		{"FRP (reverse)", "frp", nil},
 	}
 	if fam == "v6" {
-		cases = append(cases, tc{"Direct v6 (ip6gre)", "direct6", nil})
+		cases = append(cases, tc{"Direct v6 (ip6gre)", "direct6", nil},
+			tc{"Direct v6 carrier udp, GRE dropped", "direct6", map[string]string{"carrier": "udp"}})
 	} else {
 		cases = append(cases, tc{"Golden-GRE (dns)", "golden", nil})
 	}
@@ -193,6 +194,11 @@ func TestE2EMethods(t *testing.T) {
 		sk := &e2eSide{ns: "tkh", label: "KH", dir: base + "/kh", h: nsHost{"tkh"}, plan: khP}
 		si := &e2eSide{ns: "tir", label: "IR", dir: base + "/ir", h: nsHost{"tir"}, plan: irP}
 		res := ""
+		// "GRE dropped": the path drops protocol 47, as many providers do
+		block47 := strings.Contains(c.name, "GRE dropped")
+		if block47 {
+			sh(t, "for n in tir tkh; do ip netns exec $n ip6tables -w -t raw -I PREROUTING -p 47 -j DROP; ip netns exec $n iptables -w -t raw -I PREROUTING -p 47 -j DROP; done")
+		}
 		if err := sk.up(ctx, t, j, tn); err != nil {
 			res = "FOREIGN DEPLOY FAILED: " + err.Error()
 		} else if err := si.up(ctx, t, j, tn); err != nil {
@@ -229,6 +235,9 @@ func TestE2EMethods(t *testing.T) {
 		}
 		si.down(ctx, tn)
 		sk.down(ctx, tn)
+		if block47 {
+			sh(t, "for n in tir tkh; do ip netns exec $n ip6tables -w -t raw -D PREROUTING -p 47 -j DROP; ip netns exec $n iptables -w -t raw -D PREROUTING -p 47 -j DROP; done")
+		}
 		left := sh(t, "for n in tir tkh; do ip netns exec $n iptables-save 2>/dev/null; ip netns exec $n ip6tables-save 2>/dev/null; done | grep -cE 'TPI_|TPF_|TPM_|TP_tp' ")
 		if left != "0" {
 			res += "; LEFTOVER firewall rules: " + left
@@ -241,5 +250,34 @@ func TestE2EMethods(t *testing.T) {
 		if !strings.Contains(r, "✓") || strings.Contains(r, "FAIL") || strings.Contains(r, "LEFTOVER") {
 			t.Error("failed: " + r)
 		}
+	}
+}
+
+// The IPv6 fixes on a real kernel: the RA repair, and a clear error for an IPv6 address
+// the server doesn't have. Runs with TP_E2E=v6.
+func TestIPv6HostFixesNS(t *testing.T) {
+	if os.Getenv("TP_E2E") != "v6" {
+		t.Skip("set TP_E2E=v6 (root, network namespaces)")
+	}
+	e2eTopology(t, "v6")
+	defer sh(t, "for n in tir tkh tus; do ip netns pids $n 2>/dev/null | xargs -r kill -9; ip netns del $n 2>/dev/null; done")
+	ctx := context.Background()
+	h := nsHost{"tir"}
+	sh(t, "ip netns exec tir sysctl -qw net.ipv6.conf.all.forwarding=1; ip netns exec tir sysctl -qw net.ipv6.conf.vir.accept_ra=1")
+	_, _ = h.Run(ctx, ipv6RAFix, nil)
+	if got := sh(t, "ip netns exec tir cat /proc/sys/net/ipv6/conf/vir/accept_ra"); got != "2" {
+		t.Errorf("forwarding on: accept_ra on the uplink is %s, want 2", got)
+	} else {
+		t.Log("✓ forwarding on → uplink accept_ra=2 (keeps taking router advertisements)")
+	}
+	out, err := h.Run(ctx, localAddr("2001:db8:99::77", "2001:db8:99::2")+"echo TPL=$TPL", nil)
+	if err == nil || !strings.Contains(out, "is not on this server") || !strings.Contains(out, "2001:db8:99::1") {
+		t.Errorf("wrong IPv6 not reported: err=%v out=%q", err, out)
+	} else {
+		t.Log("✓ wrong IPv6: " + strings.TrimSpace(out))
+	}
+	out, err = h.Run(ctx, localAddr("2001:db8:99::1", "2001:db8:99::2")+"echo TPL=$TPL", nil)
+	if err != nil || !strings.Contains(out, "TPL=2001:db8:99::1") {
+		t.Errorf("right IPv6 rejected: err=%v out=%q", err, out)
 	}
 }

@@ -133,6 +133,13 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 				j.log("  ⚠ ping doesn't answer: %s — harmless, but the path MTU can't be measured", why)
 			default:
 				bad("nothing passes through the tunnel (no ping reply, TCP to %s:%s times out)", d.KHv4, probePortOf(t))
+				gget, _ := resolveOptions(m, t.Options[m.ID])
+				switch {
+				case m.ID == "direct6" && gget("carrier") != "udp":
+					hint("GRE (protocol 47) is probably dropped on the IPv6 path or by a provider firewall — open Options, set Carrier = udp and Re-apply (GRE inside UDP), or use IPsec / BackPack / Backhaul over IPv6")
+				case m.ID == "gre":
+					hint("GRE (protocol 47) is probably dropped on the path or by a provider/cloud firewall — allow GRE there, or use %s", map[string]string{"v6": "Direct v6 with Carrier = udp, IPsec, BackPack or Backhaul", "v4": "Golden-GRE (looks like DNS), IPsec, BackPack or Backhaul"}[t.Family])
+				}
 			}
 			mtu, _ := strconv.Atoi(run(ir, "cat /sys/class/net/"+ifc+"/mtu 2>/dev/null"))
 			if mtu > 0 && pingOK {

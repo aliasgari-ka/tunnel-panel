@@ -345,6 +345,15 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "bad request")
 		return
 	}
+	var err error
+	if in.LocalIPv4, err = normIP(in.LocalIPv4, false); err != nil {
+		httpErr(w, 400, "IPv4: "+err.Error())
+		return
+	}
+	if in.LocalIPv6, err = normIP(in.LocalIPv6, true); err != nil {
+		httpErr(w, 400, "IPv6: "+err.Error())
+		return
+	}
 	_ = s.app.store.Update(func(st *State) error {
 		if in.PanelName == "" {
 			in.PanelName = st.Settings.PanelName
@@ -400,7 +409,16 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "Proxy must start with socks5://, socks5h://, http:// or https://")
 		return
 	}
-	err := s.app.store.Update(func(st *State) error {
+	var err error
+	if in.IPv4, err = normIP(in.IPv4, false); err != nil {
+		httpErr(w, 400, "IPv4: "+err.Error())
+		return
+	}
+	if in.IPv6, err = normIP(in.IPv6, true); err != nil {
+		httpErr(w, 400, "IPv6: "+err.Error())
+		return
+	}
+	err = s.app.store.Update(func(st *State) error {
 		if in.ID == "" {
 			in.ID = newID()
 			in.CreatedAt = time.Now().Unix()
