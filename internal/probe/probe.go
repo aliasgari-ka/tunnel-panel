@@ -394,10 +394,14 @@ func check(addr string, n int, pingHost string, pn int) string {
 
 var lossRE = regexp.MustCompile(`([0-9.]+)% packet loss`)
 
-// ping runs the system ping (iputils or busybox) and returns the loss in percent.
+// ping sends n ICMP echoes itself (raw socket, root) and returns the loss in percent; it
+// falls back to the system ping where raw sockets aren't allowed.
 func ping(host string, n int) (int, bool) {
 	if n < 1 {
 		n = 1
+	}
+	if l, ok := rawPing(host, n); ok {
+		return l, true
 	}
 	out, _ := exec.Command("ping", "-n", "-c", strconv.Itoa(n), "-i", "0.2", "-W", "1", host).CombinedOutput()
 	m := lossRE.FindSubmatch(out)
@@ -409,4 +413,71 @@ func ping(host string, n int) (int, bool) {
 		return 0, false
 	}
 	return int(math.Round(f)), true
+}
+
+func rawPing(host string, n int) (int, bool) {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return 0, false
+	}
+	v4 := ip.To4() != nil
+	network, typ, reply := "ip4:icmp", byte(8), byte(0)
+	if !v4 {
+		network, typ, reply = "ip6:ipv6-icmp", 128, 129
+	}
+	c, err := net.ListenPacket(network, "")
+	if err != nil {
+		return 0, false
+	}
+	defer c.Close()
+	id := uint16(os.Getpid() & 0xffff)
+	got := map[uint16]bool{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 1500)
+		for {
+			k, from, err := c.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			b := buf[:k]
+			if v4 && len(b) >= 20 && b[0]>>4 == 4 { // some kernels hand the IP header over too
+				b = b[int(b[0]&0x0f)*4:]
+			}
+			if len(b) >= 8 && b[0] == reply && binary.BigEndian.Uint16(b[4:]) == id {
+				if a, ok := from.(*net.IPAddr); ok && a.IP.Equal(ip) {
+					got[binary.BigEndian.Uint16(b[6:])] = true
+				}
+			}
+		}
+	}()
+	dst := &net.IPAddr{IP: ip}
+	for seq := 1; seq <= n; seq++ {
+		msg := make([]byte, 64)
+		msg[0] = typ
+		binary.BigEndian.PutUint16(msg[4:], id)
+		binary.BigEndian.PutUint16(msg[6:], uint16(seq))
+		if v4 { // ICMPv6 checksums are filled in by the kernel
+			binary.BigEndian.PutUint16(msg[2:], icmpSum(msg))
+		}
+		if _, err := c.WriteTo(msg, dst); err != nil {
+			return 0, false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
+	<-done
+	return (n - len(got)) * 100 / n, true
+}
+
+func icmpSum(b []byte) uint16 {
+	var s uint32
+	for i := 0; i+1 < len(b); i += 2 {
+		s += uint32(b[i])<<8 | uint32(b[i+1])
+	}
+	for s>>16 != 0 {
+		s = s>>16 + s&0xffff
+	}
+	return ^uint16(s)
 }

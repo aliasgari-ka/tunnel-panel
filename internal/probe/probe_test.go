@@ -2,6 +2,7 @@ package probe
 
 import (
 	"net"
+	"os"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,14 @@ func TestCappedTests(t *testing.T) {
 	}
 	if r := check(addr, 2, "", 0); !strings.HasPrefix(r, "ok ") || !strings.HasSuffix(r, " -1") {
 		t.Errorf("check: %q", r)
+	}
+	if os.Geteuid() == 0 {
+		if l, ok := rawPing("127.0.0.1", 3); !ok || l != 0 {
+			t.Errorf("raw ping of loopback: loss %d ok %v", l, ok)
+		}
+		if r := check(addr, 2, "127.0.0.1", 3); !strings.HasSuffix(r, " 0") {
+			t.Errorf("check with ping: %q", r)
+		}
 	}
 	if r := check("127.0.0.1:1", 2, "", 0); r != "down" {
 		t.Errorf("check of a closed port: %q", r)
