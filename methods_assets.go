@@ -177,7 +177,10 @@ kdf_iterations = 100000
 [tuning]
 auto_tuning = true
 tuning_profile = "balanced"
+workers = 0
 channel_size = 10_000
+batch_size = 2048
+so_sndbuf = 0
 
 [logging]
 log_level = "info"
