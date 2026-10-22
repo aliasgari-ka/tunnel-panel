@@ -131,13 +131,7 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 			}
 			j.log("✕ foreign → Iran:%d is blocked on the path; ✓ port %d works — using it as the tunnel port", try[0], p)
 			_ = a.store.Update(func(*State) error {
-				if t.Options == nil {
-					t.Options = map[string]map[string]string{}
-				}
-				if t.Options[m.ID] == nil {
-					t.Options[m.ID] = map[string]string{}
-				}
-				t.Options[m.ID][key] = strconv.Itoa(p)
+				t.setOption(m.ID, key, strconv.Itoa(p))
 				return nil
 			})
 			return true, nil

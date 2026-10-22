@@ -736,7 +736,7 @@ function tunnelCard(t) {
   on('[data-diag]', () => tunnelJob(t, '/tunnels/diagnose', 'Diagnose'));
   on('[data-trace]', () => tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'));
   on('[data-edit]', () => tunnelModal(t));
-  on('[data-del]', async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } });
+  on('[data-del]', async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { const r = await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); if (r.warning) alertModal('Deleted — with a warning', r.warning); } catch (er) { alertModal('Error', er.message); } });
   refreshStatus(t, card);
   return card;
 }
@@ -1057,18 +1057,28 @@ function closeLog() { if (logTimer) clearInterval(logTimer); logTimer = null; $$
 async function pollJob(jobId, tunnelId) {
   const box = $('#logbox'), stat = $('#jobstat');
   const url = jobId ? '/jobs?id=' + jobId : '/tunnels/lastjob?id=' + tunnelId;
+  // each drawer owns its timer, so quickly opening another one can't orphan or kill it
+  let me = null, finished = false;
+  const stop = () => { if (me) clearInterval(me); if (logTimer === me) logTimer = null; me = null; };
   const tick = async () => {
+    if (!box.isConnected) { stop(); return; } // drawer closed or replaced
     try {
       const j = await api(url);
+      if (!box.isConnected || finished) return;
       box.innerHTML = j.lines.map(l => { let c = /ERROR|failed| ✕ |WARNING|CANCELLED/.test(l) ? 'err' : /DONE|is active|unit .*active| ✓ /.test(l) ? 'ok' : /\[IR\]/.test(l) ? 'ir' : ''; return `<div class="ln ${c}">${esc(l)}</div>`; }).join('');
       box.scrollTop = box.scrollHeight;
       if (stat) stat.textContent = j.status === 'running' ? 'running…' : (j.status === 'ok' ? 'completed' : j.status === 'cancelled' ? 'cancelled' : 'error');
       const cb = $('#cancelJob');
       if (cb) { cb.hidden = j.status !== 'running'; cb.onclick = async () => { cb.disabled = true; try { await api('/jobs/cancel', { ID: j.id }); toast('Job cancelled'); } catch (e) { alertModal('Cancel', e.message); } cb.disabled = false; }; }
-      if (j.status !== 'running') { clearInterval(logTimer); logTimer = null; await loadAll(); if (STATE.view === 'tunnels') { const w = $('#work'); if (w && $('.drawer')) { /* keep drawer, repaint behind */ viewTunnels(w); } } }
-    } catch (e) { if (!jobId) { box.innerHTML = '<span class="muted">No job yet.</span>'; clearInterval(logTimer); } }
+      if (j.status !== 'running') {
+        finished = true; stop(); await loadAll();
+        if (STATE.view === 'tunnels') { const w = $('#work'); if (w && $('.drawer')) viewTunnels(w); }
+      }
+    } catch (e) { if (!jobId) { box.innerHTML = '<span class="muted">No job yet.</span>'; stop(); } }
   };
-  await tick(); logTimer = setInterval(tick, 1200);
+  me = setInterval(tick, 1200); logTimer = me;
+  tick();
 }
+
 
 boot();

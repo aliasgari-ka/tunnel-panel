@@ -135,8 +135,10 @@ if [ -x "$D" ] && [ "$(m "$D")" = %[2]s ]; then echo "already installed on this 
 MK="$(dirname "$D")/.vendor-unreachable"
 if [ -f "$MK" ] && [ $(( $(date +%%s) - $(stat -c %%Y "$MK") )) -lt 21600 ]; then echo "the vendor was unreachable from this host recently"; exit 1; fi
 T=$(mktemp -d); trap 'rm -rf $T' EXIT; cd $T
-for u in %[3]s; do curl -fsSL --max-time 30 -o p.tgz "$u" && break; done
-[ -s p.tgz ] || { mkdir -p "$(dirname "$D")"; touch "$MK"; echo "this host cannot reach the vendor either"; exit 1; }
+n=0; for u in %[3]s; do n=$((n+1)); curl -fsSL --max-time 30 -o p$n.tgz "$u" || rm -f p$n.tgz; done
+set -- p*.tgz; [ -s "$1" ] || { mkdir -p "$(dirname "$D")"; touch "$MK"; echo "this host cannot reach the vendor either"; exit 1; }
+if [ -s p1.tgz ] && [ -s p2.tgz ] && [ "$(sha256sum < p1.tgz)" != "$(sha256sum < p2.tgz)" ]; then echo "the two vendor mirrors served different files — refusing"; exit 1; fi
+mv "$1" p.tgz
 tar -xzf p.tgz 2>/dev/null || { echo "vendor file is not a tar.gz"; exit 1; }
 f=""; for x in $(find . -type f); do [ "$(m "$x")" = %[2]s ] && { f=$x; break; }; done
 [ -n "$f" ] || { echo "no %[4]s binary inside the vendor archive"; exit 1; }

@@ -19,19 +19,26 @@ const traceTag = "tp-trace"
 
 // traceRules adds or removes the counting rules: SYNs and bytes towards the port, and
 // (foreign only) bytes the service sends back.
-func traceRules(add bool, ports []string, replies bool) string {
+func traceRules(add bool, ports []string, replies bool, src string) string {
 	op := "-D"
 	if add {
 		op = "-I"
 	}
+	from := ""
+	if src != "" {
+		from = "-s " + src + " "
+	}
 	var b strings.Builder
 	for _, ipt := range []string{"iptables", "ip6tables"} {
+		if src != "" && strings.Contains(src, ":") != (ipt == "ip6tables") {
+			continue // a source filter belongs to one family only
+		}
 		fmt.Fprintf(&b, "if command -v %s >/dev/null 2>&1; then\n", ipt)
 		for _, p := range ports {
 			for _, r := range []string{
-				fmt.Sprintf("PREROUTING -p tcp --dport %s --syn -m comment --comment %s-syn-%s", p, traceTag, p),
-				fmt.Sprintf("PREROUTING -p tcp --dport %s -m comment --comment %s-in-%s", p, traceTag, p),
-				fmt.Sprintf("PREROUTING -p udp --dport %s -m comment --comment %s-udp-%s", p, traceTag, p),
+				fmt.Sprintf("PREROUTING %s-p tcp --dport %s --syn -m comment --comment %s-syn-%s", from, p, traceTag, p),
+				fmt.Sprintf("PREROUTING %s-p tcp --dport %s -m comment --comment %s-in-%s", from, p, traceTag, p),
+				fmt.Sprintf("PREROUTING %s-p udp --dport %s -m comment --comment %s-udp-%s", from, p, traceTag, p),
 			} {
 				if add {
 					fmt.Fprintf(&b, "%s -w -t mangle %s %s 2>/dev/null\n", ipt, op, r)
@@ -185,13 +192,13 @@ func (a *App) Trace(t *Tunnel, secs int) (*Job, error) {
 		}
 
 		start := time.Now().Unix()
-		_, _ = ir.Run(ctx, traceRules(true, irPorts, false), nil)
-		_, _ = kh.Run(ctx, traceRules(true, khPorts, true), nil)
+		_, _ = ir.Run(ctx, traceRules(true, irPorts, false, ""), nil)
+		_, _ = kh.Run(ctx, traceRules(true, khPorts, true, ""), nil)
 		defer func() {
 			cctx, c2 := context.WithTimeout(context.Background(), 30*time.Second)
 			defer c2()
-			_, _ = ir.Run(cctx, traceRules(false, irPorts, false), nil)
-			_, _ = kh.Run(cctx, traceRules(false, khPorts, true), nil)
+			_, _ = ir.Run(cctx, traceRules(false, irPorts, false, ""), nil)
+			_, _ = kh.Run(cctx, traceRules(false, khPorts, true, ""), nil)
 		}()
 
 		var irT, khT *traceCount

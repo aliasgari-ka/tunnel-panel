@@ -68,7 +68,8 @@ func ensureArtifact(ctx context.Context, j *Job, a Artifact, arch string) ([]byt
 		return nil, err
 	}
 	j.log("[KH] fetching %s for %s", a.Name, arch)
-	script := fmt.Sprintf("ARCH=%s\nOUT=%s\nTMP=$(mktemp -d)\ntrap 'rm -rf $TMP' EXIT\ncd $TMP\n%s\n", arch, shq(out+".part"), a.Fetch)
+	// set -e: a failed checksum or download must stop the script before anything is installed
+	script := fmt.Sprintf("set -e\nARCH=%s\nOUT=%s\nTMP=$(mktemp -d)\ntrap 'rm -rf $TMP' EXIT\ncd $TMP\n%s\n", arch, shq(out+".part"), a.Fetch)
 	if _, err := (LocalHost{}).Run(ctx, script, func(l string) { j.log("[KH] %s", l) }); err != nil {
 		if len(cached) > 0 {
 			j.log("[KH] refresh of %s failed, keeping the cached copy", a.Name)

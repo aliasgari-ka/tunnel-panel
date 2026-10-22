@@ -295,6 +295,11 @@ func (h AgentHost) Run(ctx context.Context, script string, log func(string)) (st
 		return out.buf.String(), err
 	case <-ctx.Done():
 		st.Close()
+		select { // the reader stops once the stream is closed; don't read the buffer under it
+		case <-done:
+		case <-time.After(2 * time.Second):
+			return "", ctx.Err()
+		}
 		return out.buf.String(), ctx.Err()
 	}
 }

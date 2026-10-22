@@ -104,9 +104,11 @@ func (a *App) applyAndWait(ctx context.Context, t *Tunnel, mid string) error {
 	return ctx.Err()
 }
 
-// verifyPath checks that traffic entering the tunnel's forwarded port reaches the foreign
-// service. With no service listening there yet, it falls back to the probe through the
-// tunnel (the link itself works).
+// verifyPath checks that this tunnel carries traffic end to end: the per-tunnel probe must
+// pass through it (unique port, so no other tunnel or client can fake it), and when a
+// service listens on the forwarded port's target it must be reachable the way the tunnel
+// delivers (L3: a SYN from this tunnel's Iran address arrives; forwarders: the service
+// accepts on the foreign host's loopback).
 func (a *App) verifyPath(ctx context.Context, t *Tunnel) (bool, string) {
 	srv := a.store.Server(t.ServerID)
 	m := methodByID[t.Active]
@@ -124,56 +126,88 @@ func (a *App) verifyPath(ctx context.Context, t *Tunnel) (bool, string) {
 	d := deriveFor(t, srv, a.store.Server(t.ForeignID), a.settings())
 	l3 := benchIsL3(m, t.Options[m.ID])
 	run := func(h Host, s string) string { out, _ := h.Run(ctx, s, nil); return strings.TrimSpace(out) }
-	ps := firstPorts(t.Ports, 1)
-	if len(ps) > 0 {
-		dst := ps[0].dst
-		if i := strings.LastIndex(dst, ":"); i >= 0 {
-			dst = dst[i+1:]
+
+	// 1. the tunnel itself (spoof carries UDP only: skip the TCP probe)
+	if m.ID != "spoof" {
+		if err := pushArtifacts(ctx, &Job{}, "IR", ir, []Artifact{probeArt}); err != nil {
+			return false, "probe: " + err.Error()
 		}
-		if run(kh, "ss -Hltn 'sport = :"+dst+"' 2>/dev/null | head -1") != "" {
-			// count SYNs arriving at the service while Iran connects through the tunnel
-			_, _ = kh.Run(ctx, traceRules(true, []string{dst}, false), nil)
-			defer func() {
-				c, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-				defer cancel()
-				_, _ = kh.Run(c, traceRules(false, []string{dst}, false), nil)
-			}()
-			target := "127.0.0.1/" + ps[0].listen
-			if l3 && m.ID != "bp_l3" {
-				target = d.KHv4 + "/" + dst // DNAT applies to outside users only; test the hop behind it
-			}
-			for i := 0; i < 8; i++ {
-				run(ir, "timeout 5 bash -c '</dev/tcp/"+target+"' 2>/dev/null")
-				if c := parseTrace(run(kh, traceRead))[dst]; c != nil && c.syn > 0 {
-					return true, fmt.Sprintf("connections to Iran port %s reach the service on the foreign server", ps[0].listen)
-				}
+		if err := pushArtifacts(ctx, &Job{}, "KH", kh, []Artifact{probeArt}); err != nil {
+			return false, "probe: " + err.Error()
+		}
+		port := probePortFor(t)
+		_, _ = kh.Run(ctx, probeServerUpLife(port, 90), nil)
+		target := fmt.Sprintf("127.0.0.1:%d", port)
+		if l3 {
+			target = fmt.Sprintf("%s:%d", d.KHv4, port)
+		}
+		passed := false
+		for i := 0; i < 8 && !passed; i++ {
+			if _, err := runProbe[probeRTT](ctx, ir, "probe rtt -addr "+target+" -n 3", 15); err == nil {
+				passed = true
+			} else {
 				time.Sleep(3 * time.Second)
 			}
-			return false, "nothing arrives at the foreign service through the forwarded port"
+		}
+		_, _ = kh.Run(context.Background(), probeServerDown(port), nil)
+		if !passed {
+			return false, "no traffic passes through the tunnel"
 		}
 	}
-	// no service yet: the tunnel itself must pass traffic (probe through it)
-	if err := pushArtifacts(ctx, &Job{}, "IR", ir, []Artifact{probeArt}); err != nil {
-		return false, "probe: " + err.Error()
+	// 2. the service behind the forwarded port
+	ps := firstPorts(t.Ports, 1)
+	if len(ps) == 0 {
+		return true, "traffic passes through the tunnel"
 	}
-	if err := pushArtifacts(ctx, &Job{}, "KH", kh, []Artifact{probeArt}); err != nil {
-		return false, "probe: " + err.Error()
+	dst := ps[0].dst
+	if i := strings.LastIndex(dst, ":"); i >= 0 {
+		dst = dst[i+1:]
 	}
-	port := probePortFor(t)
-	_, _ = kh.Run(ctx, probeServerUpLife(port, 90), nil)
-	defer func() { _, _ = kh.Run(context.Background(), probeServerDown(port), nil) }()
-	target := fmt.Sprintf("127.0.0.1:%d", port)
-	if l3 {
-		target = fmt.Sprintf("%s:%d", d.KHv4, port)
+	if run(kh, "ss -Hltn 'sport = :"+dst+"' 2>/dev/null | head -1") == "" {
+		return true, "traffic passes through the tunnel (no service listens on port " + dst + " yet)"
 	}
-	for i := 0; i < 8; i++ {
-		if _, err := runProbe[probeRTT](ctx, ir, "probe rtt -addr "+target+" -n 3", 15); err == nil {
-			return true, "traffic passes through the tunnel (no service on the forwarded port yet)"
+	if !l3 || m.ID == "bp_l3" {
+		if run(kh, fmt.Sprintf("timeout 4 bash -c '</dev/tcp/127.0.0.1/%s' 2>/dev/null && echo open", dst)) == "open" {
+			return true, fmt.Sprintf("traffic passes through the tunnel and the service on port %s accepts it", dst)
 		}
-		time.Sleep(3 * time.Second)
+		if m.ID != "bp_l3" {
+			return false, "the service on port " + dst + " doesn't accept connections on 127.0.0.1, where the tunnel delivers"
+		}
 	}
-	return false, "no traffic passes through the tunnel"
+	_, _ = kh.Run(ctx, traceRules(true, []string{dst}, false, d.IRv4), nil)
+	defer func() {
+		c, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, _ = kh.Run(c, traceRules(false, []string{dst}, false, d.IRv4), nil)
+	}()
+	for i := 0; i < 5; i++ {
+		run(ir, "timeout 5 bash -c '</dev/tcp/"+d.KHv4+"/"+dst+"' 2>/dev/null")
+		if c := parseTrace(run(kh, traceRead))[dst]; c != nil && c.syn > 0 {
+			return true, fmt.Sprintf("connections through the tunnel reach the service on port %s", dst)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return false, "nothing from this tunnel arrives at the service on port " + dst
 }
+
+// failoverNotBefore is when the next automatic failover attempt for a tunnel may start
+// (after one that found no working path, wait failoverRetry instead of looping).
+func (a *App) failoverNotBefore(id string) time.Time {
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	return a.foNext[id]
+}
+
+func (a *App) setFailoverNotBefore(id string, at time.Time) {
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	if a.foNext == nil {
+		a.foNext = map[string]time.Time{}
+	}
+	a.foNext[id] = at
+}
+
+const failoverRetry = 30 * time.Minute
 
 // clearFailover forgets the backup state (the user chose a path by hand).
 func (a *App) clearFailover(t *Tunnel) {
@@ -207,6 +241,10 @@ func (a *App) Failover(t *Tunnel, reason string) {
 		tries = tries[:failoverTries]
 	}
 	for _, p := range tries {
+		if ctx.Err() != nil {
+			j.log("cancelled — leaving the tunnel as the user set it")
+			return
+		}
 		j.log("trying %s", p)
 		if t.Family != p.family {
 			a.setFamily(t, p.family)
@@ -230,15 +268,24 @@ func (a *App) Failover(t *Tunnel, reason string) {
 			j.log("  ✕ %s", why)
 		}
 	}
+	if ctx.Err() != nil {
+		j.log("cancelled — leaving the tunnel as the user set it")
+		return
+	}
 	// nothing worked: put the original back so it resumes by itself when the path recovers
 	j.log("no working path found — restoring %s", pathChoice{orig.Method, orig.Family})
 	if t.Family != orig.Family {
 		a.setFamily(t, orig.Family)
 	}
-	_ = a.applyAndWait(ctx, t, orig.Method)
+	if err := a.applyAndWait(ctx, t, orig.Method); err != nil {
+		// keep it marked as running so the monitor keeps watching (and retrying) it
+		j.log("restoring failed too (%v) — the monitor keeps watching it", err)
+		_ = a.store.Update(func(*State) error { t.Active, t.Selected = orig.Method, orig.Method; return nil })
+	}
 	_ = a.store.Update(func(*State) error { t.Failover = nil; return nil })
+	a.setFailoverNotBefore(t.ID, time.Now().Add(failoverRetry))
 	j.finish("error")
-	a.push(fmt.Sprintf("❌ Failover for %s found no working path (tried %d). It stays on %s and alerts you when it recovers.", t.Name, len(tries), pathChoice{orig.Method, orig.Family}))
+	a.push(fmt.Sprintf("❌ Failover for %s found no working path (tried %d). It stays on %s, alerts you when it recovers and tries failover again in %s.", t.Name, len(tries), pathChoice{orig.Method, orig.Family}, failoverRetry))
 }
 
 // Failback re-tests the original path on the benchmark slot (the live tunnel keeps running)

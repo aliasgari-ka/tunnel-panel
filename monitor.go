@@ -64,6 +64,14 @@ func (a *App) healthMonitor() {
 			}
 		})
 		live := map[string]bool{}
+		// tunnels being applied or failed over briefly show Active == "": keep their state
+		a.store.View(func(st *State) {
+			for _, t := range st.Tunnels {
+				if a.jobs.running(t.ID) != "" || a.jobs.running(failoverJobKey+t.ID) != "" {
+					live[t.ID] = true
+				}
+			}
+		})
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 4)
 		for _, t := range ts {
@@ -116,7 +124,7 @@ func (a *App) healthMonitor() {
 					a.push(fmt.Sprintf("🟢 Tunnel back up: %s (was down %s)", t.Name, h.lastOutage.Round(time.Minute)))
 				}
 				switch {
-				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter:
+				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter && time.Now().After(a.failoverNotBefore(t.ID)):
 					h.failoverStarted = true
 					go a.Failover(t, reason)
 				case reason == "" && t.Failover != nil && time.Since(time.Unix(t.Failover.LastCheck, 0)) >= failbackEvery:

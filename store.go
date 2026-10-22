@@ -88,6 +88,44 @@ type Shape struct {
 	OnBoth  bool   `json:"onBoth"` // also shape the foreign egress
 }
 
+// setOption sets one method option copy-on-write (readers outside the store lock keep a
+// consistent map). Call it inside store.Update.
+func (t *Tunnel) setOption(mid, key, val string) {
+	no := make(map[string]map[string]string, len(t.Options)+1)
+	for k, v := range t.Options {
+		no[k] = v
+	}
+	inner := make(map[string]string, len(no[mid])+1)
+	for k, v := range no[mid] {
+		inner[k] = v
+	}
+	inner[key] = val
+	no[mid] = inner
+	t.Options = no
+}
+
+// clone is a deep copy safe to use after the store lock is released.
+func (t *Tunnel) clone() Tunnel {
+	cp := *t
+	cp.Options = make(map[string]map[string]string, len(t.Options))
+	for k, v := range t.Options {
+		in := make(map[string]string, len(v))
+		for a, b := range v {
+			in[a] = b
+		}
+		cp.Options[k] = in
+	}
+	cp.Secrets = make(map[string]string, len(t.Secrets))
+	for k, v := range t.Secrets {
+		cp.Secrets[k] = v
+	}
+	if t.Failover != nil {
+		f := *t.Failover
+		cp.Failover = &f
+	}
+	return cp
+}
+
 // secret returns a stable random secret for the given key, creating it once.
 // Not persisted here; the caller persists the tunnel after building.
 func (t *Tunnel) secret(key string) string {
@@ -98,7 +136,13 @@ func (t *Tunnel) secret(key string) string {
 		return v
 	}
 	v := randHex(24)
-	t.Secrets[key] = v
+	// copy-on-write: other goroutines may be reading the current map
+	ns := make(map[string]string, len(t.Secrets)+1)
+	for k, x := range t.Secrets {
+		ns[k] = x
+	}
+	ns[key] = v
+	t.Secrets = ns
 	return v
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Bot is a long-polling Telegram bot that drives the panel. No inbound webhook is
@@ -199,7 +200,18 @@ func clip(s string) string {
 	if len(s) <= 4000 {
 		return s
 	}
-	return s[:4000] + "\n…"
+	cut := strings.LastIndex(s[:3900], "\n") // a newline is never inside a UTF-8 rune or a tag here
+	if cut < 0 {
+		cut = 3900
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+	}
+	out := s[:cut]
+	if strings.Count(out, "<pre>") > strings.Count(out, "</pre>") {
+		out += "</pre>"
+	}
+	return out + "\n…"
 }
 
 // slow runs fn while showing a placeholder, then edits the placeholder with the result.
@@ -611,6 +623,9 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 	case "a":
 		if len(parts) < 3 {
 			return
+		}
+		if id := b.app.jobs.running(failoverJobKey + t.ID); id != "" {
+			_, _ = b.app.jobs.cancel(id)
 		}
 		j, err := b.app.Apply(t, parts[2])
 		if err == nil {

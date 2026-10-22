@@ -133,7 +133,10 @@ func (js *Jobs) cancel(id string) (*Job, error) {
 	if cancel != nil {
 		cancel()
 	}
-	js.done(j)
+	// a benchmark still tears down its probe/port after cancel; keep its slot until then
+	if j.Tunnel != "bench" {
+		js.done(j)
+	}
 	return j, nil
 }
 
@@ -171,7 +174,8 @@ type App struct {
 	hostFor func(*Server) Host
 
 	healthMu    sync.Mutex
-	healthCache map[string]string // tunnel id -> "" healthy / reason, from the monitor
+	healthCache map[string]string    // tunnel id -> "" healthy / reason, from the monitor
+	foNext      map[string]time.Time // tunnel id -> next automatic failover allowed
 
 	traffic  *trafficMon
 	speedMu  sync.Mutex
@@ -342,6 +346,27 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 	return j, nil
 }
 
+// purge removes a tunnel's leftovers (units, rules, interface) from both servers, best
+// effort; it returns a warning for servers it could not reach.
+func (a *App) purge(parent context.Context, t *Tunnel) string {
+	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
+	defer cancel()
+	var warn []string
+	if srv := a.store.Server(t.ServerID); srv != nil {
+		if h, _, err := a.reach(ctx, srv, nil); err == nil {
+			_, _ = h.Run(ctx, teardownScript(t), nil)
+		} else {
+			warn = append(warn, "Iran server unreachable — leftovers may remain there")
+		}
+	}
+	if h, _, err := a.foreignHost(ctx, t, nil); err == nil {
+		_, _ = h.Run(ctx, teardownScript(t), nil)
+	} else {
+		warn = append(warn, "foreign server unreachable — leftovers may remain there")
+	}
+	return strings.Join(warn, "; ")
+}
+
 // Stop tears down the active method on both sides.
 func (a *App) Stop(t *Tunnel) (*Job, error) {
 	j, err := a.jobs.start(t.ID, "stop")
@@ -460,11 +485,13 @@ func linkCheck(t *Tunnel, srv, fsrv *Server, set Settings) string {
 	if benchIsL3(m, t.Options[m.ID]) {
 		return fmt.Sprintf("ping -n -c 2 -i 0.3 -W 2 %s >/dev/null 2>&1 && echo 'LINK up' || echo 'LINK down'", d.KHv4)
 	}
-	get, _ := resolveOptions(m, t.Options[m.ID])
-	key := map[string]string{"backhaul": "tunnel_port", "bp_reverse": "tunnel_port", "frp": "bind_port", "premium": "port"}[m.ID]
-	if key == "" {
+	// only a TCP control/pool connection shows up as an established socket; for udp/kcp/
+	// quic/pck/xdi transports the link can't be judged this way, so report "unknown"
+	key, ok := reverseTCPPort(m, t)
+	if !ok {
 		return ""
 	}
+	get, _ := resolveOptions(m, t.Options[m.ID])
 	p := portOr(get(key), d.BasePort)
 	return fmt.Sprintf(`if ss -Htn state established "( sport = :%s )" 2>/dev/null | grep -q .; then echo 'LINK up'; else echo 'LINK down'; fi`, p)
 }

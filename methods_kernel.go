@@ -19,10 +19,12 @@ func kernelTunnel(c *buildCtx, desc string, ifaceUp func(selfPub, peerPub string
 		return fmt.Sprintf("ip addr add %s/30 dev %s\nip -6 addr add %s/64 dev %s 2>/dev/null || true\n", v4, d.Iface, v6, d.Iface)
 	}
 	del := fmt.Sprintf("ip link del %s 2>/dev/null || true\n", d.Iface)
-	irUp := sysctlBBR + del + ifaceUp(d.IRPub, d.KHPub) + addrs(d.IRv4, d.IRv6) +
+	// without set -e the unit would report "active" even when the interface is missing
+	check := fmt.Sprintf("ip link show %[1]s >/dev/null 2>&1 || { echo \"could not create interface %[1]s (kernel module missing, or the addresses are wrong?)\"; exit 1; }\n", d.Iface)
+	irUp := sysctlBBR + del + ifaceUp(d.IRPub, d.KHPub) + check + addrs(d.IRv4, d.IRv6) +
 		portForwardV4(c.T.Ports, d.KHv4, d.Iface, fwdTag(d))
 	irDown := portForwardDownV4(fwdTag(d)) + extraDown + del
-	khUp := sysctlBBR + del + ifaceUp(d.KHPub, d.IRPub) + addrs(d.KHv4, d.KHv6)
+	khUp := sysctlBBR + del + ifaceUp(d.KHPub, d.IRPub) + check + addrs(d.KHv4, d.KHv6)
 	khDown := extraDown + del
 	irF, irU := scriptPair(c.T, desc+" (Iran)", irUp, irDown)
 	khF, khU := scriptPair(c.T, desc+" (foreign)", khUp, khDown)

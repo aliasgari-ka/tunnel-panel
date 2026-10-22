@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 func init() {
 	register(methodBackhaul)
@@ -135,7 +139,11 @@ auth.token = "%s"
 `, ipAny(c.T.Family), bp, extra, tok)
 
 		var proxies string
-		for _, p := range splitPorts(c.T.Ports) {
+		pairs, perr := expandPortPairs(c.T.Ports, 512)
+		if perr != nil {
+			return ir, kh, perr
+		}
+		for _, p := range pairs {
 			lp := p.dst
 			rp := p.listen
 			proxies += fmt.Sprintf("\n[[proxies]]\nname = \"p-%s\"\ntype = \"tcp\"\nlocalIP = \"127.0.0.1\"\nlocalPort = %s\nremotePort = %s\ntransport.useEncryption = true\ntransport.useCompression = false\n", rp, lp, rp)
@@ -164,4 +172,36 @@ transport.dialServerKeepalive = 120
 			Unit:      Unit{Desc: "FRP client " + c.T.Name, ExecStart: "/opt/frp/frpc -c " + khCfg}}
 		return ir, kh, nil
 	},
+}
+
+// expandPortPairs turns "443,8080=80,2000-2010,3000-3002=4000-4002" into single
+// listen→dst pairs (a range maps with its offset; a range onto one port maps every port to it).
+func expandPortPairs(spec string, max int) ([]portSpec, error) {
+	var out []portSpec
+	for _, p := range splitPorts(spec) {
+		l := p.listen
+		if i := strings.LastIndex(l, ":"); i >= 0 {
+			l = l[i+1:]
+		}
+		d := p.dst
+		if i := strings.LastIndex(d, ":"); i >= 0 {
+			d = d[i+1:]
+		}
+		llo, lhi := portRange(l)
+		dlo, dhi := portRange(d)
+		if llo <= 0 || lhi < llo {
+			return nil, fmt.Errorf("bad port entry %q", p.listen)
+		}
+		for x := llo; x <= lhi; x++ {
+			dst := dlo
+			if dhi > dlo {
+				dst = dlo + (x - llo)
+			}
+			out = append(out, portSpec{listen: strconv.Itoa(x), dst: strconv.Itoa(dst)})
+			if len(out) > max {
+				return nil, fmt.Errorf("FRP supports at most %d forwarded ports per tunnel", max)
+			}
+		}
+	}
+	return out, nil
 }

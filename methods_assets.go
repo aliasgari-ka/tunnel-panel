@@ -104,7 +104,8 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 		}
 
 		mk := func(selfPub, peerPub, tunAddr string, entry bool) SidePlan {
-			up := linkUp(selfPub, peerPub, tunAddr)
+			up := linkUp(selfPub, peerPub, tunAddr) +
+				fmt.Sprintf("ip link show %[1]s >/dev/null 2>&1 || { echo \"could not create interface %[1]s (gre/fou kernel modules?)\"; exit 1; }\n", d.Iface)
 			down := linkDown(selfPub, peerPub)
 			if entry {
 				up += portForwardV4(c.T.Ports, d.KHv4, d.Iface, fwdTag(d))

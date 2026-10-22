@@ -349,7 +349,7 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 		if in.PanelName == "" {
 			in.PanelName = st.Settings.PanelName
 		}
-		if isMasked(in.TelegramTok) {
+		if in.TelegramTok == "********" { // unchanged; an empty field clears the token
 			in.TelegramTok = st.Settings.TelegramTok
 		}
 		st.Settings = in
@@ -589,7 +589,7 @@ func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 	out := []Tunnel{}
 	s.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
-			cp := *t
+			cp := t.clone()  // deep copy: encoded after the lock is released
 			cp.Secrets = nil // never send tokens/PSKs to the browser
 			out = append(out, cp)
 		}
@@ -644,8 +644,19 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 	if in.Family != "v6" {
 		in.Family = "v4"
 	}
-	if strings.TrimSpace(in.Name) == "" {
+	// the name ends up in unit files and logs: no control characters
+	in.Name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(in.Name))
+	if in.Name == "" {
 		httpErr(w, 400, "Give the tunnel a name.")
+		return
+	}
+	if err := validateOptions(in.Options); err != nil {
+		httpErr(w, 400, err.Error())
 		return
 	}
 	srv := s.app.store.Server(in.ServerID)
@@ -687,12 +698,15 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		if in.Selected != "" {
 			t.Selected = in.Selected
 		}
-		if t.Options == nil {
-			t.Options = map[string]map[string]string{}
+		// copy-on-write: the monitor and traffic collector read Options without the lock
+		no := make(map[string]map[string]string, len(t.Options)+len(in.Options))
+		for mid, opts := range t.Options {
+			no[mid] = opts
 		}
 		for mid, opts := range in.Options {
-			t.Options[mid] = opts
+			no[mid] = opts
 		}
+		t.Options = no
 		t.Updated = time.Now().Unix()
 		return nil
 	})
@@ -715,6 +729,13 @@ func (s *Server2) tunnelDelete(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "Stop the tunnel first, then delete it.")
 		return
 	}
+	if s.app.jobs.running(t.ID) != "" || s.app.jobs.running(failoverJobKey+t.ID) != "" {
+		httpErr(w, 409, "A job is still running on this tunnel — wait for it or cancel it first.")
+		return
+	}
+	// a failed Apply can leave the foreign side deployed; remove whatever is left on both
+	// servers so its unit, rules and interface don't clash with the next tunnel on this index
+	warn := s.app.purge(r.Context(), t)
 	_ = s.app.store.Update(func(st *State) error {
 		var keep []*Tunnel
 		for _, x := range st.Tunnels {
@@ -725,7 +746,7 @@ func (s *Server2) tunnelDelete(w http.ResponseWriter, r *http.Request) {
 		st.Tunnels = keep
 		return nil
 	})
-	writeJSON(w, map[string]string{"ok": "1"})
+	writeJSON(w, map[string]string{"ok": "1", "warning": warn})
 }
 
 func (s *Server2) tunnelApply(w http.ResponseWriter, r *http.Request) {
@@ -744,6 +765,9 @@ func (s *Server2) tunnelApply(w http.ResponseWriter, r *http.Request) {
 	if !supportsFamily(m, t.Family) {
 		httpErr(w, 400, fmt.Sprintf("%s does not work over %s.", m.Title, t.Family))
 		return
+	}
+	if id := s.app.jobs.running(failoverJobKey + t.ID); id != "" {
+		_, _ = s.app.jobs.cancel(id) // the user's choice wins over an automatic failover
 	}
 	j, err := s.app.Apply(t, in.Method)
 	if err != nil {
@@ -1110,4 +1134,44 @@ func (s *Server2) helperFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "source": res.Source, "sha256": res.SHA256, "size": res.Size, "note": res.Note})
+}
+
+var optTextRe = regexp.MustCompile(`^[A-Za-z0-9_.:/@,= -]*$`)
+
+// validateOptions checks method options before they reach configs and shell scripts:
+// numbers must be numbers, selects one of their choices, free text a safe charset.
+func validateOptions(opts map[string]map[string]string) error {
+	for mid, kv := range opts {
+		m := methodByID[mid]
+		if m == nil {
+			return fmt.Errorf("unknown method %q", mid)
+		}
+		for k, v := range kv {
+			f := methodField(m, k)
+			if f == nil {
+				return fmt.Errorf("%s has no option %q", m.Title, k)
+			}
+			switch f.Type {
+			case "number":
+				if v != "" {
+					if n, err := strconv.Atoi(v); err != nil || n < 0 || n > 65535 {
+						return fmt.Errorf("%s: %s must be a number", m.Title, f.Label)
+					}
+				}
+			case "bool":
+				if v != "" && v != "true" && v != "false" {
+					return fmt.Errorf("%s: %s must be true or false", m.Title, f.Label)
+				}
+			case "select":
+				if v != "" && !contains(f.Options, v) {
+					return fmt.Errorf("%s: %s must be one of %s", m.Title, f.Label, strings.Join(f.Options, ", "))
+				}
+			default:
+				if !optTextRe.MatchString(v) || len(v) > 200 {
+					return fmt.Errorf("%s: %s contains characters that aren't allowed", m.Title, f.Label)
+				}
+			}
+		}
+	}
+	return nil
 }

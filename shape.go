@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 )
 
 // shapeUnitName is the systemd unit for a tunnel's shaping layer.
@@ -44,16 +45,22 @@ func buildShape(t *Tunnel) SidePlan {
 	}
 	mss := ""
 	if s.MSS > 0 {
-		mss = fmt.Sprintf(`iptables -t mangle -C POSTROUTING -o "$IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d 2>/dev/null || iptables -t mangle -A POSTROUTING -o "$IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d`, s.MSS, s.MSS)
+		mss = fmt.Sprintf(`iptables -t mangle -C POSTROUTING -o "$IF" -p tcp --tcp-flags SYN,RST SYN -m comment --comment tp-shape-%[2]s -j TCPMSS --set-mss %[1]d 2>/dev/null || iptables -t mangle -A POSTROUTING -o "$IF" -p tcp --tcp-flags SYN,RST SYN -m comment --comment tp-shape-%[2]s -j TCPMSS --set-mss %[1]d`, s.MSS, t.ID)
 	}
 
 	up := fmt.Sprintf("%s\n%s\n%s\n%s\necho \"shaping %s on $IF\"\n", ifaceExpr, applyWithFallback, jitter, mss, q)
 
 	downMSS := ""
 	if s.MSS > 0 {
-		downMSS = fmt.Sprintf(`iptables -t mangle -D POSTROUTING -o "$IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss %d 2>/dev/null || true`, s.MSS)
+		downMSS = fmt.Sprintf(`while iptables -t mangle -D POSTROUTING -o "$IF" -p tcp --tcp-flags SYN,RST SYN -m comment --comment tp-shape-%[2]s -j TCPMSS --set-mss %[1]d 2>/dev/null; do :; done`, s.MSS, t.ID)
 	}
-	down := fmt.Sprintf("%s\ntc qdisc del dev \"$IF\" root 2>/dev/null || true\n%s\ntrue\n", ifaceExpr, downMSS)
+	// the root qdisc belongs to the whole interface: leave it while another shaped tunnel runs
+	down := fmt.Sprintf(`%s
+others=$(systemctl list-units --type=service --state=active --no-legend 'tp-shape-*' 2>/dev/null | awk '{print $1}' | grep -vx %s | wc -l)
+if [ "$others" = 0 ]; then tc qdisc del dev "$IF" root 2>/dev/null || true; fi
+%s
+true
+`, ifaceExpr, shapeUnitName(t), downMSS)
 
 	dir := tunnelDir(t) + "/shape"
 	files := map[string]FileSpec{
@@ -89,6 +96,8 @@ func (a *App) deployShape(ctx context.Context, j *Job, label string, host Host, 
 }
 
 // normalizeShape clamps user input to valid shaping settings.
+var ifaceNameRe = regexp.MustCompile(`^([A-Za-z0-9_.@-]{1,15})?$`)
+
 func normalizeShape(s Shape) Shape {
 	switch s.Qdisc {
 	case "cake", "htb", "tbf", "fq_codel":
@@ -97,6 +106,9 @@ func normalizeShape(s Shape) Shape {
 	}
 	if s.MSS != 0 && (s.MSS < 400 || s.MSS > 1452) {
 		s.MSS = 0
+	}
+	if !ifaceNameRe.MatchString(s.Iface) {
+		s.Iface = "" // goes into a shell script: only real interface names
 	}
 	return s
 }
