@@ -175,6 +175,7 @@ type App struct {
 
 	srvMon      *serverMon // the SSH-port server monitor (nil until it runs)
 	healthMu    sync.Mutex
+	hsViews     map[string]*hsView   // hot-standby switchers' state, as last read
 	healthCache map[string]string    // tunnel id -> "" healthy / reason, from the monitor
 	foNext      map[string]time.Time // tunnel id -> next automatic failover allowed
 
@@ -323,6 +324,17 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 			srv = a.store.Server(t.ServerID)
 		}
 
+		if t.HotStandby {
+			a.applyHot(ctx, j, t, m, srv, irHost, khHost, fail)
+			return
+		}
+		if len(t.Paths) > 0 { // hot standby was turned off: remove its paths and switcher
+			j.log("removing the hot-standby paths")
+			_, _ = irHost.Run(ctx, hsTeardown(t), nil)
+			_, _ = khHost.Run(ctx, hsTeardown(t), nil)
+			_ = a.store.Update(func(*State) error { t.Paths = nil; return nil })
+		}
+
 		j.log("building %s config", m.Title)
 		irP, khP, err := a.build(m, t, srv)
 		if err != nil {
@@ -439,13 +451,13 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 		if srv := a.store.Server(t.ServerID); srv != nil {
 			if irHost, path, err := a.reach(ctx, srv, j); err == nil {
 				j.log("Iran reachable via %s", path)
-				_, _ = irHost.Run(ctx, teardownScript(t), func(l string) { j.log("[IR] %s", l) })
+				_, _ = irHost.Run(ctx, teardownScript(t)+hsTeardown(t), func(l string) { j.log("[IR] %s", l) })
 			} else {
 				j.log("WARNING: Iran unreachable (%v) — only the foreign side was stopped", err)
 			}
 		}
 		if kh, _, err := a.foreignHost(ctx, t, j); err == nil {
-			_, _ = kh.Run(ctx, teardownScript(t), func(l string) { j.log("[KH] %s", l) })
+			_, _ = kh.Run(ctx, teardownScript(t)+hsTeardown(t), func(l string) { j.log("[KH] %s", l) })
 		} else {
 			j.log("WARNING: foreign server unreachable (%v)", err)
 		}
@@ -515,6 +527,18 @@ func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	h, _, err := a.reach(ctx, srv, nil)
 	if err != nil {
 		return "unreachable", kh, ""
+	}
+	if t.HotStandby && len(t.Paths) > 0 {
+		// the switcher's own verdict: the path it keeps the users on works
+		v, events, err := a.hsRead(ctx, h, t, t.HSSeen)
+		a.hsReport(t, v, events)
+		switch {
+		case err != nil:
+			return err.Error(), kh, ""
+		case v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active]:
+			return "active", "active", "up"
+		}
+		return "active", "active", "down"
 	}
 	chk := linkCheck(t, srv, a.store.Server(t.ForeignID), a.settings())
 	out, _ := h.Run(ctx, cmd+"\n"+chk, nil)

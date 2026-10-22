@@ -740,7 +740,7 @@ function tunnelCard(t) {
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
-    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(t.family)}</span>${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>'}</div>
+    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(t.family)}</span>${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : (t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>')}</div>
     ${t.active ? `<div class="traf mini" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
@@ -778,6 +778,20 @@ async function applyMethod(t, mid, fam) {
 async function tunnelJob(t, path, label) {
   try { const r = await api(path, { ID: t.id }); openLog({ id: t.id, name: label + ' · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); }
 }
+// hot standby: which path carries the users now, and how many work
+function hsChip(t) {
+  const v = t.hs;
+  if (!v || !v.paths || !v.paths.length) return '<span class="chip" title="hot standby — starts on the next Start/Re-apply">⚡ standby</span>';
+  const n = v.ok.filter(Boolean).length, cur = v.paths[v.active] || '—';
+  return `<span class="chip${n ? '' : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '')).join('\n'))}">⚡ ${n}/${v.paths.length} paths · on ${esc(cur)}</span>`;
+}
+function hsBox(t) {
+  const v = t.hs;
+  if (!t.hotStandby) return '';
+  if (!v || !v.paths) return '<div class="faint" style="font-size:12px">⚡ Hot standby is on — every compatible path starts on the next Start/Re-apply.</div>';
+  return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; checked every 2 s on the Iran server)</span></div><div class="hsl">${v.paths.map((p, i) =>
+    `<div class="${v.ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}">${v.ok[i] ? '✓' : '✕'} ${esc(p)}${i === v.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div>`;
+}
 // every method over every address family both servers of the tunnel have
 const famName = (f) => f === 'v6' ? 'IPv6' : 'IPv4';
 function routeChoices(t) {
@@ -802,6 +816,7 @@ function manageTunnel(t) {
     ${fams.length > 1 ? `<div class="seg" data-fams>${fams.map(f => `<button type="button" data-f="${f}">${famName(f)}${f === t.family && t.active ? ' · now' : ''}</button>`).join('')}</div>` : ''}
     <div class="method-row"><select data-method></select><button class="btn sm" data-opts>⚙ Options</button></div>
     ${fams.length < 2 ? `<div class="faint" style="font-size:12px">Only ${famName(fams[0] || t.family)} is available on this route — ${famName((fams[0] || t.family) === 'v4' ? 'v6' : 'v4')} needs a public address on both servers (add it on the Servers page, or run Test connection to detect it).</div>` : ''}
+    ${hsBox(t)}
     <div class="mdesc" data-desc></div>
     <div class="mwarn" data-warn hidden></div>
     <div data-optbox hidden></div>
@@ -898,7 +913,7 @@ function healthWatch() {
 // The save endpoint replaces the editable fields, so every save sends all of them
 // (sending a partial tunnel used to wipe its traffic-shaping settings).
 const tunnelBody = (t, patch) => ({ ID: t.id, name: t.name, serverId: t.serverId, foreignId: t.foreignId, family: t.family,
-  ports: t.ports, note: t.note, shape: t.shape || {}, noFailover: !!t.noFailover, selected: t.selected || '', ...patch });
+  ports: t.ports, note: t.note, shape: t.shape || {}, noFailover: !!t.noFailover, hotStandby: !!t.hotStandby, selected: t.selected || '', ...patch });
 async function saveTunnel(t, patch) {
   try { await api('/tunnels/save', tunnelBody(t, patch)); Object.assign(t, patch); } catch (e) {}
 }
@@ -934,6 +949,7 @@ function tunnelModal(t) {
       </div>
       <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
       <label class="row f"><input type="checkbox" id="tFail"${t.noFailover ? '' : ' checked'}> 🔁 Automatic failover <span class="faint" style="font-weight:500">— if the tunnel is down for 5 min, switch to a working method / IPv4⇄IPv6 path; re-check the original every hour and switch back when it works</span></label>
+      <label class="row f"><input type="checkbox" id="tHot"${t.hotStandby ? ' checked' : ''}> ⚡ Hot standby <span class="faint" style="font-weight:500">— keep every compatible method (IPv4 and IPv6) running; users go through the chosen one and a switcher on the Iran server moves them to the best working path within seconds (no SSH needed), and back after ${60}s of stability. Order: this route's benchmark. Applies on the next Start/Re-apply.</span></label>
       <details${sh.enabled ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Traffic shaping / link tuning</summary>
         <div class="ff" style="margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px">
           <label class="row f"><input type="checkbox" id="shEnabled"${sh.enabled ? ' checked' : ''}> Enable shaping on the Iran egress (CAKE/HTB/… qdisc)</label>
@@ -955,6 +971,7 @@ function tunnelModal(t) {
     const fd = Object.fromEntries(new FormData(ev.target));
     if (t.id) fd.ID = t.id;
     fd.noFailover = !$('#tFail', m).checked;
+    fd.hotStandby = $('#tHot', m).checked;
     if (t.selected) fd.selected = t.selected;
     fd.shape = {
       enabled: $('#shEnabled', m).checked, qdisc: $('#shQdisc', m).value,

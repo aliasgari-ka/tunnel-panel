@@ -78,6 +78,11 @@ type Tunnel struct {
 	NoFailover bool `json:"noFailover,omitempty"`
 	// Failover is set while the tunnel runs on a backup path; it remembers the original.
 	Failover *FailoverState `json:"failover,omitempty"`
+	// HotStandby keeps every compatible path running; a switcher on the Iran server moves
+	// the users between them (see hotstandby.go). Paths is the last plan, switcher order.
+	HotStandby bool     `json:"hotStandby,omitempty"`
+	Paths      []HSPath `json:"paths,omitempty"`
+	HSSeen     int64    `json:"hsSeen,omitempty"` // newest switcher event already reported
 }
 
 // Shape is an optional per-tunnel traffic-shaping layer applied with tc + iptables on the
@@ -328,6 +333,9 @@ func (s *Store) nextIndexLocked(st *State) int {
 	used := map[int]bool{}
 	for _, t := range st.Tunnels {
 		used[t.Index] = true
+		for _, p := range t.Paths {
+			used[p.Index] = true
+		}
 	}
 	for i := 1; i < 250; i++ {
 		if !used[i] {

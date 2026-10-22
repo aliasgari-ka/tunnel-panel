@@ -231,7 +231,9 @@ func (a *App) trafficCollect() {
 		var sb strings.Builder
 		sb.WriteString(nicRead)
 		for _, t := range ts {
-			if m := methodByID[t.Active]; m != nil && benchIsL3(m, t.Options[m.ID]) {
+			if t.HotStandby && len(t.Paths) > 0 {
+				sb.WriteString(hsAcct(t))
+			} else if m := methodByID[t.Active]; m != nil && benchIsL3(m, t.Options[m.ID]) {
 				ifc := trafficIface(t)
 				fmt.Fprintf(&sb, "echo \"T %s $(cat /sys/class/net/%[2]s/statistics/rx_bytes 2>/dev/null || echo -) $(cat /sys/class/net/%[2]s/statistics/tx_bytes 2>/dev/null || echo -) iface %[2]s\"\n", t.ID, ifc)
 			} else {

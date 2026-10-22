@@ -532,6 +532,23 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 	if t.Failover != nil {
 		fmt.Fprintf(&sb, "🔁 failover — original %s (%s) is down\n", esc(methodTitle(t.Failover.Method)), t.Failover.Family)
 	}
+	if t.HotStandby {
+		if v := b.app.hsViewOf(t.ID); v != nil && len(v.Paths) > 0 {
+			n := 0
+			for _, ok := range v.OK {
+				if ok {
+					n++
+				}
+			}
+			cur := "—"
+			if v.Active >= 0 && v.Active < len(v.Paths) {
+				cur = v.Paths[v.Active]
+			}
+			fmt.Fprintf(&sb, "⚡ hot standby: users on <b>%s</b> · %d/%d paths working\n", esc(cur), n, len(v.Paths))
+		} else {
+			sb.WriteString("⚡ hot standby (paths start on the next apply)\n")
+		}
+	}
 	if sp := b.app.speedResult(t.ID); sp != nil && sp.OK {
 		fmt.Fprintf(&sb, "🚀 last speed test: ↓ %.1f / ↑ %.1f Mbps, %.0f ms\n", sp.DownMbps, sp.UpMbps, sp.RTTms)
 	}

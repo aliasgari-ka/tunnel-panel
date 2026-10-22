@@ -30,6 +30,14 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
   or the other address family (IPv4 ⇄ IPv6), verified by a real connection through the
   forwarded port to the foreign service; the original path is re-tested hourly (on a spare
   slot, without touching the live tunnel) and restored when it works. Per-tunnel switch.
+- **Hot standby (per tunnel):** every compatible method over IPv4 and IPv6 runs at once,
+  each as its own path; users go through one, picked by a selector chain on Iran (DNAT into
+  an L3 path, or REDIRECT to a forwarder's internal port). A switcher **on the Iran server**
+  checks every path end to end every 2 s (a probe server on the foreign side, reachable only
+  through the tunnels), moves users to the best working path after 2 failed checks, and back to
+  a better one after it has worked for 60 s — no SSH or panel needed. Order: the route's
+  benchmark. It also keeps the kernel side in shape (forwarding, loose rp_filter, MTU probing,
+  conntrack table size). Switches and kernel changes are reported to Telegram.
 - **Outage log:** every server's SSH port is checked every 10 s (a miss is retried twice, so a
   lost packet isn't an outage but a 10-second drop is); each server/tunnel outage is kept with
   its exact start and end (Tehran time), tunnel outages say whether their servers answered —

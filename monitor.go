@@ -114,6 +114,8 @@ func (a *App) healthMonitor() {
 					a.push(fmt.Sprintf("🟢 Tunnel back up: %s\ndown %s\n%s → %s (Tehran)", t.Name, shortDur(h.lastOutage), clock(now.Add(-h.lastOutage)), clock(now)))
 				}
 				switch {
+				case t.HotStandby:
+					// the switcher on the Iran server moves the users itself
 				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter && time.Now().After(a.failoverNotBefore(t.ID)):
 					h.failoverStarted = true
 					go a.Failover(t, reason)
