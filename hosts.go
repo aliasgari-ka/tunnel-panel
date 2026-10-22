@@ -106,6 +106,7 @@ type SSHHost struct {
 	srv   *Server
 	store *Store
 	dial  dialFunc
+	v6    bool // connect to the server's IPv6 address (the IPv4 path is down)
 	mu    sync.Mutex
 	cli   *ssh.Client
 }
@@ -123,6 +124,18 @@ func (h *SSHHost) Close() {
 		h.cli.Close()
 		h.cli = nil
 	}
+}
+
+// sshAddr6 is the server's SSH address over IPv6 ("" when it has none).
+func (s *Server) sshAddr6() string {
+	if s.IPv6 == "" {
+		return ""
+	}
+	port := s.SSHPort
+	if port == 0 {
+		port = 22
+	}
+	return net.JoinHostPort(strings.Trim(s.IPv6, "[]"), strconv.Itoa(port))
 }
 
 func (s *Server) sshAddr() string {
@@ -201,6 +214,9 @@ func (h *SSHHost) client() (*ssh.Client, error) {
 		return nil, err
 	}
 	addr := h.srv.sshAddr()
+	if h.v6 {
+		addr = h.srv.sshAddr6()
+	}
 	conn, err := h.dial(addr)
 	if err != nil {
 		return nil, err

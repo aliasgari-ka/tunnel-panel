@@ -479,7 +479,7 @@ func (b *Bot) outagesText() string {
 	now := time.Now().Unix()
 	for i, n := len(os)-1, 0; i >= 0 && n < 15; i, n = i-1, n+1 {
 		o := os[i]
-		icon := map[string]string{"server": "🖧", "tunnel": "🛰", "panel": "🖥"}[o.Kind]
+		icon := map[string]string{"server": "🖧", "tunnel": "🛰", "panel": "🖥", "ssh-v4": "🟠", "ssh-v6": "🟠"}[o.Kind]
 		end := now
 		state := "🔴 ongoing"
 		if o.End != 0 {

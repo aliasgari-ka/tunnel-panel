@@ -70,23 +70,28 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 	type cand struct {
 		path string
 		dial dialFunc
+		v6   bool
 	}
 	var cands []cand
 
 	// explicit proxy first (if configured), then plain direct
 	if srv.Proxy != "" {
-		cands = append(cands, cand{"SSH via proxy", proxyDial(srv.Proxy)})
+		cands = append(cands, cand{"SSH via proxy", proxyDial(srv.Proxy), false})
 	}
-	cands = append(cands, cand{"direct SSH", directDial})
+	cands = append(cands, cand{"direct SSH", directDial, false})
+	// the same server over IPv6, for when its IPv4 path (or SSH over it) is disrupted
+	if v6 := srv.sshAddr6(); v6 != "" && v6 != srv.sshAddr() {
+		cands = append(cands, cand{"direct SSH over IPv6", directDial, true})
+	}
 	// explicit jump
 	if srv.Via != "" {
 		if via := a.store.Server(srv.Via); via != nil {
-			cands = append(cands, cand{"jump via " + via.Name, a.jumpDial(ctx, via)})
+			cands = append(cands, cand{"jump via " + via.Name, a.jumpDial(ctx, via), false})
 		}
 	} else {
 		// auto: try every other reachable server as a jump host
 		for _, other := range a.otherServers(srv.ID) {
-			cands = append(cands, cand{"jump via " + other.Name, a.jumpDial(ctx, other)})
+			cands = append(cands, cand{"jump via " + other.Name, a.jumpDial(ctx, other), false})
 		}
 	}
 
@@ -104,6 +109,7 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		}
 		logf("trying %s", c.path)
 		sh := newSSHHost(a.store, srv, c.dial)
+		sh.v6 = c.v6
 		if _, err := sh.client(); err != nil {
 			lastErr = fmt.Errorf("%s: %w", c.path, err)
 			logf("  %s failed: %v", c.path, err)

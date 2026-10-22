@@ -178,13 +178,30 @@ func (a *App) serverRound(m *serverMon) {
 	wg.Wait()
 }
 
+// checkServer tries the SSH port over IPv4 and over IPv6 (when the server has both): the
+// server is down only when neither answers; one family down alone is logged as such.
 func (a *App) checkServer(m *serverMon, s *Server, addr string, pause time.Duration) {
 	up, first := tcpUp(addr, 3, pause)
 	reason := "SSH port " + addr + " doesn't answer"
-	if !up && a.agents != nil && a.agents.online(s.ID) != nil {
-		up = true // SSH is filtered, but the server is alive and talking to the panel
+	addr6 := s.sshAddr6()
+	if addr6 == addr {
+		addr6 = ""
 	}
-	a.transition(m, s.ID, "server", s.Name, !up, first, reason)
+	up6 := false
+	if addr6 != "" {
+		up6, _ = tcpUp(addr6, 3, pause)
+		if !up6 {
+			reason = "SSH doesn't answer on " + addr + " nor over IPv6 on " + addr6
+		}
+		// one family down while the other works: worth knowing (and logging) on its own
+		a.transition(m, s.ID+"/v4", "ssh-v4", s.Name+" (IPv4)", !up && up6, first, "SSH over IPv4 ("+addr+") doesn't answer — IPv6 ("+addr6+") works; the panel manages it over IPv6 meanwhile")
+		a.transition(m, s.ID+"/v6", "ssh-v6", s.Name+" (IPv6)", up && !up6, time.Now(), "SSH over IPv6 ("+addr6+") doesn't answer — IPv4 works")
+	}
+	alive := up || up6
+	if !alive && a.agents != nil && a.agents.online(s.ID) != nil {
+		alive = true // SSH is filtered, but the server is alive and talking to the panel
+	}
+	a.transition(m, s.ID, "server", s.Name, !alive, first, reason)
 }
 
 // transition records a change of state and tells Telegram.
@@ -209,7 +226,7 @@ func (a *App) transition(m *serverMon, id, kind, name string, down bool, at time
 		oid := s.outageID
 		m.mu.Unlock()
 		a.addOutage(Outage{ID: oid, Kind: kind, Target: id, Name: name, Start: at.Unix(), Reason: reason})
-		icon := map[string]string{"server": "🔴 Server unreachable", "panel": "⚠ Panel host offline"}[kind]
+		icon := map[string]string{"server": "🔴 Server unreachable", "panel": "⚠ Panel host offline", "ssh-v4": "🟠 SSH over IPv4 down", "ssh-v6": "🟠 SSH over IPv6 down"}[kind]
 		a.push(fmt.Sprintf("%s: %s\nsince %s (Tehran)\n%s", icon, name, clock(at), reason))
 		return
 	}
@@ -217,7 +234,7 @@ func (a *App) transition(m *serverMon, id, kind, name string, down bool, at time
 	m.mu.Unlock()
 	now := time.Now()
 	a.endOutage(oid, now)
-	icon := map[string]string{"server": "🟢 Server reachable again", "panel": "🟢 Panel host back online"}[kind]
+	icon := map[string]string{"server": "🟢 Server reachable again", "panel": "🟢 Panel host back online", "ssh-v4": "🟢 SSH over IPv4 back", "ssh-v6": "🟢 SSH over IPv6 back"}[kind]
 	a.push(fmt.Sprintf("%s: %s\ndown %s\n%s → %s (Tehran)", icon, name, shortDur(now.Sub(since)), clock(since), clock(now)))
 }
 
