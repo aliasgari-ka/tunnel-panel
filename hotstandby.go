@@ -284,7 +284,7 @@ active=-1
 rm -f cmp.run cmp.done cmp.tmp
 if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash down.sh >/dev/null 2>&1; bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
 [ $active -ge 0 ] || use 0 "start"
-tune; n=0; cmpat=0; backoff=600; hold=0
+tune; n=0; cmpat=0; backoff=600; hold=0; badsince=0; cmploss=0
 while true; do
   M=manual; [ -s mode ] && read -r M < mode
   all=0; [ "${fails[$active]:-0}" -gt 0 ] && all=1
@@ -306,7 +306,7 @@ while true; do
       if [ "$r" = ok ]; then
         [ "${ok[$k]}" = 1 ] || since[$k]=$now; ok[$k]=1; fails[$k]=0
         if [ -z "${qr[$k]}" ]; then qr[$k]=$rt; else qr[$k]=$(( (3 * qr[$k] + rt) / 4 )); fi
-        if [ "${ls:--1}" -ge 0 ]; then if [ -z "${ql[$k]}" ]; then ql[$k]=$((ls * 10)); else ql[$k]=$(( (3 * ql[$k] + ls * 10) / 4 )); fi; fi
+        if [ "${ls:--1}" -ge 0 ]; then if [ -z "${ql[$k]}" ]; then ql[$k]=$((ls * 10)); else ql[$k]=$(( (ql[$k] + ls * 10) / 2 )); fi; fi
       else
         [ "${ok[$k]}" = 0 ] || since[$k]=$now; ok[$k]=0; fails[$k]=$(( ${fails[$k]:-0} + 1 ))
       fi
@@ -355,7 +355,7 @@ while true; do
         hold=$((now + HOLD)); backoff=600
       else
         ev keep "$a" "$a" "compared ${why:-paths}: none clearly better ($(mb $sa) Mbit/s here)"
-        cmpat=$((now + backoff)); backoff=$((backoff * 2)); [ $backoff -gt 7200 ] && backoff=7200
+        cmpat=$((now + backoff)); backoff=$((backoff * 2)); [ $backoff -gt 7200 ] && backoff=7200; cmploss=${ql[$a]:-0}
       fi
     fi
     rm -f cmp.done
@@ -371,7 +371,12 @@ while true; do
       [ $(( $(cost $k) * 10 )) -lt $(( $(cost $a) * 7 )) ] && better=1
       [ $k = 0 ] && [ $(( $(cost $k) * 10 )) -le $(( $(cost $a) * 11 )) ] && better=1
     done
-    if [ -n "$list" ] && { [ -n "$why" ] || [ $better = 1 ]; } && [ $now -ge $cmpat ] && [ $now -ge $hold ]; then
+    # degraded only counts once it has lasted 30 s (one bad reading is not a reason to measure)
+    if [ -n "$why" ]; then [ $badsince -gt 0 ] || badsince=$now; else badsince=0; fi
+    [ -n "$why" ] && [ $((now - badsince)) -lt 30 ] && why=""
+    # much worse loss than at the last "none better": compare again without waiting
+    worse=0; [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && [ ${ql[$a]:-0} -ge $((cmploss * 2)) ] && worse=1
+    if [ -n "$list" ] && { [ -n "$why" ] || [ $better = 1 ]; } && { [ $now -ge $cmpat ] || [ $worse = 1 ]; } && [ $now -ge $hold ]; then
       measure cmp $a "$why" $a $(printf '%s' "$list" | sort -n | head -3 | cut -d' ' -f2)
     elif [ $((now - ${spat[$a]:-0})) -ge $SPEVERY ]; then
       measure speed $a "" $a
