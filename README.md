@@ -49,7 +49,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/aliasgari-ka/tunnel-panel/ma
 It installs dependencies, builds the binary (or uses a release), installs a `systemd` service,
 and prints the URL. Open `http://<foreign-ip>:8088/` and create the admin account on first visit.
 
-**Secure it:** the panel serves plain HTTP. Put it behind an HTTPS reverse proxy, or bind it to
+**Secure it with HTTPS.** `--ip-ssl` gets a real, warning-free Let's Encrypt cert for this
+server's IP via sslip.io (no domain needed; ports 80+443 must be open). `--domain example.com`
+does the same for your own domain. `--self-signed` serves HTTPS with a self-signed cert. Without
+any flag the panel serves plain HTTP.
+
+ Put it behind an HTTPS reverse proxy, or bind it to
 localhost (`--addr 127.0.0.1:8088`) and reach it over an SSH tunnel. It stores server
 credentials in `/etc/tunnel-panel/state.json` (mode 0600).
 

@@ -11,20 +11,33 @@ PORT=8088
 AGENT_PORT=7020
 REF=main
 TLS=""
+IPSSL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="$2"; shift 2;;
     --agent-port) AGENT_PORT="$2"; shift 2;;
     --ref) REF="$2"; shift 2;;
     --domain) TLS="$2"; shift 2;;        # Let's Encrypt cert for this domain (needs 80+443)
+    --ip-ssl) IPSSL=1; shift;;           # trusted cert for this server's IP via sslip.io
     --self-signed|--https) TLS="self"; shift;;
     --http) TLS=""; shift;;
     *) echo "unknown arg: $1"; exit 1;;
   esac
 done
+[ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
+
+# --ip-ssl: build a real Let's Encrypt cert for <ip-with-dashes>.sslip.io, which
+# resolves to this server's public IPv4. No domain needed, no browser warning.
+if [ "$IPSSL" = 1 ]; then
+  PUBIP=$(curl -fsS4 --max-time 6 ifconfig.me 2>/dev/null || curl -fsS4 --max-time 6 api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
+  case "$PUBIP" in
+    *.*.*.*) TLS="$(echo "$PUBIP" | tr '.' '-').sslip.io";;
+    *) echo "could not detect a public IPv4 for --ip-ssl"; exit 1;;
+  esac
+  echo "==> --ip-ssl: using domain $TLS (needs ports 80 and 443 open)"
+fi
 # With a real domain, the panel serves HTTPS on 443 (+80 for the ACME challenge).
 if [ -n "$TLS" ] && [ "$TLS" != "self" ]; then PORT=443; fi
-[ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
 ARCH=amd64; case "$(uname -m)" in aarch64|arm64) ARCH=arm64;; x86_64) ARCH=amd64;; *) echo "unsupported arch $(uname -m)"; exit 1;; esac
 DEST=/usr/local/bin/tunnel-panel
