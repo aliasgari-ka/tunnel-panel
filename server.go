@@ -142,9 +142,11 @@ func (s *Server2) setCookie(w http.ResponseWriter, r *http.Request, user string)
 	// browsers/proxies mangle (that was the login-loop bug on some setups).
 	raw := fmt.Sprintf("%s|%d|%s", user, exp, s.sign(user, exp))
 	val := base64.RawURLEncoding.EncodeToString([]byte(raw))
-	https := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	// Deliberately NOT setting Secure: browsers refuse to store a Secure cookie on a
+	// self-signed-HTTPS origin (shown as "Not secure"), which caused a login loop. The
+	// cookie is still HttpOnly + SameSite=Lax; use --ip-ssl/--domain for a trusted cert.
 	http.SetCookie(w, &http.Cookie{Name: "tp_session", Value: val, Path: "/", HttpOnly: true,
-		Secure: https, SameSite: http.SameSiteLaxMode, MaxAge: 72 * 3600})
+		SameSite: http.SameSiteLaxMode, MaxAge: 72 * 3600})
 }
 
 func (s *Server2) currentUser(r *http.Request) string {
