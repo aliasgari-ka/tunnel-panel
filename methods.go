@@ -118,6 +118,7 @@ type Method struct {
 	Families []string                                       `json:"families"` // v4, v6
 	Encrypt  string                                         `json:"encrypt"`  // short note shown as a badge
 	Fields   []Field                                        `json:"fields"`
+	Helper   string                                         `json:"helper,omitempty"` // embedded/uploaded binary "<helper>-<arch>" both hosts need
 	Build    func(c *buildCtx) (ir, kh SidePlan, err error) `json:"-"`
 }
 

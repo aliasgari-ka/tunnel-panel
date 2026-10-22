@@ -81,7 +81,11 @@ func helperBytes(name, arch string) ([]byte, error) {
 	if b, err := assetBytes(file); err == nil && len(b) > 0 {
 		return b, nil
 	}
-	return nil, fmt.Errorf("helper %s is not available for %s — upload it under Settings → Helper binaries", name, arch)
+	hint := ""
+	if name == "backhaul_premium" {
+		hint = fmt.Sprintf(" (the vendor's backhaul_premium_%s.tar.gz can be uploaded as is)", arch)
+	}
+	return nil, fmt.Errorf("helper %s is not available for %s — upload it as %s-%s under Settings → Helper binaries%s", name, arch, name, arch, hint)
 }
 
 var dataDir = "/etc/tunnel-panel"

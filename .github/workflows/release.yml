@@ -17,7 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install gcc
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       - name: Build
         run: |
           bash build.sh amd64 arm64

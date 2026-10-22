@@ -36,14 +36,25 @@ async function boot() {
   } catch (e) { renderAuth('login'); }
 }
 async function loadAll() {
-  const [methods, servers, tunnels, settings] = await Promise.all([
-    api('/methods'), api('/servers'), api('/tunnels'), api('/settings')]);
+  const [methods, servers, tunnels, settings, helpers] = await Promise.all([
+    api('/methods'), api('/servers'), api('/tunnels'), api('/settings'), api('/helpers').catch(() => [])]);
+  STATE.helpers = (helpers || []).map(x => x.name); STATE.hostArch = (settings && settings.hostArch) || 'amd64';
   STATE.methods = methods || []; STATE.servers = servers || []; STATE.tunnels = tunnels || [];
   STATE.settings = (settings && settings.settings) || {}; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
 }
 const iranServers = () => STATE.servers.filter(s => (s.role || 'iran') === 'iran');
 const foreignServers = () => STATE.servers.filter(s => s.role === 'foreign');
 const methodsFor = (fam) => STATE.methods.filter(m => m.families.includes(fam));
+// uname -m → release arch, as the server does (goArch)
+const archOf = (u) => /^(aarch64|arm64)$/.test(u || '') ? 'arm64' : /^(x86_64|amd64)$/.test(u || '') ? 'amd64' : (u || '');
+// what a method still needs for this tunnel's two hosts ("" = ready): arch-specific helper binaries
+function methodMissing(m, t) {
+  if (!m || !m.helper) return '';
+  const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
+  const arches = [archOf(ir && ir.arch), fg ? archOf(fg.arch) : STATE.hostArch].filter(Boolean);
+  const miss = [...new Set(arches)].filter(a => !(STATE.helpers || []).includes(m.helper + '-' + a));
+  return miss.map(a => m.helper + '-' + a).join(', ');
+}
 const serverById = (id) => STATE.servers.find(s => s.id === id);
 const serverName = (id) => id ? (serverById(id)?.name || '(deleted)') : 'this panel host';
 // flag emoji from an ISO-3166 alpha-2 country code (regional indicator letters)
@@ -240,7 +251,7 @@ async function loadHelpers(card) {
   let list = [];
   try { list = await api('/helpers'); } catch (e) {}
   card.innerHTML = `<h3>Helper binaries</h3>
-    <p class="muted" style="font-size:13px;margin:6px 0">Closed binaries the panel uploads to hosts (e.g. the Backhaul Premium core). Upload the amd64/arm64 build once; it is never fetched over HTTP.</p>
+    <p class="muted" style="font-size:13px;margin:6px 0">Closed binaries the panel uploads to hosts (e.g. the Backhaul Premium core). Upload one per architecture your servers use: <span class="mono">-amd64</span> for x86 servers, <span class="mono">-arm64</span> for ARM servers. A vendor <span class="mono">.tar.gz</span> is unpacked automatically and the architecture is checked. This panel host is <b class="mono">${esc(STATE.hostArch || '')}</b>.</p>
     <table class="tbl"><thead><tr><th>name</th><th>source</th><th>size</th></tr></thead><tbody>
     ${list.map(x => `<tr><td class="mono">${esc(x.name)}</td><td>${esc(x.source)}</td><td>${(x.size / 1048576).toFixed(1)} MB</td></tr>`).join('') || '<tr><td colspan=3 class="muted">none</td></tr>'}
     </tbody></table>
@@ -251,7 +262,7 @@ async function loadHelpers(card) {
     </div><div class="faint" id="hstat" style="font-size:12px;margin-top:6px"></div>`;
   const file = $('#hfile', card); let chosen = null;
   $('#hpick', card).onclick = () => file.click();
-  file.onchange = () => { chosen = file.files[0]; if (chosen) { $('#hstat', card).textContent = chosen.name + ' (' + (chosen.size / 1048576).toFixed(1) + ' MB)'; $('#hup', card).disabled = false; if (!$('#hname', card).value) $('#hname', card).value = chosen.name.replace(/[^a-z0-9_.-]/gi, ''); } };
+  file.onchange = () => { chosen = file.files[0]; if (chosen) { $('#hstat', card).textContent = chosen.name + ' (' + (chosen.size / 1048576).toFixed(1) + ' MB)'; $('#hup', card).disabled = false; if (!$('#hname', card).value) $('#hname', card).value = chosen.name.replace(/\.(tar\.gz|tgz)$/i, '').replace(/_(amd64|arm64)$/i, '-$1').replace(/[^a-z0-9_.-]/gi, '').toLowerCase(); } };
   $('#hup', card).onclick = async () => {
     const name = $('#hname', card).value.trim();
     if (!chosen || !/^[a-z0-9_.-]+-(amd64|arm64)$/.test(name)) { alertModal('Name', 'Name must look like backhaul_premium-amd64 (…-amd64 or …-arm64).'); return; }
@@ -505,8 +516,9 @@ function tunnelCard(t) {
       <div class="meta"><span data-tot>total —</span><span data-speed></span></div></div>` : ''}
     <div class="msec">
       <div class="lbl">Connection method</div>
-      <div class="method-row"><select data-method>${avail.map(m => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.title)} · ${esc(m.encrypt)}</option>`).join('')}</select><button class="btn sm" data-opts title="Method options">⚙ Options</button></div>
+      <div class="method-row"><select data-method>${avail.map(m => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.title)} · ${esc(m.encrypt)}${methodMissing(m, t) ? ' ⚠ needs upload' : ''}</option>`).join('')}</select><button class="btn sm" data-opts title="Method options">⚙ Options</button></div>
       <div class="mdesc" data-desc></div>
+      <div class="mwarn" data-warn hidden></div>
       <div data-optbox hidden></div>
       <div class="actions"><button class="btn pri" data-apply></button><button class="btn" data-stop ${t.active ? '' : 'disabled'}>■ Stop</button></div>
     </div>
@@ -518,7 +530,13 @@ function tunnelCard(t) {
       ${moreMenu([{ label: '✎ Edit tunnel', attr: 'data-edit' }, { label: '🗑 Delete tunnel', attr: 'data-del', danger: true }])}
     </div></div>`);
   const selEl = $('[data-method]', card), descEl = $('[data-desc]', card), optBox = $('[data-optbox]', card), applyBtn = $('[data-apply]', card);
-  const refresh = () => { const m = STATE.methods.find(x => x.id === selEl.value); descEl.textContent = m ? m.desc : ''; applyBtn.textContent = (t.active === selEl.value) ? '↻ Re-apply' : (t.active ? '⇄ Switch to this method' : '▶ Start'); };
+  const warnEl = $('[data-warn]', card);
+  const refresh = () => {
+    const m = STATE.methods.find(x => x.id === selEl.value); descEl.textContent = m ? m.desc : '';
+    const miss = methodMissing(m, t);
+    warnEl.hidden = !miss;
+    if (miss) warnEl.innerHTML = `⚠ This method needs <b class="mono">${esc(miss)}</b> for this tunnel's servers. Upload it under <a href="#" data-goset>Settings → Helper binaries</a>${m.helper === 'backhaul_premium' ? ' — the vendor\'s <span class="mono">backhaul_premium_&lt;arch&gt;.tar.gz</span> can be uploaded as is' : ''}.`;
+    const gs = $('[data-goset]', warnEl); if (gs) gs.onclick = (e) => { e.preventDefault(); STATE.view = 'settings'; paintNav(); renderView(); }; applyBtn.textContent = (t.active === selEl.value) ? '↻ Re-apply' : (t.active ? '⇄ Switch to this method' : '▶ Start'); };
   selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: selEl.value }); };
   refresh();
   $('[data-opts]', card).onclick = () => { if (!optBox.hidden) { optBox.hidden = true; return; } renderOpts(optBox, t, selEl.value); optBox.hidden = false; };

@@ -18,6 +18,7 @@ var methodGoldenGRE = &Method{
 	Desc:     "GRE-in-FOU with a userspace relay that disguises traffic as DNS queries or ICMP echo. IPv4 only. Optional XChaCha20 encryption.",
 	Families: []string{"v4"},
 	Encrypt:  "optional XChaCha20",
+	Helper:   "golden-gre-relay",
 	Fields: []Field{
 		{Key: "facade", Label: "Disguise", Type: "select", Default: "dns", Options: []string{"dns", "icmp", "none"}},
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1380"},
@@ -136,9 +137,10 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
-	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. amd64 only.",
+	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. amd64 and arm64: upload the core for each architecture you use.",
 	Families: []string{"v4"},
 	Encrypt:  "AEAD (ipx) / TLS",
+	Helper:   "backhaul_premium",
 	Fields: []Field{
 		{Key: "mode", Label: "Mode", Type: "select", Default: "ipx", Options: []string{"ipx", "anytls", "tcpmux", "wssmux", "tcp"}},
 		{Key: "profile", Label: "IPX carrier", Type: "select", Default: "tcp", Options: []string{"tcp", "bip", "gre", "ipip", "udp", "icmp"}},

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -330,7 +334,7 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		set := s.app.settings()
 		set.TelegramTok = maskStr(set.TelegramTok)
-		writeJSON(w, map[string]any{"settings": set, "agentPin": s.app.agents.pin, "agentPort": s.app.agentPort})
+		writeJSON(w, map[string]any{"settings": set, "agentPin": s.app.agents.pin, "agentPort": s.app.agentPort, "hostArch": runtime.GOARCH})
 		return
 	}
 	var in Settings
@@ -925,7 +929,7 @@ func (s *Server2) helpers(w http.ResponseWriter, r *http.Request) {
 	if ents, err := os.ReadDir(helpersDir()); err == nil {
 		for _, e := range ents {
 			b, err := os.ReadFile(filepath.Join(helpersDir(), e.Name()))
-			if err != nil {
+			if err != nil || len(b) == 0 || strings.HasSuffix(e.Name(), ".part") {
 				continue
 			}
 			sum := sha256.Sum256(b)
@@ -939,6 +943,9 @@ func (s *Server2) helpers(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			b, _ := assetsFS.ReadFile("assets/" + e.Name())
+			if len(b) == 0 || !helperNameRe.MatchString(e.Name()) {
+				continue // placeholder (not built for this arch) or not a helper
+			}
 			sum := sha256.Sum256(b)
 			out = append(out, hv{e.Name(), int64(len(b)), hex.EncodeToString(sum[:]), "built-in"})
 		}
@@ -977,9 +984,70 @@ func (s *Server2) helperUpload(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "upload failed")
 		return
 	}
+	// a .tar.gz straight from the vendor is unpacked; then the ELF must match the name's arch
+	if err := normalizeHelper(tmp, name); err != nil {
+		os.Remove(tmp)
+		httpErr(w, 400, err.Error())
+		return
+	}
+	if st, err := os.Stat(tmp); err == nil {
+		n = st.Size()
+	}
 	if err := os.Rename(tmp, filepath.Join(helpersDir(), name)); err != nil {
 		httpErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "size": n})
+}
+
+// normalizeHelper unpacks an uploaded .tar.gz (the first ELF inside wins) and checks
+// that the binary is a Linux ELF for the architecture in its name, so an amd64 core
+// can't be stored as "-arm64" by mistake.
+func normalizeHelper(path, name string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(raw) > 2 && raw[0] == 0x1f && raw[1] == 0x8b {
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return fmt.Errorf("bad .tar.gz: %v", err)
+		}
+		tr := tar.NewReader(zr)
+		var found []byte
+		for {
+			hd, err := tr.Next()
+			if err != nil {
+				break
+			}
+			if hd.Typeflag != tar.TypeReg || hd.Size < 4 || hd.Size > 200<<20 {
+				continue
+			}
+			b, err := io.ReadAll(io.LimitReader(tr, 200<<20))
+			if err == nil && bytes.HasPrefix(b, []byte("\x7fELF")) {
+				found = b
+				break
+			}
+		}
+		if found == nil {
+			return fmt.Errorf("no Linux binary found inside the archive")
+		}
+		raw = found
+		if err := os.WriteFile(path, raw, 0o700); err != nil {
+			return err
+		}
+	}
+	ef, err := elf.NewFile(bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("not a Linux binary (ELF): %v", err)
+	}
+	want := map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}[name[strings.LastIndex(name, "-")+1:]]
+	if ef.Machine != want {
+		got := map[elf.Machine]string{elf.EM_X86_64: "amd64", elf.EM_AARCH64: "arm64"}[ef.Machine]
+		if got == "" {
+			got = ef.Machine.String()
+		}
+		return fmt.Errorf("this binary is for %s but the name says %s — rename it to %s-%s", got, name[strings.LastIndex(name, "-")+1:], name[:strings.LastIndex(name, "-")], got)
+	}
+	return nil
 }
