@@ -357,6 +357,7 @@ while true; do
         cmpat=$((now + backoff)); backoff=$((backoff * 2)); [ $backoff -gt 7200 ] && backoff=7200
       fi
     fi
+    rm -f cmp.done
   elif [ "${ok[$active]}" = 1 ] && [ ! -f cmp.run ] && [ $((n % 5)) = 0 ]; then
     a=$active; why=""; better=0
     [ ${ql[$a]:-0} -ge $LOSSBAD ] && why="loss $(pc ${ql[$a]})%"

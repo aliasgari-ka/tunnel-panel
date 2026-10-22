@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,8 +35,15 @@ func TestHotStandbyNS(t *testing.T) {
 		return nil
 	})
 	var msgs []string
+	var mu sync.Mutex
 	a := &App{store: st, jobs: newJobs(), traffic: newTrafficMon(), speedRes: map[string]*SpeedResult{}}
-	a.notify = func(m string) { msgs = append(msgs, m) }
+	a.notify = func(m string) { mu.Lock(); msgs = append(msgs, m); mu.Unlock() }
+	allMsgs := func() string {
+		time.Sleep(300 * time.Millisecond)
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(msgs, "\n")
+	}
 	a.hostFor = func(s *Server) Host {
 		if s.ID == "ir" {
 			return nsSD{"tir", fake}
@@ -99,9 +107,9 @@ func TestHotStandbyNS(t *testing.T) {
 
 	_, _, link := a.Health(ctx, tn)
 	step("panel health reads the switcher (link "+link+")", link == "up")
-	t.Log("   Telegram:\n      " + strings.Join(msgs, "\n      "))
-	step("kernel change reported once", strings.Count(strings.Join(msgs, "\n"), "nf_conntrack_max") <= 1)
-	step("switch and return were reported", strings.Contains(strings.Join(msgs, "\n"), "🔀 hot switched to") && strings.Contains(strings.Join(msgs, "\n"), "↩ hot back on Plain GRE (v4)"))
+	t.Log("   Telegram:\n      " + strings.ReplaceAll(allMsgs(), "\n", "\n      "))
+	step("kernel change reported once", strings.Count(allMsgs(), "nf_conntrack_max") <= 1)
+	step("switch and return were reported", strings.Contains(allMsgs(), "🔀 hot switched to") && strings.Contains(allMsgs(), "↩ hot back on Plain GRE (v4)"))
 
 	// auto mode: GRE gets lossy (not down) → the switcher measures and moves the users
 	msg, err := a.setHSMode(ctx, tn, true)
@@ -129,7 +137,8 @@ func TestHotStandbyNS(t *testing.T) {
 	v, _, _ := a.hsRead(ctx, nsSD{"tir", fake}, tn, 0)
 	t.Logf("   view: %+v", v)
 	step("view carries rtt/loss/speed", v != nil && len(v.RTT) == len(v.Paths) && v.RTT[0] >= 0)
-	all := strings.Join(msgs, "\n")
+	_, _, _ = a.Health(ctx, tn)
+	all := allMsgs()
 	step("auto move reported", strings.Contains(all, "auto mode moved the users"))
 
 	j, _ := a.Stop(tn)
