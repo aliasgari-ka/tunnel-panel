@@ -147,6 +147,13 @@ func (js *Jobs) running(tunnel string) string {
 	return js.busy[tunnel]
 }
 
+// anyRunning: some job (apply, stop, benchmark, failover…) is in progress.
+func (js *Jobs) anyRunning() bool {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return len(js.busy) > 0
+}
+
 func (js *Jobs) done(j *Job) {
 	js.mu.Lock()
 	defer js.mu.Unlock()

@@ -459,8 +459,16 @@ function viewSettings(w) {
         <label class="f">Admin chat id(s)<input name="telegramAdmin" class="mono" value="${esc(s.telegramAdmin || '')}" placeholder="comma-separated"></label>
       </div>
       <div class="faint" style="font-size:12px">Message your bot <b>/start</b>; it replies with your chat id if you're not yet an admin. The bot can start, stop and switch every tunnel.</div>
+      <label class="row f"><input type="checkbox" name="telegramBackup" value="on" ${s.telegramBackup === 'on' ? 'checked' : ''}> Send the daily backup to the admin chat too</label>
       <div><button class="btn pri">Save settings</button></div>
     </form>
+    <div class="card pad" id="bkCard">
+      <h3>Backup &amp; restore</h3>
+      <p class="muted" style="font-size:13px;margin:6px 0">One file with everything: servers (with their SSH passwords/keys), tunnels and their secrets, settings, users and history. A copy is also kept every day on this host (the last 14, next to the panel's state in <span class="mono">backups/</span>). Keep the file private.</p>
+      <div class="actions"><a class="btn pri" href="/api/backup" download>⬇ Download backup</a>
+        <input type="file" id="bkfile" accept=".json,application/json" hidden><button class="btn" id="bkpick">⬆ Restore from file…</button></div>
+      <div class="faint" id="bkstat" style="font-size:12px;margin-top:6px">Restoring replaces the whole panel state (the current one is saved first). Tunnels already running on the servers keep running; Apply them again if the backup's settings differ. You may have to log in again with the backup's password.</div>
+    </div>
     <div class="card pad">
       <h3>Agent certificate pin</h3>
       <p class="muted" style="font-size:13px;margin:6px 0">Agents verify the panel with this pin. It never changes unless you delete the panel's agent key.</p>
@@ -484,6 +492,16 @@ function viewSettings(w) {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
     try { await api('/password', { Old: fd.old, New: fd.new }); ev.target.reset(); toast('Password updated'); } catch (e) { alertModal('Error', e.message); }
+  };
+  const bkf = $('#bkfile', card);
+  $('#bkpick', card).onclick = () => bkf.click();
+  bkf.onchange = async () => {
+    const f = bkf.files[0]; bkf.value = '';
+    if (!f) return;
+    if (!confirm('Replace the whole panel state with ' + f.name + '?')) return;
+    $('#bkstat', card).textContent = 'Restoring…';
+    try { const r = await api('/backup', { data: await f.text() }); alertModal('Restored', r.ok); await loadAll(); renderView(); }
+    catch (e) { $('#bkstat', card).textContent = ''; alertModal('Restore failed', e.message); }
   };
   loadHelpers($('#helperCard', card));
 }

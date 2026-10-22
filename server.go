@@ -88,6 +88,7 @@ func (a *App) routes() http.Handler {
 	p("/api/bench/active", s.benchActive)
 	p("/api/bench/history", s.benchHistory)
 	p("/api/outages", s.outages)
+	p("/api/backup", s.backup)
 	p("/api/helpers", s.helpers)
 	mux.HandleFunc("/api/helpers/upload", s.auth(s.helperUpload)) // multipart, not JSON
 	p("/api/helpers/fetch", s.helperFetch)

@@ -436,7 +436,7 @@ func (b *Bot) tunnelList() string {
 		rows = [][]ikey{{{Text: "no tunnels yet — create one in the panel", Data: "noop"}}}
 	}
 	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "📉 Outages", Data: "home:out"}})
-	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "🔄", Data: "home"}})
+	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "💾 Backup", Data: "home:bk"}, {Text: "🔄", Data: "home"}})
 	return b.keyboard(rows)
 }
 
@@ -772,6 +772,13 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		return
 	case "home:bh":
 		b.sendMsg(chat, b.benchHistoryText(), "")
+		return
+	case "home:bk":
+		if data, err := b.app.backupJSON(); err == nil {
+			if err := b.sendDocument(chat, backupName(time.Now()), data, "💾 backup — keep it private: it holds the servers' SSH passwords/keys and the tunnels' secrets"); err != nil {
+				b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
+			}
+		}
 		return
 	case "home:out":
 		b.sendMsg(chat, b.outagesText(), "")

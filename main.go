@@ -102,6 +102,7 @@ func main() {
 	go app.healthMonitor()
 	go app.serverMonitor()
 	go app.autoBench()
+	go app.autoBackup()
 
 	fmt.Printf("Tunnel Panel %s (agent %s, data %s, %d methods)\n", version, *agentAddr, *dir, len(methods))
 	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))

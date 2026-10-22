@@ -27,6 +27,8 @@ type Settings struct {
 	TelegramAdmin string `json:"telegramAdmin"` // numeric chat id(s), comma-separated
 	// AutoBench: hours between automatic benchmarks of every route in use ("" = 12, "0" = off)
 	AutoBench string `json:"autoBench"`
+	// TelegramBackup "on": the daily backup is also sent to the admin chat
+	TelegramBackup string `json:"telegramBackup"`
 }
 
 // Server is a remote Iran server reached over SSH.
