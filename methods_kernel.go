@@ -142,7 +142,13 @@ var methodIPsecV6 = &Method{
 		psk := c.T.secret("ipsec-psk")
 		confPath := fmt.Sprintf("/etc/swanctl/conf.d/tp%d.conf", d.Idx)
 		conn := fmt.Sprintf("tp%d", d.Idx)
-		conf := func(localPub, remotePub, localID, remoteID, start string) FileSpec {
+		// Iran initiates and re-initiates; the foreign side only answers, so exactly one
+		// IKE SA exists (both sides starting gave two, which collide on rekey)
+		conf := func(localPub, remotePub, localID, remoteID string, initiator bool) FileSpec {
+			start, dpd, closeA := "start", "restart", "start"
+			if !initiator {
+				start, dpd, closeA = "none", "clear", "none"
+			}
 			return FileSpec{Mode: 0o600, Content: []byte(fmt.Sprintf(`connections {
   %[1]s {
     version = 2
@@ -151,51 +157,71 @@ var methodIPsecV6 = &Method{
     encap = yes
     dpd_delay = 15s
     keyingtries = 0
-    proposals = aes256gcm16-prfsha256-x25519,chacha20poly1305-prfsha256-x25519
+    proposals = aes256gcm16-prfsha256-x25519,chacha20poly1305-prfsha256-x25519,aes256gcm16-prfsha256-ecp256
     if_id_in = %[4]d
     if_id_out = %[4]d
-    local  { auth = psk  id = %[5]s }
-    remote { auth = psk  id = %[6]s }
+    # one setting per line: swanctl.conf reads a value up to the end of its line
+    local {
+      auth = psk
+      id = %[5]s
+    }
+    remote {
+      auth = psk
+      id = %[6]s
+    }
     children {
       net {
         local_ts = 0.0.0.0/0,::/0
         remote_ts = 0.0.0.0/0,::/0
-        esp_proposals = aes256gcm16-x25519,chacha20poly1305-x25519
-        dpd_action = restart
+        esp_proposals = aes256gcm16-x25519,chacha20poly1305-x25519,aes256gcm16-ecp256
+        dpd_action = %[9]s
         start_action = %[7]s
-        close_action = start
+        close_action = %[10]s
         rekey_time = 1h
       }
     }
   }
 }
 secrets {
-  ike-%[1]s { id-1 = %[5]s  id-2 = %[6]s  secret = "%[8]s" }
+  ike-%[1]s {
+    id-1 = %[5]s
+    id-2 = %[6]s
+    secret = "%[8]s"
+  }
 }
-`, conn, localPub, remotePub, d.IfID, localID, remoteID, start, psk))}
+`, conn, localPub, remotePub, d.IfID, localID, remoteID, start, psk, dpd, closeA))}
 		}
 		setup := `if ! command -v swanctl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && ! systemctl cat strongswan.service >/dev/null 2>&1; }; then
   # swanctl + charon-systemd (strongswan.service) is the vici-native daemon we drive
   (apt-get update -qq && apt-get install -y -qq strongswan-swanctl charon-systemd libcharon-extra-plugins) \
   || dnf install -y strongswan || yum install -y strongswan || { echo "could not install strongSwan"; exit 1; }
 fi
+# configs written by earlier panel versions (several settings on one line) don't load, and
+# strongswan.service fails to start while any file in conf.d is broken
+for f in /etc/swanctl/conf.d/tp*.conf; do
+  if [ -f "$f" ] && grep -qE '[{] *auth = psk +id = ' "$f"; then echo "removing $f (broken config from an earlier version)"; rm -f "$f"; fi
+done
 ` + charonUp + "tp_charon || exit 1\n"
 		up := func(self, peer string) string {
-			return fmt.Sprintf(`ip link add %[1]s type xfrm dev $(ip route show default | awk '{print $5; exit}') if_id %[2]d
+			// the XFRM interface hangs off the device towards the peer (works for v4 and v6)
+			return localAddr(self, peer) + fmt.Sprintf(`if [ "$TPL" != %[5]s ]; then sed -i "s/local_addrs = %[5]s\$/local_addrs = $TPL/" %[6]s; fi
+dev=$(ip -o route get %[7]s 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+[ -n "$dev" ] || dev=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+[ -n "$dev" ] || { echo "no route to %[7]s"; exit 1; }
+ip link add %[1]s type xfrm dev $dev if_id %[2]d
 ip link set %[1]s mtu %[3]s up
 # charon must answer on its vici socket before swanctl can load the connection
 %[4]stp_charon || exit 1
 if ! swanctl --load-all --noprompt >/tmp/tp-swanctl.log 2>&1; then
-  grep -v -e '^usage' -e '^ ' /tmp/tp-swanctl.log | head -4
+  grep -v -e '^usage' -e '^ ' -e '^plugin ' /tmp/tp-swanctl.log | head -4
   exit 1
 fi
-`, d.Iface, d.IfID, c.Opt("mtu"), charonUp)
+`, d.Iface, d.IfID, c.Opt("mtu"), charonUp, self, confPath, peer)
 		}
 		down := fmt.Sprintf("swanctl --terminate --ike %s >/dev/null 2>&1 || true\n", conn)
 		ir, kh = kernelTunnel(c, "IPsec "+c.T.Name, up, down)
-		// Iran initiates; the foreign side waits (trap) so one SA is negotiated.
-		ir.Files[confPath] = conf(d.IRPub, d.KHPub, "ir-"+conn, "kh-"+conn, "start")
-		kh.Files[confPath] = conf(d.KHPub, d.IRPub, "kh-"+conn, "ir-"+conn, "trap")
+		ir.Files[confPath] = conf(d.IRPub, d.KHPub, "ir-"+conn, "kh-"+conn, true)
+		kh.Files[confPath] = conf(d.KHPub, d.IRPub, "kh-"+conn, "ir-"+conn, false)
 		ir.Setup, kh.Setup = setup, setup
 		// remove the conf on teardown so swanctl stops the connection
 		rm := fmt.Sprintf("rm -f %s; swanctl --load-all >/dev/null 2>&1 || true\n", confPath)

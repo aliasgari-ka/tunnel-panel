@@ -219,7 +219,13 @@ done
 systemctl daemon-reload 2>/dev/null || true
 [ -x %[2]s/fw-in-down.sh ] && %[2]s/fw-in-down.sh >/dev/null 2>&1
 rm -rf %[2]s
-%[4]s`, unitName(t), tunnelDir(t), shapeUnitName(t), acctDown(t))
+# an IPsec config left by a failed deploy would keep strongSwan trying (or failing to start)
+if [ -f /etc/swanctl/conf.d/tp%[5]d.conf ]; then
+  swanctl --terminate --ike tp%[5]d >/dev/null 2>&1
+  rm -f /etc/swanctl/conf.d/tp%[5]d.conf
+  swanctl --load-all --noprompt >/dev/null 2>&1 || true
+fi
+%[4]s`, unitName(t), tunnelDir(t), shapeUnitName(t), acctDown(t), t.Index)
 }
 
 // deploy installs a side plan on one host.
