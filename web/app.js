@@ -30,7 +30,7 @@ async function boot() {
     if (!s.configured) return renderAuth('register', s.panelName);
     const me = await api('/me');
     if (!me.user) return renderAuth('login', s.panelName);
-    STATE.user = me.user;
+    STATE.user = me.user; STATE.version = me.version || "";
     await loadAll();
     renderShell();
   } catch (e) { renderAuth('login'); }
@@ -88,7 +88,7 @@ function renderShell() {
       <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span>${n[2]}</span>${n[1]}</button>`).join('')}</nav>
       <div class="foot">
         <button class="btn ghost sm" id="themeBtn">◐ Theme</button>
-        <div class="faint" style="font-size:11px;padding:0 8px">Signed in as <b>${esc(STATE.user)}</b></div>
+        <div class="faint" style="font-size:11px;padding:0 8px">Signed in as <b>${esc(STATE.user)}</b>${STATE.version ? `<br>version <span class="mono">${esc(STATE.version)}</span>` : ''}</div>
         <button class="btn ghost sm" id="logout">Sign out</button>
       </div></aside>
     <main class="main" id="work"></main></div>`);

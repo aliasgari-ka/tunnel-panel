@@ -125,7 +125,11 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now tunnel-panel
+systemctl enable tunnel-panel >/dev/null 2>&1
+# restart, not just "enable --now": on an update the old process would keep running
+systemctl restart tunnel-panel
+sleep 1
+systemctl is-active --quiet tunnel-panel && echo "==> running $($DEST --version 2>/dev/null)" || { echo "tunnel-panel failed to start:"; journalctl -u tunnel-panel -n 20 --no-pager; exit 1; }
 
 IP=$(curl -fsS4 --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 SCHEME=http; OPENHOST="${IP}:${PORT}"

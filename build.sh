@@ -5,6 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ARCHES="${*:-$(go env GOARCH)}"
+VERSION="${TP_VERSION:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)-$(date -u +%Y%m%d)}"
 mkdir -p assets dist
 
 echo "==> building tp-agent for amd64 and arm64"
@@ -25,7 +26,7 @@ fi
 
 for arch in $ARCHES; do
   echo "==> building tunnel-panel for $arch"
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" -o "dist/tunnel-panel-$arch" .
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "dist/tunnel-panel-$arch" .
 done
 echo "==> done:"
 ls -la dist/

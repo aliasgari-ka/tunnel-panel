@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -38,6 +39,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			if _, err := fs.Stat(root, strings.TrimPrefix(r.URL.Path, "/")); err == nil {
+				// always revalidate: after an update the browser must not keep an old app.js
+				w.Header().Set("Cache-Control", "no-cache")
 				fileSrv.ServeHTTP(w, r)
 				return
 			}
@@ -98,6 +101,8 @@ func serveFile(w http.ResponseWriter, root fs.FS, name, ct string) {
 	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "no-cache")
+	// cache-bust the script per build, so a new version is picked up without a hard refresh
+	b = bytes.ReplaceAll(b, []byte(`src="/app.js"`), []byte(`src="/app.js?v=`+version+`"`))
 	_, _ = w.Write(b)
 }
 
@@ -287,7 +292,7 @@ func (s *Server2) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server2) me(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"user": s.currentUser(r)})
+	writeJSON(w, map[string]string{"user": s.currentUser(r), "version": version})
 }
 
 func (s *Server2) password(w http.ResponseWriter, r *http.Request) {

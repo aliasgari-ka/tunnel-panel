@@ -14,7 +14,14 @@ import (
 	"tunnelpanel/internal/agent"
 )
 
+// version is stamped by build.sh (-X main.version=...).
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Println("tunnel-panel " + version)
+		return
+	}
 	// agent subcommand: tunnel-panel agent --connect host:port --token T --pin P
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		fs := flag.NewFlagSet("agent", flag.ExitOnError)
@@ -93,7 +100,7 @@ func main() {
 
 	go func() { time.Sleep(10 * time.Second); app.autoSetupLocal() }()
 
-	fmt.Printf("Tunnel Panel (agent %s, data %s, %d methods)\n", *agentAddr, *dir, len(methods))
+	fmt.Printf("Tunnel Panel %s (agent %s, data %s, %d methods)\n", version, *agentAddr, *dir, len(methods))
 	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))
 }
 
