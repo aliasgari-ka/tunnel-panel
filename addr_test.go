@@ -65,16 +65,15 @@ func TestRankBench(t *testing.T) {
 func TestAcctScriptAndRates(t *testing.T) {
 	tn := &Tunnel{ID: "abc123", Ports: "443,8080=80,2000-2010,[::1]:8443", Index: 3}
 	sc := acctScript(tn)
-	for _, want := range []string{"--dport 443", "--sport 80", "--dport 2000:2010", "--dport 8443", `echo "T abc123 $d $u"`} {
-		if want == "--sport 80" {
-			continue // listen side is 8080; the rule matches the Iran-facing port
-		}
+	// counted by the connection's original (Iran-facing) port, both directions
+	for _, want := range []string{"--ctdir ORIGINAL --ctorigdstport 443", "--ctdir REPLY --ctorigdstport 443", "--ctorigdstport 2000:2010",
+		"--ctorigdstport 8443", "--ctorigdstport 8080", "grep -q ctorigdstport", `echo "T abc123 $d $u"`} {
 		if !strings.Contains(sc, want) {
 			t.Errorf("script lacks %q:\n%s", want, sc)
 		}
 	}
-	if !strings.Contains(sc, "--sport 8080") {
-		t.Errorf("expected Iran-facing port 8080 counted")
+	if strings.Contains(sc, "--ctorigdstport 80\n") {
+		t.Errorf("the foreign-side port 80 must not be counted on Iran")
 	}
 	tm := newTrafficMon()
 	now := time.Now()
