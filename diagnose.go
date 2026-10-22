@@ -137,6 +137,13 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 				switch {
 				case m.ID == "direct6" && gget("carrier") != "udp":
 					hint("GRE (protocol 47) is probably dropped on the IPv6 path or by a provider firewall — open Options, set Carrier = udp and Re-apply (GRE inside UDP), or use IPsec / BackPack / Backhaul over IPv6")
+				case m.ID == "bp_l3":
+					bget, _ := resolveOptions(m, t.Options[m.ID])
+					who, port := "Iran dials the foreign server", portOr(bget("port"), d.BasePort)
+					if bget("dialer") == "foreign" {
+						who = "the foreign server dials Iran"
+					}
+					hint("the BackPack link isn't up: %s on %s port %s — a provider/cloud firewall blocking that port is the usual cause; try Carrier = quic or sni, or switch \"Who connects\"", who, map[string]string{"udp": "UDP", "quic": "UDP (QUIC)"}[bget("carrier")]+orStr(map[string]string{"pck": "raw", "sni": "TCP", "xdi": "raw"}[bget("carrier")], ""), port)
 				case m.ID == "gre":
 					hint("GRE (protocol 47) is probably dropped on the path or by a provider/cloud firewall — allow GRE there, or use %s", map[string]string{"v6": "Direct v6 with Carrier = udp, IPsec, BackPack or Backhaul", "v4": "Golden-GRE (looks like DNS), IPsec, BackPack or Backhaul"}[t.Family])
 				}
@@ -194,8 +201,15 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 				} else {
 					bad("no DNAT rule for port %s on Iran — users hitting it go nowhere", p.listen)
 				}
-			} else if run(ir, "ss -Hltn 'sport = :"+p.listen+"' 2>/dev/null | head -1") != "" {
-				ok("Iran listens on port %s", p.listen)
+			} else if pn, _ := strconv.Atoi(p.listen); pn > 0 && len(heldPorts(ctx, ir, []int{pn})) > 0 {
+				// listening is not enough: it must be this tunnel's daemon
+				hp := heldPorts(ctx, ir, []int{pn})[0]
+				if hp.unit == unitName(t) {
+					ok("Iran listens on port %s (%s, this tunnel)", p.listen, hp.name)
+				} else {
+					bad("Iran port %s is held by %s (pid %d: %s), not by this tunnel — users reach that program instead", p.listen, hp.name, hp.pid, hp.cmd)
+					hint("stop that program or give this tunnel another Iran port (e.g. %d=%s), then Re-apply", pn+1, p.listen)
+				}
 			} else {
 				bad("nothing listens on Iran port %s", p.listen)
 			}

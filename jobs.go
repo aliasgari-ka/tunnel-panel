@@ -331,6 +331,12 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		_, _ = khHost.Run(ctx, teardownScript(t), func(l string) { j.log("[KH] %s", l) })
 		a.setActive(t, "")
 
+		// the ports this method binds on Iran must really be free now
+		if err := a.freeIranPorts(ctx, j, irHost, t, m); err != nil {
+			fail("%v", err)
+			return
+		}
+
 		// reverse methods: make sure the foreign server can actually dial Iran first
 		changed, err := a.reversePreflight(ctx, j, t, m, irHost, khHost)
 		if err != nil {

@@ -218,3 +218,81 @@ func portClash(st *State, t *Tunnel, mid string) error {
 	}
 	return nil
 }
+
+// portHolder is a process listening on one of a tunnel's Iran ports.
+type portHolder struct {
+	port, pid int
+	unit, name, cmd string
+}
+
+// heldPorts lists who listens (TCP or UDP) on the given ports of a host.
+func heldPorts(ctx context.Context, h Host, ports []int) []portHolder {
+	if len(ports) == 0 {
+		return nil
+	}
+	var ps []string
+	for _, p := range ports {
+		ps = append(ps, strconv.Itoa(p))
+	}
+	out, _ := h.Run(ctx, `for p in `+strings.Join(ps, " ")+`; do
+  ss -Hltunp "( sport = :$p )" 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u | while read pid; do
+    u=$(grep -o 'tp-[0-9a-z-]*\.service' /proc/$pid/cgroup 2>/dev/null | head -1)
+    echo "HELD $p $pid ${u:-none} $(cat /proc/$pid/comm 2>/dev/null) $(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null | cut -c1-200)"
+  done
+done`, nil)
+	var res []portHolder
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 5 || f[0] != "HELD" {
+			continue
+		}
+		p, _ := strconv.Atoi(f[1])
+		pid, _ := strconv.Atoi(f[2])
+		res = append(res, portHolder{p, pid, f[3], f[4], strings.Join(f[5:], " ")})
+	}
+	return res
+}
+
+// userspaceIran: the method's own daemon binds the users' ports on Iran (the kernel
+// tunnels DNAT them instead, so another listener there doesn't take their traffic).
+func userspaceIran(m *Method) bool {
+	switch m.ID {
+	case "gre", "direct6", "ipsec6", "golden", "spoof":
+		return false
+	}
+	return true
+}
+
+// freeIranPorts runs after the old method was stopped: a panel process left over on one
+// of the tunnel's ports is stopped; anything else holding a port the method must bind is
+// an error naming the program, instead of a daemon that starts and never forwards.
+func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *Method) error {
+	want := iranPorts(t, m.ID)
+	if userspaceIran(m) && !benchIsL3(m, t.Options[m.ID]) {
+		want[probePortFor(t)] = "speed-test port"
+	}
+	var ports []int
+	for p := range want {
+		ports = append(ports, p)
+	}
+	for _, hp := range heldPorts(ctx, h, ports) {
+		switch {
+		case hp.unit == unitName(t) || strings.Contains(hp.cmd, tunnelDir(t)+"/") || strings.Contains(hp.cmd, "probe serve -listen :"+strconv.Itoa(hp.port)+" "):
+			j.log("[IR] port %d was still held by a leftover %s (pid %d) — stopping it", hp.port, hp.name, hp.pid)
+			_, _ = h.Run(ctx, fmt.Sprintf("kill %d 2>/dev/null; sleep 1; kill -9 %d 2>/dev/null; true", hp.pid, hp.pid), nil)
+		case strings.HasPrefix(hp.unit, "tp-"):
+			other := strings.TrimSuffix(strings.TrimPrefix(hp.unit, "tp-"), ".service")
+			name := other
+			if o := a.store.Tunnel(other); o != nil {
+				name = o.Name
+			}
+			return fmt.Errorf("Iran port %d (%s) is held by tunnel %q on this Iran server — give one of them another port", hp.port, want[hp.port], name)
+		case userspaceIran(m):
+			return fmt.Errorf("Iran port %d (%s) is already used on the Iran server by %s (pid %d: %s) — %s must listen on it itself. Stop that program, or give this tunnel another Iran port mapped to the service (e.g. %d=%d)",
+				hp.port, want[hp.port], hp.name, hp.pid, hp.cmd, m.Title, hp.port+1, hp.port)
+		default:
+			j.log("[IR] note: %s (pid %d) also listens on port %d on Iran; users from outside still reach the tunnel (DNAT), only connections made on the Iran server itself go to that program", hp.name, hp.pid, hp.port)
+		}
+	}
+	return nil
+}

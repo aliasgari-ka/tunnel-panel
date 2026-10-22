@@ -306,3 +306,26 @@ func TestFixIPv6(t *testing.T) {
 		t.Fatalf("a correct address was changed: %s", n)
 	}
 }
+
+func TestFreeIranPorts(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	a := &App{store: st}
+	tn := &Tunnel{ID: "t1", Name: "usa", ServerID: "ir", Ports: "32641", Index: 4, Options: map[string]map[string]string{}}
+	ctx := context.Background()
+	other := fakeHost{"HELD 32641 812 none xray /usr/local/bin/xray run -c /etc/xray.json\n"}
+	j := &Job{}
+	if err := a.freeIranPorts(ctx, j, other, tn, methodByID["frp"]); err == nil || !strings.Contains(err.Error(), "xray (pid 812") {
+		t.Errorf("FRP with xray on the port: %v", err)
+	}
+	if err := a.freeIranPorts(ctx, j, other, tn, methodByID["gre"]); err != nil {
+		t.Errorf("GRE (DNAT) must only note it: %v", err)
+	}
+	left := fakeHost{"HELD 32641 900 tp-t1.service frps /opt/frp/frps -c /etc/tunnel-panel/t/t1/frps.toml\n"}
+	if err := a.freeIranPorts(ctx, j, left, tn, methodByID["backhaul"]); err != nil {
+		t.Errorf("own leftover must be stopped, not refused: %v", err)
+	}
+	if !strings.Contains(strings.Join(j.snapshot().Lines, "\n"), "leftover frps (pid 900)") {
+		t.Errorf("leftover not reported: %v", j.snapshot().Lines)
+	}
+}
