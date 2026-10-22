@@ -228,7 +228,7 @@ func hsTarget(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
 // hours (hsSpeedMB, capped), and when the active path degrades — loss ≥ 5 %, speed down to
 // half of its recent best or under 1 Mbit/s — or another path is clearly cheaper, it measures
 // the active path and up to three stable candidates the same way and moves the users to a
-// clearly better one. After a move it holds for hsHold; a comparison that changed nothing
+// clearly better one (heavy loss ≥ 15 % loses to a clean path even if it measures faster). After a move it holds for hsHold; a comparison that changed nothing
 // backs off (10 min, doubling to 2 h), so a bad hour costs little traffic. Standby paths
 // are checked every hsStandby checks (the active one every check), for the same reason.
 const (
@@ -344,6 +344,7 @@ while true; do
         if [ $sa = 0 ]; then win=1
         elif [ $((sc * 10)) -ge $((sa * 15)) ] && [ ${ql[$c]:-0} -le $(( ${ql[$a]:-0} + 20 )) ]; then win=1
         elif [ ${ql[$a]:-0} -ge $LOSSBAD ] && [ $(( ${ql[$c]:-0} * 2 )) -le ${ql[$a]:-0} ] && [ $((sc * 10)) -ge $((sa * 8)) ]; then win=1
+        elif [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && [ ${ql[$c]:-0} -le 20 ] && [ $((sc * 10)) -ge $((sa * 3)) ]; then win=1 # heavy loss breaks uploads and handshakes even where the download test still looks fast
         elif [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 7 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
         elif [ $c = 0 ] && [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 11 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
         fi
