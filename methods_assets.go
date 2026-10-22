@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"fmt"
+)
 
 func init() {
 	register(methodGoldenGRE)
@@ -111,7 +114,9 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 				dir + "/down.sh": {Content: []byte("#!/bin/bash\n" + down), Mode: 0o755},
 			}
 			if useKey {
-				files[keyPath] = FileSpec{Content: []byte(c.T.secret("golden-key")), Mode: 0o600}
+				// the relay wants exactly 32 raw bytes; derive them from the stored secret
+				k := sha256.Sum256([]byte(c.T.secret("golden-key")))
+				files[keyPath] = FileSpec{Content: k[:], Mode: 0o600}
 			}
 			sp := SidePlan{Files: files, Artifacts: []Artifact{relay}, Unit: Unit{
 				Desc:         "Golden-GRE " + c.T.Name,

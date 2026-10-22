@@ -155,7 +155,7 @@ func (a *App) Prepare(srv *Server) (*Job, error) {
 	}
 	go func() {
 		defer a.jobs.done(j)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		ctx, cancel := j.context(30 * time.Minute)
 		defer cancel()
 		var h Host = LocalHost{}
 		label, iran := "KH", false

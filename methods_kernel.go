@@ -134,7 +134,10 @@ systemctl enable --now strongswan 2>/dev/null || systemctl enable --now strongsw
 		up := func(self, peer string) string {
 			return fmt.Sprintf(`ip link add %[1]s type xfrm dev $(ip route show default | awk '{print $5; exit}') if_id %[2]d
 ip link set %[1]s mtu %[3]s up
-swanctl --load-all >/dev/null
+# charon must be up (its vici socket) before swanctl can load the connection
+systemctl start strongswan 2>/dev/null || systemctl start strongswan-starter 2>/dev/null || true
+for i in $(seq 1 30); do [ -S /var/run/charon.vici ] || [ -S /run/charon.vici ] && break; sleep 0.5; done
+swanctl --load-all --noprompt >/tmp/tp-swanctl.log 2>&1 || { cat /tmp/tp-swanctl.log; exit 1; }
 `, d.Iface, d.IfID, c.Opt("mtu"))
 		}
 		down := fmt.Sprintf("swanctl --terminate --ike %s >/dev/null 2>&1 || true\n", conn)

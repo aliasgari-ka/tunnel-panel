@@ -18,6 +18,17 @@ type Job struct {
 	Ended   int64    `json:"ended"`
 	mu      sync.Mutex
 	onLine  func(string)
+	cancel  context.CancelFunc
+}
+
+// context returns the job's context; Jobs.cancel ends it, which kills whatever
+// remote command the job is waiting on (SSH sessions and agent runs honour ctx).
+func (j *Job) context(d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	j.mu.Lock()
+	j.cancel = cancel
+	j.mu.Unlock()
+	return ctx, cancel
 }
 
 func (j *Job) log(format string, a ...any) {
@@ -33,6 +44,9 @@ func (j *Job) log(format string, a ...any) {
 
 func (j *Job) finish(status string) {
 	j.mu.Lock()
+	if j.Status == "cancelled" {
+		status = "cancelled" // a cancelled job stays cancelled whatever its goroutine reports
+	}
 	j.Status = status
 	j.Ended = time.Now().Unix()
 	j.mu.Unlock()
@@ -99,6 +113,37 @@ func (js *Jobs) start(tunnel, kind string) (*Job, error) {
 	return j, nil
 }
 
+// cancel aborts a running job; the tunnel is released at once so Stop/Apply can run.
+func (js *Jobs) cancel(id string) (*Job, error) {
+	j := js.get(id)
+	if j == nil {
+		return nil, fmt.Errorf("job not found")
+	}
+	j.mu.Lock()
+	running, cancel := j.Status == "running", j.cancel
+	if running {
+		j.Status = "cancelled"
+		j.Ended = time.Now().Unix()
+	}
+	j.mu.Unlock()
+	if !running {
+		return j, nil
+	}
+	j.log("CANCELLED by user")
+	if cancel != nil {
+		cancel()
+	}
+	js.done(j)
+	return j, nil
+}
+
+// running returns the id of the job running on a tunnel ("" = none).
+func (js *Jobs) running(tunnel string) string {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return js.busy[tunnel]
+}
+
 func (js *Jobs) done(j *Job) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
@@ -157,6 +202,7 @@ func teardownScript(t *Tunnel) string {
   fi
 done
 systemctl daemon-reload 2>/dev/null || true
+[ -x %[2]s/fw-in-down.sh ] && %[2]s/fw-in-down.sh >/dev/null 2>&1
 rm -rf %[2]s
 %[4]s`, unitName(t), tunnelDir(t), shapeUnitName(t), acctDown(t))
 }
@@ -184,14 +230,16 @@ func (a *App) deploy(ctx context.Context, j *Job, label string, h Host, t *Tunne
 	}
 	script := fmt.Sprintf(`systemctl daemon-reload
 systemctl enable %[1]s >/dev/null 2>&1
+jl() { inv=$(systemctl show -p InvocationID --value %[1]s 2>/dev/null)
+  if [ -n "$inv" ]; then journalctl _SYSTEMD_INVOCATION_ID=$inv -n 25 --no-pager -o cat; else journalctl -u %[1]s -n 25 --no-pager -o cat; fi; }
 if ! systemctl restart %[1]s; then
-  journalctl -u %[1]s -n 25 --no-pager
+  jl
   exit 1
 fi
 sleep 2
 st=$(systemctl is-active %[1]s)
 echo "unit %[1]s: $st"
-if [ "$st" != active ]; then journalctl -u %[1]s -n 25 --no-pager; exit 1; fi
+if [ "$st" != active ]; then jl; exit 1; fi
 `, u)
 	out, err := h.Run(ctx, script, logf)
 	return withTail(err, out)
@@ -205,7 +253,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 	}
 	go func() {
 		defer a.jobs.done(j)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		ctx, cancel := j.context(20 * time.Minute)
 		defer cancel()
 		fail := func(f string, x ...any) {
 			j.log("ERROR: "+f, x...)
@@ -283,6 +331,7 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 	}
 	go func() {
 		defer a.jobs.done(j)
+		// Stop must run even right after a cancelled job, so it never inherits one
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		if srv := a.store.Server(t.ServerID); srv != nil {

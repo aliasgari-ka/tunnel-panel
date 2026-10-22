@@ -132,7 +132,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	a.benchMu.Unlock()
 	go func() {
 		defer a.jobs.done(j)
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+		ctx, cancel := j.context(45 * time.Minute)
 		defer cancel()
 		probePort := 40000 + 250*4 + 2
 		bt := &Tunnel{ID: "bench", Name: "route-benchmark", ServerID: req.IranID, ForeignID: req.ForeignID,
@@ -151,6 +151,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			return
 		}
 		j.log("benchmarking %s ⇄ %s (%s), %d methods", ipath, kpath, req.Family, len(cands))
+		j.log("firewall — Iran: %s; foreign: %s (each tunnel opens what it needs)", firewallInfo(ctx, irHost), firewallInfo(ctx, khHost))
 
 		// the probe binary on both ends + a probe server on the foreign side for the whole run
 		probeOK := pushArtifacts(ctx, j, "IR", irHost, []Artifact{probeArt}) == nil &&
@@ -164,6 +165,9 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 
 		var out []BenchResult
 		for i, m := range cands {
+			if ctx.Err() != nil {
+				break // cancelled
+			}
 			r := BenchResult{Method: m.ID, Title: m.Title, Kind: "forward"}
 			if benchIsL3(m, nil) {
 				r.Kind = "l3"
@@ -182,9 +186,11 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			} else {
 				j.log("   ok: ↓%.1f ↑%.1f Mbps, RTT %.1f ms, jitter %.1f ms", r.DownMbps, r.UpMbps, r.RTTms, r.Jitterms)
 			}
-			// always tear down the bench tunnel on both ends
-			_, _ = irHost.Run(ctx, teardownScript(bt), nil)
-			_, _ = khHost.Run(ctx, teardownScript(bt), nil)
+			// always tear down the bench tunnel on both ends (even when cancelled)
+			tctx, tcancel := context.WithTimeout(context.Background(), time.Minute)
+			_, _ = irHost.Run(tctx, teardownScript(bt), nil)
+			_, _ = khHost.Run(tctx, teardownScript(bt), nil)
+			tcancel()
 			out = append(out, r)
 			// publish partial results so the page shows progress even after a reload
 			partial := append([]BenchResult(nil), out...)
@@ -206,6 +212,31 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 }
 
 const probeBin = "/usr/local/lib/tunnel-panel/tp-probe"
+
+// unitTail returns the last n meaningful log lines of a unit's current run, joined.
+func unitTail(ctx context.Context, h Host, unit string, n int) string {
+	out, _ := h.Run(ctx, fmt.Sprintf(`inv=$(systemctl show -p InvocationID --value %[1]s 2>/dev/null)
+[ -n "$inv" ] && journalctl _SYSTEMD_INVOCATION_ID=$inv --no-pager -o cat 2>/dev/null | grep -v -e '^Started ' -e '^Starting ' | tail -%[2]d`, unit, n), nil)
+	var keep []string
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			if len(l) > 160 {
+				l = l[:160] + "…"
+			}
+			keep = append(keep, l)
+		}
+	}
+	return strings.Join(keep, " / ")
+}
+
+// firewallInfo summarises a host's inbound filtering in a few words.
+func firewallInfo(ctx context.Context, h Host) string {
+	out, _ := h.Run(ctx, `p=$(iptables -w -S INPUT 2>/dev/null | head -1 | awk '{print $3}')
+u=$(ufw status 2>/dev/null | head -1 | awk '{print $2}')
+f=$(firewall-cmd --state 2>/dev/null)
+echo "INPUT=${p:-?} ufw=${u:-none} firewalld=${f:-none}"`, nil)
+	return strings.TrimSpace(lastLine(out))
+}
 
 func probeServerUp(port int) string { return probeServerUpLife(port, 2700) }
 
@@ -269,7 +300,15 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 		time.Sleep(2 * time.Second)
 	}
 	if lastErr != nil {
-		return fmt.Errorf("unit is running but no traffic passes through the tunnel within 25s (%v)", lastErr)
+		// the daemons usually say why (dial timeout, auth, bind) — show it
+		why := ""
+		if l := unitTail(ctx, khHost, unitName(bt), 2); l != "" {
+			why += " | foreign: " + l
+		}
+		if l := unitTail(ctx, irHost, unitName(bt), 2); l != "" {
+			why += " | Iran: " + l
+		}
+		return fmt.Errorf("unit is running but no traffic passes through the tunnel within 25s (%v)%s", lastErr, why)
 	}
 	r.RTTms, r.Jitterms = rt.RTTms, rt.Jitterms
 	if l3 {

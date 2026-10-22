@@ -77,6 +77,7 @@ func (a *App) routes() http.Handler {
 	p("/api/tunnels/diagnose", s.tunnelDiagnose)
 	p("/api/traffic", s.trafficGet)
 	p("/api/jobs", s.job)
+	p("/api/jobs/cancel", s.jobCancel)
 	p("/api/bench/start", s.benchStart)
 	p("/api/bench/results", s.benchResults)
 	p("/api/bench/active", s.benchActive)
@@ -752,6 +753,10 @@ func (s *Server2) tunnelStop(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "tunnel not found")
 		return
 	}
+	// Stop always wins: cancel whatever is still running on the tunnel first
+	if id := s.app.jobs.running(t.ID); id != "" {
+		_, _ = s.app.jobs.cancel(id)
+	}
 	j, err := s.app.Stop(t)
 	if err != nil {
 		httpErr(w, 409, err.Error())
@@ -830,6 +835,17 @@ func (s *Server2) tunnelLastJob(w http.ResponseWriter, r *http.Request) {
 	j := s.app.jobs.latestFor(r.URL.Query().Get("id"))
 	if j == nil {
 		httpErr(w, 404, "no jobs yet")
+		return
+	}
+	writeJSON(w, j.snapshot())
+}
+
+func (s *Server2) jobCancel(w http.ResponseWriter, r *http.Request) {
+	var in struct{ ID string }
+	_ = readJSON(r, &in)
+	j, err := s.app.jobs.cancel(in.ID)
+	if err != nil {
+		httpErr(w, 404, err.Error())
 		return
 	}
 	writeJSON(w, j.snapshot())

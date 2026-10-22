@@ -428,7 +428,7 @@ func (a *App) SpeedTest(t *Tunnel, secs int) (*Job, error) {
 	}
 	go func() {
 		defer a.jobs.done(j)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := j.context(5 * time.Minute)
 		defer cancel()
 		res := &SpeedResult{At: time.Now().Unix()}
 		fail := func(f string, x ...any) {

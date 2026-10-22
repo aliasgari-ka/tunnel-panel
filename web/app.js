@@ -453,15 +453,25 @@ function tunnelCard(t) {
   selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: selEl.value }); };
   refresh();
   $('[data-opts]', card).onclick = () => { if (!optBox.hidden) { optBox.hidden = true; return; } renderOpts(optBox, t, selEl.value); optBox.hidden = false; };
-  applyBtn.onclick = async () => { applyBtn.disabled = true; try { const r = await api('/tunnels/apply', { ID: t.id, Method: selEl.value }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); applyBtn.disabled = false; } };
+  applyBtn.onclick = async () => { applyBtn.disabled = true; try { const r = await api('/tunnels/apply', { ID: t.id, Method: selEl.value }); openLog(t, r.job); } catch (e) { busyOrError(t, e); applyBtn.disabled = false; } };
   $('[data-stop]', card).onclick = async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } };
   $('[data-log]', card).onclick = () => openLog(t, null);
-  $('[data-diag]', card).onclick = async () => { try { const r = await api('/tunnels/diagnose', { ID: t.id }); openLog({ id: t.id, name: 'Diagnose · ' + t.name }, r.job); } catch (e) { alertModal('Diagnose', e.message); } };
-  $('[data-speedtest]', card).onclick = async () => { try { const r = await api('/tunnels/speedtest', { ID: t.id }); openLog({ id: t.id, name: 'Speed test · ' + t.name }, r.job); } catch (e) { alertModal('Speed test', e.message); } };
+  $('[data-diag]', card).onclick = async () => { try { const r = await api('/tunnels/diagnose', { ID: t.id }); openLog({ id: t.id, name: 'Diagnose · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); } };
+  $('[data-speedtest]', card).onclick = async () => { try { const r = await api('/tunnels/speedtest', { ID: t.id }); openLog({ id: t.id, name: 'Speed test · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); } };
   $('[data-edit]', card).onclick = () => tunnelModal(t);
   $('[data-del]', card).onclick = async (e) => { if (!confirmInline(e.target, 'Confirm delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } };
   refreshStatus(t, card);
   return card;
+}
+// A tunnel runs one job at a time. When another one is still going, offer to watch or cancel it.
+function busyOrError(t, e) {
+  const mm = /another job \(([0-9a-f]+)\)/.exec(e.message || '');
+  if (!mm) { alertModal('Error', e.message); return; }
+  const m = modal(`<h2>A job is still running</h2><p class="muted">Another job is still running on <b>${esc(t.name)}</b> (${esc(mm[1])}). Watch it, or cancel it to free the tunnel. Stop always works — it cancels the running job first.</p>
+    <div class="actions" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost" data-x>Close</button><button class="btn" data-w>Show its log</button><button class="btn danger" data-c>Cancel the job</button></div>`);
+  $('[data-x]', m).onclick = () => m.remove();
+  $('[data-w]', m).onclick = () => { m.remove(); openLog(t, mm[1]); };
+  $('[data-c]', m).onclick = async () => { try { await api('/jobs/cancel', { ID: mm[1] }); m.remove(); toast('Cancelled — you can run it again now'); } catch (er) { alertModal('Cancel', er.message); } };
 }
 async function refreshStatus(t, card) {
   if (!t.active) { $('[data-ir]', card).textContent = '—'; $('[data-fg]', card).textContent = '—'; return; }
@@ -552,7 +562,7 @@ function viewBench(w) {
         <label class="f">Throughput probe (s)<input name="seconds" type="number" class="mono" value="5"></label>
       </div>
       <div class="faint" style="font-size:12px">Each method is deployed on a temporary tunnel, measured, then removed. It runs on the server — you can leave this page and come back.</div>
-      <div><button class="btn pri" id="brun">Run benchmark</button></div>
+      <div style="display:flex;gap:8px"><button class="btn pri" id="brun">Run benchmark</button><button type="button" class="btn danger" id="bcancel" hidden>■ Cancel</button></div>
     </form>
     <div id="blogcard"></div><div id="bres"></div></div>`);
   w.appendChild(card);
@@ -591,8 +601,10 @@ function benchWatch(job, fd) {
     const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
     log.innerHTML = j.lines.map(l => `<div class="ln ${/ERROR|FAILED/.test(l) ? 'err' : /DONE|best| ok:/.test(l) ? 'ok' : ''}">${esc(l)}</div>`).join('');
     if (stick) log.scrollTop = log.scrollHeight;
-    $('#bhead', lc).textContent = j.status === 'running' ? 'Running… (continues on the server if you leave)' : (j.status === 'ok' ? 'Finished' : 'Stopped with an error');
+    $('#bhead', lc).textContent = j.status === 'running' ? 'Running… (continues on the server if you leave)' : (j.status === 'ok' ? 'Finished' : j.status === 'cancelled' ? 'Cancelled' : 'Stopped with an error');
     if (btn) { btn.disabled = j.status === 'running'; btn.textContent = j.status === 'running' ? 'Benchmark running…' : 'Run benchmark'; }
+    const cb = $('#bcancel');
+    if (cb) { cb.hidden = j.status !== 'running'; cb.onclick = async () => { cb.disabled = true; try { await api('/jobs/cancel', { ID: job }); toast('Benchmark cancelled — cleaning up'); } catch (e) { alertModal('Cancel', e.message); } cb.disabled = false; }; }
     showBenchResults(fd);
     if (j.status !== 'running') { clearInterval(benchTimer); benchTimer = null; }
   };
@@ -634,7 +646,7 @@ let logTimer = null;
 function openLog(t, jobId) {
   closeLog();
   const d = h(`<div class="drawer"><div class="panel">
-    <div class="dh"><div><h3>${esc(t.name)}</h3><div class="muted" style="font-size:12px" id="jobstat">${jobId ? 'running…' : 'last job'}</div></div><button class="btn ghost sm" id="closeLog">✕ Close</button></div>
+    <div class="dh"><div><h3>${esc(t.name)}</h3><div class="muted" style="font-size:12px" id="jobstat">${jobId ? 'running…' : 'last job'}</div></div><div style="display:flex;gap:6px"><button class="btn sm danger" id="cancelJob" hidden>■ Cancel job</button><button class="btn ghost sm" id="closeLog">✕ Close</button></div></div>
     <div class="logbox" id="logbox"><span class="muted">${jobId ? 'Starting…' : 'Loading last job…'}</span></div></div></div>`);
   document.body.appendChild(d);
   $('#closeLog', d).onclick = closeLog;
@@ -648,9 +660,11 @@ async function pollJob(jobId, tunnelId) {
   const tick = async () => {
     try {
       const j = await api(url);
-      box.innerHTML = j.lines.map(l => { let c = /ERROR|failed| ✕ |WARNING/.test(l) ? 'err' : /DONE|is active|unit .*active| ✓ /.test(l) ? 'ok' : /\[IR\]/.test(l) ? 'ir' : ''; return `<div class="ln ${c}">${esc(l)}</div>`; }).join('');
+      box.innerHTML = j.lines.map(l => { let c = /ERROR|failed| ✕ |WARNING|CANCELLED/.test(l) ? 'err' : /DONE|is active|unit .*active| ✓ /.test(l) ? 'ok' : /\[IR\]/.test(l) ? 'ir' : ''; return `<div class="ln ${c}">${esc(l)}</div>`; }).join('');
       box.scrollTop = box.scrollHeight;
-      if (stat) stat.textContent = j.status === 'running' ? 'running…' : (j.status === 'ok' ? 'completed' : 'error');
+      if (stat) stat.textContent = j.status === 'running' ? 'running…' : (j.status === 'ok' ? 'completed' : j.status === 'cancelled' ? 'cancelled' : 'error');
+      const cb = $('#cancelJob');
+      if (cb) { cb.hidden = j.status !== 'running'; cb.onclick = async () => { cb.disabled = true; try { await api('/jobs/cancel', { ID: j.id }); toast('Job cancelled'); } catch (e) { alertModal('Cancel', e.message); } cb.disabled = false; }; }
       if (j.status !== 'running') { clearInterval(logTimer); logTimer = null; await loadAll(); if (STATE.view === 'tunnels') { const w = $('#work'); if (w && $('.drawer')) { /* keep drawer, repaint behind */ viewTunnels(w); } } }
     } catch (e) { if (!jobId) { box.innerHTML = '<span class="muted">No job yet.</span>'; clearInterval(logTimer); } }
   };

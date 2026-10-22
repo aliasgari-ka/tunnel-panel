@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -127,5 +128,55 @@ func TestPMTU(t *testing.T) {
 	}
 	if fp := firstPorts("443,2000-2010=3000-3010,127.0.0.1:8443=9000", 5); len(fp) != 3 || fp[1].listen != "2000" || fp[1].dst != "3000" || fp[2].listen != "8443" || fp[2].dst != "9000" {
 		t.Fatalf("firstPorts: %+v", fp)
+	}
+}
+
+func TestGoldenKeyAndUnitHooks(t *testing.T) {
+	tn := &Tunnel{ID: "g1", Name: "g", Family: "v4", Ports: "443", Index: 5, Options: map[string]map[string]string{}}
+	ir, kh, err := buildPlans(methodByID["golden"], tn, &Server{IPv4: "192.0.2.1"}, &Server{IPv4: "192.0.2.2"}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []SidePlan{ir, kh} {
+		if k := p.Files[tunnelDir(tn)+"/golden.key"]; len(k.Content) != 32 {
+			t.Fatalf("golden key is %d bytes", len(k.Content))
+		}
+		u := renderUnit(p.Unit)
+		if !strings.Contains(u, "ExecStartPre=-/etc/tunnel-panel/t/g1/fw-in-up.sh") || !strings.Contains(u, "ExecStopPost=-/etc/tunnel-panel/t/g1/fw-in-down.sh") {
+			t.Fatalf("unit lacks firewall hooks:\n%s", u)
+		}
+	}
+	if !bytes.Contains(ir.Files[tunnelDir(tn)+"/fw-in-up.sh"].Content, []byte("-s 192.0.2.2 -j ACCEPT")) ||
+		!bytes.Contains(ir.Files[tunnelDir(tn)+"/fw-in-up.sh"].Content, []byte("--dport 443 -j ACCEPT")) ||
+		bytes.Contains(kh.Files[tunnelDir(tn)+"/fw-in-up.sh"].Content, []byte("--dport 443")) {
+		t.Fatal("inbound rules wrong")
+	}
+}
+
+func TestJobCancel(t *testing.T) {
+	js := newJobs()
+	j, _ := js.start("t1", "apply")
+	ctx, cancel := j.context(time.Minute)
+	defer cancel()
+	if _, err := js.start("t1", "apply"); err == nil {
+		t.Fatal("second job should be refused while one runs")
+	}
+	if js.running("t1") != j.ID {
+		t.Fatal("running() wrong")
+	}
+	js.cancel(j.ID)
+	if ctx.Err() == nil || js.running("t1") != "" {
+		t.Fatal("cancel did not end the context / free the tunnel")
+	}
+	j.finish("error")
+	if j.snapshot().Status != "cancelled" {
+		t.Fatal("status should stay cancelled")
+	}
+	if _, err := js.start("t1", "apply"); err != nil {
+		t.Fatal("tunnel should be free after cancel")
+	}
+	js.done(j) // the old goroutine's deferred done must not free the new job
+	if js.running("t1") == "" {
+		t.Fatal("old job's done() released the new job")
 	}
 }

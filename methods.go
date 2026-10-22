@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -26,6 +27,10 @@ type Unit struct {
 	ExecStart       string
 	ExecStop        string
 	ExecStopPost    string
+	// ExtraPre/ExtraPost are more ExecStartPre=/ExecStopPost= lines (run after the
+	// main ones), used for per-tunnel firewall openings that every method gets.
+	ExtraPre  []string
+	ExtraPost []string
 }
 
 // SidePlan is everything to do on one host for a method.
@@ -54,12 +59,18 @@ func renderUnit(u Unit) string {
 	if u.ExecStartPre != "" {
 		b.WriteString("ExecStartPre=" + u.ExecStartPre + "\n")
 	}
+	for _, x := range u.ExtraPre {
+		b.WriteString("ExecStartPre=" + x + "\n")
+	}
 	b.WriteString("ExecStart=" + u.ExecStart + "\n")
 	if u.ExecStop != "" {
 		b.WriteString("ExecStop=" + u.ExecStop + "\n")
 	}
 	if u.ExecStopPost != "" {
 		b.WriteString("ExecStopPost=" + u.ExecStopPost + "\n")
+	}
+	for _, x := range u.ExtraPost {
+		b.WriteString("ExecStopPost=" + x + "\n")
 	}
 	if typ == "simple" {
 		b.WriteString("Restart=always\nRestartSec=3\n")
@@ -223,7 +234,93 @@ func buildPlans(m *Method, t *Tunnel, srv, fsrv *Server, set Settings) (SidePlan
 	tc := *t
 	tc.Ports = withProbePort(m, t)
 	c := &buildCtx{T: &tc, Srv: srv, Set: set, Opt: get, OptB: getB, D: d}
-	return m.Build(c)
+	ir, kh, err := m.Build(c)
+	if err != nil {
+		return ir, kh, err
+	}
+	ifc := l3Iface(m, t)
+	addInbound(&ir, t, d.KHPub, tc.Ports, ifc)
+	addInbound(&kh, t, d.IRPub, "", ifc)
+	return ir, kh, nil
+}
+
+// l3Iface is the interface an L3 method's packets cross ("" for port forwarders).
+func l3Iface(m *Method, t *Tunnel) string {
+	if !benchIsL3(m, t.Options[m.ID]) {
+		return ""
+	}
+	if m.ID == "premium" {
+		return fmt.Sprintf("bhp%d", t.Index)
+	}
+	return fmt.Sprintf("tp%d", t.Index)
+}
+
+// addInbound opens the host firewall for this tunnel: everything from the peer server
+// (carrier/tunnel ports, GRE, ESP, raw ipx — whatever the method speaks), the forwarded
+// ports users connect to (Iran), and the tunnel interface (L3). Rules live in a
+// per-tunnel chain TPI_<id> inserted at the top of INPUT, so a DROP policy or ufw can't
+// block the tunnel; firewalld gets runtime rules. Re-added on every unit start (so they
+// survive reboots) and removed on stop.
+func addInbound(p *SidePlan, t *Tunnel, peer, ports, iface string) {
+	up, down := inboundRules(t, peer, ports, iface)
+	if p.Files == nil {
+		p.Files = map[string]FileSpec{}
+	}
+	dir := tunnelDir(t)
+	p.Files[dir+"/fw-in-up.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + up), Mode: 0o755}
+	p.Files[dir+"/fw-in-down.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + down), Mode: 0o755}
+	p.Unit.ExtraPre = append(p.Unit.ExtraPre, "-"+dir+"/fw-in-up.sh")
+	p.Unit.ExtraPost = append(p.Unit.ExtraPost, "-"+dir+"/fw-in-down.sh")
+}
+
+func inboundChain(t *Tunnel) string { return "TPI_" + t.ID }
+
+func inboundRules(t *Tunnel, peer, ports, iface string) (up, down string) {
+	ch := inboundChain(t)
+	ipt, fam := "iptables", "ipv4"
+	if strings.Contains(peer, ":") {
+		ipt, fam = "ip6tables", "ipv6"
+	}
+	var b, fw strings.Builder
+	fmt.Fprintf(&b, "command -v %[1]s >/dev/null 2>&1 || exit 0\n%[1]s -w -N %[2]s 2>/dev/null || %[1]s -w -F %[2]s\n", ipt, ch)
+	if peer != "" {
+		fmt.Fprintf(&b, "%s -w -A %s -s %s -j ACCEPT\n", ipt, ch, peer)
+		fmt.Fprintf(&fw, "firewall-cmd -q --add-rich-rule='rule family=%s source address=%s accept' 2>/dev/null\n", fam, peer)
+	}
+	if iface != "" {
+		// the inner traffic is IPv4 (10.10.N.x) whatever the outer family is
+		fmt.Fprintf(&b, "iptables -w -C INPUT -i %[1]s -j ACCEPT 2>/dev/null || iptables -w -I INPUT -i %[1]s -j ACCEPT\n", iface)
+		fmt.Fprintf(&fw, "firewall-cmd -q --zone=trusted --add-interface=%s 2>/dev/null\n", iface)
+	}
+	for _, p := range splitPorts(ports) {
+		port := p.listen
+		if i := strings.LastIndex(port, ":"); i >= 0 && !strings.Contains(port, "-") {
+			port = port[i+1:] // "127.0.0.1:443" style binds
+		}
+		if _, err := strconv.Atoi(strings.SplitN(port, "-", 2)[0]); err != nil {
+			continue
+		}
+		for _, proto := range []string{"tcp", "udp"} {
+			fmt.Fprintf(&b, "%s -w -A %s -p %s --dport %s -j ACCEPT\n", ipt, ch, proto, strings.ReplaceAll(port, "-", ":"))
+			fmt.Fprintf(&fw, "firewall-cmd -q --add-port=%s/%s 2>/dev/null\n", port, proto)
+		}
+	}
+	fmt.Fprintf(&b, "%[1]s -w -C INPUT -j %[2]s 2>/dev/null || %[1]s -w -I INPUT -j %[2]s\n", ipt, ch)
+	if fw.Len() > 0 {
+		b.WriteString("if firewall-cmd --state >/dev/null 2>&1; then\n" + fw.String() + "fi\n")
+	}
+	b.WriteString("exit 0\n")
+
+	var d strings.Builder
+	fmt.Fprintf(&d, "while %[1]s -w -D INPUT -j %[2]s 2>/dev/null; do :; done\n%[1]s -w -F %[2]s 2>/dev/null; %[1]s -w -X %[2]s 2>/dev/null\n", ipt, ch)
+	if iface != "" {
+		fmt.Fprintf(&d, "iptables -w -D INPUT -i %s -j ACCEPT 2>/dev/null\n", iface)
+	}
+	if fw.Len() > 0 {
+		d.WriteString("if firewall-cmd --state >/dev/null 2>&1; then\n" + strings.ReplaceAll(fw.String(), "--add-", "--remove-") + "fi\n")
+	}
+	d.WriteString("exit 0\n")
+	return b.String(), d.String()
 }
 
 func supportsFamily(m *Method, fam string) bool {

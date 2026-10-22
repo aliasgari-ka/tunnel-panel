@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,7 +24,7 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 	}
 	go func() {
 		defer a.jobs.done(j)
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		ctx, cancel := j.context(4 * time.Minute)
 		defer cancel()
 		problems := 0
 		ok := func(f string, x ...any) { j.log("  ✓ "+f, x...) }
