@@ -19,7 +19,8 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 - **Multi-node:** register several Iran and foreign servers; each tunnel picks its own pair.
 - **Port forwarding** from Iran's public ports to the foreign side, with MSS clamping, in
   per-tunnel iptables chains that tear down cleanly.
-- **Telegram bot** that does everything the panel does (start/stop/switch/status) over buttons.
+- **Telegram bot** that does everything the panel does (start/stop/switch/status) over buttons;
+  the method picker has an IPv4 / IPv6 switch, so each tunnel's method *and* family can be chosen.
 - **Persistent & supervised:** every method is a `systemd` unit, so tunnels survive reboots.
 - **SSH bridge:** expose an Iran server's SSH on a panel port so you can log in manually.
 - **Traffic shaping:** optional per-tunnel CAKE/HTB/TBF/fq_codel qdisc + jitter + MSS clamp.
@@ -29,7 +30,8 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
   forwarded port to the foreign service; the original path is re-tested hourly (on a spare
   slot, without touching the live tunnel) and restored when it works. Per-tunnel switch.
 - **Health & alerts:** live health on every card (red when down); Telegram 🔴/🟢/🔁 messages.
-- **Diagnose / Trace / Speed test:** Diagnose checks every hop and names the problem; Trace
+- **Diagnose / Trace / Speed test:** Diagnose checks every hop and names the problem (a server
+  that drops ping is not reported as a dead tunnel when TCP gets through); Trace
   watches while you connect a client (e.g. Xray) and shows where the connection stops, with
   the service's own log lines; Speed test measures RTT and ↓/↑ throughput through the tunnel.
 - **Live traffic** per tunnel and per server NIC; **benchmark history** of every route tested.

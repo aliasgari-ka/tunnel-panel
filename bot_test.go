@@ -33,7 +33,7 @@ func TestBotFlows(t *testing.T) {
 	dataDir = t.TempDir()
 	st, _ := LoadStore(dataDir)
 	_ = st.Update(func(s *State) error {
-		s.Servers = []*Server{{ID: "ir1", Name: "ir-xe101", IPv4: "192.0.2.1", Country: "IR"}, {ID: "kh1", Name: "germany", IPv4: "198.51.100.1", Role: "foreign", Country: "DE"}}
+		s.Servers = []*Server{{ID: "ir1", Name: "ir-xe101", IPv4: "192.0.2.1", IPv6: "2001:db8::1", Country: "IR"}, {ID: "kh1", Name: "germany", IPv4: "198.51.100.1", IPv6: "2001:db8::2", Role: "foreign", Country: "DE"}}
 		s.Tunnels = []*Tunnel{
 			{ID: "aaaaaaaaaaaa", Name: "tehran-de", ServerID: "ir1", ForeignID: "kh1", Family: "v4", Ports: "443", Index: 1, Active: "bp_reverse", Selected: "bp_reverse",
 				Failover: &FailoverState{Method: "gre", Family: "v6", Reason: "tunnel link down"}},
@@ -53,6 +53,8 @@ func TestBotFlows(t *testing.T) {
 	b.onText("42", "/menu")
 	b.onCallback("42", 7, "cb", "t:aaaaaaaaaaaa")
 	b.onCallback("42", 7, "cb", "m:aaaaaaaaaaaa")
+	b.onCallback("42", 7, "cb", "m:aaaaaaaaaaaa:v6")
+	b.onCallback("42", 7, "cb", "a:bbbbbbbbbbbb:golden:v6") // Golden is IPv4 only → refused, family unchanged
 	b.onCallback("42", 7, "cb", "sq:aaaaaaaaaaaa")
 	b.onCallback("42", 7, "cb", "t:bbbbbbbbbbbb")
 	b.onCallback("42", 7, "cb", "home:bh")
@@ -87,10 +89,14 @@ func TestBotFlows(t *testing.T) {
 		}
 	}
 	out := all.String()
-	for _, want := range []string{"▶ 1/2 running", "🔁 1 on backup", "★ BackPack reverse", "L3 tunnels", "Yes, stop it", "Benchmark history", "Not authorized", "no longer exists"} {
+	for _, want := range []string{"▶ 1/2 running", "🔁 1 on backup", "★ BackPack reverse", "L3 tunnels", "Yes, stop it", "Benchmark history", "Not authorized", "no longer exists",
+		"● IPv4", "○ IPv6", "● IPv6", "Golden-GRE", "Direct v6", "does not work over IPv6"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in bot output", want)
 		}
+	}
+	if f := st.Tunnel("bbbbbbbbbbbb").Family; f != "v6" {
+		t.Errorf("a refused apply changed the family to %s", f)
 	}
 	if testing.Verbose() {
 		t.Log("\n" + out)

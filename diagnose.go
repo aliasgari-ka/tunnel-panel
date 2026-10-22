@@ -79,6 +79,31 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 			}
 		}
 
+		// 1b. the underlay: do the two servers reach each other over this family at all?
+		fam := map[string]string{"v4": "IPv4", "v6": "IPv6"}[t.Family]
+		j.log("1b. %s between the servers (%s → %s)", fam, d.IRPub, d.KHPub)
+		under := run(ir, fmt.Sprintf("ping -n -c 3 -i 0.3 -W 2 %s >/dev/null 2>&1 && echo ping", d.KHPub))
+		if under != "ping" {
+			sshp := "22"
+			if f := a.store.Server(t.ForeignID); f != nil && f.SSHPort > 0 {
+				sshp = strconv.Itoa(f.SSHPort)
+			}
+			under = run(ir, tcpReach(d.KHPub, sshp))
+		}
+		switch under {
+		case "ping", "open", "refused":
+			ok("Iran reaches the foreign server over %s", fam)
+		default:
+			// only a warning: ping may be filtered and SSH open to some IPs only, while the
+			// tunnel itself (often dialled from the foreign side) still works — the steps below decide
+			j.log("  ⚠ Iran gets no ping or TCP answer from %s over %s", d.KHPub, fam)
+			if t.Family == "v6" {
+				hint("if the checks below fail too, IPv6 between these servers is the problem (common with Iranian datacenters' IPv6 transit) — switch the tunnel to IPv4 in Manage")
+			} else {
+				hint("if the checks below fail too, check the public IPs and both providers' firewalls")
+			}
+		}
+
 		// 2. tunnel link + path MTU (L3 only)
 		if l3 {
 			ifc := trafficIface(t)
@@ -88,13 +113,29 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 			} else {
 				bad("interface %s is missing on Iran", ifc)
 			}
+			pingOK := false
 			if _, _, loss, err := parsePing(run(ir, fmt.Sprintf("ping -n -c 4 -i 0.3 -W 2 %s 2>/dev/null | tail -3", d.KHv4))); err == nil && loss < 100 {
 				ok("ping through the tunnel works (loss %.0f%%)", loss)
-			} else {
-				bad("no ping reply from %s through the tunnel", d.KHv4)
+				pingOK = true
+			}
+			tcp := run(ir, tcpReach(d.KHv4, probePortOf(t)))
+			switch {
+			case pingOK:
+			case tcp == "open" || tcp == "refused":
+				// the link works; only ICMP doesn't — say why instead of flagging the tunnel
+				why := "ICMP is blocked on the path or by a firewall"
+				if run(ir, "command -v ping >/dev/null && echo y") != "y" {
+					why = "ping isn't installed on the Iran server (apt install iputils-ping)"
+				} else if run(kh, "cat /proc/sys/net/ipv4/icmp_echo_ignore_all 2>/dev/null") == "1" {
+					why = "the foreign server ignores pings (net.ipv4.icmp_echo_ignore_all = 1)"
+				}
+				ok("the tunnel carries traffic (TCP to %s:%s %s)", d.KHv4, probePortOf(t), map[string]string{"open": "connects", "refused": "is answered"}[tcp])
+				j.log("  ⚠ ping doesn't answer: %s — harmless, but the path MTU can't be measured", why)
+			default:
+				bad("nothing passes through the tunnel (no ping reply, TCP to %s:%s times out)", d.KHv4, probePortOf(t))
 			}
 			mtu, _ := strconv.Atoi(run(ir, "cat /sys/class/net/"+ifc+"/mtu 2>/dev/null"))
-			if mtu > 0 {
+			if mtu > 0 && pingOK {
 				up := pmtu(run, ir, d.KHv4, mtu)
 				down := pmtu(run, kh, d.IRv4, mtu)
 				j.log("  path MTU through the tunnel: Iran→foreign %s, foreign→Iran %s (interface MTU %d)", mtuStr(up), mtuStr(down), mtu)
@@ -109,7 +150,7 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 					} else if lo > 0 {
 						hint("lower the method's MTU option to %d and Re-apply", lo-20)
 					} else {
-						hint("even small packets fail — the carrier itself is blocked or broken")
+						hint("only small packets pass — lower the MTU option and Re-apply")
 					}
 				} else {
 					ok("full-size packets pass both ways")
@@ -288,4 +329,24 @@ func firstPorts(ports string, n int) []portSpec {
 		}
 	}
 	return out
+}
+
+// tcpReach prints open / refused / timeout for host:port. "refused" still proves the
+// path carries packets both ways (the RST came back); only "timeout" means no path.
+func tcpReach(host, port string) string {
+	return fmt.Sprintf(`r=$(timeout 4 bash -c 'exec 3<>/dev/tcp/%s/%s' 2>&1); rc=$?
+if [ $rc = 0 ]; then echo open; elif echo "$r" | grep -qi refused; then echo refused; else echo timeout; fi`, host, port)
+}
+
+// probePortOf is a port to test reachability through a tunnel: the first forwarded
+// target port (a service usually listens there), else SSH.
+func probePortOf(t *Tunnel) string {
+	if ps := firstPorts(t.Ports, 1); len(ps) > 0 {
+		d := ps[0].dst
+		if i := strings.LastIndex(d, ":"); i >= 0 {
+			d = d[i+1:]
+		}
+		return d
+	}
+	return "22"
 }

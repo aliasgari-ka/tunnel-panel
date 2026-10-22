@@ -586,12 +586,16 @@ func isMasked(s string) bool { return s == "" || s == "********" }
 // ---- tunnels ----
 
 func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
-	out := []Tunnel{}
+	type tv struct {
+		Tunnel
+		Families []string `json:"families"` // address families both of its servers can use
+	}
+	out := []tv{}
 	s.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
 			cp := t.clone()  // deep copy: encoded after the lock is released
 			cp.Secrets = nil // never send tokens/PSKs to the browser
-			out = append(out, cp)
+			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t)})
 		}
 	})
 	writeJSON(w, out)
@@ -750,31 +754,22 @@ func (s *Server2) tunnelDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server2) tunnelApply(w http.ResponseWriter, r *http.Request) {
-	var in struct{ ID, Method string }
+	var in struct{ ID, Method, Family string }
 	_ = readJSON(r, &in)
 	t := s.app.store.Tunnel(in.ID)
 	if t == nil {
 		httpErr(w, 404, "tunnel not found")
 		return
 	}
-	m := methodByID[in.Method]
-	if m == nil {
-		httpErr(w, 400, "unknown method")
-		return
-	}
-	if !supportsFamily(m, t.Family) {
-		httpErr(w, 400, fmt.Sprintf("%s does not work over %s.", m.Title, t.Family))
-		return
-	}
-	if id := s.app.jobs.running(failoverJobKey + t.ID); id != "" {
-		_, _ = s.app.jobs.cancel(id) // the user's choice wins over an automatic failover
-	}
-	j, err := s.app.Apply(t, in.Method)
+	j, err := s.app.ApplyRoute(t, in.Method, in.Family)
 	if err != nil {
-		httpErr(w, 409, err.Error())
+		code := 400
+		if strings.Contains(err.Error(), "still running") {
+			code = 409
+		}
+		httpErr(w, code, err.Error())
 		return
 	}
-	s.app.clearFailover(t) // chosen by hand
 	writeJSON(w, map[string]string{"job": j.ID})
 }
 

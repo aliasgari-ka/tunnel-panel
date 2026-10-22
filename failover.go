@@ -216,6 +216,93 @@ func (a *App) clearFailover(t *Tunnel) {
 	}
 }
 
+// routeFamilies lists the address families both of a tunnel's servers can use.
+func (a *App) routeFamilies(t *Tunnel) []string {
+	ir, fg := a.store.Server(t.ServerID), a.store.Server(t.ForeignID)
+	if ir == nil {
+		return nil
+	}
+	var out []string
+	for _, fam := range []string{"v4", "v6"} {
+		d := deriveFor(&Tunnel{Family: fam}, ir, fg, a.settings())
+		if d.IRPub != "" && d.KHPub != "" {
+			out = append(out, fam)
+		}
+	}
+	return out
+}
+
+// routeFamiliesLocked is routeFamilies for callers already inside store.View/Update.
+func (a *App) routeFamiliesLocked(st *State, t *Tunnel) []string {
+	var ir, fg *Server
+	for _, s := range st.Servers {
+		if s.ID == t.ServerID {
+			ir = s
+		}
+		if s.ID == t.ForeignID {
+			fg = s
+		}
+	}
+	out := []string{}
+	if ir == nil {
+		return out
+	}
+	for _, fam := range []string{"v4", "v6"} {
+		d := deriveFor(&Tunnel{Family: fam}, ir, fg, st.Settings)
+		if d.IRPub != "" && d.KHPub != "" {
+			out = append(out, fam)
+		}
+	}
+	return out
+}
+
+// switchFamily validates method m over fam for this tunnel and, when fam differs from
+// the tunnel's current family, switches it (the following Apply tears the old one down).
+func (a *App) switchFamily(t *Tunnel, m *Method, fam string) error {
+	if fam != "v4" && fam != "v6" {
+		return fmt.Errorf("family must be v4 or v6")
+	}
+	if !supportsFamily(m, fam) {
+		return fmt.Errorf("%s does not work over %s", m.Title, map[string]string{"v4": "IPv4", "v6": "IPv6"}[fam])
+	}
+	if !contains(a.routeFamilies(t), fam) {
+		return fmt.Errorf("%s isn't available on this route: a server has no public %s address (set it on the Servers page or run Test connection)", map[string]string{"v4": "IPv4", "v6": "IPv6"}[fam], fam)
+	}
+	if t.Family != fam {
+		a.setFamily(t, fam)
+	}
+	return nil
+}
+
+// ApplyRoute is a hand-picked Apply of method mid over family fam (empty = the tunnel's
+// current one): the user's choice wins over a running automatic failover, and the family
+// is put back if the apply cannot start.
+func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
+	m := methodByID[mid]
+	if m == nil {
+		return nil, fmt.Errorf("unknown method")
+	}
+	if fam == "" {
+		fam = t.Family
+	}
+	old := t.Family
+	if err := a.switchFamily(t, m, fam); err != nil {
+		return nil, err
+	}
+	if id := a.jobs.running(failoverJobKey + t.ID); id != "" {
+		_, _ = a.jobs.cancel(id)
+	}
+	j, err := a.Apply(t, mid)
+	if err != nil {
+		if t.Family != old {
+			a.setFamily(t, old)
+		}
+		return nil, err
+	}
+	a.clearFailover(t)
+	return j, nil
+}
+
 // setFamily switches a stopped-or-being-replaced tunnel's underlay family.
 func (a *App) setFamily(t *Tunnel, fam string) {
 	_ = a.store.Update(func(*State) error { t.Family = fam; return nil })

@@ -108,6 +108,27 @@ func TestFailoverNS(t *testing.T) {
 	}
 	step("user traffic passes on GRE/v6", user())
 
+	// many real servers drop ping: health and Diagnose must still see a working tunnel
+	sh(t, "ip netns exec tkh iptables -w -I INPUT -p icmp --icmp-type echo-request -j DROP")
+	_, _, link := a.Health(ctx, tn)
+	step("ping blocked → health still says link up ("+link+")", link == "up")
+	if dj, err := a.Diagnose(tn); err == nil {
+		for dj.snapshot().Status == "running" {
+			time.Sleep(time.Second)
+		}
+		var crosses []string
+		for _, l := range dj.snapshot().Lines {
+			if strings.Contains(l, "✕") || strings.Contains(l, "⚠") || strings.Contains(l, "DONE") {
+				crosses = append(crosses, strings.TrimSpace(l))
+				t.Log("   diagnose " + strings.TrimSpace(l))
+			}
+		}
+		step("ping blocked → Diagnose finds no problem", strings.Contains(strings.Join(crosses, "\n"), "no problem found"))
+	} else {
+		step("diagnose starts: "+err.Error(), false)
+	}
+	sh(t, "ip netns exec tkh iptables -w -D INPUT -p icmp --icmp-type echo-request -j DROP")
+
 	sh(t, "ip netns exec tkh ip6tables -w -I INPUT -p 47 -j DROP")
 	step("ip6gre blocked → user traffic stops", !user())
 

@@ -503,14 +503,93 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 	}
 	rows := [][]ikey{}
 	if t.Active != "" {
-		rows = append(rows, []ikey{{Text: "⏹ Stop", Data: "sq:" + t.ID}, {Text: "↻ Re-apply", Data: "a:" + t.ID + ":" + t.Active}})
+		rows = append(rows, []ikey{{Text: "⏹ Stop", Data: "sq:" + t.ID}, {Text: "↻ Re-apply", Data: "a:" + t.ID + ":" + t.Active + ":" + t.Family}})
 		rows = append(rows, []ikey{{Text: "🩺 Diagnose", Data: "dg:" + t.ID}, {Text: "🚀 Speed test", Data: "sp:" + t.ID}})
 		rows = append(rows, []ikey{{Text: "🔎 Trace 30 s", Data: "tr:" + t.ID}, {Text: "📊 Health", Data: "st:" + t.ID}})
 	} else if t.Selected != "" {
-		rows = append(rows, []ikey{{Text: "▶ Start " + methodTitle(t.Selected), Data: "a:" + t.ID + ":" + t.Selected}})
+		rows = append(rows, []ikey{{Text: "▶ Start " + methodTitle(t.Selected) + " · " + famName(t.Family), Data: "a:" + t.ID + ":" + t.Selected + ":" + t.Family}})
 	}
-	rows = append(rows, []ikey{{Text: "⇄ Switch method", Data: "m:" + t.ID}, {Text: "📜 Last log", Data: "lg:" + t.ID}})
+	rows = append(rows, []ikey{{Text: "⇄ Method / IPv4·IPv6", Data: "m:" + t.ID}, {Text: "📜 Last log", Data: "lg:" + t.ID}})
 	rows = append(rows, []ikey{{Text: "« Tunnels", Data: "home"}})
+	return sb.String(), b.keyboard(rows)
+}
+
+func famName(f string) string {
+	return map[string]string{"v4": "IPv4", "v6": "IPv6"}[f]
+}
+
+// methodPicker lists the methods that work over fam, L3 tunnels and port forwarders apart,
+// with a row on top to switch between the route's families.
+func (b *Bot) methodPicker(t *Tunnel, fam string, fams []string) (string, string) {
+	best := ""
+	for _, r := range b.app.benchResults(t.ServerID, t.ForeignID, fam) {
+		if r.Recommended {
+			best = r.Method
+		}
+	}
+	var rows [][]ikey
+	if len(fams) > 1 {
+		var fr []ikey
+		for _, f := range fams {
+			label := famName(f)
+			if f == fam {
+				label = "● " + label
+			} else {
+				label = "○ " + label
+			}
+			fr = append(fr, ikey{Text: label, Data: "m:" + t.ID + ":" + f})
+		}
+		rows = append(rows, fr)
+	}
+	group := func(l3 bool) [][]ikey {
+		var rows [][]ikey
+		var cur []ikey
+		for _, m := range methods {
+			if !supportsFamily(m, fam) || m.ID == "spoof" || benchIsL3(m, t.Options[m.ID]) != l3 {
+				continue
+			}
+			label := m.Title
+			switch {
+			case m.ID == t.Active && fam == t.Family:
+				label = "✓ " + label
+			case m.ID == best:
+				label = "★ " + label
+			}
+			cur = append(cur, ikey{Text: label, Data: "a:" + t.ID + ":" + m.ID + ":" + fam})
+			if len(cur) == 2 {
+				rows = append(rows, cur)
+				cur = nil
+			}
+		}
+		if len(cur) > 0 {
+			rows = append(rows, cur)
+		}
+		return rows
+	}
+	if l3 := group(true); len(l3) > 0 {
+		rows = append(rows, []ikey{{Text: "── L3 tunnels ──", Data: "noop"}})
+		rows = append(rows, l3...)
+	}
+	if fw := group(false); len(fw) > 0 {
+		rows = append(rows, []ikey{{Text: "── port forwarders ──", Data: "noop"}})
+		rows = append(rows, fw...)
+	}
+	rows = append(rows, []ikey{{Text: "« Back", Data: "t:" + t.ID}})
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<b>%s</b> — choose a method over <b>%s</b>", esc(t.Name), famName(fam))
+	if t.Active != "" {
+		fmt.Fprintf(&sb, "\nnow running: %s over %s", esc(methodTitle(t.Active)), famName(t.Family))
+	}
+	switch {
+	case len(fams) == 0:
+		sb.WriteString("\n⚠ a server has no public IP saved — open Servers in the panel and run Test connection")
+	case len(fams) == 1:
+		other := map[string]string{"v4": "IPv6", "v6": "IPv4"}[fams[0]]
+		fmt.Fprintf(&sb, "\n%s isn't offered: one of the two servers has no public %s address (it is detected on Test connection)", other, other)
+	}
+	if best != "" {
+		sb.WriteString("\n★ = best in this route's last benchmark")
+	}
 	return sb.String(), b.keyboard(rows)
 }
 
@@ -558,7 +637,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		b.sendMsg(chat, b.benchHistoryText(), "")
 		return
 	}
-	parts := strings.SplitN(data, ":", 3)
+	parts := strings.SplitN(data, ":", 4)
 	if len(parts) < 2 {
 		return
 	}
@@ -578,60 +657,29 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 	case "t":
 		text, kb := b.tunnelPage(t)
 		b.edit(chat, msg, text, kb)
-	case "m": // method picker, grouped; ★ = this route's benchmark winner
-		best := ""
-		for _, r := range b.app.benchResults(t.ServerID, t.ForeignID, t.Family) {
-			if r.Recommended {
-				best = r.Method
-			}
+	case "m": // method picker: pick the address family on top, then a method (★ = benchmark winner)
+		fams := b.app.routeFamilies(t)
+		fam := t.Family
+		if len(parts) > 2 && contains(fams, parts[2]) {
+			fam = parts[2]
+		} else if !contains(fams, fam) && len(fams) > 0 {
+			fam = fams[0]
 		}
-		group := func(l3 bool) [][]ikey {
-			var rows [][]ikey
-			var cur []ikey
-			for _, m := range methods {
-				if !supportsFamily(m, t.Family) || m.ID == "spoof" || benchIsL3(m, t.Options[m.ID]) != l3 {
-					continue
-				}
-				label := m.Title
-				switch {
-				case m.ID == t.Active:
-					label = "✓ " + label
-				case m.ID == best:
-					label = "★ " + label
-				}
-				cur = append(cur, ikey{Text: label, Data: "a:" + t.ID + ":" + m.ID})
-				if len(cur) == 2 {
-					rows = append(rows, cur)
-					cur = nil
-				}
-			}
-			if len(cur) > 0 {
-				rows = append(rows, cur)
-			}
-			return rows
-		}
-		rows := [][]ikey{{{Text: "── L3 tunnels (Iran dials out) ──", Data: "noop"}}}
-		rows = append(rows, group(true)...)
-		rows = append(rows, []ikey{{Text: "── port forwarders (reverse) ──", Data: "noop"}})
-		rows = append(rows, group(false)...)
-		rows = append(rows, []ikey{{Text: "« Back", Data: "t:" + t.ID}})
-		hint := ""
-		if best != "" {
-			hint = "\n★ = best in this route's last benchmark"
-		}
-		b.edit(chat, msg, "<b>"+esc(t.Name)+"</b> ("+t.Family+") — choose a method:"+hint, b.keyboard(rows))
+		text, kb := b.methodPicker(t, fam, fams)
+		b.edit(chat, msg, text, kb)
 	case "a":
 		if len(parts) < 3 {
 			return
 		}
-		if id := b.app.jobs.running(failoverJobKey + t.ID); id != "" {
-			_, _ = b.app.jobs.cancel(id)
+		fam := ""
+		if len(parts) > 3 {
+			fam = parts[3]
 		}
-		j, err := b.app.Apply(t, parts[2])
-		if err == nil {
-			b.app.clearFailover(t)
+		if fam == "" {
+			fam = t.Family
 		}
-		job(j, err, "Applying "+methodTitle(parts[2])+" to "+t.Name)
+		j, err := b.app.ApplyRoute(t, parts[2], fam)
+		job(j, err, "Applying "+methodTitle(parts[2])+" over "+famName(fam)+" to "+t.Name)
 	case "sq": // confirm before stopping
 		b.edit(chat, msg, "Stop <b>"+esc(t.Name)+"</b>? Users on its ports lose the connection.",
 			b.keyboard([][]ikey{{{Text: "⏹ Yes, stop it", Data: "s:" + t.ID}, {Text: "Cancel", Data: "t:" + t.ID}}}))

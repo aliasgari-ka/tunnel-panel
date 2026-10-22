@@ -139,7 +139,12 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .sfoot,.tfoot{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .grow{flex:1}
 /* ⋯ menu */
+.seg{display:flex;gap:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;align-self:flex-start;margin:2px 0 8px}
+.seg button{background:transparent;border:0;color:var(--muted);padding:8px 18px;font-weight:650;font-size:13px;cursor:pointer}
+.seg button+button{border-inline-start:1px solid var(--line)}
+.seg button.on{background:var(--accent);color:var(--accent-fg)}
 details.more{position:relative}
+.card.raised,.card:has(details.more[open]){position:relative;z-index:35}
 details.more>summary{list-style:none}
 details.more .pop{position:absolute;inset-inline-end:0;top:calc(100% + 4px);z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:5px;min-width:200px;display:flex;flex-direction:column}
 .mi{background:none;border:0;color:var(--fg);text-align:start;padding:8px 10px;border-radius:7px;font-size:13px;font-weight:550}
@@ -234,6 +239,12 @@ summary::-webkit-details-marker{display:none}
   .opts,.ff .two{grid-template-columns:1fr}
   .summary{grid-template-columns:repeat(2,minmax(0,1fr))}
   .tgrid,.grid.cards{grid-template-columns:1fr}
+  /* phones: no blur behind cards (it is what trapped the ⋯ menu under the next card, and it is slow
+     over the animated background); the ⋯ menu opens as a bottom sheet with big touch targets */
+  .card{-webkit-backdrop-filter:none;backdrop-filter:none;background:color-mix(in srgb,var(--panel) 96%,transparent)}
+  details.more[open]>summary::before{content:"";position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:68}
+  details.more .pop{position:fixed;inset-inline:10px;top:auto;bottom:calc(10px + env(safe-area-inset-bottom));z-index:70;min-width:0;padding:8px;border-radius:14px;max-height:70vh;overflow:auto}
+  .mi{padding:13px 12px;font-size:15px}
 }
 </style>
 </head>

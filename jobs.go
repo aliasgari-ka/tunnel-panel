@@ -483,7 +483,9 @@ func linkCheck(t *Tunnel, srv, fsrv *Server, set Settings) string {
 	}
 	d := deriveFor(t, srv, fsrv, set)
 	if benchIsL3(m, t.Options[m.ID]) {
-		return fmt.Sprintf("ping -n -c 2 -i 0.3 -W 2 %s >/dev/null 2>&1 && echo 'LINK up' || echo 'LINK down'", d.KHv4)
+		// ping first; many servers drop ICMP, so a TCP connect (or RST) through the tunnel
+		// to the forwarded service port also proves the link carries traffic
+		return fmt.Sprintf("if ping -n -c 2 -i 0.3 -W 2 %[1]s >/dev/null 2>&1; then echo 'LINK up'; else\n%[2]s | sed 's/^open$/LINK up/; s/^refused$/LINK up/; s/^timeout$/LINK down/'\nfi", d.KHv4, tcpReach(d.KHv4, probePortOf(t)))
 	}
 	// only a TCP control/pool connection shows up as an established socket; for udp/kcp/
 	// quic/pck/xdi transports the link can't be judged this way, so report "unknown"

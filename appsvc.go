@@ -136,9 +136,14 @@ func (a *App) restartBot() {
 // routes, plus (only when that IPv4 is private/NATed) what the internet sees.
 const addrScript = `v4=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
 v6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null | sed -n 's/.* src \([0-9a-fA-F:]*\).*/\1/p' | head -1)
-[ -n "$v6" ] || v6=$(ip -6 -o addr show scope global 2>/dev/null | grep -v -e temporary -e deprecated | awk '{print $4}' | cut -d/ -f1 | grep -iv '^f[cd]' | head -1)
+# an address without a default IPv6 route can't carry a tunnel: report none
+if [ -n "$(ip -6 route show default 2>/dev/null)" ]; then
+  [ -n "$v6" ] || v6=$(ip -6 -o addr show scope global 2>/dev/null | grep -v -e temporary -e deprecated | awk '{print $4}' | cut -d/ -f1 | grep -iv '^f[cd]' | head -1)
+  [ -n "$v6" ] || v6=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep : | grep -iv '^f[cde]' | head -1)
+else
+  v6=""
+fi
 [ -n "$v4" ] || v4=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v : | head -1)
-[ -n "$v6" ] || v6=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep : | grep -iv '^f[cde]' | head -1)
 echo "V4=$v4"
 echo "V6=$v6"
 case "$v4" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*|"")

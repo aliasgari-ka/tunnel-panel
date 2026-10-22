@@ -546,6 +546,9 @@ function moreMenu(items) {
     `<button class="mi${i.danger ? ' danger' : ''}" ${i.attr}>${i.label}</button>`).join('')}</div></details>`;
 }
 document.addEventListener('click', (e) => { $$('details.more[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
+// keep an open ⋯ menu above the next card (browsers without :has()), and close it once an item is picked
+document.addEventListener('toggle', (e) => { const d = e.target; if (!d.matches || !d.matches('details.more')) return; const c = d.closest('.card'); if (c) c.classList.toggle('raised', d.open); }, true);
+document.addEventListener('click', (e) => { const mi = e.target.closest && e.target.closest('details.more .mi'); if (mi) setTimeout(() => { const d = mi.closest('details.more'); if (d && !mi.dataset.armed) d.removeAttribute('open'); }, 0); });
 function serverCard(s) {
   const isIran = (s.role || 'iran') === 'iran';
   const status = s.agentOnline ? `<span class="pill on"><span class="led"></span>agent online</span>`
@@ -709,7 +712,7 @@ function tunnelCard(t) {
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
-    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span>${t.family === 'v6' ? '<span class="chip">v6</span>' : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>'}</div>
+    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(t.family)}</span>${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>'}</div>
     ${t.active ? `<div class="traf mini" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
@@ -729,7 +732,7 @@ function tunnelCard(t) {
     </div></div>`);
   const on = (sel, fn) => { const el = $(sel, card); if (el) el.onclick = fn; };
   on('[data-manage]', () => manageTunnel(t));
-  on('[data-start]', () => { if (!selM || miss) { manageTunnel(t); return; } applyMethod(t, selM.id); });
+  on('[data-start]', () => { if (!selM || miss) { manageTunnel(t); return; } applyMethod(t, selM.id, t.family); });
   on('[data-stop]', async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } });
   on('[data-log]', () => openLog(t, null));
   on('[data-speedtest]', () => tunnelJob(t, '/tunnels/speedtest', 'Speed test'));
@@ -740,33 +743,53 @@ function tunnelCard(t) {
   refreshStatus(t, card);
   return card;
 }
-async function applyMethod(t, mid) {
-  try { const r = await api('/tunnels/apply', { ID: t.id, Method: mid }); openLog(t, r.job); return true; }
+async function applyMethod(t, mid, fam) {
+  try { const r = await api('/tunnels/apply', { ID: t.id, Method: mid, Family: fam || t.family }); openLog(t, r.job); return true; }
   catch (e) { busyOrError(t, e); return false; }
 }
 async function tunnelJob(t, path, label) {
   try { const r = await api(path, { ID: t.id }); openLog({ id: t.id, name: label + ' · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); }
 }
-// The full controls for one tunnel: method, its options, start/switch/stop and tests.
+// every method over every address family both servers of the tunnel have
+const famName = (f) => f === 'v6' ? 'IPv6' : 'IPv4';
+function routeChoices(t) {
+  const fams = (t.families && t.families.length) ? t.families : [t.family];
+  const out = [];
+  fams.forEach(f => STATE.methods.forEach(m => { if (m.families.includes(f)) out.push({ m, fam: f }); }));
+  return out;
+}
+// The full controls for one tunnel: method + address family, options, start/switch/stop and tests.
 function manageTunnel(t) {
-  const avail = methodsFor(t.family);
-  const sel = (t.selected && avail.find(m => m.id === t.selected)) ? t.selected : (t.active || avail[0]?.id || '');
+  const choices = routeChoices(t);
+  const fams = ['v4', 'v6'].filter(f => choices.some(c => c.fam === f));
+  const selId = t.selected || t.active || choices[0]?.m.id || '';
+  const sel = choices.find(c => c.m.id === selId && c.fam === t.family) ? `${selId}|${t.family}` : (choices[0] ? `${choices[0].m.id}|${choices[0].fam}` : '');
   const active = STATE.methods.find(m => m.id === t.active);
   const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
   const m = modal(`<div class="mg">
     <div class="mg-h"><div><h2 style="margin:0">${esc(t.name)}</h2><div class="faint" style="font-size:12.5px">${(ir && ir.country) ? flag(ir.country) : '🇮🇷'} ${esc(serverName(t.serverId))} → ${fg && fg.country ? flag(fg.country) : (fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'this panel host')} · ports <span class="mono">${esc(t.ports)}</span></div></div>
       ${active ? `<span class="pill on"><span class="led"></span>${esc(active.title)}</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
-    <div class="lbl">Connection method</div>
-    <div class="method-row"><select data-method>${avail.map(x => `<option value="${x.id}"${x.id === sel ? ' selected' : ''}>${esc(x.title)} · ${esc(x.encrypt)}${methodMissing(x, t) ? ' ⚠ needs upload' : ''}</option>`).join('')}</select><button class="btn sm" data-opts>⚙ Options</button></div>
+    <div class="lbl">Connection method · address family</div>
+    ${fams.length > 1 ? `<div class="seg" data-fams>${fams.map(f => `<button type="button" data-f="${f}">${famName(f)}${f === t.family && t.active ? ' · now' : ''}</button>`).join('')}</div>` : ''}
+    <div class="method-row"><select data-method></select><button class="btn sm" data-opts>⚙ Options</button></div>
+    ${fams.length < 2 ? `<div class="faint" style="font-size:12px">Only ${famName(fams[0] || t.family)} is available on this route — ${famName((fams[0] || t.family) === 'v4' ? 'v6' : 'v4')} needs a public address on both servers (add it on the Servers page, or run Test connection to detect it).</div>` : ''}
     <div class="mdesc" data-desc></div>
     <div class="mwarn" data-warn hidden></div>
     <div data-optbox hidden></div>
     <div class="actions"><button class="btn pri" data-apply></button>${t.active ? '<button class="btn" data-stop>■ Stop</button>' : ''}<span class="grow"></span>
-      ${t.active ? '<button class="btn ghost" data-speedtest>🚀 Speed test</button><button class="btn ghost" data-diag>🩺 Diagnose</button><button class="btn ghost" data-trace title="Watch 30 s while you connect your client (e.g. Xray) and see where it stops">🔎 Trace</button>' : ''}<button class="btn ghost" data-x>Close</button></div>
+      ${t.active ? '<button class="btn ghost" data-speedtest>🚀 Speed test</button><button class="btn ghost" data-diag>🩺 Diagnose</button><button class="btn ghost" data-trace title="Watch 30 s while you connect your client (e.g. Xray) and see where it stops">🔎 Trace</button>' : ''}<button class="btn ghost" data-editt>✎ Edit tunnel</button><button class="btn ghost" data-x>Close</button></div>
   </div>`, true);
   const selEl = $('[data-method]', m), descEl = $('[data-desc]', m), warnEl = $('[data-warn]', m), optBox = $('[data-optbox]', m), applyBtn = $('[data-apply]', m);
+  const pick = () => { const [mid, fam] = selEl.value.split('|'); return { mid, fam, x: STATE.methods.find(y => y.id === mid) }; };
+  // the family switch fills the list with that family's methods (keeping the method when it exists there too)
+  const fill = (fam, want) => {
+    selEl.innerHTML = choices.filter(c => c.fam === fam).map(c => { const v = `${c.m.id}|${fam}`; return `<option value="${v}"${c.m.id === want ? ' selected' : ''}>${esc(c.m.title)} · ${esc(c.m.encrypt)}${methodMissing(c.m, t) ? ' ⚠ needs upload' : ''}${c.m.id === t.active && fam === t.family ? ' ✓ running' : ''}</option>`; }).join('');
+    $$('[data-fams] button', m).forEach(b => b.classList.toggle('on', b.dataset.f === fam));
+  };
+  fill(sel.split('|')[1] || t.family, sel.split('|')[0]);
+  $$('[data-fams] button', m).forEach(b => b.onclick = () => { fill(b.dataset.f, pick().mid); optBox.hidden = true; refresh(); });
   const refresh = () => {
-    const x = STATE.methods.find(y => y.id === selEl.value); descEl.textContent = x ? x.desc : '';
+    const { mid, fam, x } = pick(); descEl.textContent = x ? x.desc : '';
     const miss = methodMissing(x, t);
     warnEl.hidden = !miss;
     if (miss) {
@@ -775,17 +798,18 @@ function manageTunnel(t) {
       $$('[data-fetch]', warnEl).forEach(b => b.onclick = () => fetchHelper(b.dataset.fetch, b, () => { m.remove(); manageTunnel(t); }));
       const gs = $('[data-goset]', warnEl); if (gs) gs.onclick = (e) => { e.preventDefault(); m.remove(); STATE.view = 'settings'; paintNav(); renderView(); };
     }
-    applyBtn.textContent = (t.active === selEl.value) ? '↻ Re-apply' : (t.active ? '⇄ Switch to this method' : '▶ Start');
+    applyBtn.textContent = (t.active === mid && t.family === fam) ? '↻ Re-apply' : (t.active ? `⇄ Switch to this (${famName(fam)})` : `▶ Start (${famName(fam)})`);
   };
-  selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: selEl.value }); };
+  selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: pick().mid }); };
   refresh();
-  $('[data-opts]', m).onclick = () => { if (!optBox.hidden) { optBox.hidden = true; return; } renderOpts(optBox, t, selEl.value); optBox.hidden = false; };
-  applyBtn.onclick = async () => { applyBtn.disabled = true; if (await applyMethod(t, selEl.value)) m.remove(); else applyBtn.disabled = false; };
+  $('[data-opts]', m).onclick = () => { if (!optBox.hidden) { optBox.hidden = true; return; } renderOpts(optBox, t, pick().mid); optBox.hidden = false; };
+  applyBtn.onclick = async () => { applyBtn.disabled = true; const { mid, fam } = pick(); if (await applyMethod(t, mid, fam)) m.remove(); else applyBtn.disabled = false; };
   const on = (sel, fn) => { const el = $(sel, m); if (el) el.onclick = fn; };
   on('[data-stop]', async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); m.remove(); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } });
   on('[data-speedtest]', () => { m.remove(); tunnelJob(t, '/tunnels/speedtest', 'Speed test'); });
   on('[data-diag]', () => { m.remove(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); });
   on('[data-trace]', () => { m.remove(); tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'); });
+  on('[data-editt]', () => { m.remove(); tunnelModal(t); });
   on('[data-x]', () => m.remove());
 }
 // Download a vendor helper (Backhaul Premium core) on the panel host.
@@ -1033,11 +1057,11 @@ function renderBenchTable(res, fd, caption) {
   $$('[data-use]', box).forEach(b => b.onclick = () => applyBenchToTunnel(fd, b.dataset.use));
 }
 function applyBenchToTunnel(fd, method) {
-  const opts = STATE.tunnels.filter(t => t.serverId === fd.iran && (t.foreignId || '') === (fd.foreign || '') && t.family === fd.family);
+  const opts = STATE.tunnels.filter(t => t.serverId === fd.iran && (t.foreignId || '') === (fd.foreign || ''));
   if (!opts.length) { alertModal('No tunnel', 'Create a tunnel for this exact route first, then apply the method from its card.'); return; }
   const m = modal(`<h2>Apply ${esc(methodTitle(method))}</h2><p class="muted">Pick the tunnel to switch to this method:</p>
     <div class="ff">${opts.map(t => `<button class="btn" data-t="${t.id}">${esc(t.name)}</button>`).join('')}</div>`, true);
-  $$('[data-t]', m).forEach(b => b.onclick = async () => { try { const r = await api('/tunnels/apply', { ID: b.dataset.t, Method: method }); m.remove(); STATE.view = 'tunnels'; paintNav(); renderView(); const t = STATE.tunnels.find(x => x.id === b.dataset.t); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } });
+  $$('[data-t]', m).forEach(b => b.onclick = async () => { try { const r = await api('/tunnels/apply', { ID: b.dataset.t, Method: method, Family: fd.family }); m.remove(); STATE.view = 'tunnels'; paintNav(); renderView(); const t = STATE.tunnels.find(x => x.id === b.dataset.t); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } });
 }
 const methodTitle = (id) => STATE.methods.find(m => m.id === id)?.title || id;
 
