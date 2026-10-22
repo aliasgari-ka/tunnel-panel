@@ -215,6 +215,13 @@ func resolveOptions(m *Method, saved map[string]string) (func(string) string, fu
 }
 
 func buildPlans(m *Method, t *Tunnel, srv, fsrv *Server, set Settings) (SidePlan, SidePlan, error) {
+	return buildPlansRedirect(m, t, srv, fsrv, set, nil)
+}
+
+// buildPlansRedirect: redir maps users' ports on Iran that another program holds to the
+// internal port the forwarder listens on instead (an iptables REDIRECT sends the outside
+// traffic there; see freeIranPorts).
+func buildPlansRedirect(m *Method, t *Tunnel, srv, fsrv *Server, set Settings, redir map[int]int) (SidePlan, SidePlan, error) {
 	get, getB := resolveOptions(m, t.Options[m.ID])
 	d := deriveFor(t, srv, fsrv, set)
 	if d.IRPub == "" || d.KHPub == "" {
@@ -234,17 +241,55 @@ func buildPlans(m *Method, t *Tunnel, srv, fsrv *Server, set Settings) (SidePlan
 	}
 	tc := *t
 	tc.Ports = withProbePort(m, t)
+	var redirUp, redirDown strings.Builder
+	var redirPorts []string
+	if len(redir) > 0 {
+		var specs []string
+		for _, p := range splitPorts(tc.Ports) {
+			if n, err := strconv.Atoi(p.listen); err == nil && redir[n] > 0 {
+				q := redir[n]
+				specs = append(specs, fmt.Sprintf("%d=%s", q, p.dst))
+				redirPorts = append(redirPorts, strconv.Itoa(q))
+				for _, proto := range []string{"tcp", "udp"} {
+					rule := fmt.Sprintf("PREROUTING -p %s --dport %d -m addrtype --dst-type LOCAL -m comment --comment tpr-%s -j REDIRECT --to-ports %d", proto, n, t.ID, q)
+					fmt.Fprintf(&redirUp, "iptables -w -t nat -C %[1]s 2>/dev/null || iptables -w -t nat -I %[1]s\n", rule)
+					fmt.Fprintf(&redirDown, "while iptables -w -t nat -D %s 2>/dev/null; do :; done\n", rule)
+				}
+				continue
+			}
+			if p.dst == p.listen {
+				specs = append(specs, p.listen)
+			} else {
+				specs = append(specs, p.listen+"="+p.dst)
+			}
+		}
+		tc.Ports = strings.Join(specs, ",")
+	}
 	c := &buildCtx{T: &tc, Srv: srv, Set: set, Opt: get, OptB: getB, D: d}
 	ir, kh, err := m.Build(c)
 	if err != nil {
 		return ir, kh, err
+	}
+	if redirUp.Len() > 0 {
+		dir := tunnelDir(t)
+		if ir.Files == nil {
+			ir.Files = map[string]FileSpec{}
+		}
+		ir.Files[dir+"/redir-up.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + redirUp.String() + "exit 0\n"), Mode: 0o755}
+		ir.Files[dir+"/redir-down.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + redirDown.String() + "exit 0\n"), Mode: 0o755}
+		ir.Unit.ExtraPre = append(ir.Unit.ExtraPre, "-"+dir+"/redir-up.sh")
+		ir.Unit.ExtraPost = append(ir.Unit.ExtraPost, "-"+dir+"/redir-down.sh")
 	}
 	ifc := l3Iface(m, t)
 	// the side that listens for the other's tunnel connection also opens that port to
 	// everyone (the token/handshake guards it): the dialer may leave from an address other
 	// than the one saved for it (several IPs, NAT), and the peer-only rule would drop it
 	irL, khL := tunnelListenPort(m, t, get, d)
-	irPorts, khPorts := tc.Ports, khL
+	// users still arrive on the original ports (INPUT sees the redirected one too)
+	irPorts, khPorts := strings.TrimPrefix(withProbePort(m, t)+","+strings.Join(redirPorts, ","), ","), khL
+	if len(redirPorts) == 0 {
+		irPorts = tc.Ports
+	}
 	if irL != "" {
 		irPorts = strings.TrimPrefix(irPorts+","+irL, ",")
 	}

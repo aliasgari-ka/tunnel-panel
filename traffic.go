@@ -96,6 +96,19 @@ func (a *App) Traffic() TrafficSnapshot {
 	return snap
 }
 
+// trafficFlowing: the live counters (when a page keeps them running) saw traffic in both
+// directions within the last half minute. It doesn't start the collector.
+func (a *App) trafficFlowing(id string) bool {
+	if a.traffic == nil {
+		return false
+	}
+	tm := a.traffic
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	st := tm.tunnels[id]
+	return st != nil && st.Error == "" && time.Since(time.Unix(st.Updated, 0)) < 30*time.Second && st.Down > 2000 && st.Up > 2000
+}
+
 func (a *App) trafficLoop() {
 	tm := a.traffic
 	for {

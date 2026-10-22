@@ -235,8 +235,12 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 			} else if pn, _ := strconv.Atoi(p.listen); pn > 0 && len(heldPorts(ctx, ir, []int{pn})) > 0 {
 				// listening is not enough: it must be this tunnel's daemon
 				hp := heldPorts(ctx, ir, []int{pn})[0]
+				// a held port may be redirected to the tunnel's internal port (see freeIranPorts)
+				to, _ := strconv.Atoi(run(ir, "iptables -w -t nat -S PREROUTING 2>/dev/null | grep -- 'tpr-"+t.ID+" ' | grep -- '-p tcp --dport "+p.listen+" ' | grep -o 'to-ports [0-9]*' | head -1 | cut -d' ' -f2"))
 				if hp.unit == unitName(t) {
 					ok("Iran listens on port %s (%s, this tunnel)", p.listen, hp.name)
+				} else if to > 0 && func() bool { h := heldPorts(ctx, ir, []int{to}); return len(h) > 0 && h[0].unit == unitName(t) }() {
+					ok("outside traffic to port %s is redirected to this tunnel (port %d); %s keeps %s only for connections made on the Iran server", p.listen, to, hp.name, p.listen)
 				} else {
 					bad("Iran port %s is held by %s (pid %d: %s), not by this tunnel — users reach that program instead", p.listen, hp.name, hp.pid, hp.cmd)
 					hint("stop that program or give this tunnel another Iran port (e.g. %d=%s), then Re-apply", pn+1, p.listen)
@@ -314,6 +318,15 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 				ok("TCP connect from Iran to %s:%s through the tunnel works", host, port)
 			} else {
 				bad("TCP connect from Iran to %s:%s through the tunnel fails", host, port)
+			}
+		}
+
+		// what the health monitor (red/green card, alerts, failover) concludes
+		if irs, khs, link := a.Health(ctx, t); link != "" {
+			if r := healthReason(irs, khs, link); r == "" {
+				ok("health monitor's check: link %s", link)
+			} else {
+				bad("health monitor's check says: %s (link %s)", r, link)
 			}
 		}
 

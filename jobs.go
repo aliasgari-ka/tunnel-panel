@@ -190,12 +190,16 @@ func (a *App) settings() Settings {
 }
 
 // build creates plans under the store lock (secrets may be created) and persists them.
-func (a *App) build(m *Method, t *Tunnel, srv *Server) (SidePlan, SidePlan, error) {
+func (a *App) build(m *Method, t *Tunnel, srv *Server, redir ...map[int]int) (SidePlan, SidePlan, error) {
 	var ir, kh SidePlan
 	var err error
 	fsrv := a.store.Server(t.ForeignID)
+	var rd map[int]int
+	if len(redir) > 0 {
+		rd = redir[0]
+	}
 	uerr := a.store.Update(func(st *State) error {
-		ir, kh, err = buildPlans(m, t, srv, fsrv, st.Settings)
+		ir, kh, err = buildPlansRedirect(m, t, srv, fsrv, st.Settings, rd)
 		if err == nil && t.ID != "bench" {
 			err = portClash(st, t, m.ID)
 		}
@@ -333,10 +337,18 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		_, _ = khHost.Run(ctx, teardownScript(t), func(l string) { j.log("[KH] %s", l) })
 		a.setActive(t, "")
 
-		// the ports this method binds on Iran must really be free now
-		if err := a.freeIranPorts(ctx, j, irHost, t, m); err != nil {
+		// the ports this method binds on Iran must really be free now; a user port another
+		// program holds is redirected to a free internal port the daemon listens on instead
+		redir, err := a.freeIranPorts(ctx, j, irHost, t, m)
+		if err != nil {
 			fail("%v", err)
 			return
+		}
+		if len(redir) > 0 {
+			if irP, khP, err = a.build(m, t, srv, redir); err != nil {
+				fail("build: %v", err)
+				return
+			}
 		}
 
 		// reverse methods: make sure the foreign server can actually dial Iran first
@@ -346,7 +358,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 			return
 		}
 		if changed {
-			if irP, khP, err = a.build(m, t, srv); err != nil {
+			if irP, khP, err = a.build(m, t, srv, redir); err != nil {
 				fail("build: %v", err)
 				return
 			}
@@ -518,6 +530,10 @@ func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	if ir == "" {
 		ir = "unknown"
 	}
+	// users' traffic flowing both ways through the tunnel right now is proof enough
+	if link == "down" && a.trafficFlowing(t.ID) {
+		link = "up"
+	}
 	return ir, kh, link
 }
 
@@ -541,7 +557,8 @@ func linkCheck(t *Tunnel, srv, fsrv *Server, set Settings) string {
 	}
 	get, _ := resolveOptions(m, t.Options[m.ID])
 	p := portOr(get(key), d.BasePort)
-	return fmt.Sprintf(`if ss -Htn state established "( sport = :%s )" 2>/dev/null | grep -q .; then echo 'LINK up'; else echo 'LINK down'; fi`, p)
+	// plain "ss -tn" (old iproute2 has no -H and no state filters), netstat as a fallback
+	return fmt.Sprintf(`if { ss -tn 2>/dev/null || netstat -tn 2>/dev/null; } | awk '($1=="ESTAB" || $6=="ESTABLISHED") && ($4 ~ /:%[1]s$/) {f=1} END {exit !f}'; then echo 'LINK up'; else echo 'LINK down'; fi`, p)
 }
 
 func lastLine(s string) string {

@@ -151,6 +151,8 @@ func TestE2EMethods(t *testing.T) {
 		{"BackPack L3 (Iran dials)", "bp_l3", nil},
 		{"BackPack L3 (reverse: foreign dials)", "bp_l3", map[string]string{"dialer": "foreign"}},
 		{"BackPack L3, port held on Iran (haproxy)", "bp_l3", nil},
+		{"BackPack reverse, port held → redirect", "bp_reverse", nil},
+		{"Backhaul, port held → redirect", "backhaul", nil},
 		{"BackPack reverse", "bp_reverse", nil},
 		{"Backhaul (reverse)", "backhaul", nil},
 		{"FRP (reverse)", "frp", nil},
@@ -185,7 +187,11 @@ func TestE2EMethods(t *testing.T) {
 		if c.opts != nil {
 			tn.Options[c.mid] = c.opts
 		}
-		irP, khP, err := buildPlans(m, tn, ir, kh, set)
+		var redir map[int]int
+		if strings.Contains(c.name, "→ redirect") { // what Apply does when another program holds the port
+			redir = map[int]int{28579: 50000 + tn.Index*20}
+		}
+		irP, khP, err := buildPlansRedirect(m, tn, ir, kh, set, redir)
 		if err != nil {
 			report = append(report, fmt.Sprintf("%-38s BUILD ERROR %v", c.name, err))
 			continue
@@ -201,7 +207,6 @@ func TestE2EMethods(t *testing.T) {
 		// "port held": another program already listens on the users' port on Iran
 		if strings.Contains(c.name, "port held") {
 			sh(t, "mkdir -p /tmp/tp-e2e-empty; ip netns exec tir setsid python3 -m http.server 28579 --bind 0.0.0.0 -d /tmp/tp-e2e-empty >/dev/null 2>&1 & sleep 1")
-			defer sh(t, "pkill -f 'tp-e2e-empty'")
 		}
 		if block47 {
 			sh(t, "for n in tir tkh; do ip netns exec $n ip6tables -w -t raw -I PREROUTING -p 47 -j DROP; ip netns exec $n iptables -w -t raw -I PREROUTING -p 47 -j DROP; done")
@@ -245,7 +250,10 @@ func TestE2EMethods(t *testing.T) {
 		if block47 {
 			sh(t, "for n in tir tkh; do ip netns exec $n ip6tables -w -t raw -D PREROUTING -p 47 -j DROP; ip netns exec $n iptables -w -t raw -D PREROUTING -p 47 -j DROP; done")
 		}
-		left := sh(t, "for n in tir tkh; do ip netns exec $n iptables-save 2>/dev/null; ip netns exec $n ip6tables-save 2>/dev/null; done | grep -cE 'TPI_|TPF_|TPM_|TP_tp' ")
+		if strings.Contains(c.name, "port held") {
+			sh(t, "pkill -f 'tp-e2e-empty'") // the stand-in for haproxy, only for its own case
+		}
+		left := sh(t, "for n in tir tkh; do ip netns exec $n iptables-save 2>/dev/null; ip netns exec $n ip6tables-save 2>/dev/null; done | grep -cE 'TPI_|TPF_|TPM_|TP_tp|tpr-' ")
 		if left != "0" {
 			res += "; LEFTOVER firewall rules: " + left
 		}

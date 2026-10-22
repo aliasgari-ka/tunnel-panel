@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -307,25 +308,59 @@ func TestFixIPv6(t *testing.T) {
 	}
 }
 
+// portHost answers the holder query for the ports in held only.
+type portHost map[int]string
+
+func (h portHost) Label() string { return "IR" }
+func (h portHost) Run(_ context.Context, script string, _ func(string)) (string, error) {
+	var out []string
+	for p, line := range h {
+		if strings.Contains(script, "for p in ") && strings.Contains(strings.SplitN(strings.SplitN(script, "for p in ", 2)[1], ";", 2)[0], strconv.Itoa(p)) {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n"), nil
+}
+func (h portHost) WriteFile(string, []byte, os.FileMode) error { return nil }
+
 func TestFreeIranPorts(t *testing.T) {
 	dataDir = t.TempDir()
 	st, _ := LoadStore(dataDir)
 	a := &App{store: st}
 	tn := &Tunnel{ID: "t1", Name: "usa", ServerID: "ir", Ports: "32641", Index: 4, Options: map[string]map[string]string{}}
 	ctx := context.Background()
-	other := fakeHost{"HELD 32641 812 none xray /usr/local/bin/xray run -c /etc/xray.json\n"}
+	other := portHost{32641: "HELD 32641 1081 none haproxy /usr/sbin/haproxy -Ws -f /etc/haproxy/haproxy.cfg"}
 	j := &Job{}
-	if err := a.freeIranPorts(ctx, j, other, tn, methodByID["frp"]); err == nil || !strings.Contains(err.Error(), "xray (pid 812") {
-		t.Errorf("FRP with xray on the port: %v", err)
+	redir, err := a.freeIranPorts(ctx, j, other, tn, methodByID["bp_reverse"])
+	if err != nil || redir[32641] != 50080 {
+		t.Fatalf("BackPack reverse with haproxy on the users' port: redir=%v err=%v", redir, err)
 	}
-	if err := a.freeIranPorts(ctx, j, other, tn, methodByID["gre"]); err != nil {
+	if _, err := a.freeIranPorts(ctx, j, other, tn, methodByID["gre"]); err != nil {
 		t.Errorf("GRE (DNAT) must only note it: %v", err)
 	}
-	left := fakeHost{"HELD 32641 900 tp-t1.service frps /opt/frp/frps -c /etc/tunnel-panel/t/t1/frps.toml\n"}
-	if err := a.freeIranPorts(ctx, j, left, tn, methodByID["backhaul"]); err != nil {
-		t.Errorf("own leftover must be stopped, not refused: %v", err)
+	// the reverse tunnel port itself can't be redirected
+	tp := portHost{40016: "HELD 40016 77 none nginx nginx: master process"}
+	if _, err := a.freeIranPorts(ctx, j, tp, tn, methodByID["backhaul"]); err == nil || !strings.Contains(err.Error(), "nginx (pid 77") {
+		t.Errorf("tunnel port held by nginx: %v", err)
+	}
+	left := portHost{32641: "HELD 32641 900 tp-t1.service frps /opt/frp/frps -c /etc/tunnel-panel/t/t1/frps.toml"}
+	if r, err := a.freeIranPorts(ctx, j, left, tn, methodByID["backhaul"]); err != nil || len(r) != 0 {
+		t.Errorf("own leftover must be stopped, not redirected: %v %v", r, err)
 	}
 	if !strings.Contains(strings.Join(j.snapshot().Lines, "\n"), "leftover frps (pid 900)") {
 		t.Errorf("leftover not reported: %v", j.snapshot().Lines)
+	}
+	// the plan: the daemon listens on 50080, Iran redirects 32641 there
+	ir := &Server{ID: "ir", IPv4: "192.0.2.1"}
+	kh := &Server{ID: "kh", IPv4: "198.51.100.1", Role: "foreign"}
+	tn.ForeignID, tn.Family, tn.Secrets = "kh", "v4", map[string]string{}
+	irP, _, err := buildPlansRedirect(methodByID["bp_reverse"], tn, ir, kh, Settings{}, redir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(irP.Files[tunnelDir(tn)+"/tp-t1.toml"].Content)
+	up := string(irP.Files[tunnelDir(tn)+"/redir-up.sh"].Content)
+	if !strings.Contains(cfg, `"50080=32641"`) || !strings.Contains(up, "--dport 32641 -m addrtype --dst-type LOCAL -m comment --comment tpr-t1 -j REDIRECT --to-ports 50080") {
+		t.Errorf("redirect plan wrong:\n%s\n%s", cfg, up)
 	}
 }

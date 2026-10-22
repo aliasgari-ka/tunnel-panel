@@ -269,7 +269,7 @@ func userspaceIran(m *Method, t *Tunnel) bool {
 // freeIranPorts runs after the old method was stopped: a panel process left over on one
 // of the tunnel's ports is stopped; anything else holding a port the method must bind is
 // an error naming the program, instead of a daemon that starts and never forwards.
-func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *Method) error {
+func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *Method) (map[int]int, error) {
 	want := iranPorts(t, m.ID)
 	if userspaceIran(m, t) && !benchIsL3(m, t.Options[m.ID]) {
 		want[probePortFor(t)] = "speed-test port"
@@ -278,8 +278,18 @@ func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *M
 	for p := range want {
 		ports = append(ports, p)
 	}
+	redir := map[int]int{}
 	for _, hp := range heldPorts(ctx, h, ports) {
 		switch {
+		case userspaceIran(m, t) && want[hp.port] == "forwarded port" && hp.unit == "none" && !strings.Contains(hp.cmd, "/etc/tunnel-panel/t/"):
+			// another program (haproxy, xray…) has the users' port: listen on a free
+			// internal port and REDIRECT the outside traffic there, like the DNAT methods
+			q := a.freeInternalPort(ctx, h, t, len(redir))
+			if q == 0 {
+				return nil, fmt.Errorf("Iran port %d is used by %s (pid %d) and no free internal port was found for a redirect", hp.port, hp.name, hp.pid)
+			}
+			redir[hp.port] = q
+			j.log("[IR] port %d is held by %s (pid %d): %s will listen on %d and outside traffic to %d is redirected there — %s keeps %d only for connections made on the Iran server itself", hp.port, hp.name, hp.pid, m.Title, q, hp.port, hp.name, hp.port)
 		case hp.unit == unitName(t) || strings.Contains(hp.cmd, tunnelDir(t)+"/") || strings.Contains(hp.cmd, "probe serve -listen :"+strconv.Itoa(hp.port)+" "):
 			j.log("[IR] port %d was still held by a leftover %s (pid %d) — stopping it", hp.port, hp.name, hp.pid)
 			_, _ = h.Run(ctx, fmt.Sprintf("kill %d 2>/dev/null; sleep 1; kill -9 %d 2>/dev/null; true", hp.pid, hp.pid), nil)
@@ -289,13 +299,25 @@ func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *M
 			if o := a.store.Tunnel(other); o != nil {
 				name = o.Name
 			}
-			return fmt.Errorf("Iran port %d (%s) is held by tunnel %q on this Iran server — give one of them another port", hp.port, want[hp.port], name)
+			return nil, fmt.Errorf("Iran port %d (%s) is held by tunnel %q on this Iran server — give one of them another port", hp.port, want[hp.port], name)
 		case userspaceIran(m, t):
-			return fmt.Errorf("Iran port %d (%s) is already used on the Iran server by %s (pid %d: %s) — %s must listen on it itself. Stop that program, or give this tunnel another Iran port mapped to the service (e.g. %d=%d)",
+			return nil, fmt.Errorf("Iran port %d (%s) is already used on the Iran server by %s (pid %d: %s) — %s must listen on it itself. Stop that program, or give this tunnel another Iran port mapped to the service (e.g. %d=%d)",
 				hp.port, want[hp.port], hp.name, hp.pid, hp.cmd, m.Title, hp.port+1, hp.port)
 		default:
 			j.log("[IR] note: %s (pid %d) also listens on port %d on Iran; users from outside still reach the tunnel (DNAT), only connections made on the Iran server itself go to that program", hp.name, hp.pid, hp.port)
 		}
 	}
-	return nil
+	return redir, nil
+}
+
+// freeInternalPort picks the k-th per-tunnel internal port (50000+index*20+k…) that
+// nothing listens on.
+func (a *App) freeInternalPort(ctx context.Context, h Host, t *Tunnel, k int) int {
+	for ; k < 20; k++ {
+		q := 50000 + t.Index*20 + k
+		if len(heldPorts(ctx, h, []int{q})) == 0 {
+			return q
+		}
+	}
+	return 0
 }
