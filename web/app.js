@@ -380,6 +380,7 @@ async function trafficTick() {
   if (document.hidden) return;
   let d; try { d = await api('/traffic'); } catch (e) { return; }
   const tun = d.tunnels || {}, srv = d.servers || {}, speed = d.speed || {};
+  $$('[data-res]').forEach(el => renderRes(el, (d.res || {})[el.dataset.res]));
   const sum = Object.values(tun).reduce((a, x) => (x.error ? a : [a[0] + x.down, a[1] + x.up]), [0, 0]);
   const sd = $('[data-sum-dn]'), su = $('[data-sum-up]');
   if (sd) sd.textContent = fmtRate(sum[0]);
@@ -405,6 +406,35 @@ async function trafficTick() {
     if (s.error) { el.innerHTML = `<span class="faint">traffic: ${esc(s.error)}</span>`; return; }
     el.innerHTML = `<span class="faint">${esc((s.source || '').replace('nic ', 'NIC '))}</span> <span class="dn">↓ ${fmtRate(s.down)}</span> <span class="up">↑ ${fmtRate(s.up)}</span> <span class="faint">· since boot ↓ ${fmtBytes(s.totalDown)} ↑ ${fmtBytes(s.totalUp)}</span>`;
   });
+}
+// a server's live CPU / RAM / disk, load, sockets and busiest programs
+const kbTxt = (kb) => kb >= 2 ** 30 ? (kb / 2 ** 30).toFixed(1) + ' TB' : kb >= 2 ** 20 ? (kb / 2 ** 20).toFixed(1) + ' GB' : (kb / 1024).toFixed(0) + ' MB';
+const upTxt = (s) => s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor(s % 86400 / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
+function renderRes(el, r) {
+  if (!r) { el.innerHTML = ''; return; }
+  if (r.error) { el.innerHTML = `<span class="faint" style="font-size:12px">resources: ${esc(r.error)}</span>`; return; }
+  const p = (a, b) => b ? 100 * a / b : 0;
+  const bar = (label, v, txt, title) => `<div class="rbar${v >= 90 ? ' crit' : v >= 70 ? ' warn' : ''}" title="${esc(title || '')}"><span class="rl">${label}</span><span class="rt"><i style="width:${Math.min(100, v).toFixed(1)}%"></i></span><span class="rv">${v.toFixed(0)}%</span><span class="rx faint">${txt}</span></div>`;
+  const mem = p(r.memUsed, r.memTotal), disk = p(r.diskUsed, r.diskTotal);
+  const extra = [`load ${r.load.map(x => x.toFixed(2)).join(' ')}`, `${r.cores} cores`, `up ${upTxt(r.uptime)}`, `TCP ${r.tcp}`];
+  if (r.ctMax > 0 && r.conntrack >= 0) extra.push(`conntrack ${r.conntrack}/${r.ctMax}`);
+  const warn = [];
+  if (r.steal >= 5) warn.push(`steal ${r.steal.toFixed(0)}% — the host is oversold, this VPS waits for CPU`);
+  if (r.iowait >= 10) warn.push(`iowait ${r.iowait.toFixed(0)}% — waiting on the disk`);
+  if (r.swapUsed > 0 && mem > 80) warn.push(`swap in use: ${kbTxt(r.swapUsed)}`);
+  const procs = (r.procs || []).filter(x => x.cpu >= 0.1 || x.rssMB >= 20).slice(0, 6);
+  el.innerHTML = bar('CPU', r.cpu, `iowait ${r.iowait.toFixed(0)}% · steal ${r.steal.toFixed(0)}%`, 'all cores together')
+    + bar('RAM', mem, `${kbTxt(r.memUsed)} / ${kbTxt(r.memTotal)}${r.swapTotal ? ` · swap ${kbTxt(r.swapUsed)}` : ''}`)
+    + bar('Disk', disk, `${kbTxt(r.diskUsed)} / ${kbTxt(r.diskTotal)}`, 'the root filesystem')
+    + `<svg class="rspark" viewBox="0 0 100 24" preserveAspectRatio="none"><path class="pc" d="${resLine(r.hist, 'cpu')}"/><path class="pm" d="${resLine(r.hist, 'mem')}"/></svg>`
+    + `<div class="faint rinfo">${extra.join(' · ')} <span class="rleg"><b class="pc">━</b> CPU <b class="pm">━</b> RAM · last 3 min</span></div>`
+    + warn.map(w => `<div class="rwarn">⚠ ${esc(w)}</div>`).join('')
+    + (procs.length ? `<details class="rprocs"><summary>Top programs</summary><table>${procs.map(x => `<tr><td class="mono">${esc(x.name)}${x.n > 1 ? ` <span class="faint">×${x.n}</span>` : ''}</td><td>${x.cpu.toFixed(1)}%</td><td class="faint">${x.rssMB.toFixed(0)} MB</td></tr>`).join('')}</table></details>` : '');
+}
+function resLine(hist, k) {
+  const pts = (hist || []).slice(-90), n = pts.length;
+  if (n < 2) return '';
+  return pts.map((p, i) => `${i ? 'L' : 'M'}${(i / (n - 1) * 100).toFixed(2)},${(23 - Math.min(100, p[k]) / 100 * 22).toFixed(2)}`).join('');
 }
 function drawSpark(svg, hist) {
   if (!svg) return;
@@ -601,6 +631,7 @@ function panelHostCard() {
       <dt>Tunnels</dt><dd>${n}</dd>
     </dl>
     <div class="nic" data-nic=""></div>
+    <div class="res" data-res=""></div>
     <div class="sfoot"><button class="btn sm" data-prep="" title="Pre-install the binaries every method needs">Install packages</button><span class="grow"></span><span class="faint" style="font-size:12px">edit in Settings</span></div>
   </div>`);
 }
@@ -667,6 +698,7 @@ function serverCard(s) {
       <dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not yet</span>'}</dd>
     </dl>
     <div class="nic" data-nic="${s.id}"></div>
+    <div class="res" data-res="${s.id}"></div>
     <div class="sfoot">
       <button class="btn sm" data-test="${s.id}">Test connection</button>
       <button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">${s.provisioned ? 'Update packages' : 'Install packages'}</button>

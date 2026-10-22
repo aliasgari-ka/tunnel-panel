@@ -909,7 +909,7 @@ func (s *Server2) trafficGet(w http.ResponseWriter, r *http.Request) {
 		speed[k] = v
 	}
 	s.app.speedMu.Unlock()
-	writeJSON(w, map[string]any{"tunnels": snap.Tunnels, "servers": snap.Servers, "speed": speed})
+	writeJSON(w, map[string]any{"tunnels": snap.Tunnels, "servers": snap.Servers, "res": snap.Res, "speed": speed})
 }
 
 func (s *Server2) tunnelSpeedTest(w http.ResponseWriter, r *http.Request) {

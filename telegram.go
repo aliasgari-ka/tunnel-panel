@@ -435,7 +435,7 @@ func (b *Bot) tunnelList() string {
 	if len(rows) == 0 {
 		rows = [][]ikey{{{Text: "no tunnels yet — create one in the panel", Data: "noop"}}}
 	}
-	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "📉 Outages", Data: "home:out"}})
+	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "🖥 Servers", Data: "home:res"}, {Text: "📉 Outages", Data: "home:out"}})
 	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "💾 Backup", Data: "home:bk"}, {Text: "🔄", Data: "home"}})
 	return b.keyboard(rows)
 }
@@ -806,6 +806,11 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		return
 	case "home:out":
 		b.sendMsg(chat, b.outagesText(), "")
+		return
+	case "home:res":
+		b.slow(chat, "reading every server…", func() (string, string) {
+			return b.app.resourcesText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}}})
+		})
 		return
 	}
 	parts := strings.SplitN(data, ":", 4)

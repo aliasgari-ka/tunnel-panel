@@ -54,6 +54,7 @@ type TrafficStat struct {
 type TrafficSnapshot struct {
 	Tunnels map[string]*TrafficStat `json:"tunnels"`
 	Servers map[string]*TrafficStat `json:"servers"` // "" = this panel host
+	Res     map[string]*ServerRes   `json:"res"`
 	Live    bool                    `json:"live"`
 }
 
@@ -63,8 +64,9 @@ type trafficMon struct {
 	servers map[string]*TrafficStat
 	wanted  time.Time
 	running bool
-	busy    map[string]bool      // server id -> a read is in flight
-	backoff map[string]time.Time // server id -> skip until (unreachable)
+	busy    map[string]bool       // server id -> a read is in flight
+	res     map[string]*ServerRes // server id -> live resources ("" = this panel host)
+	backoff map[string]time.Time  // server id -> skip until (unreachable)
 }
 
 func newTrafficMon() *trafficMon {
@@ -92,6 +94,7 @@ func (a *App) Traffic() TrafficSnapshot {
 		cp.Hist = append([]TrafficPoint(nil), v.Hist...)
 		snap.Servers[k] = &cp
 	}
+	snap.Res = tm.resSnapshot()
 	tm.mu.Unlock()
 	return snap
 }
@@ -207,9 +210,9 @@ func (a *App) trafficCollect() {
 				byServer[t.ServerID] = append(byServer[t.ServerID], t)
 			}
 		}
-		// servers with a live agent are cheap to read even without tunnels
+		// every server, for its NIC and resources (unreachable ones back off)
 		for _, s := range st.Servers {
-			if _, ok := byServer[s.ID]; !ok && a.agents != nil && a.agents.online(s.ID) != nil {
+			if _, ok := byServer[s.ID]; !ok {
 				byServer[s.ID] = nil
 			}
 		}
@@ -235,6 +238,7 @@ func (a *App) trafficCollect() {
 		}
 		var sb strings.Builder
 		sb.WriteString(nicRead)
+		sb.WriteString(a.resScript(id))
 		for _, t := range ts {
 			if t.HotStandby && len(t.Paths) > 0 {
 				sb.WriteString(hsAcct(t))
@@ -251,6 +255,7 @@ func (a *App) trafficCollect() {
 			return
 		}
 		a.trafficParse(id, ts, out)
+		a.resParse(id, out)
 	}
 	tm.mu.Lock()
 	jobs := map[string][]*Tunnel{"": byServer[""]} // panel host NIC always
@@ -316,6 +321,7 @@ func (a *App) trafficFail(id string, ts []*Tunnel, msg string) {
 	if s, ok := tm.servers[id]; ok {
 		s.Error = msg
 	}
+	tm.resOf(id).Error = msg
 }
 
 func (tm *trafficMon) stat(m map[string]*TrafficStat, id string) *TrafficStat {
