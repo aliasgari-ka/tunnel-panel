@@ -153,6 +153,19 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 			}
 		}
 
+		// 3b. reverse methods: can the foreign server reach Iran's tunnel port at all?
+		if key, isRev := reverseTCPPort(m, t); isRev {
+			get, _ := resolveOptions(m, t.Options[m.ID])
+			tp := portOr(get(key), d.BasePort)
+			if run(kh, fmt.Sprintf("timeout 6 bash -c '</dev/tcp/%s/%s' 2>/dev/null && echo open", d.IRPub, tp)) == "open" {
+				ok("foreign → Iran %s:%s (the reverse connection) is reachable", d.IRPub, tp)
+			} else {
+				bad("the foreign server cannot connect to Iran %s:%s — the reverse connection is dropped on the path", d.IRPub, tp)
+				hint("Re-apply with the method's tunnel port left blank: the panel then tests 443, 8443, 2053… and picks one that gets through")
+				hint("if no port works (provider firewall such as OVH's, or Iran filtering), use BackPack L3, GRE, Golden-GRE or IPsec — there Iran dials out")
+			}
+		}
+
 		// 4. foreign side: is there a service to deliver to?
 		j.log("4. foreign service")
 		for _, p := range firstPorts(t.Ports, 3) {

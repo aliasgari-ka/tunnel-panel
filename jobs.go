@@ -294,6 +294,19 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		_, _ = khHost.Run(ctx, teardownScript(t), func(l string) { j.log("[KH] %s", l) })
 		a.setActive(t, "")
 
+		// reverse methods: make sure the foreign server can actually dial Iran first
+		changed, err := a.reversePreflight(ctx, j, t, m, irHost, khHost)
+		if err != nil {
+			fail("%v", err)
+			return
+		}
+		if changed {
+			if irP, khP, err = a.build(m, t, srv); err != nil {
+				fail("build: %v", err)
+				return
+			}
+		}
+
 		j.log("== foreign server (this one) ==")
 		if err := a.deploy(ctx, j, "KH", khHost, t, khP); err != nil {
 			fail("foreign: %v", err)
