@@ -25,6 +25,8 @@ type Settings struct {
 	AgentConnect  string `json:"agentConnect"`
 	TelegramTok   string `json:"telegramTok"`
 	TelegramAdmin string `json:"telegramAdmin"` // numeric chat id(s), comma-separated
+	// AutoBench: hours between automatic benchmarks of every route in use ("" = 12, "0" = off)
+	AutoBench string `json:"autoBench"`
 }
 
 // Server is a remote Iran server reached over SSH.

@@ -38,6 +38,8 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
   a better one after it has worked for 60 s — no SSH or panel needed. Order: the route's
   benchmark. It also keeps the kernel side in shape (forwarding, loose rp_filter, MTU probing,
   conntrack table size). Switches and kernel changes are reported to Telegram.
+- **Automatic benchmark:** every route with a running tunnel (per family) is benchmarked every
+  12 h by default on the spare slot — live tunnels untouched; Settings → 0 turns it off.
 - **Outage log:** every server's SSH port is checked every 10 s (a miss is retried twice, so a
   lost packet isn't an outage but a 10-second drop is); each server/tunnel outage is kept with
   its exact start and end (Tehran time), tunnel outages say whether their servers answered —

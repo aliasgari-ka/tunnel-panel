@@ -399,6 +399,7 @@ function viewSettings(w) {
       <div class="two">
         <label class="f">FRP version <span class="faint">(blank = latest)</span><input name="frpVersion" class="mono" value="${esc(s.frpVersion || '')}"></label>
         <label class="f">GitHub download prefix<input name="githubProxy" class="mono" value="${esc(s.githubProxy || '')}" placeholder="https://ghproxy.net/"></label>
+        <label class="f">Automatic benchmark every … hours <span class="faint">(every route with a running tunnel, on the spare slot — live tunnels aren't touched; blank = 12, 0 = off)</span><input name="autoBench" class="mono" inputmode="numeric" value="${esc(s.autoBench || '')}" placeholder="12"></label>
       </div>
       <h3 style="margin-top:6px">Telegram bot</h3>
       <div class="two">

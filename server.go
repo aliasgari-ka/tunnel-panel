@@ -347,6 +347,12 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var err error
+	if v := strings.TrimSpace(in.AutoBench); v != "" {
+		if n, e := strconv.Atoi(v); e != nil || n < 0 || n > 720 {
+			httpErr(w, 400, "Automatic benchmark: hours must be 0 (off) to 720")
+			return
+		}
+	}
 	if in.LocalIPv4, err = normIP(in.LocalIPv4, false); err != nil {
 		httpErr(w, 400, "IPv4: "+err.Error())
 		return
