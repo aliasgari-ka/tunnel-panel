@@ -38,7 +38,11 @@ func benchKey(iran, foreign, family string) string { return iran + "|" + foreign
 func (a *App) benchResults(iran, foreign, family string) []BenchResult {
 	a.benchMu.Lock()
 	defer a.benchMu.Unlock()
-	return a.benchRes[benchKey(iran, foreign, family)]
+	r := a.benchRes[benchKey(iran, foreign, family)]
+	if r == nil {
+		return []BenchResult{}
+	}
+	return r
 }
 
 func (a *App) setBench(iran, foreign, family string, rs []BenchResult) {

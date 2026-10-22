@@ -38,8 +38,8 @@ async function boot() {
 async function loadAll() {
   const [methods, servers, tunnels, settings] = await Promise.all([
     api('/methods'), api('/servers'), api('/tunnels'), api('/settings')]);
-  STATE.methods = methods; STATE.servers = servers; STATE.tunnels = tunnels;
-  STATE.settings = settings.settings; STATE.agentPin = settings.agentPin; STATE.agentPort = settings.agentPort;
+  STATE.methods = methods || []; STATE.servers = servers || []; STATE.tunnels = tunnels || [];
+  STATE.settings = (settings && settings.settings) || {}; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
 }
 const iranServers = () => STATE.servers.filter(s => (s.role || 'iran') === 'iran');
 const foreignServers = () => STATE.servers.filter(s => s.role === 'foreign');

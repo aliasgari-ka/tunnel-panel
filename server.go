@@ -354,7 +354,7 @@ type serverView struct {
 
 func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		var out []serverView
+		out := []serverView{}
 		s.app.store.View(func(st *State) {
 			for _, x := range st.Servers {
 				cp := *x
@@ -568,7 +568,7 @@ func isMasked(s string) bool { return s == "" || s == "********" }
 // ---- tunnels ----
 
 func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
-	var out []Tunnel
+	out := []Tunnel{}
 	s.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
 			cp := *t
@@ -816,7 +816,7 @@ func (s *Server2) helpers(w http.ResponseWriter, r *http.Request) {
 		SHA256 string `json:"sha256"`
 		Source string `json:"source"`
 	}
-	var out []hv
+	out := []hv{}
 	seen := map[string]bool{}
 	if ents, err := os.ReadDir(helpersDir()); err == nil {
 		for _, e := range ents {
