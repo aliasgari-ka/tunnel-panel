@@ -255,10 +255,13 @@ done`, nil)
 
 // userspaceIran: the method's own daemon binds the users' ports on Iran (the kernel
 // tunnels DNAT them instead, so another listener there doesn't take their traffic).
-func userspaceIran(m *Method) bool {
+func userspaceIran(m *Method, t *Tunnel) bool {
 	switch m.ID {
-	case "gre", "direct6", "ipsec6", "golden", "spoof":
+	case "gre", "direct6", "ipsec6", "golden", "spoof", "bp_l3":
 		return false
+	case "premium": // ipx forwards with its own iptables rules
+		get, _ := resolveOptions(m, t.Options[m.ID])
+		return get("mode") != "ipx"
 	}
 	return true
 }
@@ -268,7 +271,7 @@ func userspaceIran(m *Method) bool {
 // an error naming the program, instead of a daemon that starts and never forwards.
 func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *Method) error {
 	want := iranPorts(t, m.ID)
-	if userspaceIran(m) && !benchIsL3(m, t.Options[m.ID]) {
+	if userspaceIran(m, t) && !benchIsL3(m, t.Options[m.ID]) {
 		want[probePortFor(t)] = "speed-test port"
 	}
 	var ports []int
@@ -287,7 +290,7 @@ func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *M
 				name = o.Name
 			}
 			return fmt.Errorf("Iran port %d (%s) is held by tunnel %q on this Iran server — give one of them another port", hp.port, want[hp.port], name)
-		case userspaceIran(m):
+		case userspaceIran(m, t):
 			return fmt.Errorf("Iran port %d (%s) is already used on the Iran server by %s (pid %d: %s) — %s must listen on it itself. Stop that program, or give this tunnel another Iran port mapped to the service (e.g. %d=%d)",
 				hp.port, want[hp.port], hp.name, hp.pid, hp.cmd, m.Title, hp.port+1, hp.port)
 		default:

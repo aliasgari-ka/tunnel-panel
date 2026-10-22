@@ -150,6 +150,7 @@ func TestE2EMethods(t *testing.T) {
 		{"Plain GRE", "gre", nil},
 		{"BackPack L3 (Iran dials)", "bp_l3", nil},
 		{"BackPack L3 (reverse: foreign dials)", "bp_l3", map[string]string{"dialer": "foreign"}},
+		{"BackPack L3, port held on Iran (haproxy)", "bp_l3", nil},
 		{"BackPack reverse", "bp_reverse", nil},
 		{"Backhaul (reverse)", "backhaul", nil},
 		{"FRP (reverse)", "frp", nil},
@@ -197,6 +198,11 @@ func TestE2EMethods(t *testing.T) {
 		res := ""
 		// "GRE dropped": the path drops protocol 47, as many providers do
 		block47 := strings.Contains(c.name, "GRE dropped")
+		// "port held": another program already listens on the users' port on Iran
+		if strings.Contains(c.name, "port held") {
+			sh(t, "mkdir -p /tmp/tp-e2e-empty; ip netns exec tir setsid python3 -m http.server 28579 --bind 0.0.0.0 -d /tmp/tp-e2e-empty >/dev/null 2>&1 & sleep 1")
+			defer sh(t, "pkill -f 'tp-e2e-empty'")
+		}
 		if block47 {
 			sh(t, "for n in tir tkh; do ip netns exec $n ip6tables -w -t raw -I PREROUTING -p 47 -j DROP; ip netns exec $n iptables -w -t raw -I PREROUTING -p 47 -j DROP; done")
 		}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type Bot struct {
 	stop   chan struct{}
 	once   sync.Once
 	sel    sync.Map // chatID -> selected tunnel id
+	await  sync.Map // chatID -> optWait: the option a typed reply sets
 	base   string   // API base (tests point it at a fake server)
 }
 
@@ -228,6 +230,10 @@ func (b *Bot) onText(chat, text string) {
 	}
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
+		return
+	}
+	if w, ok := b.await.LoadAndDelete(chat); ok && !strings.HasPrefix(text, "/") && !isMenuButton(text) {
+		b.typedOption(chat, w.(optWait), strings.TrimSpace(text))
 		return
 	}
 	switch strings.ToLower(strings.TrimPrefix(fields[0], "/")) {
@@ -509,9 +515,95 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 	} else if t.Selected != "" {
 		rows = append(rows, []ikey{{Text: "▶ Start " + methodTitle(t.Selected) + " · " + famName(t.Family), Data: "a:" + t.ID + ":" + t.Selected + ":" + t.Family}})
 	}
-	rows = append(rows, []ikey{{Text: "⇄ Method / IPv4·IPv6", Data: "m:" + t.ID}, {Text: "📜 Last log", Data: "lg:" + t.ID}})
+	rows = append(rows, []ikey{{Text: "⇄ Method / IPv4·IPv6", Data: "m:" + t.ID}, {Text: "⚙ Settings", Data: "o:" + t.ID}})
+	rows = append(rows, []ikey{{Text: "📜 Last log", Data: "lg:" + t.ID}})
 	rows = append(rows, []ikey{{Text: "« Tunnels", Data: "home"}})
 	return sb.String(), b.keyboard(rows)
+}
+
+// optWait is an option the next typed message sets.
+type optWait struct {
+	tid, mid, key string
+	msg           int64
+}
+
+func isMenuButton(s string) bool {
+	return s == btnStatus || s == btnTunnels || s == btnTraffic || s == btnServers
+}
+
+// optionsPage lists a method's settings with their current values.
+func (b *Bot) optionsPage(t *Tunnel, mid string) (string, string) {
+	m := methodByID[mid]
+	get, _ := resolveOptions(m, t.Options[m.ID])
+	var rows [][]ikey
+	for i, f := range m.Fields {
+		v := get(f.Key)
+		switch {
+		case f.Type == "password" && v != "":
+			v = "••••"
+		case f.Type == "bool":
+			v = map[bool]string{true: "✅", false: "⬜"}[v == "true"]
+		case v == "":
+			v = "auto"
+		}
+		label := f.Label
+		if i := strings.Index(label, " ("); i > 0 {
+			label = label[:i] // the long hints stay in the field's own page
+		}
+		if len([]rune(label)) > 30 {
+			label = string([]rune(label)[:29]) + "…"
+		}
+		rows = append(rows, []ikey{{Text: label + ": " + v, Data: fmt.Sprintf("of:%s:%s:%d", t.ID, m.ID, i)}})
+	}
+	if t.Active == mid {
+		rows = append(rows, []ikey{{Text: "↻ Apply changes (re-apply)", Data: "a:" + t.ID + ":" + mid + ":" + t.Family}})
+	} else {
+		rows = append(rows, []ikey{{Text: "▶ Start " + m.Title, Data: "a:" + t.ID + ":" + mid + ":" + t.Family}})
+	}
+	rows = append(rows, []ikey{{Text: "« Back", Data: "t:" + t.ID}})
+	note := "changes are saved at once and take effect on the next apply"
+	return fmt.Sprintf("⚙ <b>%s</b> — %s settings\n<i>%s</i>", esc(t.Name), esc(m.Title), note), b.keyboard(rows)
+}
+
+// saveOption validates and stores one option ("" = back to the default).
+func (b *Bot) saveOption(t *Tunnel, m *Method, key, val string) error {
+	if err := validateOptions(map[string]map[string]string{m.ID: {key: val}}); err != nil {
+		return err
+	}
+	return b.app.store.Update(func(st *State) error {
+		cand := *t
+		cand.setOption(m.ID, key, val)
+		if err := portClash(st, &cand, m.ID); err != nil {
+			return err
+		}
+		t.setOption(m.ID, key, val)
+		return nil
+	})
+}
+
+func (b *Bot) setOptionMsg(chat string, msg int64, t *Tunnel, m *Method, f Field, val string) {
+	if err := b.saveOption(t, m, f.Key, val); err != nil {
+		b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
+		return
+	}
+	text, kb := b.optionsPage(t, m.ID)
+	b.edit(chat, msg, text, kb)
+}
+
+func (b *Bot) typedOption(chat string, w optWait, val string) {
+	t, m := b.app.store.Tunnel(w.tid), methodByID[w.mid]
+	if t == nil || m == nil {
+		return
+	}
+	if val == "-" {
+		val = ""
+	}
+	if err := b.saveOption(t, m, w.key, val); err != nil {
+		b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
+		return
+	}
+	text, kb := b.optionsPage(t, m.ID)
+	b.sendMsg(chat, "✅ saved\n\n"+text, kb)
 }
 
 func famName(f string) string {
@@ -680,6 +772,56 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		}
 		j, err := b.app.ApplyRoute(t, parts[2], fam)
 		job(j, err, "Applying "+methodTitle(parts[2])+" over "+famName(fam)+" to "+t.Name)
+	case "o": // the method's settings
+		mid := t.Active
+		if mid == "" {
+			mid = t.Selected
+		}
+		if methodByID[mid] == nil {
+			b.sendMsg(chat, "Pick a method first (⇄ Method).", "")
+			return
+		}
+		text, kb := b.optionsPage(t, mid)
+		b.edit(chat, msg, text, kb)
+	case "of", "ov": // one option: choices / toggle / ask for a typed value
+		f := strings.Split(data, ":")
+		if len(f) < 4 {
+			return
+		}
+		m := methodByID[f[2]]
+		fi, _ := strconv.Atoi(f[3])
+		if m == nil || fi < 0 || fi >= len(m.Fields) {
+			return
+		}
+		fd := m.Fields[fi]
+		get, _ := resolveOptions(m, t.Options[m.ID])
+		switch {
+		case parts[0] == "ov" && len(f) == 5:
+			oi, _ := strconv.Atoi(f[4])
+			if oi >= 0 && oi < len(fd.Options) {
+				b.setOptionMsg(chat, msg, t, m, fd, fd.Options[oi])
+			}
+		case fd.Type == "bool":
+			b.setOptionMsg(chat, msg, t, m, fd, strconv.FormatBool(get(fd.Key) != "true"))
+		case fd.Type == "select":
+			var rows [][]ikey
+			for i, o := range fd.Options {
+				label := o
+				if o == get(fd.Key) {
+					label = "● " + o
+				}
+				rows = append(rows, []ikey{{Text: label, Data: fmt.Sprintf("ov:%s:%s:%d:%d", t.ID, m.ID, fi, i)}})
+			}
+			rows = append(rows, []ikey{{Text: "« Settings", Data: "o:" + t.ID}})
+			b.edit(chat, msg, fmt.Sprintf("<b>%s</b> · %s\n%s", esc(m.Title), esc(fd.Label), esc(fd.Help)), b.keyboard(rows))
+		default:
+			b.await.Store(chat, optWait{t.ID, m.ID, fd.Key, msg})
+			cur := get(fd.Key)
+			if fd.Type == "password" && cur != "" {
+				cur = "••••"
+			}
+			b.sendMsg(chat, fmt.Sprintf("Send the new value for <b>%s</b> (%s)\nnow: <code>%s</code>\nsend <code>-</code> for the default (%s)", esc(fd.Label), esc(m.Title), esc(orStr(cur, "default")), esc(orStr(fd.Default, "auto"))), "")
+		}
 	case "sq": // confirm before stopping
 		b.edit(chat, msg, "Stop <b>"+esc(t.Name)+"</b>? Users on its ports lose the connection.",
 			b.keyboard([][]ikey{{{Text: "⏹ Yes, stop it", Data: "s:" + t.ID}, {Text: "Cancel", Data: "t:" + t.ID}}}))

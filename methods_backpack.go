@@ -100,9 +100,7 @@ local_ip = "%s/30"
 peer_ip = "%s"
 iface = "%s"
 mtu = %s
-%sports = [%s]
-accept_udp = true
-`, irMode, irAddr, tok, carrier, d.IRv4, d.KHv4, d.Iface, c.Opt("mtu"), sni, portsTOML(c.T.Ports))
+%s`, irMode, irAddr, tok, carrier, d.IRv4, d.KHv4, d.Iface, c.Opt("mtu"), sni)
 		khToml := fmt.Sprintf(`[l3]
 mode = "%s"
 addr = "%s"
@@ -113,7 +111,19 @@ peer_ip = "%s"
 iface = "%s"
 mtu = %s
 %s`, khMode, khAddr, tok, carrier, d.KHv4, d.IRv4, d.Iface, c.Opt("mtu"), sni)
-		return backpackPlans(c, irToml, khToml)
+		ir, kh, err = backpackPlans(c, irToml, khToml)
+		if err != nil {
+			return ir, kh, err
+		}
+		// users' ports: kernel DNAT into the TUN, like the GRE methods, rather than BackPack's
+		// own listeners — so another program on those ports (haproxy, xray…) can't block them
+		// (the rules name the interface, so they can go in before BackPack creates it)
+		dir := tunnelDir(c.T)
+		ir.Files[dir+"/fwd-up.sh"] = FileSpec{Content: []byte("#!/bin/bash\nsysctl -qw net.ipv4.ip_forward=1\n" + portForwardV4(c.T.Ports, d.KHv4, d.Iface, fwdTag(d)) + "exit 0\n"), Mode: 0o755}
+		ir.Files[dir+"/fwd-down.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + portForwardDownV4(fwdTag(d))), Mode: 0o755}
+		ir.Unit.ExecStartPre = dir + "/fwd-up.sh"
+		ir.Unit.ExecStopPost = dir + "/fwd-down.sh"
+		return ir, kh, nil
 	},
 }
 

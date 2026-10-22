@@ -174,7 +174,7 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 
 		// 3. Iran side: how users get in
 		j.log("3. Iran entry (ports %s)", t.Ports)
-		dnat := l3 && m.ID != "bp_l3" // BackPack L3 forwards ports with a userspace listener
+		dnat := !userspaceIran(m, t)
 		if dnat {
 			if v := run(ir, "cat /proc/sys/net/ipv4/ip_forward"); v == "1" {
 				ok("ip_forward = 1")

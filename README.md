@@ -21,6 +21,7 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
   per-tunnel iptables chains that tear down cleanly.
 - **Telegram bot** that does everything the panel does (start/stop/switch/status) over buttons;
   the method picker has an IPv4 / IPv6 switch, so each tunnel's method *and* family can be chosen.
+  "⚙ Settings" edits the method's options (transport, ports, …) from the chat.
 - **Persistent & supervised:** every method is a `systemd` unit, so tunnels survive reboots.
 - **SSH bridge:** expose an Iran server's SSH on a panel port so you can log in manually.
 - **Traffic shaping:** optional per-tunnel CAKE/HTB/TBF/fq_codel qdisc + jitter + MSS clamp.

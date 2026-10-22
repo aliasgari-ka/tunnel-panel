@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -100,5 +101,72 @@ func TestBotFlows(t *testing.T) {
 	}
 	if testing.Verbose() {
 		t.Log("\n" + out)
+	}
+}
+
+func TestBotOptions(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{{ID: "ir1", Name: "ir", IPv4: "192.0.2.1"}, {ID: "kh1", Name: "de", IPv4: "198.51.100.1", Role: "foreign"}}
+		s.Tunnels = []*Tunnel{
+			{ID: "aaaaaaaaaaaa", Name: "bh", ServerID: "ir1", ForeignID: "kh1", Family: "v4", Ports: "443", Index: 1, Active: "backhaul", Selected: "backhaul", Options: map[string]map[string]string{}},
+			{ID: "cccccccccccc", Name: "other", ServerID: "ir1", ForeignID: "kh1", Family: "v4", Ports: "8443", Index: 2, Active: "gre", Options: map[string]map[string]string{}},
+		}
+		return nil
+	})
+	a := &App{store: st, jobs: newJobs(), traffic: newTrafficMon(), speedRes: map[string]*SpeedResult{}, healthCache: map[string]string{}}
+	f := &fakeTG{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	b := newBot(a, "TOKEN", "42")
+	b.base = srv.URL
+	opt := func(k string) string { return st.Tunnel("aaaaaaaaaaaa").Options["backhaul"][k] }
+	idx := func(k string) int {
+		for i, f := range methodBackhaul.Fields {
+			if f.Key == k {
+				return i
+			}
+		}
+		return -1
+	}
+	b.onCallback("42", 7, "cb", "o:aaaaaaaaaaaa")
+	b.onCallback("42", 7, "cb", fmt.Sprintf("of:aaaaaaaaaaaa:backhaul:%d", idx("transport")))
+	b.onCallback("42", 7, "cb", fmt.Sprintf("ov:aaaaaaaaaaaa:backhaul:%d:%d", idx("transport"), 2)) // ws
+	if opt("transport") != "ws" {
+		t.Errorf("transport = %q, want ws", opt("transport"))
+	}
+	b.onCallback("42", 7, "cb", fmt.Sprintf("of:aaaaaaaaaaaa:backhaul:%d", idx("sniffer"))) // bool toggles
+	if opt("sniffer") != "true" {
+		t.Errorf("sniffer = %q", opt("sniffer"))
+	}
+	b.onCallback("42", 7, "cb", fmt.Sprintf("of:aaaaaaaaaaaa:backhaul:%d", idx("tunnel_port")))
+	b.onText("42", "8443") // another tunnel forwards 8443 on this Iran server → refused
+	if opt("tunnel_port") != "" {
+		t.Errorf("clashing port saved: %q", opt("tunnel_port"))
+	}
+	b.onCallback("42", 7, "cb", fmt.Sprintf("of:aaaaaaaaaaaa:backhaul:%d", idx("tunnel_port")))
+	b.onText("42", "2096")
+	if opt("tunnel_port") != "2096" {
+		t.Errorf("tunnel_port = %q", opt("tunnel_port"))
+	}
+	b.onCallback("42", 7, "cb", fmt.Sprintf("of:aaaaaaaaaaaa:backhaul:%d", idx("mux_con")))
+	b.onText("42", "lots") // not a number
+	b.onCallback("42", 7, "cb", fmt.Sprintf("of:aaaaaaaaaaaa:backhaul:%d", idx("tunnel_port")))
+	b.onText("42", "-") // back to the default
+	if v, ok := st.Tunnel("aaaaaaaaaaaa").Options["backhaul"]["tunnel_port"]; !ok || v != "" {
+		t.Errorf("reset: %q %v", v, ok)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var all strings.Builder
+	for _, c := range f.calls {
+		all.WriteString(c.Get("text") + c.Get("reply_markup") + "\n")
+	}
+	out := all.String()
+	for _, want := range []string{"Backhaul (reverse) settings", "Transport: tcpmux", "● tcpmux", "Send the new value for", "already used by tunnel", "must be a number", "✅ saved", "Apply changes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
 	}
 }
