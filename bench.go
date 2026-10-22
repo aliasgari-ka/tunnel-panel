@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -24,13 +25,25 @@ type BenchResult struct {
 	Method      string  `json:"method"`
 	Title       string  `json:"title"`
 	OK          bool    `json:"ok"`
+	Skipped     bool    `json:"skipped,omitempty"` // not measurable here (needs config / UDP-only)
 	Error       string  `json:"error,omitempty"`
+	Kind        string  `json:"kind"` // l3 | forward
 	RTTms       float64 `json:"rttMs"`
 	Jitterms    float64 `json:"jitterMs"`
 	LossPct     float64 `json:"lossPct"`
-	Mbps        float64 `json:"mbps"`
+	LossKnown   bool    `json:"lossKnown"` // ICMP loss is only measurable on L3 tunnels
+	Mbps        float64 `json:"mbps"`      // mean of up and down
+	UpMbps      float64 `json:"upMbps"`    // Iran -> foreign
+	DownMbps    float64 `json:"downMbps"`  // foreign -> Iran (what users downloading feel)
 	Score       float64 `json:"score"`
 	Recommended bool    `json:"recommended"`
+}
+
+// benchActive is the running benchmark, so the UI can re-attach after navigating away.
+type benchActive struct {
+	Job     string       `json:"job"`
+	Req     BenchRequest `json:"req"`
+	Running bool         `json:"running"`
 }
 
 func benchKey(iran, foreign, family string) string { return iran + "|" + foreign + "|" + family }
@@ -54,7 +67,37 @@ func (a *App) setBench(iran, foreign, family string, rs []BenchResult) {
 	a.benchRes[benchKey(iran, foreign, family)] = rs
 }
 
+// activeBench returns the running (or most recent) benchmark, or nil.
+func (a *App) activeBench() *benchActive {
+	a.benchMu.Lock()
+	defer a.benchMu.Unlock()
+	if a.benchRun == nil {
+		return nil
+	}
+	j := a.jobs.get(a.benchRun.Job)
+	if j == nil {
+		return nil
+	}
+	cp := *a.benchRun
+	cp.Running = j.snapshot().Status == "running"
+	return &cp
+}
+
+// benchIsL3 reports whether a method gives a routed link (peer reachable at its tunnel
+// IP); the others are port forwarders and are measured through a forwarded port.
+func benchIsL3(m *Method, opts map[string]string) bool {
+	switch m.ID {
+	case "golden", "bp_l3", "direct6", "ipsec6", "gre":
+		return true
+	case "premium":
+		get, _ := resolveOptions(m, opts)
+		return get("mode") == "ipx"
+	}
+	return false
+}
+
 // Bench runs a disposable tunnel for each candidate method, measures it, then tears it down.
+// It runs entirely on the server: leaving the page (or closing the browser) doesn't stop it.
 func (a *App) Bench(req BenchRequest) (*Job, error) {
 	srv := a.store.Server(req.IranID)
 	if srv == nil {
@@ -79,16 +122,22 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	if len(cands) == 0 {
 		return nil, fmt.Errorf("no methods match")
 	}
-	j, err := a.jobs.start("", "bench")
+	// one benchmark at a time: they all use the same throwaway tunnel slot
+	j, err := a.jobs.start("bench", "bench")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("a benchmark is already running — wait for it to finish")
 	}
+	a.benchMu.Lock()
+	a.benchRun = &benchActive{Job: j.ID, Req: req}
+	a.benchMu.Unlock()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer a.jobs.done(j)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 		defer cancel()
-		// a throwaway tunnel object, high index so it never collides with real ones
+		probePort := 40000 + 250*4 + 2
 		bt := &Tunnel{ID: "bench", Name: "route-benchmark", ServerID: req.IranID, ForeignID: req.ForeignID,
-			Family: req.Family, Ports: "0", Index: 250, Options: map[string]map[string]string{}, Secrets: map[string]string{}}
+			Family: req.Family, Ports: strconv.Itoa(probePort), Index: 250,
+			Options: map[string]map[string]string{}, Secrets: map[string]string{}}
 		irHost, ipath, err := a.reach(ctx, srv, j)
 		if err != nil {
 			j.log("ERROR: Iran unreachable: %v", err)
@@ -101,26 +150,53 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			j.finish("error")
 			return
 		}
-		j.log("benchmarking %s ⇄ %s (%s)", ipath, kpath, req.Family)
+		j.log("benchmarking %s ⇄ %s (%s), %d methods", ipath, kpath, req.Family, len(cands))
+
+		// the probe binary on both ends + a probe server on the foreign side for the whole run
+		probeOK := pushArtifacts(ctx, j, "IR", irHost, []Artifact{probeArt}) == nil &&
+			pushArtifacts(ctx, j, "KH", khHost, []Artifact{probeArt}) == nil
+		if probeOK {
+			_, _ = khHost.Run(ctx, probeServerUp(probePort), nil)
+		} else {
+			j.log("WARNING: could not install the probe — falling back to ping only (no throughput)")
+		}
+		defer func() { _, _ = khHost.Run(context.Background(), probeServerDown(probePort), nil) }()
+
 		var out []BenchResult
-		for _, m := range cands {
-			r := BenchResult{Method: m.ID, Title: m.Title}
-			j.log("── %s ──", m.Title)
-			if err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, &r); err != nil {
+		for i, m := range cands {
+			r := BenchResult{Method: m.ID, Title: m.Title, Kind: "forward"}
+			if benchIsL3(m, nil) {
+				r.Kind = "l3"
+			}
+			j.log("── [%d/%d] %s ──", i+1, len(cands), m.Title)
+			if m.ID == "spoof" {
+				r.Skipped = true
+				r.Error = "UDP-only pipe with forged source IPs — set it up on a tunnel and test with your UDP app"
+				j.log("   skipped: %s", r.Error)
+				out = append(out, r)
+				continue
+			}
+			if err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, probeOK, probePort, &r); err != nil {
 				r.Error = err.Error()
-				j.log("   skipped: %v", err)
+				j.log("   FAILED: %v", err)
+			} else {
+				j.log("   ok: ↓%.1f ↑%.1f Mbps, RTT %.1f ms, jitter %.1f ms", r.DownMbps, r.UpMbps, r.RTTms, r.Jitterms)
 			}
 			// always tear down the bench tunnel on both ends
 			_, _ = irHost.Run(ctx, teardownScript(bt), nil)
 			_, _ = khHost.Run(ctx, teardownScript(bt), nil)
 			out = append(out, r)
+			// publish partial results so the page shows progress even after a reload
+			partial := append([]BenchResult(nil), out...)
+			rankBench(partial)
+			a.setBench(req.IranID, req.ForeignID, req.Family, partial)
 		}
 		rankBench(out)
 		a.setBench(req.IranID, req.ForeignID, req.Family, out)
 		if best := firstOK(out); best != nil {
-			j.log("DONE — best: %s (score %.0f, %.0f Mbps, %.1f ms, loss %.1f%%)",
-				best.Title, best.Score, best.Mbps, best.RTTms, best.LossPct)
-			a.push(fmt.Sprintf("📊 Route benchmark done — best: %s (%.0f Mbps, %.1f ms)", best.Title, best.Mbps, best.RTTms))
+			j.log("DONE — best: %s (score %.0f, ↓%.0f/↑%.0f Mbps, %.1f ms)",
+				best.Title, best.Score, best.DownMbps, best.UpMbps, best.RTTms)
+			a.push(fmt.Sprintf("📊 Route benchmark done — best: %s (↓%.0f Mbps, %.1f ms)", best.Title, best.DownMbps, best.RTTms))
 		} else {
 			j.log("DONE — no method succeeded on this route")
 		}
@@ -129,13 +205,30 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	return j, nil
 }
 
-// benchOne deploys one method on the bench tunnel, measures RTT/jitter/loss and throughput.
-func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHost, khHost Host, secs int, r *BenchResult) error {
+const probeBin = "/usr/local/lib/tunnel-panel/tp-probe"
+
+func probeServerUp(port int) string {
+	return fmt.Sprintf(`pkill -f 'tp-probe probe serve' 2>/dev/null || true
+iptables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
+ip6tables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
+setsid nohup %[2]s probe serve -listen :%[1]d -life 2700 >/dev/null 2>&1 </dev/null &
+sleep 0.5; echo probe-up
+`, port, probeBin)
+}
+
+func probeServerDown(port int) string {
+	return fmt.Sprintf(`pkill -f 'tp-probe probe serve' 2>/dev/null || true
+iptables -D INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
+ip6tables -D INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
+`, port)
+}
+
+// benchOne deploys one method on the bench tunnel and measures it end to end.
+func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHost, khHost Host, secs int, probeOK bool, port int, r *BenchResult) error {
 	irP, khP, err := buildPlans(m, bt, a.store.Server(bt.ServerID), a.store.Server(bt.ForeignID), a.settings())
 	if err != nil {
 		return err
 	}
-	_ = a.store.Save()
 	_, _ = irHost.Run(ctx, teardownScript(bt), nil)
 	_, _ = khHost.Run(ctx, teardownScript(bt), nil)
 	if err := a.deploy(ctx, j, "KH", khHost, bt, khP); err != nil {
@@ -145,79 +238,136 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 		return fmt.Errorf("Iran deploy: %w", err)
 	}
 	d := deriveFor(bt, a.store.Server(bt.ServerID), a.store.Server(bt.ForeignID), a.settings())
-	// private tunnel endpoints
-	irTun, khTun := d.IRv4, d.KHv4
-	if bt.Family == "v6" && (m.ID == "direct6") {
-		irTun, khTun = d.IRv6, d.KHv6
+	l3 := r.Kind == "l3"
+	// L3: talk to the foreign tunnel IP directly. Forwarders: Iran's forwarded port.
+	target := fmt.Sprintf("127.0.0.1:%d", port)
+	if l3 {
+		target = fmt.Sprintf("%s:%d", d.KHv4, port)
 	}
-	_ = irTun
-	time.Sleep(2 * time.Second)
 
-	// latency/jitter/loss: ping from Iran to the foreign tunnel IP
-	pingCmd := fmt.Sprintf("ping -n -i 0.2 -c 25 -w 8 %s 2>/dev/null | tail -3", khTun)
-	out, _ := irHost.Run(ctx, pingCmd, nil)
-	rtt, jit, loss, perr := parsePing(out)
-	if perr != nil {
-		return fmt.Errorf("no connectivity through tunnel (%v)", perr)
+	if !probeOK {
+		if !l3 {
+			return fmt.Errorf("probe unavailable — port forwarders can't be measured with ping")
+		}
+		return a.benchPing(ctx, j, irHost, d.KHv4, r)
 	}
-	r.RTTms, r.Jitterms, r.LossPct = rtt, jit, loss
 
-	// throughput: nc-based bulk transfer foreign→Iran over the tunnel
-	mbps := a.benchThroughput(ctx, j, irHost, khHost, irTun, khTun, d.BasePort+3, secs)
-	r.Mbps = mbps
+	// wait for the tunnel to come up (IKE, reverse dial-in, handshakes take a few seconds)
+	j.log("   waiting for the tunnel to pass traffic (%s)…", target)
+	var rt probeRTT
+	var lastErr error
+	deadline := time.Now().Add(25 * time.Second)
+	for {
+		rt, lastErr = runProbe[probeRTT](ctx, irHost, fmt.Sprintf("probe rtt -addr %s -n 20", target), 25)
+		if lastErr == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("unit is running but no traffic passes through the tunnel within 25s (%v)", lastErr)
+	}
+	r.RTTms, r.Jitterms = rt.RTTms, rt.Jitterms
+	if l3 {
+		out, _ := irHost.Run(ctx, fmt.Sprintf("ping -n -i 0.2 -c 25 -w 8 %s 2>/dev/null | tail -3", d.KHv4), nil)
+		if _, _, loss, perr := parsePing(out); perr == nil || loss >= 100 {
+			if perr == nil {
+				r.LossPct, r.LossKnown = loss, true
+			}
+		}
+	}
+	j.log("   RTT %.1f ms, jitter %.1f ms — measuring throughput (%ds each way)", r.RTTms, r.Jitterms, secs)
+	if up, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -addr %s -secs %d", target, secs), secs+30); err == nil {
+		r.UpMbps = up.Mbps
+	} else {
+		j.log("   upload test failed: %v", err)
+	}
+	if dn, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -down -addr %s -secs %d", target, secs), secs+30); err == nil {
+		r.DownMbps = dn.Mbps
+	} else {
+		j.log("   download test failed: %v", err)
+	}
+	r.Mbps = (r.UpMbps + r.DownMbps) / 2
 	r.OK = true
 	return nil
 }
 
-// benchThroughput pushes zeros through a one-shot nc listener on the foreign tunnel IP.
-func (a *App) benchThroughput(ctx context.Context, j *Job, irHost, khHost Host, irTun, khTun string, port, secs int) float64 {
-	if !hasNC(ctx, irHost) || !hasNC(ctx, khHost) {
-		j.log("   (throughput skipped: nc not installed on both sides)")
-		return 0
+// benchPing is the no-probe fallback for L3 tunnels: latency/loss only.
+func (a *App) benchPing(ctx context.Context, j *Job, irHost Host, khTun string, r *BenchResult) error {
+	var out string
+	for i := 0; i < 10; i++ {
+		out, _ = irHost.Run(ctx, fmt.Sprintf("ping -n -i 0.2 -c 25 -w 8 %s 2>/dev/null | tail -3", khTun), nil)
+		if _, _, loss, err := parsePing(out); err == nil && loss < 100 {
+			break
+		}
+		time.Sleep(2 * time.Second)
 	}
-	// listener on foreign, sinks to /dev/null
-	go func() {
-		_, _ = khHost.Run(ctx, fmt.Sprintf("timeout %d nc -l -p %d >/dev/null 2>&1 || timeout %d nc -l %d >/dev/null 2>&1 || true", secs+3, port, secs+3, port), nil)
-	}()
-	time.Sleep(600 * time.Millisecond)
-	cmd := fmt.Sprintf(`timeout %d sh -c 'head -c %d /dev/zero | nc -w %d %s %d' 2>/dev/null; echo DONE`,
-		secs+2, 1<<30, secs, khTun, port)
-	start := time.Now()
-	// measure how many bytes we actually sent by counting via pv-less method: send fixed, time it
-	// Simpler: send for `secs` seconds and report bytes/time using dd on Iran.
-	cmd = fmt.Sprintf(`timeout %d sh -c 'dd if=/dev/zero bs=1M 2>/tmp/bw | nc -w %d %s %d' >/dev/null 2>&1; sleep 0.2; awk "/copied/{print \$1}" /tmp/bw 2>/dev/null | tail -1`, secs, secs, khTun, port)
-	out, _ := irHost.Run(ctx, cmd, nil)
-	elapsed := time.Since(start).Seconds()
-	bytes := parseBytes(out)
-	if bytes <= 0 || elapsed <= 0 {
-		return 0
+	rtt, jit, loss, err := parsePing(out)
+	if err != nil {
+		return fmt.Errorf("no connectivity through tunnel (%v)", err)
 	}
-	return (float64(bytes) * 8) / (elapsed * 1e6)
+	r.RTTms, r.Jitterms, r.LossPct, r.LossKnown, r.OK = rtt, jit, loss, true, true
+	return nil
 }
 
-func hasNC(ctx context.Context, h Host) bool {
-	out, _ := h.Run(ctx, "command -v nc >/dev/null && echo yes || echo no", nil)
-	return strings.Contains(out, "yes")
+type probeRTT struct {
+	RTTms    float64 `json:"rttMs"`
+	Jitterms float64 `json:"jitterMs"`
+	Error    string  `json:"error"`
+}
+
+type probeBW struct {
+	Mbps  float64 `json:"mbps"`
+	Error string  `json:"error"`
+}
+
+// runProbe runs the probe binary on a host and decodes its one-line JSON answer.
+func runProbe[T any](ctx context.Context, h Host, args string, timeout int) (T, error) {
+	var v T
+	out, _ := h.Run(ctx, fmt.Sprintf("timeout %d %s %s 2>&1 | tail -1", timeout, probeBin, args), nil)
+	line := strings.TrimSpace(lastLine(out))
+	var e struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		if line == "" || line == "unknown" {
+			line = "no output (timed out)"
+		}
+		return v, fmt.Errorf("%s", line)
+	}
+	if e.Error != "" {
+		return v, fmt.Errorf("%s", e.Error)
+	}
+	if err := json.Unmarshal([]byte(line), &v); err != nil {
+		return v, err
+	}
+	return v, nil
 }
 
 // rankBench scores results and flags the best. Higher score = better.
+// Throughput dominates (log scale, so 400 vs 500 Mbps matters less than 5 vs 50);
+// latency, jitter and loss subtract. Without a throughput figure it ranks on latency.
 func rankBench(rs []BenchResult) {
 	for i := range rs {
 		r := &rs[i]
+		r.Recommended = false
 		if !r.OK {
 			continue
 		}
-		// throughput dominates; latency, jitter and loss subtract.
-		tp := r.Mbps
-		if tp <= 0 {
-			tp = 1 // latency-only ranking when nc is unavailable
+		base := 60.0
+		if r.Mbps > 0 {
+			// weight download (foreign -> Iran) higher: that's what users mostly pull
+			tp := 0.65*r.DownMbps + 0.35*r.UpMbps
+			base = 100 * math.Log10(1+tp)
 		}
-		r.Score = math.Max(0, 100*math.Log10(1+tp)-
-			r.RTTms*0.4-r.Jitterms*1.0-r.LossPct*8)
+		r.Score = math.Max(1, base-r.RTTms*0.15-r.Jitterms*1.0-r.LossPct*8)
 	}
 	sort.SliceStable(rs, func(i, j int) bool {
 		if rs[i].OK != rs[j].OK {
 			return rs[i].OK
+		}
+		if rs[i].Skipped != rs[j].Skipped {
+			return rs[j].Skipped
 		}
 		return rs[i].Score > rs[j].Score
 	})

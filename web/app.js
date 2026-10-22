@@ -136,8 +136,8 @@ function viewSettings(w) {
       <h3>Panel & this host</h3>
       <label class="f">Panel name<input name="panelName" value="${esc(s.panelName || '')}"></label>
       <div class="two">
-        <label class="f">This host · public IPv4<input name="localIPv4" class="mono" value="${esc(s.localIPv4 || '')}"></label>
-        <label class="f">This host · public IPv6<input name="localIPv6" class="mono" value="${esc(s.localIPv6 || '')}"></label>
+        <label class="f">This host · public IPv4<input name="localIPv4" class="mono" placeholder="auto-detected if blank" value="${esc(s.localIPv4 || '')}"></label>
+        <label class="f">This host · public IPv6<input name="localIPv6" class="mono" placeholder="auto-detected if blank" value="${esc(s.localIPv6 || '')}"></label>
       </div>
       <label class="f">Agent dial-back address <span class="faint">host:port Iran agents connect to (blank = this host's IPv4 : ${STATE.agentPort})</span><input name="agentConnect" class="mono" value="${esc(s.agentConnect || '')}" placeholder="203.0.113.5:${STATE.agentPort}"></label>
       <div class="two">
@@ -222,6 +222,12 @@ function viewServers(w) {
   $$('[data-agent]', wrap).forEach(b => b.onclick = () => agentModal(b.dataset.agent));
   $$('[data-bridge]', wrap).forEach(b => b.onclick = () => bridgeModal(b.dataset.bridge));
   $$('[data-optz]', wrap).forEach(b => b.onclick = () => optimizeModal(b.dataset.optz));
+  $$('[data-prep]', wrap).forEach(b => b.onclick = () => prepareServer(b.dataset.prep));
+}
+async function prepareServer(id) {
+  const s = STATE.servers.find(x => x.id === id);
+  try { const r = await api('/servers/prepare', { ID: id }); openLog({ id: '', name: 'Install packages · ' + (s ? s.name : '') }, r.job); }
+  catch (e) { alertModal('Error', e.message); }
 }
 function optimizeModal(id) {
   const m = modal(`<h2>Optimize kernel</h2>
@@ -267,6 +273,7 @@ function serverCard(s) {
     <div class="actions">
       <button class="btn sm" data-test="${s.id}">Test paths</button>
       <button class="btn sm" data-optz="${s.id}">Optimize</button>
+      <button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">${s.provisioned ? '✓ Packages' : 'Install packages'}</button>
       <button class="btn sm" data-agent="${s.id}">Agent install</button>
       <button class="btn sm" data-bridge="${s.id}">SSH bridge</button>
       <button class="btn sm" data-edit="${s.id}">Edit</button>
@@ -324,7 +331,7 @@ function serverModal(s) {
       </div>
       <div class="two">
         <label class="f">Public IPv4<input name="ipv4" class="mono" value="${esc(s.ipv4 || '')}"></label>
-        <label class="f">Public IPv6<input name="ipv6" class="mono" value="${esc(s.ipv6 || '')}"></label>
+        <label class="f">Public IPv6<input name="ipv6" class="mono" placeholder="blank = read from the server on Test" value="${esc(s.ipv6 || '')}"></label>
       </div>
       <div class="two">
         <label class="f">SSH host <span class="faint">(blank=IPv4)</span><input name="sshHost" class="mono" value="${esc(s.sshHost || '')}"></label>
@@ -468,6 +475,9 @@ function tunnelModal(t) {
 }
 
 /* ---------------- benchmark ---------------- */
+// The benchmark runs on the server; the page only watches it. benchWatch survives
+// navigation, and /bench/active lets a fresh page (or reload) re-attach to a running job.
+let benchTimer = null;
 function viewBench(w) {
   w.innerHTML = topbar('Route benchmark', 'Measure every method between two servers — latency, jitter, loss and throughput — and get a recommendation.');
   const card = h(`<div class="grid" style="gap:16px">
@@ -480,43 +490,73 @@ function viewBench(w) {
         <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>
         <label class="f">Throughput probe (s)<input name="seconds" type="number" class="mono" value="5"></label>
       </div>
-      <div class="faint" style="font-size:12px">Each method is deployed on a temporary tunnel, measured, then removed. This takes a few minutes and briefly uses bandwidth.</div>
-      <div><button class="btn pri">Run benchmark</button></div>
+      <div class="faint" style="font-size:12px">Each method is deployed on a temporary tunnel, measured, then removed. It runs on the server — you can leave this page and come back.</div>
+      <div><button class="btn pri" id="brun">Run benchmark</button></div>
     </form>
-    <div id="bres"></div></div>`);
+    <div id="blogcard"></div><div id="bres"></div></div>`);
   w.appendChild(card);
-  $('#bf').onsubmit = async (ev) => {
+  const form = $('#bf');
+  const cur = () => { const fd = Object.fromEntries(new FormData(form)); return { iran: fd.iran, foreign: fd.foreign || '', family: fd.family }; };
+  form.onchange = () => { if (!benchTimer) showBenchResults(cur()); };
+  form.onsubmit = async (ev) => {
     ev.preventDefault();
-    const fd = Object.fromEntries(new FormData(ev.target));
-    try { const r = await api('/bench/start', { iranId: fd.iran, foreignId: fd.foreign, family: fd.family, seconds: parseInt(fd.seconds || '5', 10) }); benchLog(fd, r.job); }
+    const fd = Object.fromEntries(new FormData(form));
+    try { const r = await api('/bench/start', { iranId: fd.iran, foreignId: fd.foreign, family: fd.family, seconds: parseInt(fd.seconds || '5', 10) }); benchWatch(r.job, cur()); }
     catch (e) { alertModal('Error', e.message); }
   };
+  // re-attach to a running benchmark, else show the stored results of the selected route
+  api('/bench/active').then(a => {
+    const q = (a && a.req) || {};
+    // a running benchmark always re-attaches; a finished one only for the route on screen
+    const same = q.iranId === cur().iran;
+    if (a && a.job && (a.running || same)) {
+      if (q.iranId) form.iran.value = q.iranId;
+      form.foreign.value = q.foreignId || '';
+      if (q.family) form.family.value = q.family;
+      benchWatch(a.job, { iran: q.iranId, foreign: q.foreignId || '', family: q.family || 'v4' });
+    } else showBenchResults(cur());
+  }).catch(() => showBenchResults(cur()));
 }
-function benchLog(fd, job) {
-  const box = $('#bres'); box.innerHTML = `<div class="card pad"><h3>Running…</h3><div class="logbox" id="blog" style="height:220px"></div></div>`;
-  const log = $('#blog');
+function benchWatch(job, fd) {
+  if (benchTimer) clearInterval(benchTimer);
   const tick = async () => {
-    try {
-      const j = await api('/jobs?id=' + job);
-      log.innerHTML = j.lines.map(l => `<div class="ln ${/ERROR/.test(l) ? 'err' : /DONE|best/.test(l) ? 'ok' : ''}">${esc(l)}</div>`).join('');
-      log.scrollTop = log.scrollHeight;
-      if (j.status !== 'running') { clearInterval(iv); showBenchResults(fd); }
-    } catch (e) {}
+    let j;
+    try { j = await api('/jobs?id=' + job); } catch (e) { return; }
+    if (STATE.view !== 'bench') { if (j.status !== 'running') { clearInterval(benchTimer); benchTimer = null; } return; }
+    const lc = $('#blogcard'), btn = $('#brun');
+    if (!lc) return;
+    if (!$('#blog', lc)) lc.innerHTML = `<div class="card pad"><h3 id="bhead"></h3><div class="logbox" id="blog" style="height:240px"></div></div>`;
+    const log = $('#blog', lc);
+    const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+    log.innerHTML = j.lines.map(l => `<div class="ln ${/ERROR|FAILED/.test(l) ? 'err' : /DONE|best| ok:/.test(l) ? 'ok' : ''}">${esc(l)}</div>`).join('');
+    if (stick) log.scrollTop = log.scrollHeight;
+    $('#bhead', lc).textContent = j.status === 'running' ? 'Running… (continues on the server if you leave)' : (j.status === 'ok' ? 'Finished' : 'Stopped with an error');
+    if (btn) { btn.disabled = j.status === 'running'; btn.textContent = j.status === 'running' ? 'Benchmark running…' : 'Run benchmark'; }
+    showBenchResults(fd);
+    if (j.status !== 'running') { clearInterval(benchTimer); benchTimer = null; }
   };
-  const iv = setInterval(tick, 1200); tick();
+  benchTimer = setInterval(tick, 1500); tick();
 }
 async function showBenchResults(fd) {
   let res = [];
-  try { res = await api(`/bench/results?iran=${fd.iran}&foreign=${fd.foreign || ''}&family=${fd.family}`); } catch (e) {}
+  try { res = await api(`/bench/results?iran=${encodeURIComponent(fd.iran || '')}&foreign=${encodeURIComponent(fd.foreign || '')}&family=${fd.family}`); } catch (e) {}
   const box = $('#bres');
-  const rows = res.map(r => `<tr class="${r.recommended ? 'best' : ''}">
-    <td>${r.recommended ? '★ ' : ''}${esc(r.title)}</td>
-    <td>${r.ok ? r.mbps.toFixed(1) : '—'}</td><td>${r.ok ? r.rttMs.toFixed(1) : '—'}</td>
-    <td>${r.ok ? r.jitterMs.toFixed(1) : '—'}</td><td>${r.ok ? r.lossPct.toFixed(0) + '%' : '—'}</td>
-    <td>${r.ok ? r.score.toFixed(0) : esc((r.error || '').slice(0, 40))}</td>
-    <td>${r.ok ? `<button class="btn sm pri" data-use="${r.method}">Apply to tunnel</button>` : ''}</td></tr>`).join('');
+  if (!box) return; // user left the page
+  if (!res || !res.length) { box.innerHTML = ''; return; }
+  const n = (v) => v > 0 ? v.toFixed(v < 10 ? 1 : 0) : '—';
+  const rows = res.map(r => {
+    if (!r.ok) return `<tr class="${r.skipped ? 'skip' : 'fail'}"><td>${esc(r.title)}</td>
+      <td colspan="6" class="${r.skipped ? 'faint' : 'errtxt'}" style="white-space:normal;font-size:12.5px">${r.skipped ? 'skipped — ' : '✕ '}${esc(r.error || 'failed')}</td><td></td></tr>`;
+    return `<tr class="${r.recommended ? 'best' : ''}">
+    <td>${r.recommended ? '★ ' : ''}${esc(r.title)} <span class="faint" style="font-size:11px">${r.kind === 'l3' ? 'L3' : 'port-fwd'}</span></td>
+    <td>${n(r.downMbps)}</td><td>${n(r.upMbps)}</td><td>${r.rttMs.toFixed(1)}</td>
+    <td>${r.jitterMs.toFixed(1)}</td><td>${r.lossKnown ? r.lossPct.toFixed(0) + '%' : '<span class="faint" title="ICMP loss is only measurable on L3 tunnels">n/a</span>'}</td>
+    <td>${r.score.toFixed(0)}</td>
+    <td><button class="btn sm pri" data-use="${r.method}">Apply to tunnel</button></td></tr>`;
+  }).join('');
   box.innerHTML = `<div class="card pad"><h3>Results</h3>
-    <table class="tbl bench"><thead><tr><th>method</th><th>Mbps</th><th>RTT ms</th><th>jitter</th><th>loss</th><th>score</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan=7 class="muted">no results</td></tr>'}</tbody></table></div>`;
+    <div style="overflow-x:auto"><table class="tbl bench"><thead><tr><th>method</th><th>↓ Mbps</th><th>↑ Mbps</th><th>RTT ms</th><th>jitter</th><th>loss</th><th>score</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="faint" style="font-size:12px;margin-top:8px">↓ = foreign → Iran (what users downloading feel), ↑ = Iran → foreign. Measured over TCP through the tunnel itself.</div></div>`;
   $$('[data-use]', box).forEach(b => b.onclick = () => applyBenchToTunnel(fd, b.dataset.use));
 }
 function applyBenchToTunnel(fd, method) {

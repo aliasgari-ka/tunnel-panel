@@ -39,9 +39,11 @@ type Server struct {
 	Arch       string `json:"arch,omitempty"`
 	OS         string `json:"os,omitempty"`
 	Prepared   bool   `json:"prepared"`
-	CreatedAt  int64  `json:"createdAt"`
-	Role       string `json:"role"`                 // iran | foreign
-	AgentToken string `json:"agentToken,omitempty"` // dial-back agent auth
+	// Provisioned is when every method's binaries/packages were last pre-installed (0 = never).
+	Provisioned int64  `json:"provisioned,omitempty"`
+	CreatedAt   int64  `json:"createdAt"`
+	Role        string `json:"role"`                 // iran | foreign
+	AgentToken  string `json:"agentToken,omitempty"` // dial-back agent auth
 	// Proxy routes the panel's SSH connection to this server through a SOCKS5 or
 	// HTTP CONNECT proxy, e.g. socks5://user:pass@1.2.3.4:1080 or http://1.2.3.4:3128
 	Proxy string `json:"proxy,omitempty"`

@@ -62,6 +62,7 @@ func (a *App) routes() http.Handler {
 	p("/api/servers/resetkey", s.serverResetKey)
 	p("/api/servers/bridge", s.serverBridge)
 	p("/api/servers/optimize", s.serverOptimize)
+	p("/api/servers/prepare", s.serverPrepare)
 	p("/api/tunnels", s.tunnels)
 	p("/api/tunnels/save", s.tunnelSave)
 	p("/api/tunnels/delete", s.tunnelDelete)
@@ -72,6 +73,7 @@ func (a *App) routes() http.Handler {
 	p("/api/jobs", s.job)
 	p("/api/bench/start", s.benchStart)
 	p("/api/bench/results", s.benchResults)
+	p("/api/bench/active", s.benchActive)
 	p("/api/helpers", s.helpers)
 	mux.HandleFunc("/api/helpers/upload", s.auth(s.helperUpload)) // multipart, not JSON
 	return securityHeaders(mux)
@@ -795,6 +797,34 @@ func (s *Server2) benchStart(w http.ResponseWriter, r *http.Request) {
 	j, err := s.app.Bench(in)
 	if err != nil {
 		httpErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"job": j.ID})
+}
+
+// benchActive returns the running or last benchmark ({} when none), so the page can re-attach.
+func (s *Server2) benchActive(w http.ResponseWriter, r *http.Request) {
+	if b := s.app.activeBench(); b != nil {
+		writeJSON(w, b)
+		return
+	}
+	writeJSON(w, map[string]string{})
+}
+
+// serverPrepare pre-installs every method's binaries/packages on a server ("" = this panel host).
+func (s *Server2) serverPrepare(w http.ResponseWriter, r *http.Request) {
+	var in struct{ ID string }
+	_ = readJSON(r, &in)
+	var srv *Server
+	if in.ID != "" {
+		if srv = s.app.store.Server(in.ID); srv == nil {
+			httpErr(w, 404, "server not found")
+			return
+		}
+	}
+	j, err := s.app.Prepare(srv)
+	if err != nil {
+		httpErr(w, 409, err.Error())
 		return
 	}
 	writeJSON(w, map[string]string{"job": j.ID})

@@ -75,10 +75,10 @@ func ensureArtifact(ctx context.Context, j *Job, a Artifact, arch string) ([]byt
 // helperBytes loads a helper binary: an uploaded one in the data dir wins over the embedded one.
 func helperBytes(name, arch string) ([]byte, error) {
 	file := name + "-" + arch
-	if b, err := os.ReadFile(filepath.Join(helpersDir(), file)); err == nil {
+	if b, err := os.ReadFile(filepath.Join(helpersDir(), file)); err == nil && len(b) > 0 {
 		return b, nil
 	}
-	if b, err := assetBytes(file); err == nil {
+	if b, err := assetBytes(file); err == nil && len(b) > 0 {
 		return b, nil
 	}
 	return nil, fmt.Errorf("helper %s is not available for %s — upload it under Settings → Helper binaries", name, arch)

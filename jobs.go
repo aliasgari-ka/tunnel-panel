@@ -120,6 +120,7 @@ type App struct {
 
 	benchMu  sync.Mutex
 	benchRes map[string][]BenchResult // "iran|foreign|family" -> results
+	benchRun *benchActive             // the running benchmark (nil when idle)
 }
 
 func (a *App) settings() Settings {
@@ -159,21 +160,8 @@ rm -rf %[2]s
 // deploy installs a side plan on one host.
 func (a *App) deploy(ctx context.Context, j *Job, label string, h Host, t *Tunnel, p SidePlan) error {
 	logf := func(l string) { j.log("[%s] %s", label, l) }
-	if len(p.Artifacts) > 0 {
-		arch, err := hostArch(ctx, h)
-		if err != nil {
-			return fmt.Errorf("detect arch: %w", err)
-		}
-		for _, art := range p.Artifacts {
-			data, err := ensureArtifact(ctx, j, art, arch)
-			if err != nil {
-				return err
-			}
-			j.log("[%s] upload %s (%s, %d KB)", label, art.Dest, arch, len(data)/1024)
-			if err := h.WriteFile(art.Dest, data, art.Mode); err != nil {
-				return err
-			}
-		}
+	if err := pushArtifacts(ctx, j, label, h, p.Artifacts); err != nil {
+		return err
 	}
 	for path, fs := range p.Files {
 		j.log("[%s] write %s", label, path)
@@ -182,8 +170,8 @@ func (a *App) deploy(ctx context.Context, j *Job, label string, h Host, t *Tunne
 		}
 	}
 	if p.Setup != "" {
-		if _, err := h.Run(ctx, "set -e\n"+p.Setup, logf); err != nil {
-			return fmt.Errorf("setup: %w", err)
+		if out, err := h.Run(ctx, "set -e\n"+p.Setup, logf); err != nil {
+			return withTail(fmt.Errorf("setup: %w", err), out)
 		}
 	}
 	u := unitName(t)
@@ -201,8 +189,8 @@ st=$(systemctl is-active %[1]s)
 echo "unit %[1]s: $st"
 if [ "$st" != active ]; then journalctl -u %[1]s -n 25 --no-pager; exit 1; fi
 `, u)
-	_, err := h.Run(ctx, script, logf)
-	return err
+	out, err := h.Run(ctx, script, logf)
+	return withTail(err, out)
 }
 
 // Apply starts or switches a tunnel to method mid.

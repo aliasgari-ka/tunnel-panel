@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -71,6 +73,13 @@ func main() {
 	app.agents.onChange = func(serverID string, online bool) {
 		if online {
 			app.push("🟢 agent online: " + serverName(app, serverID))
+			if srv := app.store.Server(serverID); srv != nil {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+					defer cancel()
+					app.autoSetup(ctx, srv, AgentHost{hub: app.agents, serverID: serverID})
+				}()
+			}
 		}
 	}
 	app.restartBot()
@@ -80,6 +89,8 @@ func main() {
 			log.Printf("agent hub stopped: %v", err)
 		}
 	}()
+
+	go func() { time.Sleep(10 * time.Second); app.autoSetupLocal() }()
 
 	fmt.Printf("Tunnel Panel (agent %s, data %s, %d methods)\n", *agentAddr, *dir, len(methods))
 	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))

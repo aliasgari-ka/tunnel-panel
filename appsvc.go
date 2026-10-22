@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 )
@@ -51,6 +52,7 @@ type TestResult struct {
 // TestServer probes agent + SSH paths and records which works, fastest first.
 func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
 	var res TestResult
+	var okHost Host
 	probe := func(name string, h Host) {
 		pr := PathResult{Path: name}
 		start := time.Now()
@@ -73,6 +75,9 @@ func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
 			}
 			if res.Arch == "" {
 				res.Arch, res.OS = arch, os2
+			}
+			if okHost == nil {
+				okHost = h
 			}
 		}
 		res.Paths = append(res.Paths, pr)
@@ -105,6 +110,8 @@ func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
 			}
 			return nil
 		})
+		// missing IPs are read from the server itself; first contact also pre-installs binaries
+		a.autoSetup(ctx, srv, okHost)
 	}
 	return res
 }
@@ -123,4 +130,100 @@ func (a *App) restartBot() {
 	}
 	a.bot = newBot(a, set.TelegramTok, set.TelegramAdmin)
 	go a.bot.Run()
+}
+
+// addrScript reports the host's own addresses: the source it uses for the default
+// routes, plus (only when that IPv4 is private/NATed) what the internet sees.
+const addrScript = `v4=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)
+v6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null | sed -n 's/.* src \([0-9a-fA-F:]*\).*/\1/p' | head -1)
+[ -n "$v6" ] || v6=$(ip -6 -o addr show scope global 2>/dev/null | grep -v -e temporary -e deprecated | awk '{print $4}' | cut -d/ -f1 | grep -iv '^f[cd]' | head -1)
+[ -n "$v4" ] || v4=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v : | head -1)
+[ -n "$v6" ] || v6=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep : | grep -iv '^f[cde]' | head -1)
+echo "V4=$v4"
+echo "V6=$v6"
+case "$v4" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*|"")
+  echo "PUB4=$(curl -4 -fsS --max-time 4 https://api.ipify.org 2>/dev/null || curl -4 -fsS --max-time 4 https://ifconfig.me 2>/dev/null)";;
+esac
+`
+
+// detectAddrs returns the public IPv4/IPv6 a host uses (empty when it has none).
+func detectAddrs(ctx context.Context, h Host) (v4, v6 string) {
+	out, _ := h.Run(ctx, addrScript, nil)
+	var pub4 string
+	for _, l := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(l), "=")
+		if !ok {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(v))
+		switch k {
+		case "V4":
+			if ip != nil && ip.To4() != nil && isPublic(ip) {
+				v4 = ip.String()
+			}
+		case "V6":
+			if ip != nil && ip.To4() == nil && isPublic(ip) {
+				v6 = ip.String()
+			}
+		case "PUB4":
+			if ip != nil && ip.To4() != nil && isPublic(ip) {
+				pub4 = ip.String()
+			}
+		}
+	}
+	if v4 == "" {
+		v4 = pub4
+	}
+	return v4, v6
+}
+
+func isPublic(ip net.IP) bool {
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() { // IsPrivate covers 10/8, 172.16/12, 192.168/16, fc00::/7
+		return false
+	}
+	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
+	return !cgnat.Contains(ip)
+}
+
+// autoSetup fills in a server's missing addresses from the server itself, then
+// pre-installs every method's binaries once (see Prepare).
+func (a *App) autoSetup(ctx context.Context, srv *Server, h Host) {
+	if srv.IPv4 == "" || srv.IPv6 == "" {
+		v4, v6 := detectAddrs(ctx, h)
+		_ = a.store.Update(func(st *State) error {
+			if x := a.store.serverLocked(st, srv.ID); x != nil {
+				if x.IPv4 == "" && v4 != "" {
+					x.IPv4 = v4
+				}
+				if x.IPv6 == "" && v6 != "" {
+					x.IPv6 = v6
+				}
+			}
+			return nil
+		})
+	}
+	if cur := a.store.Server(srv.ID); cur != nil && cur.Provisioned == 0 {
+		_, _ = a.Prepare(cur)
+	}
+}
+
+// autoSetupLocal fills the panel host's own addresses in Settings when blank and
+// pre-installs the foreign-side binaries on it.
+func (a *App) autoSetupLocal() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	set := a.settings()
+	if set.LocalIPv4 == "" || set.LocalIPv6 == "" {
+		v4, v6 := detectAddrs(ctx, LocalHost{})
+		_ = a.store.Update(func(st *State) error {
+			if st.Settings.LocalIPv4 == "" {
+				st.Settings.LocalIPv4 = v4
+			}
+			if st.Settings.LocalIPv6 == "" {
+				st.Settings.LocalIPv6 = v6
+			}
+			return nil
+		})
+	}
+	_, _ = a.Prepare(nil)
 }

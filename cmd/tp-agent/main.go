@@ -9,9 +9,14 @@ import (
 	"os"
 
 	"tunnelpanel/internal/agent"
+	"tunnelpanel/internal/probe"
 )
 
 func main() {
+	// the benchmark pushes this same binary to both servers and uses it as a path probe
+	if len(os.Args) > 1 && os.Args[1] == "probe" {
+		os.Exit(probe.Main(os.Args[2:]))
+	}
 	connect := flag.String("connect", "", "panel agent address host:port")
 	token := flag.String("token", "", "agent token from the panel")
 	pin := flag.String("pin", "", "panel certificate pin (base64 sha256)")
