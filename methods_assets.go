@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
+	"strconv"
 )
 
 func init() {
@@ -21,14 +22,21 @@ var methodGoldenGRE = &Method{
 	Helper:   "golden-gre-relay",
 	Fields: []Field{
 		{Key: "facade", Label: "Disguise", Type: "select", Default: "dns", Options: []string{"dns", "icmp", "none"}},
+		{Key: "dnsport", Label: "DNS port on the wire (change only for a 2nd Golden tunnel between the same two servers)", Type: "number", Default: "53"},
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1380"},
 		{Key: "encrypt", Label: "Encrypt payload", Type: "bool", Default: "true"},
 		{Key: "fec", Label: "FEC K:M (blank = off)", Type: "text", Default: ""},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
-		facade, mtu := c.Opt("facade"), c.Opt("mtu")
-		fouPort, relayPort := d.BasePort, d.BasePort+1
+		facade, mtu, wirePort := c.Opt("facade"), c.Opt("mtu"), c.Opt("dnsport")
+		if p, err := strconv.Atoi(wirePort); err != nil || p < 1 || p > 65535 {
+			return ir, kh, fmt.Errorf("Golden-GRE: DNS port must be 1..65535")
+		}
+		// the relay receives on its own port; a TPROXY rule per peer hands it that peer's port-53
+		// packets, so several Golden tunnels (to different peers) share one server's public port 53
+		fouPort, relayPort, rxPort := d.BasePort, d.BasePort+1, d.BasePort+3
+		tag := "tpg-" + c.T.ID
 		dir := tunnelDir(c.T)
 		keyPath := dir + "/golden.key"
 		relayBin := "/usr/local/sbin/golden-gre-relay"
@@ -47,9 +55,12 @@ iptables -C INPUT -p gre -s %[3]s -j ACCEPT 2>/dev/null || iptables -I INPUT -p 
 `, d.Iface, selfPub, peerPub, d.GREKey, tunAddr, mtu)
 				return s
 			}
-			inRule := "-p udp --dport 53"
+			inRule := "-p udp --dport " + wirePort
 			if facade == "icmp" {
 				inRule = "-p icmp"
+			}
+			if facade == "dns" {
+				s += goldenSteer(true, peerPub, wirePort, selfPub, rxPort, tag)
 			}
 			s += fmt.Sprintf(`modprobe fou 2>/dev/null || true
 ip link del %[1]s 2>/dev/null || true
@@ -69,9 +80,12 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 		}
 		linkDown := func(selfPub, peerPub string) string {
 			s := fmt.Sprintf("ip link del %s 2>/dev/null || true\nip fou del port %d local 127.0.0.1 2>/dev/null || true\n", d.Iface, fouPort)
-			inRule := "-p udp --dport 53"
+			inRule := "-p udp --dport " + wirePort
 			if facade == "icmp" {
 				inRule = "-p icmp"
+			}
+			if facade == "dns" {
+				s += goldenSteer(false, peerPub, wirePort, selfPub, rxPort, tag)
 			}
 			if facade != "none" {
 				s += fmt.Sprintf("iptables -D INPUT %s -s %s -j ACCEPT 2>/dev/null || true\n", inRule, peerPub)
@@ -90,7 +104,7 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 			args := fmt.Sprintf("%s --facade %s --bind %s --peer %s --local 127.0.0.1:%d --reply 127.0.0.1:%d",
 				relayBin, facade, selfPub, peerPub, relayPort, fouPort)
 			if facade == "dns" {
-				args += " --port 53"
+				args += fmt.Sprintf(" --port %s --listen %d", wirePort, rxPort)
 			} else {
 				args += " --itype 8"
 			}
@@ -131,6 +145,41 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 		}
 		return mk(d.IRPub, d.KHPub, d.IRv4, true), mk(d.KHPub, d.IRPub, d.KHv4, false), nil
 	},
+}
+
+// goldenSteer adds (or removes) the TPROXY rule that hands the peer's DNS-port packets to
+// this tunnel's relay. TPROXY picks the socket per packet and rewrites nothing, so unlike
+// NAT no conntrack entry from before the rule (or from another relay) can get in the way.
+func goldenSteer(add bool, peer, wirePort, self string, rxPort int, tag string) string {
+	rule := fmt.Sprintf("PREROUTING -p udp -s %s -d %s --dport %s -m comment --comment %s -j TPROXY --on-ip %s --on-port %d", peer, self, wirePort, tag, self, rxPort)
+	if !add {
+		return fmt.Sprintf("while iptables -w -t mangle -D %s 2>/dev/null; do :; done\n", rule)
+	}
+	return fmt.Sprintf(`modprobe xt_TPROXY 2>/dev/null; modprobe nf_tproxy_ipv4 2>/dev/null
+iptables -w -t mangle -C %[1]s 2>/dev/null || iptables -w -t mangle -I %[1]s || { echo "could not add the TPROXY rule for the relay (kernel module xt_TPROXY missing?)"; exit 1; }
+`, rule)
+}
+
+// goldenConflict names a running Golden-GRE (dns) tunnel that already uses t's DNS port
+// between the same two servers: both relays would be sent the same peer's packets.
+func goldenConflict(st *State, t *Tunnel) string {
+	if t.Family != "v4" {
+		return ""
+	}
+	get, _ := resolveOptions(methodGoldenGRE, t.Options["golden"])
+	if get("facade") != "dns" {
+		return ""
+	}
+	for _, o := range st.Tunnels {
+		if o.ID == t.ID || o.Active != "golden" || o.Family != "v4" || o.ServerID != t.ServerID || o.ForeignID != t.ForeignID {
+			continue
+		}
+		og, _ := resolveOptions(methodGoldenGRE, o.Options["golden"])
+		if og("facade") == "dns" && og("dnsport") == get("dnsport") {
+			return o.Name
+		}
+	}
+	return ""
 }
 
 // ---- Backhaul Premium (closed binary, uploaded & hash-pinned; new [listener]/[ipx] format) ----

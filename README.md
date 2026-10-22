@@ -53,7 +53,7 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 | **Backhaul reverse** | v4/v6 | token / wss | tcp, tcpmux, ws, wss, wsmux, wssmux, udp |
 | **FRP reverse** | v4/v6 | token (+TLS) | tcp, websocket, quic, kcp |
 | **Backhaul Premium** | v4 | AEAD (ipx) / TLS | `tun` + `ipx` raw carrier (icmp/ipip/udp/tcp/gre/bip), `anytls`. amd64, upload the core |
-| **Golden-GRE** | v4 | optional XChaCha20 | GRE-in-FOU disguised as DNS or ICMP |
+| **Golden-GRE** | v4 | optional XChaCha20 | GRE-in-FOU disguised as DNS or ICMP; several tunnels can share one server's port 53 |
 | **Direct v6 (ip6gre)** | v6 | none | kernel only, lowest overhead |
 | **Plain GRE** | v4/v6 | none | kernel GRE / ip6gre |
 | **IPsec (strongSwan)** | v6/v4 | AES-GCM | IKEv2, route-based XFRM interface |
@@ -126,8 +126,11 @@ systemctl restart tunnel-panel
 - The **Backhaul Premium** core is closed source and is **not** bundled or downloaded. Upload it
   once in *Settings → Helper binaries*; the panel stores it and pushes it to hosts itself. It is
   amd64 only, and the vendor's own installer (plain HTTP) is avoided.
-- **Golden-GRE** and **Premium** ship/upload amd64 helpers, so those two methods need amd64
-  hosts. Every other method is architecture-independent.
+- **Golden-GRE**'s relay is built for amd64 and arm64; **Premium**'s core is amd64 (arm64 via the
+  vendor build or emulation, see above). Every other method is architecture-independent.
+- **Golden-GRE (DNS)** relays receive on a per-tunnel port; an iptables TPROXY rule per peer hands
+  each relay its peer's port-53 packets, so one server can run Golden tunnels to several servers.
+  Two Golden tunnels between the *same* two servers need different "DNS port" options.
 - The panel runs as root on the foreign server (it manages `ip`, `iptables`, `sysctl`, systemd)
   and uses root on the Iran side. A fresh random token/PSK is generated per tunnel — the public
   default secrets of the upstream tools are never used.

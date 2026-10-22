@@ -17,10 +17,13 @@
 //
 //   gcc -O2 -Wall -pthread -o golden-gre-relay golden-gre-relay.c
 //   golden-gre-relay --facade dns|icmp --bind <public_ip> --peer <peer_ip> --local <ip:port>
-//                    [--reply <ip:port>] [--port 53] [--itype 0] [--fec K:M] [--gso on|off]
+//                    [--reply <ip:port>] [--port 53] [--listen PORT] [--itype 0] [--fec K:M] [--gso on|off]
 //
 // dns:  UDP from an ephemeral port to <peer>:53, framed as a DNS query (one question, EDNS0 OPT record
-//       whose RDATA is the payload); listens on <bind>:53 (--port).
+//       whose RDATA is the payload); listens on <bind>:53 (--port). With --listen it listens on
+//       <bind>:PORT instead (a transparent socket), so several relays can share one public address: an
+//       iptables TPROXY rule per peer hands that peer's port-53 packets to its relay's socket, packet by
+//       packet and without rewriting them (the wire still carries port 53; needs root).
 // icmp: ICMP messages of --itype: 0 = unsolicited echo reply, so no kernel answers it; 8 = echo request, for
 // paths that drop echo replies without a request (golden-gre-up.sh then drops the kernel's answers); needs root.
 #define _GNU_SOURCE
@@ -125,7 +128,8 @@ static struct batch from_local, from_wire;
 
 #define MAX_PORTS 8  // dns facade: the receiver may listen on several ports; see the --port list
 static int is_dns, itype, tx, loc;
-static int rxs[MAX_PORTS], nports = 1;       // the receive sockets (the dns facade may have several)
+static int rxs[MAX_PORTS], nports = 1;       // the peer's ports (the dns facade may have several)
+static int nsock = 1;                        // the receive sockets: one per port, or one with --listen
 static int peer_i;                           // which of peers[] the current tx socket sends to
 static struct sockaddr_in peers[MAX_PORTS];  // the peer addresses, one per port in the list
 static int rotate;                // dns only: reopen the sending socket every this many frames (0 = never)
@@ -162,6 +166,16 @@ static int udp_socket(struct sockaddr_in a) {
   if (s < 0) die("socket");
   setsockopt(s, SOL_SOCKET, SO_RCVBUF, &big, sizeof big);
   setsockopt(s, SOL_SOCKET, SO_SNDBUF, &big, sizeof big);
+  if (bind(s, (struct sockaddr *)&a, sizeof a) < 0) die("bind");
+  return s;
+}
+
+// The --listen socket: IP_TRANSPARENT lets a TPROXY rule deliver packets addressed to another port to it.
+static int udp_listen(struct sockaddr_in a) {
+  int s = socket(AF_INET, SOCK_DGRAM, 0), one = 1, big = 4 << 20;
+  if (s < 0) die("socket");
+  if (setsockopt(s, SOL_IP, IP_TRANSPARENT, &one, sizeof one) < 0) die("IP_TRANSPARENT (root needed)");
+  setsockopt(s, SOL_SOCKET, SO_RCVBUF, &big, sizeof big);
   if (bind(s, (struct sockaddr *)&a, sizeof a) < 0) die("bind");
   return s;
 }
@@ -738,11 +752,11 @@ static void *wire_to_local(void *arg) {  // peer -> facade -> FEC -> tunnel
   struct batch *b = &from_wire;
   struct pollfd pf[MAX_PORTS];
   (void)arg;
-  for (int i = 0; i < nports; i++) pf[i] = (struct pollfd){rxs[i], POLLIN, 0};
+  for (int i = 0; i < nsock; i++) pf[i] = (struct pollfd){rxs[i], POLLIN, 0};
   while (!GET(stopping)) {
-    if (poll(pf, nports, 1000) <= 0) continue;
+    if (poll(pf, nsock, 1000) <= 0) continue;
     int got = 0;
-    for (int k = 0; k < nports; k++) {
+    for (int k = 0; k < nsock; k++) {
       if (!(pf[k].revents & POLLIN)) continue;
       recv_setup(b, BUF);
       int n = recvmmsg(rxs[k], b->msgs, BATCH, MSG_DONTWAIT, NULL);
@@ -840,7 +854,7 @@ static int derive_key(const char *salt_arg) {
 int main(int argc, char **argv) {
   if (argc == 3 && !strcmp(argv[1], "--derive-key")) return derive_key(argv[2]);
   const char *facade = NULL, *bind_ip = NULL, *peer_ip = NULL, *local = NULL, *reply_arg = NULL, *fec_arg = NULL;
-  const char *gso_arg = "on", *rotate_arg = NULL, *port_arg = "53", *rate_arg = NULL, *keyfile = NULL;
+  const char *gso_arg = "on", *rotate_arg = NULL, *port_arg = "53", *rate_arg = NULL, *keyfile = NULL, *listen_arg = NULL;
   for (int i = 1; i + 1 < argc; i += 2) {
     if (!strcmp(argv[i], "--facade")) facade = argv[i + 1];
     else if (!strcmp(argv[i], "--keyfile")) keyfile = argv[i + 1];
@@ -849,6 +863,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--local")) local = argv[i + 1];
     else if (!strcmp(argv[i], "--reply")) reply_arg = argv[i + 1];
     else if (!strcmp(argv[i], "--port")) port_arg = argv[i + 1];
+    else if (!strcmp(argv[i], "--listen")) listen_arg = argv[i + 1];
     else if (!strcmp(argv[i], "--itype")) itype = atoi(argv[i + 1]);
     else if (!strcmp(argv[i], "--fec")) fec_arg = argv[i + 1];
     else if (!strcmp(argv[i], "--gso")) gso_arg = argv[i + 1];
@@ -857,7 +872,7 @@ int main(int argc, char **argv) {
   }
   if (!facade || !bind_ip || !peer_ip || !local || (strcmp(facade, "dns") && strcmp(facade, "icmp")) ||
       (strcmp(gso_arg, "on") && strcmp(gso_arg, "off"))) {
-    fprintf(stderr, "usage: %s --facade dns|icmp --bind IP --peer IP --local IP:PORT [--reply IP:PORT] [--port 53,853,...] [--itype 0] [--fec K:M] [--gso on|off] [--rotate N] [--rate N] [--keyfile PATH]\n", argv[0]);
+    fprintf(stderr, "usage: %s --facade dns|icmp --bind IP --peer IP --local IP:PORT [--reply IP:PORT] [--port 53,853,...] [--listen PORT] [--itype 0] [--fec K:M] [--gso on|off] [--rotate N] [--rate N] [--keyfile PATH]\n", argv[0]);
     return 1;
   }
   if (rotate_arg) {
@@ -928,11 +943,19 @@ int main(int argc, char **argv) {
       long p = strtol(tok, &end, 10);
       if (*end || p < 1 || p > 65535 || nports == MAX_PORTS)
         die("--port wants 1..65535, comma or space separated, at most 8 ports");
-      rxs[nports] = udp_socket(mkaddr(bind_ip, (int)p));
+      if (!listen_arg) rxs[nports] = udp_socket(mkaddr(bind_ip, (int)p));
       peers[nports] = mkaddr(peer_ip, (int)p);
       nports++;
     }
     if (!nports) die("--port wants at least one port");
+    nsock = nports;
+    if (listen_arg) {
+      char *end;
+      long lp = strtol(listen_arg, &end, 10);
+      if (*end || lp < 1 || lp > 65535) die("--listen wants a port 1..65535");
+      rxs[0] = udp_listen(mkaddr(bind_ip, (int)lp));
+      nsock = 1;
+    }
     tx_bind = mkaddr(bind_ip, 0);
     tx = udp_socket(tx_bind);
     peer_i = 0;
@@ -972,6 +995,7 @@ int main(int argc, char **argv) {
   if (rotate) snprintf(rot, sizeof rot, ", rotate %d", rotate);
   if (nports > 1) snprintf(rot + strlen(rot), sizeof rot - strlen(rot), ", %d ports", nports);
   if (rate) snprintf(rot + strlen(rot), sizeof rot - strlen(rot), ", rate %d", rate);
+  if (is_dns && listen_arg) snprintf(rot + strlen(rot), sizeof rot - strlen(rot), ", listen %s", listen_arg);
   printf("golden-gre-relay up: %s %s <-> %s, local %s, fec %s, gso %s, gf %s, enc %s%s%s\n", facade, bind_ip, peer_ip, local,
          fec_arg ? fec_arg : "off", use_gso ? "on" : "off", gf_impl, keyed ? "xchacha20-poly1305" : "off",
          is_dns ? "" : itype ? ", itype 8" : ", itype 0", rot);

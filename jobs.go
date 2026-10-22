@@ -195,6 +195,11 @@ func (a *App) build(m *Method, t *Tunnel, srv *Server) (SidePlan, SidePlan, erro
 	fsrv := a.store.Server(t.ForeignID)
 	uerr := a.store.Update(func(st *State) error {
 		ir, kh, err = buildPlans(m, t, srv, fsrv, st.Settings)
+		if err == nil && m.ID == "golden" {
+			if o := goldenConflict(st, t); o != "" {
+				err = fmt.Errorf("tunnel %q already runs Golden-GRE between these two servers — set a different \"DNS port\" (e.g. 5353) in this tunnel's Golden-GRE options", o)
+			}
+		}
 		return nil
 	})
 	if uerr != nil {

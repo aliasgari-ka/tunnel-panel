@@ -294,6 +294,14 @@ ip6tables -D INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 
 // benchOne deploys one method on the bench tunnel and measures it end to end.
 func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHost, khHost Host, secs int, probeOK bool, port int, r *BenchResult) error {
+	if m.ID == "golden" {
+		var o string
+		a.store.View(func(st *State) { o = goldenConflict(st, bt) })
+		if o != "" {
+			// testing it here would take the live tunnel's DNS packets for the duration
+			return fmt.Errorf("not tested: tunnel %q already runs Golden-GRE on this route", o)
+		}
+	}
 	irP, khP, err := buildPlans(m, bt, a.store.Server(bt.ServerID), a.store.Server(bt.ForeignID), a.settings())
 	if err != nil {
 		return err

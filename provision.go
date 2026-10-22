@@ -117,7 +117,11 @@ func withTail(err error, out string) error {
 	if len(keep) == 0 {
 		return err
 	}
-	return fmt.Errorf("%v — %s", err, strings.Join(keep, " | "))
+	msg := strings.Join(keep, " | ")
+	if strings.Contains(strings.ToLower(msg), "address already in use") {
+		msg += " (a port this method needs is already taken on that server by another program or tunnel — `ss -lntup` shows which)"
+	}
+	return fmt.Errorf("%v — %s", err, msg)
 }
 
 // sideArtifacts lists every binary any method needs on one side (Iran or foreign),
