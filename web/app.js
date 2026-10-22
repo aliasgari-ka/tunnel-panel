@@ -130,9 +130,14 @@ async function trafficTick() {
   if (document.hidden) return;
   let d; try { d = await api('/traffic'); } catch (e) { return; }
   const tun = d.tunnels || {}, srv = d.servers || {}, speed = d.speed || {};
+  const sum = Object.values(tun).reduce((a, x) => (x.error ? a : [a[0] + x.down, a[1] + x.up]), [0, 0]);
+  const sd = $('[data-sum-dn]'), su = $('[data-sum-up]');
+  if (sd) sd.textContent = fmtRate(sum[0]);
+  if (su) su.textContent = fmtRate(sum[1]);
   $$('[data-traf]').forEach(el => {
     const id = el.dataset.traf, s = tun[id], sp = speed[id];
     const rd = $('[data-rd]', el), ru = $('[data-ru]', el), src = $('[data-src]', el), tot = $('[data-tot]', el);
+    el.classList.toggle('err', !!(s && s.error));
     if (!s) { rd.textContent = '…'; ru.textContent = '…'; src.textContent = 'reading counters…'; }
     else if (s.error) { rd.textContent = '—'; ru.textContent = '—'; src.textContent = s.error; src.style.color = 'var(--crit)'; }
     else {
@@ -260,26 +265,47 @@ async function loadHelpers(card) {
 }
 
 /* ---------------- servers ---------------- */
+// Two clearly separate groups: Iran (entry) and foreign (exit, incl. this panel host).
 function viewServers(w) {
-  w.innerHTML = topbar('Servers', 'Iran and foreign servers. The panel reaches them by agent, direct SSH, jump or proxy — whichever works.',
-    `<button class="btn pri" id="addSrv">+ Add server</button>`);
-  w.appendChild(h(`<div class="card pad nic" style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap"><b style="color:var(--fg)">This panel host</b><span data-nic="">live traffic…</span></div>`));
-  const wrap = h(`<div class="grid cards"></div>`);
-  if (!STATE.servers.length) wrap.appendChild(h(`<div class="card empty"><div class="big">🖥</div>No servers yet. Add your Iran relay server to begin.</div>`));
-  STATE.servers.forEach(s => wrap.appendChild(serverCard(s)));
-  w.appendChild(wrap);
-  $('#addSrv').onclick = () => serverModal();
-  $$('[data-edit]', wrap).forEach(b => b.onclick = () => serverModal(STATE.servers.find(x => x.id === b.dataset.edit)));
-  $$('[data-del]', wrap).forEach(b => b.onclick = async () => { if (!confirmInline(b, 'Delete?')) return; try { await api('/servers/delete', { ID: b.dataset.del }); await loadAll(); renderView(); } catch (e) { alertModal('Error', e.message); } });
-  $$('[data-test]', wrap).forEach(b => b.onclick = () => testServer(b.dataset.test, b));
-  $$('[data-agent]', wrap).forEach(b => b.onclick = () => agentModal(b.dataset.agent));
-  $$('[data-bridge]', wrap).forEach(b => b.onclick = () => bridgeModal(b.dataset.bridge));
-  $$('[data-optz]', wrap).forEach(b => b.onclick = () => optimizeModal(b.dataset.optz));
-  $$('[data-prep]', wrap).forEach(b => b.onclick = () => prepareServer(b.dataset.prep));
+  w.innerHTML = topbar('Servers', 'Iran servers are where users connect; foreign servers are where traffic exits. The panel reaches each one by agent, SSH, jump host or proxy — whichever works.');
+  const ir = iranServers(), fg = foreignServers();
+  const sec = (key, title, sub, n, add) => h(`<section class="group">
+    <div class="ghd"><div><h2>${title} <span class="count">${n}</span></h2><p>${sub}</p></div><button class="btn pri sm" data-add="${key}">${add}</button></div>
+    <div class="grid cards" data-list="${key}"></div></section>`);
+  const irSec = sec('iran', '🇮🇷 Iran servers', 'Entry side — users connect here; the tunnel forwards their traffic abroad.', ir.length, '+ Add Iran server');
+  const fgSec = sec('foreign', '🌍 Foreign servers', 'Exit side — your services (xray/v2ray…) run here. This panel host counts as one.', fg.length + 1, '+ Add foreign server');
+  const irList = $('[data-list=iran]', irSec), fgList = $('[data-list=foreign]', fgSec);
+  if (!ir.length) irList.appendChild(h(`<div class="card empty small"><div class="big">🇮🇷</div>No Iran server yet — add one to start building tunnels.</div>`));
+  ir.forEach(x => irList.appendChild(serverCard(x)));
+  fgList.appendChild(panelHostCard());
+  fg.forEach(x => fgList.appendChild(serverCard(x)));
+  w.appendChild(irSec); w.appendChild(fgSec);
+  $$('[data-add]', w).forEach(b => b.onclick = () => serverModal({ role: b.dataset.add }));
+  $$('[data-edit]', w).forEach(b => b.onclick = () => serverModal(STATE.servers.find(x => x.id === b.dataset.edit)));
+  $$('[data-del]', w).forEach(b => b.onclick = async () => { if (!confirmInline(b, 'Click again to delete')) return; try { await api('/servers/delete', { ID: b.dataset.del }); await loadAll(); renderView(); } catch (e) { alertModal('Error', e.message); } });
+  $$('[data-test]', w).forEach(b => b.onclick = () => testServer(b.dataset.test, b));
+  $$('[data-agent]', w).forEach(b => b.onclick = () => agentModal(b.dataset.agent));
+  $$('[data-bridge]', w).forEach(b => b.onclick = () => bridgeModal(b.dataset.bridge));
+  $$('[data-optz]', w).forEach(b => b.onclick = () => optimizeModal(b.dataset.optz));
+  $$('[data-prep]', w).forEach(b => b.onclick = () => prepareServer(b.dataset.prep));
+}
+// the panel's own machine, shown as the first foreign server
+function panelHostCard() {
+  const st = STATE.settings, n = STATE.tunnels.filter(t => !t.foreignId).length;
+  return h(`<div class="card scard host">
+    <div class="sh"><div class="sname"><span class="sflag">🖥</span><div><h3>This panel host</h3><small>the machine running this panel</small></div></div><span class="pill on"><span class="led"></span>local</span></div>
+    <dl class="kv">
+      <dt>IPv4</dt><dd class="mono">${esc(st.localIPv4 || 'auto-detecting…')}</dd>
+      ${st.localIPv6 ? `<dt>IPv6</dt><dd class="mono">${esc(st.localIPv6)}</dd>` : ''}
+      <dt>Tunnels</dt><dd>${n}</dd>
+    </dl>
+    <div class="nic" data-nic=""></div>
+    <div class="sfoot"><button class="btn sm" data-prep="" title="Pre-install the binaries every method needs">Install packages</button><span class="grow"></span><span class="faint" style="font-size:12px">edit in Settings</span></div>
+  </div>`);
 }
 async function prepareServer(id) {
   const s = STATE.servers.find(x => x.id === id);
-  try { const r = await api('/servers/prepare', { ID: id }); openLog({ id: '', name: 'Install packages · ' + (s ? s.name : '') }, r.job); }
+  try { const r = await api('/servers/prepare', { ID: id }); openLog({ id: '', name: 'Install packages · ' + (s ? s.name : 'this panel host') }, r.job); }
   catch (e) { alertModal('Error', e.message); }
 }
 function optimizeModal(id) {
@@ -312,26 +338,43 @@ function optimizeModal(id) {
   };
   run(false);
 }
+// "⋯" menu for the less common actions, so each card has one clear row of buttons
+function moreMenu(items) {
+  return `<details class="more"><summary class="btn sm ghost" title="More actions">⋯</summary><div class="pop">${items.filter(Boolean).map(i =>
+    `<button class="mi${i.danger ? ' danger' : ''}" ${i.attr}>${i.label}</button>`).join('')}</div></details>`;
+}
+document.addEventListener('click', (e) => { $$('details.more[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
 function serverCard(s) {
-  const online = s.agentOnline ? `<span class="pill on"><span class="led"></span>agent online</span>`
+  const isIran = (s.role || 'iran') === 'iran';
+  const status = s.agentOnline ? `<span class="pill on"><span class="led"></span>agent online</span>`
     : s.prepared ? `<span class="pill ok2"><span class="led"></span>reachable</span>`
-    : `<span class="pill off"><span class="led"></span>untested</span>`;
-  const roleP = `<span class="pill ${s.role === 'foreign' ? 'acc' : 'neutral'}">${s.role || 'iran'}</span>`;
-  return h(`<div class="card pad">
-    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name || '(unnamed)')}${s.city ? ` <span class="faint" style="font-weight:400;font-size:12px">${esc(s.city)}</span>` : ''}</h3><div style="display:flex;gap:6px">${roleP}${online}</div></div>
-    <div class="mono muted" style="margin:8px 0;font-size:12.5px;line-height:1.7">
-      ${s.ipv4 ? `v4 ${esc(s.ipv4)}<br>` : ''}${s.ipv6 ? `v6 ${esc(s.ipv6)}<br>` : ''}
-      ssh ${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}
-      ${s.proxy ? `<br>proxy ${esc(s.proxy)}` : ''}${s.lastPath ? `<br>last path: ${esc(s.lastPath)}` : ''}${s.arch ? `<br>${esc(s.os || '')} ${esc(s.arch)}` : ''}</div>
-    <div class="actions">
-      <button class="btn sm" data-test="${s.id}">Test paths</button>
-      <button class="btn sm" data-optz="${s.id}">Optimize</button>
-      <button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">${s.provisioned ? '✓ Packages' : 'Install packages'}</button>
-      <button class="btn sm" data-agent="${s.id}">Agent install</button>
-      <button class="btn sm" data-bridge="${s.id}">SSH bridge</button>
-      <button class="btn sm" data-edit="${s.id}">Edit</button>
-      <button class="btn sm danger" data-del="${s.id}">Delete</button>
-    </div><div class="nic" data-nic="${s.id}"></div><div data-paths="${s.id}"></div></div>`);
+    : `<span class="pill off"><span class="led"></span>not tested</span>`;
+  const n = STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id).length;
+  const sub = [s.city, s.os && s.arch ? `${s.os} ${s.arch}` : ''].filter(Boolean).join(' · ');
+  return h(`<div class="card scard ${isIran ? 'ir' : 'fg'}">
+    <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${esc(s.name || '(unnamed)')}</h3><small>${esc(sub || (isIran ? 'Iran · entry' : 'foreign · exit'))}</small></div></div>${status}</div>
+    <dl class="kv">
+      <dt>IPv4</dt><dd class="mono">${esc(s.ipv4 || '—')}</dd>
+      <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'read on test'))}</dd>
+      <dt>SSH</dt><dd class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</dd>
+      ${s.lastPath ? `<dt>Reached via</dt><dd>${esc(s.lastPath)}</dd>` : ''}
+      ${s.proxy ? `<dt>Proxy</dt><dd class="mono">${esc(s.proxy)}</dd>` : ''}
+      <dt>Tunnels</dt><dd>${n}</dd>
+      <dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not yet</span>'}</dd>
+    </dl>
+    <div class="nic" data-nic="${s.id}"></div>
+    <div class="sfoot">
+      <button class="btn sm" data-test="${s.id}">Test connection</button>
+      <button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">${s.provisioned ? 'Update packages' : 'Install packages'}</button>
+      <span class="grow"></span>
+      ${moreMenu([
+        { label: '⚡ Optimize kernel', attr: `data-optz="${s.id}"` },
+        isIran ? { label: '📡 Agent install command', attr: `data-agent="${s.id}"` } : null,
+        { label: '🔑 SSH bridge', attr: `data-bridge="${s.id}"` },
+        { label: '✎ Edit', attr: `data-edit="${s.id}"` },
+        { label: '🗑 Delete', attr: `data-del="${s.id}"`, danger: true },
+      ])}
+    </div><div data-paths="${s.id}"></div></div>`);
 }
 async function testServer(id, btn) {
   btn.disabled = true; const o = btn.textContent; btn.textContent = 'Testing…';
@@ -376,11 +419,11 @@ function bridgeModal(id) {
 }
 function serverModal(s) {
   s = s || {};
-  const m = modal(`<h2>${s.id ? 'Edit server' : 'Add server'}</h2>
+  const m = modal(`<h2>${s.id ? 'Edit server' : (s.role === 'foreign' ? 'Add foreign server' : 'Add Iran server')}</h2>
     <form class="ff" id="srvf">
       <div class="two">
         <label class="f">Name<input name="name" value="${esc(s.name || '')}" required></label>
-        <label class="f">Role<select name="role"><option value="iran"${s.role === 'foreign' ? '' : ' selected'}>Iran (relay entry)</option><option value="foreign"${s.role === 'foreign' ? ' selected' : ''}>Foreign (exit)</option></select></label>
+        <label class="f">Role<select name="role"><option value="iran"${s.role === 'foreign' ? '' : ' selected'}>🇮🇷 Iran (entry)</option><option value="foreign"${s.role === 'foreign' ? ' selected' : ''}>🌍 Foreign (exit)</option></select></label>
       </div>
       <div class="two">
         <label class="f">Public IPv4<input name="ipv4" class="mono" value="${esc(s.ipv4 || '')}"></label>
@@ -411,45 +454,71 @@ function serverModal(s) {
 }
 
 /* ---------------- tunnels ---------------- */
+// Summary strip, then tunnels grouped by their Iran server.
 function viewTunnels(w) {
-  w.innerHTML = topbar('Tunnels', 'One card per route. Pick a connection method and switch any time.',
+  w.innerHTML = topbar('Tunnels', 'Each tunnel links one Iran server to one foreign server. Pick a connection method and switch any time.',
     `<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
-  const grid = h(`<div class="grid tgrid"></div>`);
-  if (!STATE.tunnels.length) grid.appendChild(h(`<div class="card empty"><div class="big">🛰</div>No tunnels yet.${iranServers().length ? '' : ' Add an Iran server first, then'} create a tunnel.</div>`));
-  STATE.tunnels.forEach(t => grid.appendChild(tunnelCard(t)));
-  w.appendChild(grid);
+  const run = STATE.tunnels.filter(t => t.active).length;
+  w.appendChild(h(`<div class="summary">
+    <div class="stat"><small>Running tunnels</small><b>${run}<span> / ${STATE.tunnels.length}</span></b></div>
+    <div class="stat"><small>Live download ↓</small><b class="dn" data-sum-dn>—</b></div>
+    <div class="stat"><small>Live upload ↑</small><b class="up" data-sum-up>—</b></div>
+    <div class="stat"><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + 1}<span> foreign</span></b></div>
+  </div>`));
+  if (!STATE.tunnels.length) {
+    w.appendChild(h(`<div class="card empty"><div class="big">🛰</div>${iranServers().length ? 'No tunnels yet — press <b>+ New tunnel</b>.' : 'Start on the <b>Servers</b> page: add an Iran server, then create a tunnel here.'}</div>`));
+  }
+  const groups = {};
+  STATE.tunnels.forEach(t => (groups[t.serverId] = groups[t.serverId] || []).push(t));
+  Object.keys(groups).sort((x, y) => serverName(x).localeCompare(serverName(y))).forEach(id => {
+    const ts = groups[id], srv = serverById(id);
+    const g = h(`<section class="group">
+      <div class="ghd"><div><h2>${srv && srv.country ? flag(srv.country) : '🇮🇷'} ${esc(serverName(id))} <span class="count">${ts.length} tunnel${ts.length > 1 ? 's' : ''}</span></h2>
+      <p>Iran entry${srv && srv.ipv4 ? ' · ' + esc(srv.ipv4) : ''}</p></div></div>
+      <div class="grid tgrid"></div></section>`);
+    ts.forEach(t => $('.tgrid', g).appendChild(tunnelCard(t)));
+    w.appendChild(g);
+  });
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
 }
 function tunnelCard(t) {
   const avail = methodsFor(t.family);
   const active = STATE.methods.find(m => m.id === t.active);
   const sel = (t.selected && avail.find(m => m.id === t.selected)) ? t.selected : (t.active || avail[0]?.id || '');
-  const card = h(`<div class="card tcard" data-id="${t.id}">
-    <div class="hd">
-      <div><h3>${esc(t.name)}</h3>
-        <div class="route"><span class="node">${serverFlag(t.serverId)}${esc(serverName(t.serverId))}</span><span class="arrow">⇄</span><span class="node">${serverFlag(t.foreignId)}${esc(serverName(t.foreignId))}</span><span class="pill ${t.family === 'v6' ? 'acc' : 'neutral'}">${t.family}</span></div></div>
-      <div>${active ? `<span class="pill on"><span class="led"></span>${esc(active.title)}</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
+  const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
+  const end = (side, s, name, fallbackFlag) => `<div class="end ${side}"><span class="sd" data-${side === 'a' ? 'ir' : 'fg'} title="not running"></span>
+    <div><small>${side === 'a' ? 'Iran · entry' : 'Foreign · exit'}</small><b>${s && s.country ? flag(s.country) : fallbackFlag} ${esc(name)}</b></div></div>`;
+  const card = h(`<div class="card tcard${t.active ? ' live' : ''}" data-id="${t.id}">
+    <div class="thd">
+      <div><h3>${esc(t.name)}</h3>${t.note ? `<div class="faint" style="font-size:12px">${esc(t.note)}</div>` : ''}</div>
+      ${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}
     </div>
-    <div class="body">
-      <div class="statline"><span>Ports <b class="mono">${esc(t.ports)}</b></span><span>Iran <b data-ir>—</b></span><span>Foreign <b data-fg>—</b></span></div>
-      ${t.active ? `<div class="traf" data-traf="${t.id}">
-        <div class="rates"><span class="dn" title="foreign → Iran (users downloading)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (users uploading)">↑ <b data-ru>…</b></span><span class="faint" style="font-size:11.5px" data-src></span></div>
-        <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
-        <div class="meta"><span data-tot>total —</span><span data-speed></span></div></div>` : ''}
-      <div class="method-row"><select data-method>${avail.map(m => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.title)} · ${esc(m.encrypt)}</option>`).join('')}</select><button class="btn sm" data-opts title="Options">⚙</button></div>
+    <div class="route2">
+      ${end('a', ir, serverName(t.serverId), '🇮🇷')}
+      <div class="link${t.active ? ' on' : ''}"><span>${active ? esc(active.title) : 'not connected'}</span></div>
+      ${end('b', fg, fg ? fg.name : 'this panel host', fg ? '🌍' : '🖥')}
+    </div>
+    <div class="chips"><span class="chip">Ports <b class="mono">${esc(t.ports)}</b></span><span class="chip">${t.family === 'v6' ? 'IPv6' : 'IPv4'} underlay</span>${t.shape && t.shape.enabled ? `<span class="chip">shaping: ${esc(t.shape.qdisc)}</span>` : ''}</div>
+    ${t.active ? `<div class="traf" data-traf="${t.id}">
+      <div class="rates"><span class="dn" title="foreign → Iran (users downloading)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (users uploading)">↑ <b data-ru>…</b></span><span class="faint" style="font-size:11.5px" data-src></span></div>
+      <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
+      <div class="meta"><span data-tot>total —</span><span data-speed></span></div></div>` : ''}
+    <div class="msec">
+      <div class="lbl">Connection method</div>
+      <div class="method-row"><select data-method>${avail.map(m => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.title)} · ${esc(m.encrypt)}</option>`).join('')}</select><button class="btn sm" data-opts title="Method options">⚙ Options</button></div>
       <div class="mdesc" data-desc></div>
       <div data-optbox hidden></div>
-      <div class="actions">
-        <button class="btn pri sm" data-apply></button>
-        <button class="btn sm" data-stop ${t.active ? '' : 'disabled'}>Stop</button>
-        <button class="btn sm" data-log>Logs</button>
-        <button class="btn sm" data-speedtest ${t.active ? '' : 'disabled'} title="Measure RTT, download and upload through the running tunnel">Speed test</button>
-        <button class="btn sm" data-diag ${t.active ? '' : 'disabled'} title="Check every hop and explain why traffic doesn't pass">Diagnose</button>
-        <button class="btn ghost sm" data-edit>Edit</button>
-        <button class="btn ghost sm danger" data-del>Delete</button>
-      </div></div></div>`);
+      <div class="actions"><button class="btn pri" data-apply></button><button class="btn" data-stop ${t.active ? '' : 'disabled'}>■ Stop</button></div>
+    </div>
+    <div class="tfoot">
+      <button class="btn sm ghost" data-log>📜 Logs</button>
+      <button class="btn sm ghost" data-speedtest ${t.active ? '' : 'disabled'} title="Measure RTT, download and upload through the running tunnel">🚀 Speed test</button>
+      <button class="btn sm ghost" data-diag ${t.active ? '' : 'disabled'} title="Check every hop and explain why traffic doesn't pass">🩺 Diagnose</button>
+      <span class="grow"></span>
+      ${moreMenu([{ label: '✎ Edit tunnel', attr: 'data-edit' }, { label: '🗑 Delete tunnel', attr: 'data-del', danger: true }])}
+    </div></div>`);
   const selEl = $('[data-method]', card), descEl = $('[data-desc]', card), optBox = $('[data-optbox]', card), applyBtn = $('[data-apply]', card);
-  const refresh = () => { const m = STATE.methods.find(x => x.id === selEl.value); descEl.textContent = m ? m.desc : ''; applyBtn.textContent = (t.active === selEl.value) ? 'Re-apply' : (t.active ? 'Switch to this' : 'Start'); };
+  const refresh = () => { const m = STATE.methods.find(x => x.id === selEl.value); descEl.textContent = m ? m.desc : ''; applyBtn.textContent = (t.active === selEl.value) ? '↻ Re-apply' : (t.active ? '⇄ Switch to this method' : '▶ Start'); };
   selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: selEl.value }); };
   refresh();
   $('[data-opts]', card).onclick = () => { if (!optBox.hidden) { optBox.hidden = true; return; } renderOpts(optBox, t, selEl.value); optBox.hidden = false; };
@@ -459,7 +528,7 @@ function tunnelCard(t) {
   $('[data-diag]', card).onclick = async () => { try { const r = await api('/tunnels/diagnose', { ID: t.id }); openLog({ id: t.id, name: 'Diagnose · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); } };
   $('[data-speedtest]', card).onclick = async () => { try { const r = await api('/tunnels/speedtest', { ID: t.id }); openLog({ id: t.id, name: 'Speed test · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); } };
   $('[data-edit]', card).onclick = () => tunnelModal(t);
-  $('[data-del]', card).onclick = async (e) => { if (!confirmInline(e.target, 'Confirm delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } };
+  $('[data-del]', card).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } };
   refreshStatus(t, card);
   return card;
 }
@@ -474,10 +543,11 @@ function busyOrError(t, e) {
   $('[data-c]', m).onclick = async () => { try { await api('/jobs/cancel', { ID: mm[1] }); m.remove(); toast('Cancelled — you can run it again now'); } catch (er) { alertModal('Cancel', er.message); } };
 }
 async function refreshStatus(t, card) {
-  if (!t.active) { $('[data-ir]', card).textContent = '—'; $('[data-fg]', card).textContent = '—'; return; }
+  const paint = (el, v) => { if (!el) return; el.className = 'sd ' + (v === 'active' ? 'ok' : (!v || v === 'stopped' || v === '—') ? '' : 'bad'); el.title = v || 'not running'; };
+  if (!t.active) { paint($('[data-ir]', card), ''); paint($('[data-fg]', card), ''); return; }
+  $('[data-ir]', card).className = 'sd wait'; $('[data-fg]', card).className = 'sd wait';
   try {
     const r = await api('/tunnels/status?id=' + t.id);
-    const paint = (el, v) => { el.textContent = v; el.style.color = v === 'active' ? 'var(--good)' : (v === 'stopped' || v === '—' ? 'var(--faint)' : 'var(--crit)'); };
     paint($('[data-ir]', card), r.iran); paint($('[data-fg]', card), r.foreign);
   } catch (e) {}
 }
