@@ -74,18 +74,36 @@ func TestGoldenMultiNS(t *testing.T) {
 		}
 		return "✕ FAILS (" + got + ")"
 	}
-	for _, oldFirst := range []bool{false, true} {
-		label := "both relays new"
-		if oldFirst {
-			label = "first relay in the old layout (bound to :53 itself)"
+	type combo struct {
+		label    string
+		mids     [2]string
+		oldFirst bool
+	}
+	combos := []combo{
+		{"Golden + Golden, both relays new", [2]string{"golden", "golden"}, false},
+		{"Golden + Golden, first relay in the old layout (bound to :53 itself)", [2]string{"golden", "golden"}, true},
+		{"Plain GRE + Plain GRE", [2]string{"gre", "gre"}, false},
+		{"Golden + Plain GRE", [2]string{"golden", "gre"}, false},
+	}
+	if only := os.Getenv("TP_MULTI_ONLY"); only != "" {
+		var keep []combo
+		for _, c := range combos {
+			if strings.Contains(c.label, only) {
+				keep = append(keep, c)
+			}
 		}
+		combos = keep
+	}
+	for _, cb := range combos {
+		label, oldFirst := cb.label, cb.oldFirst
 		var sides []*e2eSide
 		var tns []*Tunnel
 		var report []string
 		for i, fg := range []*Server{k1, k2} {
-			tn := &Tunnel{ID: fmt.Sprintf("g%d", i), Name: "golden-" + fg.Name, ServerID: "ir", ForeignID: fg.ID, Family: "v4",
+			m := methodByID[cb.mids[i]]
+			tn := &Tunnel{ID: fmt.Sprintf("g%d", i), Name: m.ID + "-" + fg.Name, ServerID: "ir", ForeignID: fg.ID, Family: "v4",
 				Ports: fmt.Sprint(28579 + i), Index: 40 + i, Options: map[string]map[string]string{}, Secrets: map[string]string{}}
-			irP, khP, err := buildPlans(methodGoldenGRE, tn, ir, fg, Settings{})
+			irP, khP, err := buildPlans(m, tn, ir, fg, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}

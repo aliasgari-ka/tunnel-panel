@@ -147,6 +147,21 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 	},
 }
 
+// ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and only box64
+// (not qemu-user) can open ipx's packet socket. Get box64 if the distro has it, else stop
+// with what to do — a unit that is "active" but carries nothing helps nobody.
+func ipxEmuCheck(mode string) string {
+	if mode != "ipx" {
+		return ""
+	}
+	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ] && ! command -v box64 >/dev/null 2>&1; then
+  echo "ipx on $(uname -m) needs box64 — installing it"
+  { apt-get install -y -qq box64 || { apt-get update -qq && apt-get install -y -qq box64; } || dnf install -y box64; } >/dev/null 2>&1
+  command -v box64 >/dev/null 2>&1 || { echo "Premium ipx can't run on this $(uname -m) server: the amd64 core runs under qemu-user, which can't open ipx's packet socket, and this distro has no box64 package — in Options set Mode to tcpmux, wssmux or anytls and Apply again (or install box64 by hand)"; exit 1; }
+fi
+`
+}
+
 // goldenSteer adds (or removes) the TPROXY rule that hands the peer's DNS-port packets to
 // this tunnel's relay. TPROXY picks the socket per packet and rewrites nothing, so unlike
 // NAT no conntrack entry from before the rule (or from another relay) can get in the way.
@@ -323,7 +338,7 @@ log_level = "info"
 			sp := SidePlan{
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
-				Setup:     sysctlBBR + certGen + fixIface(cfg),
+				Setup:     sysctlBBR + certGen + fixIface(cfg) + ipxEmuCheck(mode),
 				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg},
 			}
 			if mode == "ipx" {

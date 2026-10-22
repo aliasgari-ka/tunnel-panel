@@ -37,6 +37,12 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 	var check strings.Builder
 	for _, art := range arts {
 		data, err := ensureArtifact(ctx, j, art, arch)
+		if err != nil && art.Asset == "backhaul_premium" && arch != "amd64" && premiumEmulatedInPlace(ctx, h, art) {
+			// the amd64 core is already installed under emulation from an earlier apply: keep
+			// it instead of retrying the (unreachable) vendor every time
+			j.log("[%s] %s already installed (amd64 core under emulation, up to date)", label, art.Dest)
+			continue
+		}
 		if err != nil && art.Asset != "" && vendorHelpers[art.Asset] != nil {
 			// no copy on the panel: get the vendor's build for this arch automatically
 			j.log("[%s] %s-%s is not on the panel yet — downloading the vendor's build", label, art.Asset, arch)
@@ -291,6 +297,18 @@ if command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev
 		j.log("[%s] WARNING: under qemu-user Premium's ipx raw mode can't open its packet-socket ring — use mode tcpmux/wssmux/anytls, or install box64 for ipx", label)
 	}
 	return nil
+}
+
+// premiumEmulatedInPlace reports whether the host already runs the panel's current amd64
+// Premium core through the emulation wrapper.
+func premiumEmulatedInPlace(ctx context.Context, h Host, art Artifact) bool {
+	core, err := helperBytes("backhaul_premium", "amd64")
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(core)
+	out, _ := h.Run(ctx, fmt.Sprintf("sha256sum %s.amd64 2>/dev/null; grep -q 'under emulation' %s 2>/dev/null && echo wrapper-ok", shq(art.Dest), shq(art.Dest)), nil)
+	return strings.Contains(out, hex.EncodeToString(sum[:])) && strings.Contains(out, "wrapper-ok")
 }
 
 type blob struct {
