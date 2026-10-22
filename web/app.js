@@ -859,9 +859,27 @@ function hsChip(t) {
 function hsBox(t) {
   const v = t.hs;
   if (!t.hotStandby) return '';
-  if (!v || !v.paths) return '<div class="faint" style="font-size:12px">⚡ Hot standby is on — every compatible path starts on the next Start/Re-apply.</div>';
-  return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; checked every 2 s on the Iran server)</span></div><div class="hsl">${v.paths.map((p, i) =>
-    `<div class="${v.ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}">${v.ok[i] ? '✓' : '✕'} ${esc(p)}${i === v.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div>`;
+  const auto = !!t.hsAuto;
+  const seg = `<div class="seg" data-hsmode><button type="button" data-auto="0" class="${auto ? '' : 'on'}" title="users stay on the path you chose; only when it is down they move to the best working one, and back once it has been stable for 60 s">✋ Manual</button><button type="button" data-auto="1" class="${auto ? 'on' : ''}" title="the switcher also moves users to a clearly better path when the current one gets slow or lossy">🤖 Auto · best path</button></div>
+    <div class="faint" style="font-size:12px;margin:-4px 0 6px">${auto ? 'Auto: latency + packet loss are watched all the time, the speed of the users\' path every 2 hours (2 MB); when it gets slow or lossy the best few paths are measured the same way and users move to a clearly better one. Light on traffic: standby paths are checked every 10 s, and repeated comparisons back off up to 2 h.' : 'Manual: users stay on the chosen path; they move only when it is down, and come back after 60 s of stability.'}</div>`;
+  if (!v || !v.paths) return `<div class="lbl">⚡ Hot standby</div>${seg}<div class="faint" style="font-size:12px">every compatible path starts on the next Start/Re-apply.</div>`;
+  const q = (i) => {
+    const out = [];
+    if (v.rtt && v.rtt[i] >= 0) out.push(v.rtt[i] + ' ms');
+    if (v.loss && v.loss[i] >= 0) out.push(v.loss[i].toFixed(1) + '% loss');
+    if (v.kbps && v.kbps[i] > 0) out.push((v.kbps[i] / 1000).toFixed(1) + ' Mbps');
+    return out.length ? ` <span class="faint">${out.join(' · ')}</span>` : '';
+  };
+  return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; the users' path is checked every 2 s on the Iran server)</span></div>${seg}<div class="hsl">${v.paths.map((p, i) =>
+    `<div class="${v.ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}">${v.ok[i] ? '✓' : '✕'} ${esc(p)}${q(i)}${i === v.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div>`;
+}
+function hsWire(t, m) {
+  $$('[data-hsmode] button', m).forEach(b => b.onclick = async () => {
+    const auto = b.dataset.auto === '1';
+    try { const r = await api('/tunnels/hsmode', { ID: t.id, Auto: auto }); t.hsAuto = auto; toast(r.ok || 'saved'); await loadAll(); renderView(); }
+    catch (e) { alertModal('Hot standby mode', e.message); }
+    $$('[data-hsmode] button', m).forEach(x => x.classList.toggle('on', (x.dataset.auto === '1') === auto));
+  });
 }
 // every method over every address family both servers of the tunnel have
 const famName = (f) => f === 'v6' ? 'IPv6' : 'IPv4';
@@ -903,6 +921,7 @@ function manageTunnel(t) {
   };
   fill(sel.split('|')[1] || t.family, sel.split('|')[0]);
   $$('[data-fams] button', m).forEach(b => b.onclick = () => { fill(b.dataset.f, pick().mid); optBox.hidden = true; refresh(); });
+  hsWire(t, m);
   const refresh = () => {
     const { mid, fam, x } = pick(); descEl.textContent = x ? x.desc : '';
     const miss = methodMissing(x, t);
@@ -984,7 +1003,7 @@ function healthWatch() {
 // The save endpoint replaces the editable fields, so every save sends all of them
 // (sending a partial tunnel used to wipe its traffic-shaping settings).
 const tunnelBody = (t, patch) => ({ ID: t.id, name: t.name, serverId: t.serverId, foreignId: t.foreignId, family: t.family,
-  ports: t.ports, note: t.note, shape: t.shape || {}, noFailover: !!t.noFailover, hotStandby: !!t.hotStandby, selected: t.selected || '', ...patch });
+  ports: t.ports, note: t.note, shape: t.shape || {}, noFailover: !!t.noFailover, hotStandby: !!t.hotStandby, hsAuto: !!t.hsAuto, selected: t.selected || '', ...patch });
 async function saveTunnel(t, patch) {
   try { await api('/tunnels/save', tunnelBody(t, patch)); Object.assign(t, patch); } catch (e) {}
 }
@@ -1021,6 +1040,7 @@ function tunnelModal(t) {
       <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
       <label class="row f"><input type="checkbox" id="tFail"${t.noFailover ? '' : ' checked'}> 🔁 Automatic failover <span class="faint" style="font-weight:500">— if the tunnel is down for 5 min, switch to a working method / IPv4⇄IPv6 path; re-check the original every hour and switch back when it works</span></label>
       <label class="row f"><input type="checkbox" id="tHot"${t.hotStandby ? ' checked' : ''}> ⚡ Hot standby <span class="faint" style="font-weight:500">— keep every compatible method (IPv4 and IPv6) running; users go through the chosen one and a switcher on the Iran server moves them to the best working path within seconds (no SSH needed), and back after ${60}s of stability. Order: this route's benchmark. Applies on the next Start/Re-apply.</span></label>
+      <label class="row f" style="margin-inline-start:22px"><input type="checkbox" id="tHsAuto"${t.hsAuto ? ' checked' : ''}> 🤖 Auto — also move users to a clearly better path when theirs gets slow or lossy <span class="faint" style="font-weight:500">(off = manual: the chosen path, left only while it is down; switchable any time from the tunnel's window or the bot)</span></label>
       <details${sh.enabled ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Traffic shaping / link tuning</summary>
         <div class="ff" style="margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px">
           <label class="row f"><input type="checkbox" id="shEnabled"${sh.enabled ? ' checked' : ''}> Enable shaping on the Iran egress (CAKE/HTB/… qdisc)</label>
@@ -1043,6 +1063,7 @@ function tunnelModal(t) {
     if (t.id) fd.ID = t.id;
     fd.noFailover = !$('#tFail', m).checked;
     fd.hotStandby = $('#tHot', m).checked;
+    fd.hsAuto = $('#tHsAuto', m).checked;
     if (t.selected) fd.selected = t.selected;
     fd.shape = {
       enabled: $('#shEnabled', m).checked, qdisc: $('#shQdisc', m).value,

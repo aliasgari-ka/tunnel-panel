@@ -18,6 +18,7 @@ type BenchRequest struct {
 	Family    string   `json:"family"`
 	Methods   []string `json:"methods"` // empty = all that fit the family
 	Seconds   int      `json:"seconds"` // throughput probe length per method (default 5)
+	MaxMB     int      `json:"maxMB"`   // and at most this much per direction (0 = no cap)
 }
 
 // BenchResult is one method's measured quality on the route.
@@ -213,7 +214,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				out = append(out, r)
 				continue
 			}
-			if err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, probeOK, probePort, &r); err != nil {
+			if err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r); err != nil {
 				r.Error = err.Error()
 				j.log("   FAILED: %v", err)
 			} else {
@@ -293,7 +294,7 @@ ip6tables -D INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 }
 
 // benchOne deploys one method on the bench tunnel and measures it end to end.
-func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHost, khHost Host, secs int, probeOK bool, port int, r *BenchResult) error {
+func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHost, khHost Host, secs, maxMB int, probeOK bool, port int, r *BenchResult) error {
 	if m.ID == "golden" {
 		var o string
 		a.store.View(func(st *State) { o = goldenConflict(st, bt) })
@@ -361,13 +362,19 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 			}
 		}
 	}
-	j.log("   RTT %.1f ms, jitter %.1f ms — measuring throughput (%ds each way)", r.RTTms, r.Jitterms, secs)
-	if up, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -addr %s -secs %d", target, secs), secs+30); err == nil {
+	limit := ""
+	if maxMB > 0 {
+		limit = fmt.Sprintf(" -max %d", maxMB)
+		j.log("   RTT %.1f ms, jitter %.1f ms — measuring throughput (%ds / at most %d MB each way)", r.RTTms, r.Jitterms, secs, maxMB)
+	} else {
+		j.log("   RTT %.1f ms, jitter %.1f ms — measuring throughput (%ds each way)", r.RTTms, r.Jitterms, secs)
+	}
+	if up, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -addr %s -secs %d%s", target, secs, limit), secs+30); err == nil {
 		r.UpMbps = up.Mbps
 	} else {
 		j.log("   upload test failed: %v", err)
 	}
-	if dn, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -down -addr %s -secs %d", target, secs), secs+30); err == nil {
+	if dn, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -down -addr %s -secs %d%s", target, secs, limit), secs+30); err == nil {
 		r.DownMbps = dn.Mbps
 	} else {
 		j.log("   download test failed: %v", err)

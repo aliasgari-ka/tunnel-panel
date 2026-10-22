@@ -84,9 +84,12 @@ type Tunnel struct {
 	Failover *FailoverState `json:"failover,omitempty"`
 	// HotStandby keeps every compatible path running; a switcher on the Iran server moves
 	// the users between them (see hotstandby.go). Paths is the last plan, switcher order.
-	HotStandby bool     `json:"hotStandby,omitempty"`
-	Paths      []HSPath `json:"paths,omitempty"`
-	HSSeen     int64    `json:"hsSeen,omitempty"` // newest switcher event already reported
+	HotStandby bool `json:"hotStandby,omitempty"`
+	// HSAuto: the switcher also moves users to a clearly better path (speed, loss, latency),
+	// not only away from a failed one. Off = manual: the chosen path, unless it is down.
+	HSAuto bool     `json:"hsAuto,omitempty"`
+	Paths  []HSPath `json:"paths,omitempty"`
+	HSSeen int64    `json:"hsSeen,omitempty"` // newest switcher event already reported
 }
 
 // Shape is an optional per-tunnel traffic-shaping layer applied with tc + iptables on the

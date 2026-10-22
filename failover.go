@@ -448,5 +448,5 @@ func (a *App) testPathOnBenchSlot(ctx context.Context, j *Job, t *Tunnel, mid, f
 	if benchIsL3(m, bt.Options[mid]) {
 		r.Kind = "l3"
 	}
-	return a.benchOne(ctx, j, bt, m, irHost, khHost, 2, true, probePort, &r) == nil && r.OK
+	return a.benchOne(ctx, j, bt, m, irHost, khHost, 2, 4, true, probePort, &r) == nil && r.OK
 }

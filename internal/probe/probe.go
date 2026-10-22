@@ -3,17 +3,22 @@
 //
 //	tp-agent probe serve -listen :41002 -life 120     # on the foreign side
 //	tp-agent probe rtt   -addr 10.10.250.2:41002 -n 20
-//	tp-agent probe bw    -addr 127.0.0.1:41002 -secs 5 [-down]
+//	tp-agent probe bw    -addr 127.0.0.1:41002 -secs 5 [-down] [-max 8]
+//	tp-agent probe check -addr 10.10.3.2:49003 -n 2 [-ping 10.10.3.2]   # "ok <rtt ms> <jitter ms> <loss %|-1>" or "down"
+//	tp-agent probe speed -addr 127.0.0.1:50079 -max 2 -secs 8          # download kbit/s, plain
 //
 // Wire: the client sends one mode byte. 'E' = echo everything back. 'B' + one byte of
 // seconds = the server counts what it receives for that long (from the first byte) and
 // answers "<bytes> <seconds>\n", so throughput is measured on the receiving end and
 // buffers in the tunnel do not inflate it. 'D' + seconds = the server sends for that
-// long and the client measures (download direction, foreign -> Iran).
+// long and the client measures (download direction, foreign -> Iran). 'L' + seconds + 4
+// bytes of KiB (big endian) = like 'D', but at most that much (-max: tests that must not
+// cost the servers much traffic).
 package probe
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,6 +26,9 @@ import (
 	"math"
 	"net"
 	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -37,6 +45,9 @@ func Main(args []string) int {
 	n := fs.Int("n", 20, "rtt: number of echoes")
 	secs := fs.Int("secs", 5, "bw: seconds to send")
 	down := fs.Bool("down", false, "bw: measure the far end sending to us")
+	maxMB := fs.Float64("max", 0, "bw/speed: stop after this many MB (0 = only the time limit)")
+	pingH := fs.String("ping", "", "check: also ping this host for packet loss")
+	pn := fs.Int("pn", 10, "check: pings to send")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -49,10 +60,21 @@ func Main(args []string) int {
 		res, err = rtt(*addr, *n)
 	case "bw":
 		if *down {
-			res, err = bwDown(*addr, *secs)
+			res, err = bwDown(*addr, *secs, maxBytes(*maxMB))
 		} else {
-			res, err = bw(*addr, *secs)
+			res, err = bw(*addr, *secs, maxBytes(*maxMB))
 		}
+	case "check": // plain output, for shell scripts
+		fmt.Println(check(*addr, *n, *pingH, *pn))
+		return 0
+	case "speed":
+		r, err := bwDown(*addr, *secs, maxBytes(*maxMB))
+		if err != nil || r.Secs <= 0 {
+			fmt.Println(0)
+			return 1
+		}
+		fmt.Println(int64(r.Mbps * 1000))
+		return 0
 	default:
 		err = fmt.Errorf("unknown probe %q", args[0])
 	}
@@ -119,18 +141,31 @@ func handle(c net.Conn) {
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		fmt.Fprintf(c, "%d %.4f\n", total, el)
-	case 'D':
+	case 'D', 'L':
 		var s [1]byte
 		if _, err := io.ReadFull(c, s[:]); err != nil {
 			return
 		}
-		end := time.Now().Add(time.Duration(s[0]) * time.Second)
-		buf := make([]byte, 64<<10)
-		for time.Now().Before(end) {
-			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if _, err := c.Write(buf); err != nil {
+		limit := int64(math.MaxInt64)
+		if hdr[0] == 'L' {
+			var kb [4]byte
+			if _, err := io.ReadFull(c, kb[:]); err != nil {
 				return
 			}
+			limit = int64(binary.BigEndian.Uint32(kb[:])) << 10
+		}
+		end := time.Now().Add(time.Duration(s[0]) * time.Second)
+		buf := make([]byte, 64<<10)
+		for sent := int64(0); sent < limit && time.Now().Before(end); {
+			k := int64(len(buf))
+			if limit-sent < k {
+				k = limit - sent
+			}
+			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := c.Write(buf[:k]); err != nil {
+				return
+			}
+			sent += k
 		}
 	}
 }
@@ -202,7 +237,14 @@ type BWResult struct {
 	Mbps  float64 `json:"mbps"`
 }
 
-func bw(addr string, secs int) (*BWResult, error) {
+func maxBytes(mb float64) int64 {
+	if mb <= 0 {
+		return 0
+	}
+	return int64(mb * (1 << 20))
+}
+
+func bw(addr string, secs int, max int64) (*BWResult, error) {
 	if secs < 1 {
 		secs = 1
 	}
@@ -228,7 +270,20 @@ func bw(addr string, secs int) (*BWResult, error) {
 	}()
 	buf := make([]byte, 64<<10)
 	deadline := time.Now().Add(time.Duration(secs+15) * time.Second)
+	sent := int64(0)
 	for {
+		if max > 0 && sent >= max {
+			// enough: end the stream; the far end reports what it received
+			if tc, ok := c.(*net.TCPConn); ok {
+				_ = tc.CloseWrite()
+			}
+			select {
+			case rp := <-got:
+				return parseBW(rp.line, fmt.Errorf("no throughput report from the far end (%v)", rp.err))
+			case <-time.After(time.Until(deadline)):
+				return nil, fmt.Errorf("throughput test timed out")
+			}
+		}
 		select {
 		case rp := <-got:
 			return parseBW(rp.line, fmt.Errorf("no throughput report from the far end (%v)", rp.err))
@@ -238,7 +293,9 @@ func bw(addr string, secs int) (*BWResult, error) {
 			return nil, fmt.Errorf("throughput test timed out")
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		if _, err := c.Write(buf); err != nil {
+		k, err := c.Write(buf)
+		sent += int64(k)
+		if err != nil {
 			// the server stops reading at the end of its window; wait for its report
 			select {
 			case rp := <-got:
@@ -251,7 +308,7 @@ func bw(addr string, secs int) (*BWResult, error) {
 }
 
 // bwDown asks the far end to send for secs and measures what arrives.
-func bwDown(addr string, secs int) (*BWResult, error) {
+func bwDown(addr string, secs int, max int64) (*BWResult, error) {
 	if secs < 1 {
 		secs = 1
 	}
@@ -263,7 +320,12 @@ func bwDown(addr string, secs int) (*BWResult, error) {
 		return nil, err
 	}
 	defer c.Close()
-	if _, err := c.Write([]byte{'D', byte(secs)}); err != nil {
+	req := []byte{'D', byte(secs)}
+	if max > 0 {
+		req = []byte{'L', byte(secs), 0, 0, 0, 0}
+		binary.BigEndian.PutUint32(req[2:], uint32((max+1023)>>10))
+	}
+	if _, err := c.Write(req); err != nil {
 		return nil, err
 	}
 	buf := make([]byte, 256<<10)
@@ -313,3 +375,38 @@ func parseBW(line string, failErr error) (*BWResult, error) {
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+
+// check is one switcher check: a TCP echo through the path and, with pingHost, the packet
+// loss of pn pings (-1 when ICMP is filtered: no ping answered while the echo did).
+func check(addr string, n int, pingHost string, pn int) string {
+	r, err := rtt(addr, n)
+	if err != nil {
+		return "down"
+	}
+	loss := -1
+	if pingHost != "" {
+		if l, ok := ping(pingHost, pn); ok && l < 100 {
+			loss = l
+		}
+	}
+	return fmt.Sprintf("ok %d %d %d", int(math.Round(r.RTTms)), int(math.Round(r.Jitterms)), loss)
+}
+
+var lossRE = regexp.MustCompile(`([0-9.]+)% packet loss`)
+
+// ping runs the system ping (iputils or busybox) and returns the loss in percent.
+func ping(host string, n int) (int, bool) {
+	if n < 1 {
+		n = 1
+	}
+	out, _ := exec.Command("ping", "-n", "-c", strconv.Itoa(n), "-i", "0.2", "-W", "1", host).CombinedOutput()
+	m := lossRE.FindSubmatch(out)
+	if m == nil {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(string(m[1]), 64)
+	if err != nil {
+		return 0, false
+	}
+	return int(math.Round(f)), true
+}

@@ -545,8 +545,23 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 				cur = v.Paths[v.Active]
 			}
 			fmt.Fprintf(&sb, "⚡ hot standby: users on <b>%s</b> · %d/%d paths working\n", esc(cur), n, len(v.Paths))
+			if v.Active >= 0 && v.Active < len(v.RTT) && v.RTT[v.Active] >= 0 {
+				q := fmt.Sprintf("%d ms", v.RTT[v.Active])
+				if v.Loss[v.Active] >= 0 {
+					q += fmt.Sprintf(" · %.1f%% loss", v.Loss[v.Active])
+				}
+				if v.Kbps[v.Active] > 0 {
+					q += fmt.Sprintf(" · %.1f Mbps", float64(v.Kbps[v.Active])/1000)
+				}
+				fmt.Fprintf(&sb, "   now: %s\n", q)
+			}
 		} else {
 			sb.WriteString("⚡ hot standby (paths start on the next apply)\n")
+		}
+		if t.HSAuto {
+			sb.WriteString("🤖 auto: users move to a clearly better path when theirs gets slow or lossy\n")
+		} else {
+			sb.WriteString("✋ manual: users stay on the chosen path unless it is down\n")
 		}
 	}
 	if sp := b.app.speedResult(t.ID); sp != nil && sp.OK {
@@ -561,6 +576,15 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 		rows = append(rows, []ikey{{Text: "▶ Start " + methodTitle(t.Selected) + " · " + famName(t.Family), Data: "a:" + t.ID + ":" + t.Selected + ":" + t.Family}})
 	}
 	rows = append(rows, []ikey{{Text: "⇄ Method / IPv4·IPv6", Data: "m:" + t.ID}, {Text: "⚙ Settings", Data: "o:" + t.ID}})
+	if t.HotStandby {
+		if t.HSAuto {
+			rows = append(rows, []ikey{{Text: "🤖 Auto ✓ · switch to ✋ Manual", Data: "hm:" + t.ID + ":0"}, {Text: "⚡ Hot standby off", Data: "hh:" + t.ID + ":0"}})
+		} else {
+			rows = append(rows, []ikey{{Text: "✋ Manual ✓ · switch to 🤖 Auto", Data: "hm:" + t.ID + ":1"}, {Text: "⚡ Hot standby off", Data: "hh:" + t.ID + ":0"}})
+		}
+	} else {
+		rows = append(rows, []ikey{{Text: "⚡ Hot standby on", Data: "hh:" + t.ID + ":1"}})
+	}
 	rows = append(rows, []ikey{{Text: "📜 Last log", Data: "lg:" + t.ID}})
 	rows = append(rows, []ikey{{Text: "« Tunnels", Data: "home"}})
 	return sb.String(), b.keyboard(rows)
@@ -907,6 +931,27 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 			h := b.health([]*Tunnel{t})[t.ID]
 			return fmt.Sprintf("%s <b>%s</b>: IR %s · KH %s · link %s", healthIcon(h), esc(t.Name), h[0], h[1], orStr(h[2], "n/a")), ""
 		})
+	case "hm": // hot standby manual / auto, live on the switcher
+		auto := len(parts) > 2 && parts[2] == "1"
+		b.slow(chat, "switching "+t.Name+"…", func() (string, string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+			defer cancel()
+			r, err := b.app.setHSMode(ctx, t, auto)
+			if err != nil {
+				return "⚠ " + esc(err.Error()), ""
+			}
+			return "✓ <b>" + esc(t.Name) + "</b>: " + esc(r), ""
+		})
+		text, kb := b.tunnelPage(t)
+		b.edit(chat, msg, text, kb)
+	case "hh": // hot standby itself (takes effect on the next apply)
+		on := len(parts) > 2 && parts[2] == "1"
+		_ = b.app.store.Update(func(*State) error { t.HotStandby = on; return nil })
+		text, kb := b.tunnelPage(t)
+		if t.Active != "" {
+			text += "\n<i>Press ↻ Re-apply to " + map[bool]string{true: "start every path", false: "go back to one path"}[on] + ".</i>"
+		}
+		b.edit(chat, msg, text, kb)
 	case "lg":
 		j := b.app.jobs.latestFor(t.ID)
 		if j == nil {

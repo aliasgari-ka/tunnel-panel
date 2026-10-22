@@ -80,6 +80,7 @@ func (a *App) routes() http.Handler {
 	p("/api/tunnels/speedtest", s.tunnelSpeedTest)
 	p("/api/tunnels/diagnose", s.tunnelDiagnose)
 	p("/api/tunnels/trace", s.tunnelTrace)
+	p("/api/tunnels/hsmode", s.tunnelHSMode)
 	p("/api/traffic", s.trafficGet)
 	p("/api/jobs", s.job)
 	p("/api/jobs/cancel", s.jobCancel)
@@ -756,6 +757,13 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		t.Shape = normalizeShape(in.Shape)
 		t.NoFailover = in.NoFailover
 		t.HotStandby = in.HotStandby
+		if t.HSAuto != in.HSAuto {
+			t.HSAuto = in.HSAuto
+			if t.HotStandby && t.Active != "" {
+				cp := t
+				go func() { _, _ = s.app.pushHSMode(context.Background(), cp) }()
+			}
+		}
 		if in.Selected != "" {
 			t.Selected = in.Selected
 		}
@@ -852,6 +860,28 @@ func (s *Server2) tunnelStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"job": j.ID})
+}
+
+// tunnelHSMode switches hot standby between manual and auto, live.
+func (s *Server2) tunnelHSMode(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID   string
+		Auto bool
+	}
+	_ = readJSON(r, &in)
+	t := s.app.store.Tunnel(in.ID)
+	if t == nil {
+		httpErr(w, 404, "tunnel not found")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	defer cancel()
+	msg, err := s.app.setHSMode(ctx, t, in.Auto)
+	if err != nil {
+		httpErr(w, 502, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"ok": msg})
 }
 
 func (s *Server2) tunnelStatus(w http.ResponseWriter, r *http.Request) {

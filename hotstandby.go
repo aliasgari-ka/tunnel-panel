@@ -222,19 +222,33 @@ func hsTarget(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
 	return fmt.Sprintf("127.0.0.1:%d", hsInternal(p, 19))
 }
 
-// hsSwitcher is the switcher's loop (bash, on the Iran server).
-func hsSwitcher(t *Tunnel, paths []HSPath) string {
-	var ports []string
-	for _, s := range splitPorts(t.Ports) {
-		ports = append(ports, strings.ReplaceAll(s.listen, "-", ":"))
-	}
-	return fmt.Sprintf(`#!/bin/bash
-# Hot-standby switcher for tunnel %[1]q: checks every path end to end and keeps the users'
-# ports on the best working one. Events go to events.log (epoch kind from to reason).
-D=%[2]s; P=%[3]s; N=%[4]d; EVERY=%[5]d; FAILS=%[6]d; BACK=%[7]d; PORTS=%[8]q
-cd "$D" || exit 1
-mapfile -t T < targets
-ev() { echo "$(date +%%s) $*" >> events.log; tail -n 300 events.log > events.tmp && mv events.tmp events.log; }
+// Auto mode (Tunnel.HSAuto, the "mode" file on the Iran server, so it can be switched
+// without a re-apply): besides failing over, the switcher keeps each path's latency and
+// packet loss (a few pings per check), measures the active path's download speed every two
+// hours (hsSpeedMB, capped), and when the active path degrades — loss ≥ 5 %, speed down to
+// half of its recent best or under 1 Mbit/s — or another path is clearly cheaper, it measures
+// the active path and up to three stable candidates the same way and moves the users to a
+// clearly better one. After a move it holds for hsHold; a comparison that changed nothing
+// backs off (10 min, doubling to 2 h), so a bad hour costs little traffic. Standby paths
+// are checked every hsStandby checks (the active one every check), for the same reason.
+const (
+	hsStandby  = 5    // standby paths are checked every this many checks (active: every check)
+	hsSpeedMB  = 2    // one speed measurement (download, foreign → Iran)
+	hsSpeedSec = 7200 // the active path's speed is measured this often (auto mode)
+	hsHold     = 300  // seconds after an automatic move before the next one
+	hsLossBad  = 50   // ‰: active path loss that counts as degraded (5 %)
+	hsSpeedMin = 1000 // kbit/s: active path speed that counts as degraded
+)
+
+// hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
+const hsSwitcher = `#!/bin/bash
+# Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
+# the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
+cd "$(dirname "$0")" || exit 1
+. ./conf
+mapfile -t TL < targets
+for ((k=0; k<N; k++)); do read -r A[$k] H[$k] <<< "${TL[$k]}"; done
+ev() { echo "$(date +%s) $*" >> events.log; tail -n 300 events.log > events.tmp && mv events.tmp events.log; }
 tune() {
   # what the tunnels need from the kernel, kept in place while they run
   [ "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 ] || sysctl -qw net.ipv4.ip_forward=1
@@ -253,54 +267,191 @@ tune() {
 }
 use() { # use <k> <reason>
   bash down.sh >/dev/null 2>&1; bash up-$1.sh >/dev/null 2>&1
-  if command -v conntrack >/dev/null 2>&1; then for p in $PORTS; do conntrack -D -p tcp --orig-port-dst ${p%%%%:*} >/dev/null 2>&1; conntrack -D -p udp --orig-port-dst ${p%%%%:*} >/dev/null 2>&1; done; fi
-  ev switch "$active" "$1" "$2"; active=$1; echo "$1 $(date +%%s)" > active
+  if command -v conntrack >/dev/null 2>&1; then for p in $PORTS; do conntrack -D -p tcp --orig-port-dst ${p%%:*} >/dev/null 2>&1; conntrack -D -p udp --orig-port-dst ${p%%:*} >/dev/null 2>&1; done; fi
+  ev switch "$active" "$1" "$2"; active=$1; echo "$1 $(date +%s)" > active
 }
-declare -a ok since fails
+cost() { echo $(( ${qr[$1]:-999} + ${ql[$1]:-0} * 5 / 2 )); } # ms, 1 % loss ≈ 25 ms
+mb() { printf '%d.%d' $(($1 / 1000)) $((($1 % 1000) / 100)); }
+pc() { printf '%d.%d' $((${1:-0} / 10)) $((${1:-0} % 10)); }
+stable() { [ "${ok[$1]}" = 1 ] && [ $((now - ${since[$1]:-$now})) -ge $BACK ]; }
+measure() { # measure <kind> <from> <why> <k...>: speed tests in the background
+  local kind=$1 from=$2 why=$3; shift 3
+  echo "$kind $from $why" > cmp.run; rm -f cmp.done
+  ( for k in "$@"; do s=$(timeout 20 $P probe speed -addr ${A[$k]} -max $SPMB -secs 10 2>/dev/null); echo "$k ${s:-0}"; done > cmp.tmp; mv cmp.tmp cmp.done ) &
+}
+declare -a ok since fails qr ql sp spb spat
 active=-1
+rm -f cmp.run cmp.done cmp.tmp
 if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash down.sh >/dev/null 2>&1; bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
 [ $active -ge 0 ] || use 0 "start"
-tune; n=0
+tune; n=0; cmpat=0; backoff=600; hold=0
 while true; do
-  for ((k=0; k<N; k++)); do ( timeout 3 $P probe rtt -addr ${T[$k]} -n 2 >/dev/null 2>&1 && echo ok > c$k || echo down > c$k ) & done
-  wait
-  now=$(date +%%s); : > status.tmp
+  M=manual; [ -s mode ] && read -r M < mode
+  all=0; [ "${fails[$active]:-0}" -gt 0 ] && all=1
+  pids=()
   for ((k=0; k<N; k++)); do
-    r=$(cat c$k 2>/dev/null)
-    if [ "$r" = ok ]; then [ "${ok[$k]}" = 1 ] || since[$k]=$now; ok[$k]=1; fails[$k]=0
-    else [ "${ok[$k]}" = 0 ] || since[$k]=$now; ok[$k]=0; fails[$k]=$(( ${fails[$k]:-0} + 1 )); fi
-    echo "$k ${r:-down} ${since[$k]:-$now}" >> status.tmp
+    rm -f c$k
+    if [ $k = $active ] || [ $all = 1 ] || [ $((n % SBY)) = 0 ]; then
+      pa=""
+      if [ "$M" = auto ] && [ -n "${H[$k]}" ] && { { [ $k = $active ] && [ $((n % 5)) = 0 ]; } || [ $((n % (SBY * 3))) = 0 ]; }; then pa="-ping ${H[$k]} -pn 10"; fi
+      ( r=$(timeout 6 $P probe check -addr ${A[$k]} -n 2 $pa 2>/dev/null); echo "${r:-down}" > c$k ) &
+      pids+=($!)
+    fi
+  done
+  wait "${pids[@]}"
+  now=$(date +%s); : > status.tmp
+  for ((k=0; k<N; k++)); do
+    if [ -f c$k ]; then
+      read -r r rt jt ls < c$k
+      if [ "$r" = ok ]; then
+        [ "${ok[$k]}" = 1 ] || since[$k]=$now; ok[$k]=1; fails[$k]=0
+        if [ -z "${qr[$k]}" ]; then qr[$k]=$rt; else qr[$k]=$(( (3 * qr[$k] + rt) / 4 )); fi
+        if [ "${ls:--1}" -ge 0 ]; then if [ -z "${ql[$k]}" ]; then ql[$k]=$((ls * 10)); else ql[$k]=$(( (3 * ql[$k] + ls * 10) / 4 )); fi; fi
+      else
+        [ "${ok[$k]}" = 0 ] || since[$k]=$now; ok[$k]=0; fails[$k]=$(( ${fails[$k]:-0} + 1 ))
+      fi
+    fi
+    st=down; [ "${ok[$k]}" = 1 ] && st=ok
+    echo "$k $st ${since[$k]:-$now} ${qr[$k]:--} ${ql[$k]:--} ${sp[$k]:--}" >> status.tmp
   done
   mv status.tmp status
   if [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ]; then
-    for ((k=0; k<N; k++)); do if [ "${ok[$k]}" = 1 ]; then use $k "path $active failed $FAILS checks in a row"; break; fi; done
-  elif [ "${ok[$active]}" = 1 ]; then
-    for ((k=0; k<active; k++)); do
-      if [ "${ok[$k]}" = 1 ] && [ $((now - ${since[$k]:-$now})) -ge $BACK ]; then use $k "path $k worked for ${BACK}s"; break; fi
+    best=-1
+    for ((k=0; k<N; k++)); do
+      [ "${ok[$k]}" = 1 ] || continue
+      if [ $best -lt 0 ]; then best=$k; [ "$M" = auto ] || break
+      elif [ $(cost $k) -lt $(cost $best) ]; then best=$k; fi
     done
+    [ $best -ge 0 ] && use $best "path $active failed $FAILS checks in a row"
+  elif [ "${ok[$active]}" = 1 ] && [ "$M" != auto ]; then
+    for ((k=0; k<active; k++)); do
+      if stable $k; then use $k "path $k worked for ${BACK}s"; break; fi
+    done
+  elif [ "${ok[$active]}" = 1 ] && [ -f cmp.done ]; then
+    read -r kind from why < cmp.run; rm -f cmp.run
+    while read -r k s; do
+      [ -n "$k" ] || continue; sp[$k]=$s; spat[$k]=$now
+      if [ "${s:-0}" -gt 0 ]; then
+        if [ -z "${spb[$k]}" ] || [ $s -gt $((spb[$k] * 15 / 16)) ]; then spb[$k]=$s; else spb[$k]=$((spb[$k] * 15 / 16)); fi
+      fi
+    done < cmp.done
+    if [ "$kind" = cmp ] && [ "$from" = "$active" ]; then
+      a=$active; sa=${sp[$a]:-0}; best=-1; bs=0
+      while read -r c _; do
+        [ "$c" != "$a" ] && [ "${ok[$c]}" = 1 ] || continue
+        sc=${sp[$c]:-0}; [ $sc -gt 0 ] || continue
+        win=0
+        if [ $sa = 0 ]; then win=1
+        elif [ $((sc * 10)) -ge $((sa * 15)) ] && [ ${ql[$c]:-0} -le $(( ${ql[$a]:-0} + 20 )) ]; then win=1
+        elif [ ${ql[$a]:-0} -ge $LOSSBAD ] && [ $(( ${ql[$c]:-0} * 2 )) -le ${ql[$a]:-0} ] && [ $((sc * 10)) -ge $((sa * 8)) ]; then win=1
+        elif [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 7 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
+        elif [ $c = 0 ] && [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 11 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
+        fi
+        [ $win = 1 ] && [ $sc -gt $bs ] && { best=$c; bs=$sc; }
+      done < cmp.done
+      if [ $best -ge 0 ]; then
+        use $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
+        hold=$((now + HOLD)); backoff=600
+      else
+        ev keep "$a" "$a" "compared ${why:-paths}: none clearly better ($(mb $sa) Mbit/s here)"
+        cmpat=$((now + backoff)); backoff=$((backoff * 2)); [ $backoff -gt 7200 ] && backoff=7200
+      fi
+    fi
+  elif [ "${ok[$active]}" = 1 ] && [ ! -f cmp.run ] && [ $((n % 5)) = 0 ]; then
+    a=$active; why=""; better=0
+    [ ${ql[$a]:-0} -ge $LOSSBAD ] && why="loss $(pc ${ql[$a]})%"
+    if [ -n "${sp[$a]}" ] && [ -n "${spb[$a]}" ] && [ $((sp[$a] * 2)) -lt ${spb[$a]} ]; then why="${why:+$why, }speed $(mb ${sp[$a]}) of $(mb ${spb[$a]}) Mbit/s"
+    elif [ -n "${sp[$a]}" ] && [ ${sp[$a]} -lt $SPMIN ]; then why="${why:+$why, }speed $(mb ${sp[$a]}) Mbit/s"; fi
+    list=""
+    for ((k=0; k<N; k++)); do
+      [ $k != $a ] && stable $k || continue
+      list="$list$(cost $k) $k"$'\n'
+      [ $(( $(cost $k) * 10 )) -lt $(( $(cost $a) * 7 )) ] && better=1
+      [ $k = 0 ] && [ $(( $(cost $k) * 10 )) -le $(( $(cost $a) * 11 )) ] && better=1
+    done
+    if [ -n "$list" ] && { [ -n "$why" ] || [ $better = 1 ]; } && [ $now -ge $cmpat ] && [ $now -ge $hold ]; then
+      measure cmp $a "$why" $a $(printf '%s' "$list" | sort -n | head -3 | cut -d' ' -f2)
+    elif [ $((now - ${spat[$a]:-0})) -ge $SPEVERY ]; then
+      measure speed $a "" $a
+    fi
   fi
-  n=$((n + 1)); [ $((n %% 20)) = 0 ] && tune
+  n=$((n + 1)); [ $((n % 20)) = 0 ] && tune
   sleep $EVERY
 done
-`, t.Name, hsDir(t), probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "))
-}
+`
 
 // hsSwitcherPlan is the Iran side's switcher unit with its files.
 func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 	srv, fsrv, set := a.store.Server(t.ServerID), a.store.Server(t.ForeignID), a.settings()
 	dir := hsDir(t)
+	var ports []string
+	for _, s := range splitPorts(t.Ports) {
+		ports = append(ports, strings.ReplaceAll(s.listen, "-", ":"))
+	}
+	conf := fmt.Sprintf("# tunnel %q\nP=%s\nN=%d\nEVERY=%d\nFAILS=%d\nBACK=%d\nPORTS=%q\nSBY=%d\nSPMB=%d\nSPEVERY=%d\nHOLD=%d\nLOSSBAD=%d\nSPMIN=%d\n",
+		t.Name, probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "), hsStandby, hsSpeedMB, hsSpeedSec, hsHold, hsLossBad, hsSpeedMin)
 	files := map[string]FileSpec{
-		dir + "/switch.sh": {Content: []byte(hsSwitcher(t, paths)), Mode: 0o755},
+		dir + "/switch.sh": {Content: []byte(hsSwitcher), Mode: 0o755},
+		dir + "/conf":      {Content: []byte(conf), Mode: 0o644},
+		dir + "/mode":      {Content: []byte(hsModeName(t) + "\n"), Mode: 0o644},
 		dir + "/down.sh":   {Content: []byte("#!/bin/bash\n" + hsSelectDown(t)), Mode: 0o755},
 	}
 	var targets []string
 	for k, p := range paths {
 		files[fmt.Sprintf("%s/up-%d.sh", dir, k)] = FileSpec{Content: []byte("#!/bin/bash\n" + hsSelectUp(t, p, srv, fsrv, set) + "exit 0\n"), Mode: 0o755}
-		targets = append(targets, hsTarget(t, p, srv, fsrv, set))
+		targets = append(targets, hsTarget(t, p, srv, fsrv, set)+" "+hsPingTarget(t, p, srv, fsrv, set))
 	}
 	files[dir+"/targets"] = FileSpec{Content: []byte(strings.Join(targets, "\n") + "\n"), Mode: 0o644}
 	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Unit: Unit{
 		Desc: "Hot standby switcher " + t.Name, ExecStart: "/bin/bash " + dir + "/switch.sh", ExecStopPost: dir + "/down.sh"}}
+}
+
+func hsModeName(t *Tunnel) string {
+	if t.HSAuto {
+		return "auto"
+	}
+	return "manual"
+}
+
+// hsPingTarget is what the switcher pings for path p's packet loss: the far tunnel address
+// of an L3 path, the foreign server's address on the path's family for a forwarder.
+func hsPingTarget(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
+	pt := pathTunnel(t, p)
+	d := deriveFor(pt, srv, fsrv, set)
+	if m := methodByID[p.Method]; m != nil && benchIsL3(m, pt.Options[m.ID]) {
+		return d.KHv4
+	}
+	return strings.Trim(d.KHPub, "[]")
+}
+
+// setHSMode switches a tunnel between manual and auto; a running switcher picks it up
+// within seconds (it reads the mode file every check), no re-apply needed.
+func (a *App) setHSMode(ctx context.Context, t *Tunnel, auto bool) (string, error) {
+	_ = a.store.Update(func(*State) error { t.HSAuto = auto; return nil })
+	if !t.HotStandby || t.Active == "" {
+		return "saved — it takes effect when hot standby runs", nil
+	}
+	return a.pushHSMode(ctx, t)
+}
+
+func (a *App) pushHSMode(ctx context.Context, t *Tunnel) (string, error) {
+	srv := a.store.Server(t.ServerID)
+	if srv == nil {
+		return "", fmt.Errorf("Iran server not found")
+	}
+	h, _, err := a.reach(ctx, srv, nil)
+	if err != nil {
+		return "", fmt.Errorf("saved, but the Iran server can't be reached now (%v) — it takes effect on the next apply", err)
+	}
+	dir := hsDir(t)
+	out, _ := h.Run(ctx, fmt.Sprintf("cd %s 2>/dev/null || { echo NODIR; exit 0; }; echo %s > mode; grep -q 'mode file' switch.sh && echo OK || echo OLD", dir, hsModeName(t)), nil)
+	switch {
+	case strings.Contains(out, "OK"):
+		return "switcher is now " + hsModeName(t), nil
+	case strings.Contains(out, "OLD"):
+		return "saved — this switcher is from an older panel version: press Re-apply once", nil
+	}
+	return "saved — it takes effect on the next apply", nil
 }
 
 // hsProbePlan is the foreign side's permanent probe server the checks go to, reachable only
@@ -440,11 +591,15 @@ func hsGood(t *Tunnel) []HSPath {
 
 // hsView is the switcher's state as the panel last read it.
 type hsView struct {
-	Active int      `json:"active"`
-	Since  int64    `json:"since"`
-	Paths  []string `json:"paths"` // label of each running path, switcher order
-	OK     []bool   `json:"ok"`
-	Read   int64    `json:"read"`
+	Active int       `json:"active"`
+	Since  int64     `json:"since"`
+	Paths  []string  `json:"paths"` // label of each running path, switcher order
+	OK     []bool    `json:"ok"`
+	Read   int64     `json:"read"`
+	Auto   bool      `json:"auto"`
+	RTT    []int     `json:"rtt"`  // ms, smoothed (-1 = not measured yet)
+	Loss   []float64 `json:"loss"` // %, smoothed (-1 = unknown: ICMP filtered or manual mode)
+	Kbps   []int     `json:"kbps"` // last download measurement (-1 = none yet)
 }
 
 // hsRead reads the switcher's state and the events since `after` from the Iran server.
@@ -452,6 +607,7 @@ func (a *App) hsRead(ctx context.Context, h Host, t *Tunnel, after int64) (*hsVi
 	dir := hsDir(t)
 	out, err := h.Run(ctx, fmt.Sprintf(`cd %s 2>/dev/null || exit 3
 echo "A $(cat active 2>/dev/null)"
+echo "M $(cat mode 2>/dev/null || echo manual)"
 sed 's/^/S /' status 2>/dev/null
 awk -v s=%d '$1 > s' events.log 2>/dev/null | sed 's/^/E /' | tail -n 50
 systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir, after, unitName(hsUnitTunnel(t))), nil)
@@ -463,6 +619,17 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 		v.Paths = append(v.Paths, p.label())
 	}
 	v.OK = make([]bool, len(v.Paths))
+	v.RTT, v.Loss, v.Kbps = make([]int, len(v.Paths)), make([]float64, len(v.Paths)), make([]int, len(v.Paths))
+	for k := range v.Paths {
+		v.RTT[k], v.Loss[k], v.Kbps[k] = -1, -1, -1
+	}
+	num := func(f []string, i int) (int, bool) {
+		if i >= len(f) {
+			return 0, false
+		}
+		n, err := strconv.Atoi(f[i])
+		return n, err == nil
+	}
 	var events []string
 	unit := ""
 	for _, l := range strings.Split(out, "\n") {
@@ -479,7 +646,18 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 		case "S":
 			if k, err := strconv.Atoi(f[1]); err == nil && k < len(v.OK) && len(f) > 2 {
 				v.OK[k] = f[2] == "ok"
+				if n, ok := num(f, 4); ok {
+					v.RTT[k] = n
+				}
+				if n, ok := num(f, 5); ok {
+					v.Loss[k] = float64(n) / 10
+				}
+				if n, ok := num(f, 6); ok {
+					v.Kbps[k] = n
+				}
 			}
+		case "M":
+			v.Auto = f[1] == "auto"
 		case "E":
 			events = append(events, strings.Join(f[1:], " "))
 		case "U":
@@ -511,6 +689,9 @@ func hsEventText(t *Tunnel, e string) (int64, string) {
 	case "switch":
 		if f[2] == "-1" {
 			return at, ""
+		}
+		if strings.HasPrefix(reason, "auto: ") {
+			return at, fmt.Sprintf("⚡ %s: auto mode moved the users to %s — better than %s (%s), %s (Tehran)", t.Name, name(f[3]), name(f[2]), strings.TrimPrefix(reason, "auto: "), clock(time.Unix(at, 0)))
 		}
 		if strings.Contains(reason, "worked for") {
 			return at, fmt.Sprintf("↩ %s back on %s (it was stable for %ds) — from %s, %s (Tehran)", t.Name, name(f[3]), hsFailback, name(f[2]), clock(time.Unix(at, 0)))

@@ -19,6 +19,10 @@ func (a *App) autoBench() {
 	}
 }
 
+// autoBenchMB caps each automatic throughput test (per method, per direction), so the
+// periodic benchmark costs the Iran server little traffic: about 2×autoBenchMB per method.
+const autoBenchMB = 4
+
 func autoBenchEvery(set Settings) time.Duration {
 	v := strings.TrimSpace(set.AutoBench)
 	if v == "" {
@@ -80,7 +84,7 @@ func (a *App) autoBenchRound() {
 		if !a.serverReachable(r.iran) || (r.foreign != "" && !a.serverReachable(r.foreign)) {
 			continue // a server is down: nothing useful to measure now
 		}
-		j, err := a.Bench(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Seconds: 3})
+		j, err := a.Bench(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Seconds: 3, MaxMB: autoBenchMB})
 		if err != nil {
 			continue
 		}

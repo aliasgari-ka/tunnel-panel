@@ -103,6 +103,35 @@ func TestHotStandbyNS(t *testing.T) {
 	step("kernel change reported once", strings.Count(strings.Join(msgs, "\n"), "nf_conntrack_max") <= 1)
 	step("switch and return were reported", strings.Contains(strings.Join(msgs, "\n"), "🔀 hot switched to") && strings.Contains(strings.Join(msgs, "\n"), "↩ hot back on Plain GRE (v4)"))
 
+	// auto mode: GRE gets lossy (not down) → the switcher measures and moves the users
+	msg, err := a.setHSMode(ctx, tn, true)
+	step("auto mode switched on without a re-apply ("+msg+")", err == nil && strings.Contains(msg, "now auto"))
+	time.Sleep(25 * time.Second) // a few ping rounds on the healthy GRE first
+	sh(t, "ip netns exec tir tc qdisc add dev tp30 root netem loss 25%")
+	t2 := time.Now()
+	for time.Since(t2) < 150*time.Second && active() == "0" {
+		time.Sleep(3 * time.Second)
+	}
+	t.Logf("   auto-switched after %s; status:\n%s", time.Since(t2).Round(time.Second), sh(t, "cat /etc/netns/tir/tunnel-panel/t/hs1hs/status; tail -4 /etc/netns/tir/tunnel-panel/t/hs1hs/events.log"))
+	step("lossy GRE (25 %) → auto mode moved the users to a better path", active() != "0")
+	step("users pass on it", user())
+	moved := active()
+	time.Sleep(30 * time.Second)
+	step("no flapping: users stay put", active() == moved)
+	sh(t, "ip netns exec tir tc qdisc del dev tp30 root")
+	_, _ = a.setHSMode(ctx, tn, false)
+	t3 := time.Now()
+	for time.Since(t3) < 120*time.Second && active() != "0" {
+		time.Sleep(3 * time.Second)
+	}
+	t.Logf("   manual again: back on the chosen path after %s", time.Since(t3).Round(time.Second))
+	step("manual mode → users back on the chosen path (GRE)", active() == "0")
+	v, _, _ := a.hsRead(ctx, nsSD{"tir", fake}, tn, 0)
+	t.Logf("   view: %+v", v)
+	step("view carries rtt/loss/speed", v != nil && len(v.RTT) == len(v.Paths) && v.RTT[0] >= 0)
+	all := strings.Join(msgs, "\n")
+	step("auto move reported", strings.Contains(all, "auto mode moved the users"))
+
 	j, _ := a.Stop(tn)
 	for j.snapshot().Status == "running" {
 		time.Sleep(time.Second)
