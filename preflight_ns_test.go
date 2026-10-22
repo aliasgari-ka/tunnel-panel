@@ -53,3 +53,47 @@ func TestReversePreflightNS(t *testing.T) {
 		t.Fatalf("want tunnel_port=%s", want)
 	}
 }
+
+// Where reverse connections get lost, and a foreign server dialling from another address
+// than its saved one. Run as root with TP_E2E=v4.
+func TestPreflightWhereNS(t *testing.T) {
+	if os.Getenv("TP_E2E") != "v4" {
+		t.Skip("set TP_E2E=v4 (root, network namespaces)")
+	}
+	e2eTopology(t, "v4")
+	defer sh(t, "for n in tir tkh tus; do ip netns pids $n 2>/dev/null | xargs -r kill -9; ip netns del $n 2>/dev/null; done")
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{{ID: "ir", Name: "iran", IPv4: "10.99.0.1"}, {ID: "kh", Name: "xe105", IPv4: "10.99.0.2", Role: "foreign"}}
+		return nil
+	})
+	a := &App{store: st, jobs: newJobs()}
+	run := func(name string) error {
+		tn := &Tunnel{ID: "rv", Name: "rev", ServerID: "ir", ForeignID: "kh", Family: "v4", Ports: "28579", Index: 2, Options: map[string]map[string]string{}}
+		j := &Job{}
+		_, err := a.reversePreflight(context.Background(), j, tn, methodByID["bp_reverse"], nsHost{"tir"}, nsHost{"tkh"})
+		t.Logf("── %s → %v", name, err)
+		return err
+	}
+	// 1. dropped before Iran (raw comes before the counting rule, like a filter upstream)
+	sh(t, "ip netns exec tir iptables -w -t raw -I PREROUTING -p tcp -s 10.99.0.2 --syn -j DROP")
+	if err := run("SYNs dropped before Iran"); err == nil || !strings.Contains(err.Error(), "none of its connection attempts reached") {
+		t.Error("not identified as dropped on the way")
+	}
+	sh(t, "ip netns exec tir iptables -w -t raw -D PREROUTING -p tcp -s 10.99.0.2 --syn -j DROP")
+	// 2. they reach Iran, the answers are lost
+	sh(t, "ip netns exec tir iptables -w -I OUTPUT -p tcp --tcp-flags SYN,ACK SYN,ACK -j DROP")
+	if err := run("SYN-ACKs dropped"); err == nil || !strings.Contains(err.Error(), "DID reach the Iran server") {
+		t.Error("not identified as reaching Iran without an answer")
+	}
+	sh(t, "ip netns exec tir iptables -w -D OUTPUT -p tcp --tcp-flags SYN,ACK SYN,ACK -j DROP")
+	// 3. the foreign server dials from a second address; Iran's INPUT policy is DROP
+	sh(t, "ip -n tkh addr add 10.99.0.9/24 dev vkh; ip -n tkh route add 10.99.0.1/32 dev vkh src 10.99.0.9")
+	if err := run("foreign leaves from 10.99.0.9 (saved 10.99.0.2)"); err != nil {
+		t.Error("a foreign server with another source address must pass")
+	}
+	if n := sh(t, "ip netns exec tir iptables-save | grep -c tp-preflight"); n != "0" {
+		t.Errorf("%s preflight rules left", n)
+	}
+}

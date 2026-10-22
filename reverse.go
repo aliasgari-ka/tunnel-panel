@@ -104,14 +104,23 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 	if strings.Contains(d.KHPub, ":") {
 		ipt = "ip6tables"
 	}
+	// the probe ports are opened to everyone for the test (the foreign server may leave
+	// from another address than the one saved for it), and SYNs reaching Iran are counted
+	// so a failure can say where the connections get lost
 	var up, down strings.Builder
-	fmt.Fprintf(&up, "%[1]s -w -I INPUT -s %[2]s -j ACCEPT -m comment --comment tp-preflight 2>/dev/null\n", ipt, d.KHPub)
 	for _, p := range try {
+		for _, r := range []string{
+			fmt.Sprintf("INPUT -p tcp --dport %d -j ACCEPT -m comment --comment tp-preflight", p),
+			fmt.Sprintf("-t mangle PREROUTING -p tcp --syn --dport %d -m comment --comment tp-preflight-syn", p),
+		} {
+			fmt.Fprintf(&up, "%s -w -I %s 2>/dev/null\n", ipt, strings.Replace(r, "-t mangle PREROUTING", "PREROUTING -t mangle", 1))
+			fmt.Fprintf(&down, "while %s -w -D %s 2>/dev/null; do :; done\n", ipt, strings.Replace(r, "-t mangle PREROUTING", "PREROUTING -t mangle", 1))
+		}
 		fmt.Fprintf(&up, "setsid nohup %s probe serve -listen :%d -life 45 >/dev/null 2>&1 </dev/null &\n", probeBin, p)
 		fmt.Fprintf(&down, "pkill -f -- '-listen :%d -life 45' 2>/dev/null\n", p)
 	}
 	up.WriteString("sleep 0.7\n")
-	fmt.Fprintf(&down, "while %[1]s -w -D INPUT -s %[2]s -j ACCEPT -m comment --comment tp-preflight 2>/dev/null; do :; done\ntrue\n", ipt, d.KHPub)
+	down.WriteString("true\n")
 	_, _ = irHost.Run(ctx, up.String(), nil)
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -125,6 +134,10 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 	}
 	test.WriteString("wait\n")
 	res, _ := khHost.Run(ctx, test.String(), nil)
+	synOut, _ := irHost.Run(ctx, ipt+" -w -t mangle -nvxL PREROUTING 2>/dev/null | awk '/tp-preflight-syn/ {s+=$1} END {print s+0}'", nil)
+	syns, _ := strconv.Atoi(strings.TrimSpace(lastLine(synOut)))
+	src, _ := khHost.Run(ctx, "ip -o route get "+d.IRPub+" 2>/dev/null | sed -n 's/.* src \\([^ ]*\\).*/\\1/p' | head -1", nil)
+	src = strings.TrimSpace(src)
 	okPorts := map[int]bool{}
 	for _, l := range strings.Split(res, "\n") {
 		if f := strings.Fields(l); len(f) == 2 && f[0] == "OK" {
@@ -151,11 +164,17 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 		j.log("WARNING: the foreign server cannot reach Iran:%s (the tunnel port you set) — the tunnel will not connect; clear the option to let the panel find a working port", pinned)
 		return false, nil
 	}
-	return false, fmt.Errorf("the foreign server cannot open any TCP connection to Iran %s (tried ports %s). "+
-		"A reverse method needs the foreign server to dial Iran, so it cannot work on this route — something drops those connections "+
-		"(Iran datacenter filtering from abroad, or the foreign provider's firewall, e.g. OVH's Network Firewall/anti-DDoS). "+
+	where := fmt.Sprintf("none of its connection attempts reached the Iran server (0 SYNs counted there) — they are dropped on the way: the foreign provider's firewall/anti-DDoS for outgoing traffic (e.g. OVH Network Firewall) or Iran's filtering of connections from abroad to %s", d.IRPub)
+	if syns > 0 {
+		where = fmt.Sprintf("%d connection attempts DID reach the Iran server but got no answer — something on the Iran server drops them before the panel's rules (nftables/firewalld/a cloud firewall in front of it), or the answers are filtered on the way back", syns)
+	}
+	if src != "" && src != d.KHPub {
+		where += fmt.Sprintf(" (note: the foreign server leaves from %s, not its saved %s)", src, d.KHPub)
+	}
+	return false, fmt.Errorf("the foreign server cannot open any TCP connection to Iran %s (tried ports %s): %s. "+
+		"A reverse method needs the foreign server to dial Iran, so it cannot work on this route as it is. "+
 		"Use a method where Iran dials out instead: BackPack L3 (default direction), Plain GRE, Golden-GRE or IPsec",
-		d.IRPub, joinInts(try))
+		d.IRPub, joinInts(try), where)
 }
 
 func joinInts(v []int) string {
