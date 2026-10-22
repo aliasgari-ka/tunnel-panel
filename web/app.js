@@ -275,7 +275,7 @@ const quantumBg = (() => {
 /* ---------------- shell ---------------- */
 function renderShell() {
   document.body.innerHTML = '';
-  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['bench', 'Benchmark', '📊'], ['settings', 'Settings', '⚙']];
+  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['routes', 'Routes', '🔀'], ['bench', 'Benchmark', '📊'], ['settings', 'Settings', '⚙']];
   const shell = h(`<div class="shell">
     <aside class="side" id="side">
       <div class="brand"><div class="dot"></div><div><b>${esc(STATE.settings.panelName || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
@@ -305,9 +305,61 @@ try { const t = localStorage.getItem('tp-theme'); if (t) document.documentElemen
 
 function renderView() {
   const w = $('#work'); w.innerHTML = '';
-  ({ tunnels: viewTunnels, servers: viewServers, bench: viewBench, settings: viewSettings }[STATE.view])(w);
+  ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, bench: viewBench, settings: viewSettings }[STATE.view])(w);
   trafficWatch();
   healthWatch();
+}
+
+/* ---------------- routes ---------------- */
+// One card per Iran ⇄ foreign pair: its tunnels and every path they run (hot standby: each
+// path ✓/✕ and the one users are on), and the order the next Re-apply / hot standby /
+// failover uses — the pair's latest benchmark ranking, per address family.
+const ageTxt = (u) => { const s = Math.floor(Date.now() / 1000) - u; return s < 3600 ? `${Math.max(1, Math.floor(s / 60))} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
+async function viewRoutes(w) {
+  w.innerHTML = topbar('Routes', 'Each Iran ⇄ foreign pair: which tunnels and paths are connected, which one carries the users, and the order a Re-apply, hot standby or failover picks paths in (the latest benchmark of that pair).');
+  const box = h('<div class="grid" style="gap:16px"><div class="muted">loading…</div></div>');
+  w.appendChild(box);
+  let hist = [];
+  try { hist = await api('/bench/history'); } catch (e) {}
+  const pairs = new Map();
+  const key = (i, f) => i + '|' + (f || '');
+  STATE.tunnels.forEach(t => { const k = key(t.serverId, t.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: t.serverId, foreign: t.foreignId || '', tunnels: [] }); pairs.get(k).tunnels.push(t); });
+  hist.forEach(r => { const k = key(r.iranId, r.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: r.iranId, foreign: r.foreignId || '', tunnels: [] }); });
+  box.innerHTML = '';
+  if (!pairs.size) { box.appendChild(h('<div class="card empty"><div class="big">🔀</div>No tunnels or benchmarks yet.</div>')); return; }
+  const srvLabel = (id, fb) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : fb; };
+  for (const p of pairs.values()) {
+    const tunnels = p.tunnels.map(t => {
+      let st, cls;
+      if (!t.active) { st = 'stopped'; cls = 'off'; }
+      else if (t.health === null || t.health === undefined) { st = 'running · not checked yet'; cls = 'unk'; }
+      else if (t.health) { st = '✕ ' + t.health; cls = 'bad'; }
+      else { st = '✓ connected'; cls = 'ok'; }
+      const m = methodTitle(t.active || t.selected);
+      let paths = '';
+      if (t.hotStandby && t.hs && t.hs.paths) {
+        paths = `<div class="hsl" style="margin:6px 0 0 14px">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div>`;
+      } else if (t.hotStandby) {
+        paths = '<div class="faint" style="font-size:12px;margin:4px 0 0 14px">⚡ hot standby on — its paths start on the next Start/Re-apply</div>';
+      }
+      return `<div class="rt-t ${cls}"><div><b>${esc(t.name)}</b> <span class="faint mono">:${esc(t.ports)}</span></div><div class="faint" style="font-size:12.5px">${esc(m || '—')} · ${famName(t.family)} — <span class="st">${esc(st)}</span></div>${paths}</div>`;
+    }).join('') || '<div class="faint">no tunnel on this pair</div>';
+    const fams = ['v4', 'v6'].map(f => {
+      const r = hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f);
+      if (!r) return `<div class="rt-b"><div class="lbl">${famName(f)}</div><div class="faint" style="font-size:12.5px">not benchmarked yet</div></div>`;
+      const rows = r.results.filter(x => !x.skipped).map((x, i) => `<div class="${x.ok ? '' : 'bad'}">${x.ok ? (x.recommended ? '★' : (i + 1) + '.') : '✕'} ${esc(x.title)} ${x.ok ? `<span class="faint">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} Mbps · ${x.rttMs.toFixed(0)} ms</span>` : `<span class="faint">${esc((x.error || 'failed').slice(0, 70))}</span>`}</div>`).join('');
+      return `<div class="rt-b"><div class="lbl">${famName(f)} · benchmark ${ageTxt(r.at)}</div><div class="hsl">${rows}</div></div>`;
+    }).join('');
+    const card = h(`<div class="card" style="padding:14px 16px">
+      <div class="tc-h"><h3>${srvLabel(p.iran, 'Iran')} ⇄ ${srvLabel(p.foreign, '🖥 this panel host')}</h3><button class="btn sm" data-rb>📊 Benchmark now</button></div>
+      <div class="lbl" style="margin-top:8px">Tunnels &amp; paths</div><div class="rt-ts">${tunnels}</div>
+      <div class="lbl" style="margin-top:10px">Order a Re-apply / hot standby / failover uses (best first)</div><div class="rt-bs">${fams}</div></div>`);
+    $('[data-rb]', card).onclick = async (e) => {
+      const fam = (p.tunnels[0] && p.tunnels[0].family) || 'v4';
+      try { const r = await api('/bench/start', { iranId: p.iran, foreignId: p.foreign, family: fam, seconds: 3 }); toast('Benchmark started'); openLog({ id: 'bench', name: 'Benchmark' }, r.job); } catch (er) { alertModal('Benchmark', er.message); }
+    };
+    box.appendChild(card);
+  }
 }
 
 /* ---------------- live traffic ---------------- */

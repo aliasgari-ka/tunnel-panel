@@ -154,6 +154,10 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .hsl{display:flex;flex-direction:column;gap:3px;font-size:13px;margin-bottom:8px}
 .hsl div{padding:5px 9px;border-radius:7px;background:var(--panel-2)}
 .hsl .bad{color:var(--crit)}.hsl .cur{outline:1px solid var(--accent)}
+.rt-ts{display:flex;flex-direction:column;gap:6px}
+.rt-t{padding:8px 10px;border-radius:9px;background:var(--panel-2);border-inline-start:3px solid var(--line)}
+.rt-t.ok{border-color:var(--good)}.rt-t.bad{border-color:var(--crit)}.rt-t.bad .st{color:var(--crit)}.rt-t.ok .st{color:var(--good)}
+.rt-bs{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 details.more{position:relative}
 .card.raised,.card:has(details.more[open]){position:relative;z-index:35}
 details.more>summary{list-style:none}

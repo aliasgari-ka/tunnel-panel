@@ -616,6 +616,7 @@ func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 		Families []string `json:"families"`        // address families both of its servers can use
 		Clash    string   `json:"clash,omitempty"` // a port another tunnel on this Iran server holds
 		HS       *hsView  `json:"hs,omitempty"`    // hot standby: the switcher's state
+		Health   *string  `json:"health"`          // monitor's last verdict: "" ok, a reason, null = not checked yet
 	}
 	out := []tv{}
 	s.app.store.View(func(st *State) {
@@ -626,7 +627,11 @@ func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 			if err := portClash(st, t, ""); err != nil {
 				clash = err.Error()
 			}
-			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, s.app.hsViewOf(t.ID)})
+			var hp *string
+			if r, ok := s.app.cachedHealth(t.ID); ok {
+				hp = &r
+			}
+			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, s.app.hsViewOf(t.ID), hp})
 		}
 	})
 	writeJSON(w, out)
