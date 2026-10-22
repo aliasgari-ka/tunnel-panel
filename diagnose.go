@@ -59,6 +59,14 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 
 		// 1. units
 		j.log("1. services")
+		// errors from the start-up window (one side up before the other: "connection
+		// refused" until the peer listens) aren't problems: only look after both were up
+		since := time.Now().Add(-10 * time.Minute).Unix()
+		for _, h := range []Host{ir, kh} {
+			if v, err := strconv.ParseInt(run(h, "date -d \"$(systemctl show -p ActiveEnterTimestamp --value "+unit+" 2>/dev/null)\" +%s 2>/dev/null"), 10, 64); err == nil && v+15 > since {
+				since = v + 15
+			}
+		}
 		for _, side := range []struct {
 			n string
 			h Host
@@ -72,7 +80,7 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 					hint("%s", l)
 				}
 			}
-			if errs := run(side.h, "journalctl -u "+unit+" --since -10min --no-pager -o cat 2>/dev/null | grep -iE 'error|fatal|fail|denied|refused|timeout' | tail -3"); errs != "" {
+			if errs := run(side.h, fmt.Sprintf("journalctl -u %s --since @%d --no-pager -o cat 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' | grep -iE 'error|fatal|fail|denied|refused|timeout' | tail -3", unit, since)); errs != "" {
 				j.log("  ! recent errors on %s:", side.n)
 				for _, l := range strings.Split(errs, "\n") {
 					hint("%s", l)

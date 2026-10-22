@@ -87,26 +87,7 @@ func (a *App) healthMonitor() {
 				defer func() { <-sem }()
 				ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 				defer cancel()
-				ir, kh, link := a.Health(ctx, t)
-				reason := ""
-				switch {
-				case ir == "unreachable":
-					reason = "Iran server unreachable"
-				case ir != "active":
-					reason = "Iran service " + ir
-				case kh == "unreachable":
-					reason = "foreign server unreachable"
-				case kh != "active":
-					reason = "foreign service " + kh
-				case link == "down":
-					reason = "tunnel link down (no traffic between the servers)"
-				}
-				a.healthMu.Lock()
-				if a.healthCache == nil {
-					a.healthCache = map[string]string{}
-				}
-				a.healthCache[t.ID] = reason
-				a.healthMu.Unlock()
+				reason := a.checkHealth(ctx, t)
 				mu.Lock()
 				defer mu.Unlock()
 				h := state[t.ID]
@@ -153,6 +134,43 @@ func (a *App) healthMonitor() {
 		}
 		mu.Unlock()
 	}
+}
+
+// healthReason turns a Health result into "" (healthy) or what is wrong.
+func healthReason(ir, kh, link string) string {
+	switch {
+	case ir == "unreachable":
+		return "Iran server unreachable"
+	case ir != "active":
+		return "Iran service " + ir
+	case kh == "unreachable":
+		return "foreign server unreachable"
+	case kh != "active":
+		return "foreign service " + kh
+	case link == "down":
+		return "tunnel link down (no traffic between the servers)"
+	}
+	return ""
+}
+
+// checkHealth runs one health check and stores the verdict for the cards and the bot.
+func (a *App) checkHealth(ctx context.Context, t *Tunnel) string {
+	reason := healthReason(a.Health(ctx, t))
+	a.healthMu.Lock()
+	if a.healthCache == nil {
+		a.healthCache = map[string]string{}
+	}
+	a.healthCache[t.ID] = reason
+	a.healthMu.Unlock()
+	return reason
+}
+
+// clearHealth forgets the monitor's verdict on a tunnel whose method is being changed or
+// stopped: the old method's "down" must not paint the new one red until the next check.
+func (a *App) clearHealth(id string) {
+	a.healthMu.Lock()
+	delete(a.healthCache, id)
+	a.healthMu.Unlock()
 }
 
 // cachedHealth is the monitor's last verdict: "ok", a reason, or "" when not checked yet.

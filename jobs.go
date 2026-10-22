@@ -276,6 +276,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.clearHealth(t.ID)
 	go func() {
 		defer a.jobs.done(j)
 		ctx, cancel := j.context(20 * time.Minute)
@@ -376,6 +377,16 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		j.log("DONE — %s is active on both servers", m.Title)
 		j.finish("ok")
 		a.push(fmt.Sprintf("✅ %s now runs %s", t.Name, m.Title))
+		// a first verdict for the card now, not at the monitor's next round (reverse links
+		// need a few seconds to dial in)
+		go func() {
+			time.Sleep(8 * time.Second)
+			c, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+			defer cancel()
+			if t.Active == mid {
+				a.checkHealth(c, t)
+			}
+		}()
 	}()
 	return j, nil
 }
@@ -407,6 +418,7 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.clearHealth(t.ID)
 	go func() {
 		defer a.jobs.done(j)
 		// Stop must run even right after a cancelled job, so it never inherits one
