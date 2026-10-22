@@ -371,9 +371,10 @@ function topbar(title, sub, actions) {
     <div><h1>${esc(title)}</h1><p>${esc(sub)}</p></div></div><div class="actions">${actions || ''}</div></div>`;
 }
 function modal(inner, wide) {
-  const m = h(`<div class="modal"><div class="card"${wide ? ' style="max-width:640px"' : ''}>${inner}</div></div>`);
+  // closes only with its ✕ (or its own buttons): a click beside it no longer throws away a half-filled form
+  const m = h(`<div class="modal"><div class="card"${wide ? ' style="max-width:640px"' : ''}><button class="mclose" title="Close" aria-label="Close">✕</button>${inner}</div></div>`);
   document.body.appendChild(m);
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  $('.mclose', m).onclick = () => m.remove();
   return m;
 }
 function alertModal(title, msg) {

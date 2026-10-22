@@ -147,6 +147,10 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .otab th,.otab td{text-align:start;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
 .otab th{color:var(--faint);font-weight:600;font-size:12px}
 .otab tr.open td{background:color-mix(in srgb,var(--crit) 9%,transparent)}
+.modal .card{position:relative}
+.mclose{position:absolute;top:10px;inset-inline-end:10px;width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font-size:16px;line-height:1;cursor:pointer;z-index:2}
+.modal .card>.mclose+h2,.modal .card>.mclose+h3,.mg-h{padding-inline-end:44px}
+.mclose:hover{color:var(--fg);border-color:var(--muted)}
 details.more{position:relative}
 .card.raised,.card:has(details.more[open]){position:relative;z-index:35}
 details.more>summary{list-style:none}
