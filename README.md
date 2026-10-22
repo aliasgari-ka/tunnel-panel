@@ -24,6 +24,23 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 - **SSH bridge:** expose an Iran server's SSH on a panel port so you can log in manually.
 - **Traffic shaping:** optional per-tunnel CAKE/HTB/TBF/fq_codel qdisc + jitter + MSS clamp.
 - **Country flags:** servers are geolocated by IP and shown with their flag.
+- **Automatic failover:** a tunnel that stays down for 5 minutes is moved to a working method
+  or the other address family (IPv4 ⇄ IPv6), verified by a real connection through the
+  forwarded port to the foreign service; the original path is re-tested hourly (on a spare
+  slot, without touching the live tunnel) and restored when it works. Per-tunnel switch.
+- **Health & alerts:** live health on every card (red when down); Telegram 🔴/🟢/🔁 messages.
+- **Diagnose / Trace / Speed test:** Diagnose checks every hop and names the problem; Trace
+  watches while you connect a client (e.g. Xray) and shows where the connection stops, with
+  the service's own log lines; Speed test measures RTT and ↓/↑ throughput through the tunnel.
+- **Live traffic** per tunnel and per server NIC; **benchmark history** of every route tested.
+- **Reverse-tunnel preflight:** before starting a reverse method the panel checks that the
+  foreign server can actually reach Iran's tunnel port and moves it to a port that gets
+  through (443, 8443, 2053, …), or explains why the route needs an L3 method.
+- **Install once:** binaries are uploaded only when their sha256 differs; "Install packages"
+  pre-installs everything a server needs. IPv4/IPv6 addresses are read from the server.
+- **arm64:** Golden-GRE's relay is built for arm64; Backhaul Premium's arm64 core is fetched from
+  the vendor, or the amd64 core runs under box64/qemu-user (tcp/tcpmux/wssmux/anytls modes;
+  ipx needs box64).
 
 ## Methods
 

@@ -709,7 +709,7 @@ function tunnelCard(t) {
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
-    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span>${t.family === 'v6' ? '<span class="chip">v6</span>' : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}</div>
+    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span>${t.family === 'v6' ? '<span class="chip">v6</span>' : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>'}</div>
     ${t.active ? `<div class="traf mini" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
@@ -723,6 +723,7 @@ function tunnelCard(t) {
       ${moreMenu([
         t.active ? { label: '🚀 Speed test', attr: 'data-speedtest' } : null,
         t.active ? { label: '🩺 Diagnose', attr: 'data-diag' } : null,
+        t.active ? { label: '🔎 Trace connections (30 s)', attr: 'data-trace' } : null,
         { label: '✎ Edit tunnel', attr: 'data-edit' },
         { label: '🗑 Delete tunnel', attr: 'data-del', danger: true }])}
     </div></div>`);
@@ -733,6 +734,7 @@ function tunnelCard(t) {
   on('[data-log]', () => openLog(t, null));
   on('[data-speedtest]', () => tunnelJob(t, '/tunnels/speedtest', 'Speed test'));
   on('[data-diag]', () => tunnelJob(t, '/tunnels/diagnose', 'Diagnose'));
+  on('[data-trace]', () => tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'));
   on('[data-edit]', () => tunnelModal(t));
   on('[data-del]', async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } });
   refreshStatus(t, card);
@@ -760,7 +762,7 @@ function manageTunnel(t) {
     <div class="mwarn" data-warn hidden></div>
     <div data-optbox hidden></div>
     <div class="actions"><button class="btn pri" data-apply></button>${t.active ? '<button class="btn" data-stop>■ Stop</button>' : ''}<span class="grow"></span>
-      ${t.active ? '<button class="btn ghost" data-speedtest>🚀 Speed test</button><button class="btn ghost" data-diag>🩺 Diagnose</button>' : ''}<button class="btn ghost" data-x>Close</button></div>
+      ${t.active ? '<button class="btn ghost" data-speedtest>🚀 Speed test</button><button class="btn ghost" data-diag>🩺 Diagnose</button><button class="btn ghost" data-trace title="Watch 30 s while you connect your client (e.g. Xray) and see where it stops">🔎 Trace</button>' : ''}<button class="btn ghost" data-x>Close</button></div>
   </div>`, true);
   const selEl = $('[data-method]', m), descEl = $('[data-desc]', m), warnEl = $('[data-warn]', m), optBox = $('[data-optbox]', m), applyBtn = $('[data-apply]', m);
   const refresh = () => {
@@ -783,6 +785,7 @@ function manageTunnel(t) {
   on('[data-stop]', async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); m.remove(); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } });
   on('[data-speedtest]', () => { m.remove(); tunnelJob(t, '/tunnels/speedtest', 'Speed test'); });
   on('[data-diag]', () => { m.remove(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); });
+  on('[data-trace]', () => { m.remove(); tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'); });
   on('[data-x]', () => m.remove());
 }
 // Download a vendor helper (Backhaul Premium core) on the panel host.
@@ -839,9 +842,12 @@ function healthWatch() {
     $$('.tc.live').forEach(card => { const t = STATE.tunnels.find(x => x.id === card.dataset.id); if (t) refreshStatus(t, card); });
   }, 15000);
 }
+// The save endpoint replaces the editable fields, so every save sends all of them
+// (sending a partial tunnel used to wipe its traffic-shaping settings).
+const tunnelBody = (t, patch) => ({ ID: t.id, name: t.name, serverId: t.serverId, foreignId: t.foreignId, family: t.family,
+  ports: t.ports, note: t.note, shape: t.shape || {}, noFailover: !!t.noFailover, selected: t.selected || '', ...patch });
 async function saveTunnel(t, patch) {
-  const body = { ID: t.id, name: t.name, serverId: t.serverId, foreignId: t.foreignId, family: t.family, ports: t.ports, note: t.note, ...patch };
-  try { await api('/tunnels/save', body); Object.assign(t, patch); } catch (e) {}
+  try { await api('/tunnels/save', tunnelBody(t, patch)); Object.assign(t, patch); } catch (e) {}
 }
 function renderOpts(box, t, mid) {
   const m = STATE.methods.find(x => x.id === mid);
@@ -855,7 +861,7 @@ function renderOpts(box, t, mid) {
   }).join('')}<div style="grid-column:1/-1;display:flex;justify-content:flex-end"><button class="btn sm pri" data-save>Save options</button></div></div>`;
   $('[data-save]', box).onclick = async () => {
     const opts = {}; $$('[data-k]', box).forEach(el => opts[el.dataset.k] = el.type === 'checkbox' ? String(el.checked) : el.value);
-    try { await api('/tunnels/save', { ID: t.id, name: t.name, serverId: t.serverId, foreignId: t.foreignId, family: t.family, ports: t.ports, note: t.note, options: { [mid]: opts } }); await loadAll(); renderView(); toast('Options saved'); } catch (e) { alertModal('Error', e.message); }
+    try { await api('/tunnels/save', tunnelBody(t, { options: { [mid]: opts } })); await loadAll(); renderView(); toast('Options saved'); } catch (e) { alertModal('Error', e.message); }
   };
 }
 function tunnelModal(t) {
@@ -874,6 +880,7 @@ function tunnelModal(t) {
         <label class="f">Ports <span class="faint">443,8080=80,2000-2010</span><input name="ports" class="mono" value="${esc(t.ports || '443')}"></label>
       </div>
       <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
+      <label class="row f"><input type="checkbox" id="tFail"${t.noFailover ? '' : ' checked'}> 🔁 Automatic failover <span class="faint" style="font-weight:500">— if the tunnel is down for 5 min, switch to a working method / IPv4⇄IPv6 path; re-check the original every hour and switch back when it works</span></label>
       <details${sh.enabled ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Traffic shaping / link tuning</summary>
         <div class="ff" style="margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px">
           <label class="row f"><input type="checkbox" id="shEnabled"${sh.enabled ? ' checked' : ''}> Enable shaping on the Iran egress (CAKE/HTB/… qdisc)</label>
@@ -894,6 +901,8 @@ function tunnelModal(t) {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
     if (t.id) fd.ID = t.id;
+    fd.noFailover = !$('#tFail', m).checked;
+    if (t.selected) fd.selected = t.selected;
     fd.shape = {
       enabled: $('#shEnabled', m).checked, qdisc: $('#shQdisc', m).value,
       mss: parseInt($('#shMss', m).value || '0', 10), iface: $('#shIface', m).value.trim(),
@@ -922,7 +931,7 @@ function viewBench(w) {
       <div class="faint" style="font-size:12px">Each method is deployed on a temporary tunnel, measured, then removed. It runs on the server — you can leave this page and come back.</div>
       <div style="display:flex;gap:8px"><button class="btn pri" id="brun">Run benchmark</button><button type="button" class="btn danger" id="bcancel" hidden>■ Cancel</button></div>
     </form>
-    <div id="blogcard"></div><div id="bres"></div></div>`);
+    <div id="blogcard"></div><div id="bres"></div><div id="bhist"></div></div>`);
   w.appendChild(card);
   const form = $('#bf');
   const cur = () => { const fd = Object.fromEntries(new FormData(form)); return { iran: fd.iran, foreign: fd.foreign || '', family: fd.family }; };
@@ -933,6 +942,7 @@ function viewBench(w) {
     try { const r = await api('/bench/start', { iranId: fd.iran, foreignId: fd.foreign, family: fd.family, seconds: parseInt(fd.seconds || '5', 10) }); benchWatch(r.job, cur()); }
     catch (e) { alertModal('Error', e.message); }
   };
+  loadBenchHistory();
   // re-attach to a running benchmark, else show the stored results of the selected route
   api('/bench/active').then(a => {
     const q = (a && a.req) || {};
@@ -945,6 +955,35 @@ function viewBench(w) {
       benchWatch(a.job, { iran: q.iranId, foreign: q.foreignId || '', family: q.family || 'v4' });
     } else showBenchResults(cur());
   }).catch(() => showBenchResults(cur()));
+}
+// History: which Iran server was tested against which foreign server, when, and the winner.
+async function loadBenchHistory() {
+  let hs = [];
+  try { hs = await api('/bench/history'); } catch (e) {}
+  const box = $('#bhist');
+  if (!box) return;
+  if (!hs.length) { box.innerHTML = ''; return; }
+  const fl = (id, d) => { const s = serverById(id); return s && s.country ? flag(s.country) : d; };
+  const rows = hs.map((r, i) => {
+    const best = (r.results || []).find(x => x.recommended);
+    const ok = (r.results || []).filter(x => x.ok).length;
+    const dt = new Date(r.at * 1000);
+    return `<tr><td class="mono" style="white-space:nowrap">${dt.toLocaleDateString()} ${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+      <td>${fl(r.iranId, '🇮🇷')} ${esc(r.iranName)} <span class="faint">→</span> ${fl(r.foreignId, r.foreignId ? '🌍' : '🖥')} ${esc(r.foreignName)}</td>
+      <td>${r.family === 'v6' ? 'IPv6' : 'IPv4'}</td>
+      <td>${best ? `<b>${esc(best.title)}</b> <span class="faint">↓${best.downMbps.toFixed(0)} ↑${best.upMbps.toFixed(0)} Mbps · ${best.rttMs.toFixed(0)} ms</span>` : '<span class="faint">no method worked</span>'}</td>
+      <td class="faint">${ok}/${(r.results || []).length} ok</td>
+      <td><button class="btn sm" data-hv="${i}">View</button></td></tr>`;
+  }).join('');
+  box.innerHTML = `<div class="card pad"><div style="display:flex;justify-content:space-between;align-items:center"><h3>History</h3><button class="btn sm ghost danger" id="bhclear">Clear history</button></div>
+    <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>when</th><th>route</th><th>family</th><th>best</th><th>methods</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  $$('[data-hv]', box).forEach(b => b.onclick = () => {
+    const r = hs[+b.dataset.hv];
+    renderBenchTable(r.results || [], { iran: r.iranId, foreign: r.foreignId, family: r.family },
+      `${esc(r.iranName)} → ${esc(r.foreignName)} · ${r.family} · ${new Date(r.at * 1000).toLocaleString()}`);
+    $('#bres').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  $('#bhclear', box).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; try { await api('/bench/history', { Clear: true }); loadBenchHistory(); } catch (er) {} };
 }
 function benchWatch(job, fd) {
   if (benchTimer) clearInterval(benchTimer);
@@ -964,13 +1003,16 @@ function benchWatch(job, fd) {
     const cb = $('#bcancel');
     if (cb) { cb.hidden = j.status !== 'running'; cb.onclick = async () => { cb.disabled = true; try { await api('/jobs/cancel', { ID: job }); toast('Benchmark cancelled — cleaning up'); } catch (e) { alertModal('Cancel', e.message); } cb.disabled = false; }; }
     showBenchResults(fd);
-    if (j.status !== 'running') { clearInterval(benchTimer); benchTimer = null; }
+    if (j.status !== 'running') { clearInterval(benchTimer); benchTimer = null; loadBenchHistory(); }
   };
   benchTimer = setInterval(tick, 1500); tick();
 }
 async function showBenchResults(fd) {
   let res = [];
   try { res = await api(`/bench/results?iran=${encodeURIComponent(fd.iran || '')}&foreign=${encodeURIComponent(fd.foreign || '')}&family=${fd.family}`); } catch (e) {}
+  renderBenchTable(res || [], fd, '');
+}
+function renderBenchTable(res, fd, caption) {
   const box = $('#bres');
   if (!box) return; // user left the page
   if (!res || !res.length) { box.innerHTML = ''; return; }
@@ -985,7 +1027,7 @@ async function showBenchResults(fd) {
     <td>${r.score.toFixed(0)}</td>
     <td><button class="btn sm pri" data-use="${r.method}">Apply to tunnel</button></td></tr>`;
   }).join('');
-  box.innerHTML = `<div class="card pad"><h3>Results</h3>
+  box.innerHTML = `<div class="card pad"><h3>Results${caption ? ` <span class="faint" style="font-weight:500;font-size:13px">· ${caption}</span>` : ''}</h3>
     <div style="overflow-x:auto"><table class="tbl bench"><thead><tr><th>method</th><th>↓ Mbps</th><th>↑ Mbps</th><th>RTT ms</th><th>jitter</th><th>loss</th><th>score</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="faint" style="font-size:12px;margin-top:8px">↓ = foreign → Iran (what users downloading feel), ↑ = Iran → foreign. Measured over TCP through the tunnel itself.</div></div>`;
   $$('[data-use]', box).forEach(b => b.onclick = () => applyBenchToTunnel(fd, b.dataset.use));

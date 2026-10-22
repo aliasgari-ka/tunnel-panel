@@ -196,3 +196,38 @@ func TestMonitorStep(t *testing.T) {
 		t.Fatalf("outage = %v", h.lastOutage)
 	}
 }
+
+func TestFailoverCandidates(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{{ID: "i", IPv4: "192.0.2.1", IPv6: "2001:db8::1"}, {ID: "k", IPv4: "192.0.2.2", IPv6: "2001:db8::2", Role: "foreign"}}
+		s.Tunnels = []*Tunnel{{ID: "x", ServerID: "i", ForeignID: "k", Family: "v6", Active: "gre", Ports: "443", Index: 3}}
+		s.BenchHistory = []BenchRecord{{IranID: "i", ForeignID: "k", Family: "v4", Results: []BenchResult{
+			{Method: "frp", OK: true, Score: 90}, {Method: "bp_reverse", OK: true, Score: 150}, {Method: "golden", OK: false}}}}
+		return nil
+	})
+	a := &App{store: st, jobs: newJobs()}
+	c := a.failoverCandidates(st.Tunnel("x"))
+	if len(c) < 4 || c[0] != (pathChoice{"bp_reverse", "v4"}) || c[1] != (pathChoice{"frp", "v4"}) {
+		t.Fatalf("bench winners must come first: %v", c)
+	}
+	if c[2].family != "v4" {
+		t.Fatalf("the other family (v4) should come next after bench results: %v", c[2])
+	}
+	for _, p := range c {
+		if p.method == "gre" && p.family == "v6" {
+			t.Fatal("current path must be excluded")
+		}
+		if p.method == "spoof" || (p.method == "golden" && p.family == "v6") || (p.method == "direct6" && p.family == "v4") {
+			t.Fatalf("impossible candidate %v", p)
+		}
+	}
+	// a v4-only pair never gets v6 candidates
+	_ = st.Update(func(s *State) error { s.Servers[0].IPv6 = ""; return nil })
+	for _, p := range a.failoverCandidates(st.Tunnel("x")) {
+		if p.family == "v6" {
+			t.Fatalf("v6 candidate without IPv6 on Iran: %v", p)
+		}
+	}
+}

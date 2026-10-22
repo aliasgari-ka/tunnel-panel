@@ -29,12 +29,18 @@ type vendorResult struct {
 	Size                 int64
 }
 
-var vendorMu sync.Mutex
+var (
+	vendorMu   sync.Mutex
+	vendorDown = map[string]time.Time{} // name -> retry after
+)
 
 // fetchVendorHelper downloads "<base>-<arch>" from the vendor into the helpers dir.
 func fetchVendorHelper(name string) (*vendorResult, error) {
 	vendorMu.Lock()
 	defer vendorMu.Unlock()
+	if until, ok := vendorDown[name]; ok && time.Now().Before(until) {
+		return nil, fmt.Errorf("the vendor mirrors were unreachable a moment ago (retrying after %s)", until.Format("15:04"))
+	}
 	i := strings.LastIndex(name, "-")
 	if i < 0 {
 		return nil, fmt.Errorf("bad helper name %q", name)
@@ -47,7 +53,7 @@ func fetchVendorHelper(name string) (*vendorResult, error) {
 	if err := os.MkdirAll(helpersDir(), 0o700); err != nil {
 		return nil, err
 	}
-	cli := &http.Client{Timeout: 90 * time.Second}
+	cli := &http.Client{Timeout: 40 * time.Second}
 	type got struct{ url, sum, path string }
 	var ok []got
 	var errs []string
@@ -89,6 +95,7 @@ func fetchVendorHelper(name string) (*vendorResult, error) {
 		}
 	}()
 	if len(ok) == 0 {
+		vendorDown[name] = time.Now().Add(6 * time.Hour)
 		return nil, fmt.Errorf("could not download %s from the vendor: %s", name, strings.Join(errs, "; "))
 	}
 	note := "only one vendor mirror answered, so the copy could not be cross-checked"
@@ -125,9 +132,11 @@ func vendorOnHostScript(base, arch, dest string) string {
 	return fmt.Sprintf(`D=%[1]s
 m() { od -An -tx1 -j18 -N2 "$1" 2>/dev/null | tr -d ' \n'; }
 if [ -x "$D" ] && [ "$(m "$D")" = %[2]s ]; then echo "already installed on this host"; exit 0; fi
+MK="$(dirname "$D")/.vendor-unreachable"
+if [ -f "$MK" ] && [ $(( $(date +%%s) - $(stat -c %%Y "$MK") )) -lt 21600 ]; then echo "the vendor was unreachable from this host recently"; exit 1; fi
 T=$(mktemp -d); trap 'rm -rf $T' EXIT; cd $T
-for u in %[3]s; do curl -fsSL --max-time 90 -o p.tgz "$u" && break; done
-[ -s p.tgz ] || { echo "this host cannot reach the vendor either"; exit 1; }
+for u in %[3]s; do curl -fsSL --max-time 30 -o p.tgz "$u" && break; done
+[ -s p.tgz ] || { mkdir -p "$(dirname "$D")"; touch "$MK"; echo "this host cannot reach the vendor either"; exit 1; }
 tar -xzf p.tgz 2>/dev/null || { echo "vendor file is not a tar.gz"; exit 1; }
 f=""; for x in $(find . -type f); do [ "$(m "$x")" = %[2]s ] && { f=$x; break; }; done
 [ -n "$f" ] || { echo "no %[4]s binary inside the vendor archive"; exit 1; }

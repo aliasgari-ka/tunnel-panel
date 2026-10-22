@@ -50,12 +50,45 @@ func benchKey(iran, foreign, family string) string { return iran + "|" + foreign
 
 func (a *App) benchResults(iran, foreign, family string) []BenchResult {
 	a.benchMu.Lock()
-	defer a.benchMu.Unlock()
 	r := a.benchRes[benchKey(iran, foreign, family)]
-	if r == nil {
+	a.benchMu.Unlock()
+	if r != nil {
+		return r
+	}
+	// after a restart: the newest saved run for this route
+	var best []BenchResult
+	a.store.View(func(st *State) {
+		for i := len(st.BenchHistory) - 1; i >= 0; i-- {
+			h := st.BenchHistory[i]
+			if h.IranID == iran && h.ForeignID == foreign && h.Family == family {
+				best = h.Results
+				return
+			}
+		}
+	})
+	if best == nil {
 		return []BenchResult{}
 	}
-	return r
+	return best
+}
+
+const benchHistoryMax = 60
+
+// recordBench saves a finished run: which Iran server was tested against which foreign
+// server, when, and the ranked results.
+func (a *App) recordBench(req BenchRequest, rs []BenchResult) {
+	rec := BenchRecord{ID: newID(), At: time.Now().Unix(), IranID: req.IranID, ForeignID: req.ForeignID,
+		Family: req.Family, Results: rs, IranName: serverName(a, req.IranID), ForeignName: "this panel host"}
+	if req.ForeignID != "" {
+		rec.ForeignName = serverName(a, req.ForeignID)
+	}
+	_ = a.store.Update(func(st *State) error {
+		st.BenchHistory = append(st.BenchHistory, rec)
+		if n := len(st.BenchHistory); n > benchHistoryMax {
+			st.BenchHistory = st.BenchHistory[n-benchHistoryMax:]
+		}
+		return nil
+	})
 }
 
 func (a *App) setBench(iran, foreign, family string, rs []BenchResult) {
@@ -199,6 +232,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		}
 		rankBench(out)
 		a.setBench(req.IranID, req.ForeignID, req.Family, out)
+		a.recordBench(req, out)
 		if best := firstOK(out); best != nil {
 			j.log("DONE — best: %s (score %.0f, ↓%.0f/↑%.0f Mbps, %.1f ms)",
 				best.Title, best.Score, best.DownMbps, best.UpMbps, best.RTTms)

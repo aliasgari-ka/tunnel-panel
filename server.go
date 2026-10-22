@@ -79,12 +79,14 @@ func (a *App) routes() http.Handler {
 	p("/api/tunnels/lastjob", s.tunnelLastJob)
 	p("/api/tunnels/speedtest", s.tunnelSpeedTest)
 	p("/api/tunnels/diagnose", s.tunnelDiagnose)
+	p("/api/tunnels/trace", s.tunnelTrace)
 	p("/api/traffic", s.trafficGet)
 	p("/api/jobs", s.job)
 	p("/api/jobs/cancel", s.jobCancel)
 	p("/api/bench/start", s.benchStart)
 	p("/api/bench/results", s.benchResults)
 	p("/api/bench/active", s.benchActive)
+	p("/api/bench/history", s.benchHistory)
 	p("/api/helpers", s.helpers)
 	mux.HandleFunc("/api/helpers/upload", s.auth(s.helperUpload)) // multipart, not JSON
 	p("/api/helpers/fetch", s.helperFetch)
@@ -664,7 +666,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			in.ID = newID()
 			in.Index = s.app.store.nextIndexLocked(st)
 			in.Updated = time.Now().Unix()
-			in.Active, in.Secrets = "", nil
+			in.Active, in.Secrets, in.Failover = "", nil, nil
 			in.Shape = normalizeShape(in.Shape)
 			if in.Options == nil {
 				in.Options = map[string]map[string]string{}
@@ -681,6 +683,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		}
 		t.Name, t.ServerID, t.ForeignID, t.Family, t.Ports, t.Note = in.Name, in.ServerID, in.ForeignID, in.Family, in.Ports, in.Note
 		t.Shape = normalizeShape(in.Shape)
+		t.NoFailover = in.NoFailover
 		if in.Selected != "" {
 			t.Selected = in.Selected
 		}
@@ -747,6 +750,7 @@ func (s *Server2) tunnelApply(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 409, err.Error())
 		return
 	}
+	s.app.clearFailover(t) // chosen by hand
 	writeJSON(w, map[string]string{"job": j.ID})
 }
 
@@ -762,6 +766,10 @@ func (s *Server2) tunnelStop(w http.ResponseWriter, r *http.Request) {
 	if id := s.app.jobs.running(t.ID); id != "" {
 		_, _ = s.app.jobs.cancel(id)
 	}
+	if id := s.app.jobs.running(failoverJobKey + t.ID); id != "" {
+		_, _ = s.app.jobs.cancel(id)
+	}
+	s.app.clearFailover(t)
 	j, err := s.app.Stop(t)
 	if err != nil {
 		httpErr(w, 409, err.Error())
@@ -813,6 +821,25 @@ func (s *Server2) tunnelSpeedTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	j, err := s.app.SpeedTest(t, in.Seconds)
+	if err != nil {
+		httpErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"job": j.ID})
+}
+
+func (s *Server2) tunnelTrace(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID      string
+		Seconds int
+	}
+	_ = readJSON(r, &in)
+	t := s.app.store.Tunnel(in.ID)
+	if t == nil {
+		httpErr(w, 404, "tunnel not found")
+		return
+	}
+	j, err := s.app.Trace(t, in.Seconds)
 	if err != nil {
 		httpErr(w, 409, err.Error())
 		return
@@ -879,6 +906,24 @@ func (s *Server2) benchStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"job": j.ID})
+}
+
+// benchHistory lists saved benchmark runs, newest first (DELETE-style ?clear=1 empties it).
+func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var in struct{ Clear bool }
+		_ = readJSON(r, &in)
+		if in.Clear {
+			_ = s.app.store.Update(func(st *State) error { st.BenchHistory = nil; return nil })
+		}
+	}
+	out := []BenchRecord{}
+	s.app.store.View(func(st *State) {
+		for i := len(st.BenchHistory) - 1; i >= 0; i-- {
+			out = append(out, st.BenchHistory[i])
+		}
+	})
+	writeJSON(w, out)
 }
 
 // benchActive returns the running or last benchmark ({} when none), so the page can re-attach.

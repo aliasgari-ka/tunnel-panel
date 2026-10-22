@@ -1,0 +1,41 @@
+#!/bin/bash
+# Minimal systemctl for the network-namespace tests: runs a unit's Exec* lines itself.
+U=/etc/systemd/system; ST=/etc/tunnel-panel/.fakesd; mkdir -p $ST
+args=(); for a in "$@"; do case "$a" in --quiet|-q|--no-pager|--now) [ "$a" = --now ] && NOW=1;; *) args+=("$a");; esac; done
+cmd=${args[0]}; unit=${args[1]}
+val() { grep -E "^$2=" "$U/$1" 2>/dev/null | sed "s/^$2=//"; }
+run_lines() { while IFS= read -r l; do [ -z "$l" ] && continue; ign=0; [ "${l:0:1}" = "-" ] && { ign=1; l=${l:1}; }; bash -c "$l" >>$ST/$unit.log 2>&1 || [ $ign = 1 ] || return 1; done; }
+alive() { [ -f $ST/$1.pid ] && kill -0 $(cat $ST/$1.pid) 2>/dev/null; }
+do_start() {
+  [ -f "$U/$1" ] || { echo "Unit $1 not found."; return 5; }
+  : > $ST/$1.log
+  val $1 ExecStartPre | run_lines || { echo failed > $ST/$1.state; return 1; }
+  if [ "$(val $1 Type)" = oneshot ]; then
+    val $1 ExecStart | run_lines || { echo failed > $ST/$1.state; return 1; }
+    echo active > $ST/$1.state
+  else
+    setsid bash -c "exec $(val $1 ExecStart)" >>$ST/$1.log 2>&1 < /dev/null & echo $! > $ST/$1.pid
+    sleep 0.5; alive $1 && echo active > $ST/$1.state || { echo failed > $ST/$1.state; return 1; }
+  fi
+}
+do_stop() {
+  [ -f $ST/$1.state ] || return 0
+  if [ -f $ST/$1.pid ]; then kill $(cat $ST/$1.pid) 2>/dev/null; sleep 0.3; kill -9 $(cat $ST/$1.pid) 2>/dev/null; rm -f $ST/$1.pid; fi
+  [ "$(val $1 Type)" = oneshot ] && val $1 ExecStop | run_lines
+  val $1 ExecStopPost | run_lines
+  echo inactive > $ST/$1.state
+}
+case "$cmd" in
+  daemon-reload|enable|is-system-running) exit 0;;
+  disable) [ "$NOW" = 1 ] && do_stop "$unit"; exit 0;;
+  start) do_start "$unit";;
+  stop) do_stop "$unit";;
+  restart) do_stop "$unit"; do_start "$unit";;
+  cat) [ -f "$U/$unit" ] && cat "$U/$unit";;
+  show) echo "";;
+  is-active)
+    s=$(cat $ST/$unit.state 2>/dev/null || echo inactive)
+    [ "$s" = active ] && [ -f $ST/$unit.pid ] && ! alive $unit && s=failed
+    echo $s; [ "$s" = active ];;
+  *) exit 0;;
+esac

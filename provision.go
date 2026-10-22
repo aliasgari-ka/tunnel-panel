@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -46,6 +49,15 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 				if rerr == nil {
 					j.log("[%s] %s", label, lastLine(out))
 					continue // installed directly on the host
+				}
+				// last resort: the amd64 core under an x86-64 emulator on this host
+				if art.Asset == "backhaul_premium" && arch != "amd64" {
+					j.log("[%s] no %s core anywhere (%s) — running the amd64 core under emulation", label, arch, lastLine(out))
+					if eerr := premiumEmulated(ctx, j, label, h, art); eerr == nil {
+						continue
+					} else {
+						return fmt.Errorf("%v; emulation fallback failed: %v", err, eerr)
+					}
 				}
 				return fmt.Errorf("%v; the server's own download failed too: %s", err, lastLine(out))
 			}
@@ -219,4 +231,91 @@ func (a *App) Prepare(srv *Server) (*Job, error) {
 		j.finish("ok")
 	}()
 	return j, nil
+}
+
+// premiumEmulated installs the amd64 Backhaul Premium core on a non-amd64 host behind a
+// wrapper at art.Dest that runs it under box64 (preferred: syscalls go straight to the
+// kernel) or qemu-user (installed if needed). The core is dynamically linked against x86-64
+// glibc, so the panel's own x86-64 loader and libc go along as a small sysroot.
+// qemu-user can't set packet-socket options, so Premium's ipx raw mode needs box64; the
+// tcp/tcpmux/wssmux/anytls modes work under either.
+func premiumEmulated(ctx context.Context, j *Job, label string, h Host, art Artifact) error {
+	core, err := helperBytes("backhaul_premium", "amd64")
+	if err != nil {
+		return fmt.Errorf("the amd64 core isn't on the panel either: %w", err)
+	}
+	dir := filepath.Dir(art.Dest)
+	blobs := []blob{{art.Dest + ".amd64", core, 0o755}}
+	if runtime.GOARCH == "amd64" {
+		for _, l := range []struct{ dst, src string }{
+			{"lib64/ld-linux-x86-64.so.2", "/lib64/ld-linux-x86-64.so.2"},
+			{"lib/x86_64-linux-gnu/libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6"},
+		} {
+			b, err := os.ReadFile(l.src)
+			if err != nil {
+				return fmt.Errorf("x86-64 runtime %s missing on the panel: %w", l.src, err)
+			}
+			blobs = append(blobs, blob{dir + "/x86root/" + l.dst, b, 0o755})
+		}
+	}
+	wrapper := fmt.Sprintf(`#!/bin/sh
+# No native core for this CPU: run the amd64 Backhaul Premium core under emulation.
+D=%[1]s
+if command -v box64 >/dev/null 2>&1; then
+  BOX64_LD_LIBRARY_PATH=$D/x86root/lib/x86_64-linux-gnu BOX64_LOG=0 exec box64 $D/%[2]s.amd64 "$@"
+fi
+Q=$(command -v qemu-x86_64-static || command -v qemu-x86_64)
+[ -n "$Q" ] || { echo "no x86-64 emulator: apt install qemu-user-static (or box64)"; exit 1; }
+exec "$Q" -L $D/x86root $D/%[2]s.amd64 "$@"
+`, shq(dir), filepath.Base(art.Dest))
+	blobs = append(blobs, blob{art.Dest, []byte(wrapper), 0o755})
+	out, err := h.Run(ctx, `if command -v box64 >/dev/null 2>&1; then echo "emulator: box64"; exit 0; fi
+if ! command -v qemu-x86_64-static >/dev/null 2>&1 && ! command -v qemu-x86_64 >/dev/null 2>&1; then
+  (apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq qemu-user-static >/dev/null 2>&1) || apt-get install -y -qq qemu-user >/dev/null 2>&1 || dnf install -y qemu-user-static >/dev/null 2>&1 || true
+fi
+if command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev/null 2>&1; then echo "emulator: qemu-user"; else echo "could not install qemu-user-static"; exit 1; fi`, nil)
+	if err != nil {
+		return fmt.Errorf("%s", lastLine(out))
+	}
+	emu := strings.TrimPrefix(lastLine(out), "emulator: ")
+	if err := pushBlobs(ctx, j, label, h, blobs); err != nil {
+		return err
+	}
+	j.log("[%s] Backhaul Premium runs under %s on this %s server (expect more CPU use than native)", label, emu, "non-amd64")
+	if emu == "qemu-user" {
+		j.log("[%s] WARNING: under qemu-user Premium's ipx raw mode can't open its packet-socket ring — use mode tcpmux/wssmux/anytls, or install box64 for ipx", label)
+	}
+	return nil
+}
+
+type blob struct {
+	dest string
+	data []byte
+	mode os.FileMode
+}
+
+// pushBlobs writes files whose sha256 on the host differs (same idea as pushArtifacts).
+func pushBlobs(ctx context.Context, j *Job, label string, h Host, bs []blob) error {
+	var check strings.Builder
+	for _, b := range bs {
+		fmt.Fprintf(&check, "sha256sum %s 2>/dev/null || true\n", shq(b.dest))
+	}
+	out, _ := h.Run(ctx, check.String(), nil)
+	have := map[string]string{}
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) == 2 && len(f[0]) == 64 {
+			have[f[1]] = f[0]
+		}
+	}
+	for _, b := range bs {
+		s := sha256.Sum256(b.data)
+		if have[b.dest] == hex.EncodeToString(s[:]) {
+			continue
+		}
+		j.log("[%s] install %s (%d KB)", label, b.dest, len(b.data)/1024)
+		if err := h.WriteFile(b.dest, b.data, b.mode); err != nil {
+			return err
+		}
+	}
+	return nil
 }

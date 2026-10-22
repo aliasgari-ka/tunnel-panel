@@ -71,6 +71,10 @@ type Tunnel struct {
 	Updated   int64                        `json:"updated"`
 	Secrets   map[string]string            `json:"secrets"` // stable per-tunnel secrets (tokens, PSKs)
 	Shape     Shape                        `json:"shape"`   // optional traffic-shaping layer
+	// NoFailover turns off automatic failover for this tunnel (on by default).
+	NoFailover bool `json:"noFailover,omitempty"`
+	// Failover is set while the tunnel runs on a backup path; it remembers the original.
+	Failover *FailoverState `json:"failover,omitempty"`
 }
 
 // Shape is an optional per-tunnel traffic-shaping layer applied with tc + iptables on the
@@ -104,11 +108,33 @@ type User struct {
 }
 
 type State struct {
-	Settings Settings  `json:"settings"`
-	Users    []User    `json:"users"`
-	Servers  []*Server `json:"servers"`
-	Tunnels  []*Tunnel `json:"tunnels"`
-	Secret   string    `json:"secret"`
+	Settings     Settings      `json:"settings"`
+	Users        []User        `json:"users"`
+	Servers      []*Server     `json:"servers"`
+	Tunnels      []*Tunnel     `json:"tunnels"`
+	Secret       string        `json:"secret"`
+	BenchHistory []BenchRecord `json:"benchHistory,omitempty"`
+}
+
+// FailoverState is the original path of a tunnel that was moved to a backup.
+type FailoverState struct {
+	Method    string `json:"method"`
+	Family    string `json:"family"`
+	Since     int64  `json:"since"`     // when the backup took over
+	LastCheck int64  `json:"lastCheck"` // last time the original was re-tested
+	Reason    string `json:"reason"`
+}
+
+// BenchRecord is one finished benchmark, kept so you can see which route was tested when.
+type BenchRecord struct {
+	ID          string        `json:"id"`
+	At          int64         `json:"at"`
+	IranID      string        `json:"iranId"`
+	IranName    string        `json:"iranName"`
+	ForeignID   string        `json:"foreignId"`
+	ForeignName string        `json:"foreignName"`
+	Family      string        `json:"family"`
+	Results     []BenchResult `json:"results"`
 }
 
 type Store struct {

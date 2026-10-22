@@ -7,20 +7,22 @@ import (
 	"time"
 )
 
-// The health monitor checks every running tunnel once a minute and sends a Telegram
-// alert when one goes down (after two failed checks in a row, so a blip doesn't page
-// you) and again when it comes back. It only runs while a bot is configured.
+// The health monitor checks every running tunnel once a minute. It sends a Telegram alert
+// when one goes down (after two failed checks in a row, so a blip doesn't page you) and
+// when it comes back, starts automatic failover after failoverAfter, and re-tests the
+// original path of failed-over tunnels every failbackEvery.
 const (
 	monitorEvery = time.Minute
 	monitorFails = 2
 )
 
 type tunnelHealth struct {
-	fails      int
-	alerted    bool
-	downSince  time.Time
-	reason     string
-	lastOutage time.Duration
+	fails           int
+	alerted         bool
+	downSince       time.Time
+	reason          string
+	lastOutage      time.Duration
+	failoverStarted bool
 }
 
 // step records one check ("" = healthy) and returns "down" or "up" when an alert is due.
@@ -41,7 +43,7 @@ func (h *tunnelHealth) step(reason string, now time.Time) string {
 	if h.fails > 0 {
 		h.lastOutage = now.Sub(h.downSince)
 	}
-	h.fails, h.alerted, h.reason = 0, false, ""
+	h.fails, h.alerted, h.reason, h.failoverStarted = 0, false, "", false
 	if was {
 		return "up"
 	}
@@ -53,9 +55,6 @@ func (a *App) healthMonitor() {
 	var mu sync.Mutex
 	for {
 		time.Sleep(monitorEvery)
-		if a.settings().TelegramTok == "" {
-			continue
-		}
 		var ts []*Tunnel
 		a.store.View(func(st *State) {
 			for _, t := range st.Tunnels {
@@ -69,8 +68,8 @@ func (a *App) healthMonitor() {
 		sem := make(chan struct{}, 4)
 		for _, t := range ts {
 			live[t.ID] = true
-			if a.jobs.running(t.ID) != "" {
-				continue // being applied/stopped/tested right now
+			if a.jobs.running(t.ID) != "" || a.jobs.running(failoverJobKey+t.ID) != "" {
+				continue // being applied/stopped/tested/failed over right now
 			}
 			wg.Add(1)
 			go func(t *Tunnel) {
@@ -93,6 +92,12 @@ func (a *App) healthMonitor() {
 				case link == "down":
 					reason = "tunnel link down (no traffic between the servers)"
 				}
+				a.healthMu.Lock()
+				if a.healthCache == nil {
+					a.healthCache = map[string]string{}
+				}
+				a.healthCache[t.ID] = reason
+				a.healthMu.Unlock()
 				mu.Lock()
 				defer mu.Unlock()
 				h := state[t.ID]
@@ -102,9 +107,20 @@ func (a *App) healthMonitor() {
 				}
 				switch h.step(reason, time.Now()) {
 				case "down":
-					a.push(fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t)))
+					extra := ""
+					if !t.NoFailover {
+						extra = fmt.Sprintf("\nAutomatic failover starts if it is still down after %s.", failoverAfter)
+					}
+					a.push(fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)%s", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t), extra))
 				case "up":
 					a.push(fmt.Sprintf("🟢 Tunnel back up: %s (was down %s)", t.Name, h.lastOutage.Round(time.Minute)))
+				}
+				switch {
+				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter:
+					h.failoverStarted = true
+					go a.Failover(t, reason)
+				case reason == "" && t.Failover != nil && time.Since(time.Unix(t.Failover.LastCheck, 0)) >= failbackEvery:
+					go a.Failback(t)
 				}
 			}(t)
 		}
@@ -117,6 +133,14 @@ func (a *App) healthMonitor() {
 		}
 		mu.Unlock()
 	}
+}
+
+// cachedHealth is the monitor's last verdict: "ok", a reason, or "" when not checked yet.
+func (a *App) cachedHealth(id string) (string, bool) {
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	r, ok := a.healthCache[id]
+	return r, ok
 }
 
 func foreignName(a *App, t *Tunnel) string {

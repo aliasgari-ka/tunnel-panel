@@ -1,0 +1,4 @@
+#!/bin/bash
+# journalctl stand-in: prints the fake unit's log (-u UNIT)
+u=""; while [ $# -gt 0 ]; do [ "$1" = -u ] && { u=$2; shift; }; shift; done
+[ -n "$u" ] && tail -n 25 /etc/tunnel-panel/.fakesd/$u.log 2>/dev/null; exit 0

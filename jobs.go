@@ -167,6 +167,12 @@ type App struct {
 	benchRes map[string][]BenchResult // "iran|foreign|family" -> results
 	benchRun *benchActive             // the running benchmark (nil when idle)
 
+	// hostFor, when set (tests only), supplies the Host for a server instead of agent/SSH.
+	hostFor func(*Server) Host
+
+	healthMu    sync.Mutex
+	healthCache map[string]string // tunnel id -> "" healthy / reason, from the monitor
+
 	traffic  *trafficMon
 	speedMu  sync.Mutex
 	speedRes map[string]*SpeedResult // tunnel id -> last speed test

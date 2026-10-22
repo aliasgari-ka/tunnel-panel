@@ -42,6 +42,11 @@ func (a *App) reach(ctx context.Context, srv *Server, j *Job) (Host, string, err
 			j.log(f, x...)
 		}
 	}
+	if a.hostFor != nil {
+		if h := a.hostFor(srv); h != nil {
+			return h, "test host", nil
+		}
+	}
 	// 1. agent
 	if a.agents != nil && a.agents.online(srv.ID) != nil {
 		h := AgentHost{hub: a.agents, serverID: srv.ID}

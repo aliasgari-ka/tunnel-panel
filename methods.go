@@ -278,44 +278,55 @@ func inboundChain(t *Tunnel) string { return "TPI_" + t.ID }
 
 func inboundRules(t *Tunnel, peer, ports, iface string) (up, down string) {
 	ch := inboundChain(t)
-	ipt, fam := "iptables", "ipv4"
+	peerIpt, fam := "iptables", "ipv4"
 	if strings.Contains(peer, ":") {
-		ipt, fam = "ip6tables", "ipv6"
+		peerIpt, fam = "ip6tables", "ipv6"
 	}
 	var b, fw strings.Builder
-	fmt.Fprintf(&b, "command -v %[1]s >/dev/null 2>&1 || exit 0\n%[1]s -w -N %[2]s 2>/dev/null || %[1]s -w -F %[2]s\n", ipt, ch)
+	// the chain exists in both families: the peer arrives over the underlay family, but
+	// users reach the forwarded ports over IPv4 or IPv6 regardless of the underlay
+	for _, ipt := range []string{"iptables", "ip6tables"} {
+		fmt.Fprintf(&b, "if command -v %[1]s >/dev/null 2>&1; then\n%[1]s -w -N %[2]s 2>/dev/null || %[1]s -w -F %[2]s\n", ipt, ch)
+		if peer != "" && ipt == peerIpt {
+			fmt.Fprintf(&b, "%s -w -A %s -s %s -j ACCEPT\n", ipt, ch, peer)
+		}
+		for _, p := range splitPorts(ports) {
+			port := p.listen
+			if i := strings.LastIndex(port, ":"); i >= 0 && !strings.Contains(port, "-") {
+				port = port[i+1:] // "127.0.0.1:443" style binds
+			}
+			if _, err := strconv.Atoi(strings.SplitN(port, "-", 2)[0]); err != nil {
+				continue
+			}
+			for _, proto := range []string{"tcp", "udp"} {
+				fmt.Fprintf(&b, "%s -w -A %s -p %s --dport %s -j ACCEPT\n", ipt, ch, proto, strings.ReplaceAll(port, "-", ":"))
+				if ipt == "iptables" {
+					fmt.Fprintf(&fw, "firewall-cmd -q --add-port=%s/%s 2>/dev/null\n", port, proto)
+				}
+			}
+		}
+		fmt.Fprintf(&b, "%[1]s -w -C INPUT -j %[2]s 2>/dev/null || %[1]s -w -I INPUT -j %[2]s\nfi\n", ipt, ch)
+	}
 	if peer != "" {
-		fmt.Fprintf(&b, "%s -w -A %s -s %s -j ACCEPT\n", ipt, ch, peer)
 		fmt.Fprintf(&fw, "firewall-cmd -q --add-rich-rule='rule family=%s source address=%s accept' 2>/dev/null\n", fam, peer)
 	}
 	if iface != "" {
-		// the inner traffic is IPv4 (10.10.N.x) whatever the outer family is
+		// the inner traffic is IPv4 (10.10.N.x) and fd42:N::/64, whatever the outer family is
 		fmt.Fprintf(&b, "iptables -w -C INPUT -i %[1]s -j ACCEPT 2>/dev/null || iptables -w -I INPUT -i %[1]s -j ACCEPT\n", iface)
+		fmt.Fprintf(&b, "ip6tables -w -C INPUT -i %[1]s -j ACCEPT 2>/dev/null || ip6tables -w -I INPUT -i %[1]s -j ACCEPT 2>/dev/null\n", iface)
 		fmt.Fprintf(&fw, "firewall-cmd -q --zone=trusted --add-interface=%s 2>/dev/null\n", iface)
 	}
-	for _, p := range splitPorts(ports) {
-		port := p.listen
-		if i := strings.LastIndex(port, ":"); i >= 0 && !strings.Contains(port, "-") {
-			port = port[i+1:] // "127.0.0.1:443" style binds
-		}
-		if _, err := strconv.Atoi(strings.SplitN(port, "-", 2)[0]); err != nil {
-			continue
-		}
-		for _, proto := range []string{"tcp", "udp"} {
-			fmt.Fprintf(&b, "%s -w -A %s -p %s --dport %s -j ACCEPT\n", ipt, ch, proto, strings.ReplaceAll(port, "-", ":"))
-			fmt.Fprintf(&fw, "firewall-cmd -q --add-port=%s/%s 2>/dev/null\n", port, proto)
-		}
-	}
-	fmt.Fprintf(&b, "%[1]s -w -C INPUT -j %[2]s 2>/dev/null || %[1]s -w -I INPUT -j %[2]s\n", ipt, ch)
 	if fw.Len() > 0 {
 		b.WriteString("if firewall-cmd --state >/dev/null 2>&1; then\n" + fw.String() + "fi\n")
 	}
 	b.WriteString("exit 0\n")
 
 	var d strings.Builder
-	fmt.Fprintf(&d, "while %[1]s -w -D INPUT -j %[2]s 2>/dev/null; do :; done\n%[1]s -w -F %[2]s 2>/dev/null; %[1]s -w -X %[2]s 2>/dev/null\n", ipt, ch)
-	if iface != "" {
-		fmt.Fprintf(&d, "iptables -w -D INPUT -i %s -j ACCEPT 2>/dev/null\n", iface)
+	for _, ipt := range []string{"iptables", "ip6tables"} {
+		fmt.Fprintf(&d, "while %[1]s -w -D INPUT -j %[2]s 2>/dev/null; do :; done\n%[1]s -w -F %[2]s 2>/dev/null; %[1]s -w -X %[2]s 2>/dev/null\n", ipt, ch)
+		if iface != "" {
+			fmt.Fprintf(&d, "%s -w -D INPUT -i %s -j ACCEPT 2>/dev/null\n", ipt, iface)
+		}
 	}
 	if fw.Len() > 0 {
 		d.WriteString("if firewall-cmd --state >/dev/null 2>&1; then\n" + strings.ReplaceAll(fw.String(), "--add-", "--remove-") + "fi\n")
