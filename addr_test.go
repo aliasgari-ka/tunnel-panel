@@ -255,3 +255,34 @@ func TestNormIP(t *testing.T) {
 		}
 	}
 }
+
+func TestPortClash(t *testing.T) {
+	st := &State{Tunnels: []*Tunnel{
+		{ID: "a", Name: "usa", ServerID: "ir", ForeignID: "k1", Ports: "443,2000-2010", Index: 4, Active: "gre"},
+		{ID: "b", Name: "rev", ServerID: "ir", ForeignID: "k2", Ports: "9000", Index: 6, Active: "backhaul",
+			Options: map[string]map[string]string{"backhaul": {"tunnel_port": "8443"}}},
+		{ID: "c", Name: "other-iran", ServerID: "ir2", ForeignID: "k1", Ports: "443", Index: 7, Active: "gre"},
+	}}
+	cases := []struct {
+		t    *Tunnel
+		want string // substring of the error, "" = no clash
+	}{
+		{&Tunnel{ID: "x", ServerID: "ir", Ports: "443", Index: 9, Selected: "gre"}, `"usa"`},      // same forwarded port
+		{&Tunnel{ID: "x", ServerID: "ir", Ports: "8443=443", Index: 9, Selected: "gre"}, `"rev"`}, // hits rev's tunnel port
+		{&Tunnel{ID: "x", ServerID: "ir", Ports: "2005", Index: 9, Selected: "gre"}, `"usa"`},     // inside a range
+		{&Tunnel{ID: "x", ServerID: "ir", Ports: "444=443", Index: 9, Selected: "gre"}, ""},       // mapped: fine
+		{&Tunnel{ID: "x", ServerID: "ir2b", Ports: "443", Index: 9, Selected: "gre"}, ""},         // another Iran server
+		{&Tunnel{ID: "a", ServerID: "ir", Ports: "443", Index: 4, Selected: "gre"}, ""},           // itself
+		{&Tunnel{ID: "x", ServerID: "ir", Ports: "7000", Index: 9, Selected: "backhaul",
+			Options: map[string]map[string]string{"backhaul": {"tunnel_port": "443"}}}, `"usa"`}, // reverse port on a forwarded one
+	}
+	for i, c := range cases {
+		err := portClash(st, c.t, "")
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("case %d: unexpected clash: %v", i, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("case %d: want clash with %s, got %v", i, c.want, err)
+		}
+	}
+}

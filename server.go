@@ -606,14 +606,19 @@ func isMasked(s string) bool { return s == "" || s == "********" }
 func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 	type tv struct {
 		Tunnel
-		Families []string `json:"families"` // address families both of its servers can use
+		Families []string `json:"families"`        // address families both of its servers can use
+		Clash    string   `json:"clash,omitempty"` // a port another tunnel on this Iran server holds
 	}
 	out := []tv{}
 	s.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
 			cp := t.clone()  // deep copy: encoded after the lock is released
 			cp.Secrets = nil // never send tokens/PSKs to the browser
-			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t)})
+			clash := ""
+			if err := portClash(st, t, ""); err != nil {
+				clash = err.Error()
+			}
+			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash})
 		}
 	})
 	writeJSON(w, out)
@@ -704,6 +709,9 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			if in.Options == nil {
 				in.Options = map[string]map[string]string{}
 			}
+			if err := portClash(st, &in, ""); err != nil {
+				return err
+			}
 			st.Tunnels = append(st.Tunnels, &in)
 			return nil
 		}
@@ -713,6 +721,22 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		}
 		if t.Active != "" && (t.ServerID != in.ServerID || t.ForeignID != in.ForeignID || t.Family != in.Family) {
 			return fmt.Errorf("Stop the tunnel before changing its servers or address family.")
+		}
+		// refuse before changing anything: a failed Update doesn't roll back
+		cand := *t
+		cand.Ports, cand.ServerID = in.Ports, in.ServerID
+		cand.Options = map[string]map[string]string{}
+		for mid, opts := range t.Options {
+			cand.Options[mid] = opts
+		}
+		for mid, opts := range in.Options {
+			cand.Options[mid] = opts
+		}
+		if in.Selected != "" {
+			cand.Selected = in.Selected
+		}
+		if err := portClash(st, &cand, ""); err != nil {
+			return err
 		}
 		t.Name, t.ServerID, t.ForeignID, t.Family, t.Ports, t.Note = in.Name, in.ServerID, in.ForeignID, in.Family, in.Ports, in.Note
 		t.Shape = normalizeShape(in.Shape)

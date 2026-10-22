@@ -68,6 +68,16 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 			busy[x] = true
 		}
 	}
+	// and ports other tunnels on this Iran server use, even while they are stopped
+	a.store.View(func(st *State) {
+		for _, o := range st.Tunnels {
+			if o.ID != t.ID && o.ServerID == t.ServerID {
+				for p := range iranPorts(o, "") {
+					busy[p] = true
+				}
+			}
+		}
+	})
 	out, _ := irHost.Run(ctx, `ss -Htln 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -un`, nil)
 	for _, l := range strings.Fields(out) {
 		if p, err := strconv.Atoi(l); err == nil {
@@ -154,4 +164,57 @@ func joinInts(v []int) string {
 		s[i] = strconv.Itoa(x)
 	}
 	return strings.Join(s, ", ")
+}
+
+// iranPorts lists the Iran-side TCP/UDP ports tunnel t holds: the ports users connect to,
+// and — for a reverse method — the tunnel port the foreign server dials. mid is the method
+// to judge it by ("" = the running one, else the selected one).
+func iranPorts(t *Tunnel, mid string) map[int]string {
+	out := map[int]string{}
+	for _, p := range splitPorts(t.Ports) {
+		l := p.listen
+		if i := strings.LastIndex(l, ":"); i >= 0 && !strings.Contains(l, "-") {
+			l = l[i+1:]
+		}
+		lo, hi := portRange(l)
+		for x := lo; x > 0 && x <= hi && x-lo < 4096; x++ {
+			out[x] = "forwarded port"
+		}
+	}
+	if mid == "" {
+		mid = t.Active
+	}
+	if mid == "" {
+		mid = t.Selected
+	}
+	if m := methodByID[mid]; m != nil {
+		if key, ok := reverseTCPPort(m, t); ok {
+			get, _ := resolveOptions(m, t.Options[m.ID])
+			if p, err := strconv.Atoi(portOr(get(key), 40000+t.Index*4)); err == nil {
+				out[p] = m.Title + " tunnel port"
+			}
+		}
+	}
+	return out
+}
+
+// portClash finds another tunnel on the same Iran server that holds one of the ports t
+// would use: two DNAT rules or listeners on one port means only one tunnel gets the traffic.
+func portClash(st *State, t *Tunnel, mid string) error {
+	mine := iranPorts(t, mid)
+	for _, o := range st.Tunnels {
+		if o.ID == t.ID || o.ServerID != t.ServerID {
+			continue
+		}
+		for p, what := range iranPorts(o, "") {
+			if mw, ok := mine[p]; ok {
+				hint := "give this tunnel another Iran port and map it to the service, e.g. " + strconv.Itoa(p+1) + "=" + strconv.Itoa(p) + " (users connect to Iran " + strconv.Itoa(p+1) + ", it reaches port " + strconv.Itoa(p) + " on the foreign server)"
+				if strings.Contains(mw, "tunnel port") || strings.Contains(what, "tunnel port") {
+					hint = "clear the tunnel-port option of one of them (the panel then picks a free one) or set a different one"
+				}
+				return fmt.Errorf("Iran port %d is already used by tunnel %q (%s) on this Iran server — two tunnels can't share one Iran port, only one of them would get the traffic; %s", p, o.Name, what, hint)
+			}
+		}
+	}
+	return nil
 }
