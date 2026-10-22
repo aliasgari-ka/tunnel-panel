@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -219,6 +220,9 @@ func TestE2EMethods(t *testing.T) {
 		if res == "" {
 			// users (IPv4) → Iran:28579 → tunnel → foreign service
 			var got string
+			if !benchIsL3(m, tn.Options[c.mid]) {
+				sh(t, "ip netns exec tir bash -c "+shq(acctScript(tn))) // counters start now, as on a panel page
+			}
 			for k := 0; k < 12; k++ {
 				got = sh(t, "ip netns exec tus curl -s -o /dev/null -w '%{http_code} %{size_download}' --max-time 8 http://10.98.0.1:28579/blob.bin")
 				if strings.HasPrefix(got, "200 2097152") {
@@ -228,6 +232,18 @@ func TestE2EMethods(t *testing.T) {
 			}
 			if strings.HasPrefix(got, "200 2097152") {
 				res = "✓ user traffic passes (2 MB over HTTP from an IPv4 client)"
+				if !benchIsL3(m, tn.Options[c.mid]) {
+					// the panel's traffic counters must see it (also when the port is redirected)
+					f := strings.Fields(sh(t, "ip netns exec tir bash -c "+shq(acctScript(tn))+" 2>/dev/null | tail -1"))
+					if d := 0; len(f) == 4 {
+						d, _ = strconv.Atoi(f[2])
+						if d >= 2000000 {
+							res += fmt.Sprintf("; counted ↓%d KB", d/1024)
+						} else {
+							res += "; traffic counters FAIL (" + strings.Join(f, " ") + ")"
+						}
+					}
+				}
 			} else {
 				res = "✕ user traffic FAILS (" + got + ")"
 				res += " | IR: " + sh(t, "tail -2 "+si.dir+"/daemon.log 2>/dev/null") + " | KH: " + sh(t, "tail -2 "+sk.dir+"/daemon.log 2>/dev/null")
@@ -253,6 +269,7 @@ func TestE2EMethods(t *testing.T) {
 		if strings.Contains(c.name, "port held") {
 			sh(t, "pkill -f 'tp-e2e-empty'") // the stand-in for haproxy, only for its own case
 		}
+		sh(t, "ip netns exec tir bash -c "+shq(acctDown(tn)))
 		left := sh(t, "for n in tir tkh; do ip netns exec $n iptables-save 2>/dev/null; ip netns exec $n ip6tables-save 2>/dev/null; done | grep -cE 'TPI_|TPF_|TPM_|TP_tp|tpr-' ")
 		if left != "0" {
 			res += "; LEFTOVER firewall rules: " + left

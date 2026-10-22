@@ -161,14 +161,19 @@ func acctScript(t *Tunnel) string {
 		if _, err := strconv.Atoi(strings.SplitN(port, ":", 2)[0]); err != nil {
 			continue
 		}
+		// by the connection's original port: a users' port REDIRECTed to an internal one
+		// (another program holds it, see freeIranPorts) arrives in INPUT as the internal port
 		for _, proto := range []string{"tcp", "udp"} {
-			fmt.Fprintf(&rules, "  $ipt -w -A %s -p %s --dport %s\n  $ipt -w -A %s -p %s --sport %s\n", in, proto, port, out, proto, port)
+			fmt.Fprintf(&rules, "  $ipt -w -A %s -p %s -m conntrack --ctdir ORIGINAL --ctorigdstport %s\n  $ipt -w -A %s -p %s -m conntrack --ctdir REPLY --ctorigdstport %s\n", in, proto, port, out, proto, port)
 		}
 	}
 	return fmt.Sprintf(`d=0; u=0
 for ipt in iptables ip6tables; do
   command -v $ipt >/dev/null 2>&1 || continue
-  if ! $ipt -w -nL %[1]s >/dev/null 2>&1; then
+  # (chains from before the conntrack-based rules are rebuilt once)
+  if ! $ipt -w -S %[1]s 2>/dev/null | grep -q ctorigdstport; then
+    while $ipt -w -D INPUT -j %[1]s 2>/dev/null; do :; done; while $ipt -w -D OUTPUT -j %[2]s 2>/dev/null; do :; done
+    $ipt -w -F %[1]s 2>/dev/null; $ipt -w -X %[1]s 2>/dev/null; $ipt -w -F %[2]s 2>/dev/null; $ipt -w -X %[2]s 2>/dev/null
     $ipt -w -N %[1]s 2>/dev/null; $ipt -w -N %[2]s 2>/dev/null
 %[4]s    $ipt -w -I INPUT -j %[1]s; $ipt -w -I OUTPUT -j %[2]s
   fi
