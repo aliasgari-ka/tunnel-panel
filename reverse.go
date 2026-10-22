@@ -221,7 +221,7 @@ func portClash(st *State, t *Tunnel, mid string) error {
 
 // portHolder is a process listening on one of a tunnel's Iran ports.
 type portHolder struct {
-	port, pid int
+	port, pid       int
 	unit, name, cmd string
 }
 
