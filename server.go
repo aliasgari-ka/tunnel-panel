@@ -70,6 +70,8 @@ func (a *App) routes() http.Handler {
 	p("/api/tunnels/stop", s.tunnelStop)
 	p("/api/tunnels/status", s.tunnelStatus)
 	p("/api/tunnels/lastjob", s.tunnelLastJob)
+	p("/api/tunnels/speedtest", s.tunnelSpeedTest)
+	p("/api/traffic", s.trafficGet)
 	p("/api/jobs", s.job)
 	p("/api/bench/start", s.benchStart)
 	p("/api/bench/results", s.benchResults)
@@ -766,6 +768,40 @@ func (s *Server2) tunnelStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ir, kh := s.app.Status(ctx, t)
 	writeJSON(w, map[string]string{"active": t.Active, "iran": ir, "foreign": kh})
+}
+
+// trafficGet returns live traffic (starting the collector) plus the last speed tests.
+func (s *Server2) trafficGet(w http.ResponseWriter, r *http.Request) {
+	snap := s.app.Traffic()
+	speed := map[string]*SpeedResult{}
+	s.app.speedMu.Lock()
+	for k, v := range s.app.speedRes {
+		speed[k] = v
+	}
+	s.app.speedMu.Unlock()
+	writeJSON(w, map[string]any{"tunnels": snap.Tunnels, "servers": snap.Servers, "speed": speed})
+}
+
+func (s *Server2) tunnelSpeedTest(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ID      string
+		Seconds int
+	}
+	if err := readJSON(r, &in); err != nil {
+		httpErr(w, 400, "bad request")
+		return
+	}
+	t := s.app.store.Tunnel(in.ID)
+	if t == nil {
+		httpErr(w, 404, "tunnel not found")
+		return
+	}
+	j, err := s.app.SpeedTest(t, in.Seconds)
+	if err != nil {
+		httpErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"job": j.ID})
 }
 
 func (s *Server2) tunnelLastJob(w http.ResponseWriter, r *http.Request) {

@@ -207,17 +207,21 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 
 const probeBin = "/usr/local/lib/tunnel-panel/tp-probe"
 
-func probeServerUp(port int) string {
-	return fmt.Sprintf(`pkill -f 'tp-probe probe serve' 2>/dev/null || true
+func probeServerUp(port int) string { return probeServerUpLife(port, 2700) }
+
+// probeServerUpLife starts a probe server on port for life seconds (one per port, so a
+// tunnel speed test and a benchmark never kill each other's server).
+func probeServerUpLife(port, life int) string {
+	return fmt.Sprintf(`pkill -f -- '-listen :%[1]d -life' 2>/dev/null || true
 iptables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 ip6tables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
-setsid nohup %[2]s probe serve -listen :%[1]d -life 2700 >/dev/null 2>&1 </dev/null &
+setsid nohup %[2]s probe serve -listen :%[1]d -life %[3]d >/dev/null 2>&1 </dev/null &
 sleep 0.5; echo probe-up
-`, port, probeBin)
+`, port, probeBin, life)
 }
 
 func probeServerDown(port int) string {
-	return fmt.Sprintf(`pkill -f 'tp-probe probe serve' 2>/dev/null || true
+	return fmt.Sprintf(`pkill -f -- '-listen :%[1]d -life' 2>/dev/null || true
 iptables -D INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 ip6tables -D INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 `, port)

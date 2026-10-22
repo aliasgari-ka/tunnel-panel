@@ -109,6 +109,58 @@ try { const t = localStorage.getItem('tp-theme'); if (t) document.documentElemen
 function renderView() {
   const w = $('#work'); w.innerHTML = '';
   ({ tunnels: viewTunnels, servers: viewServers, bench: viewBench, settings: viewSettings }[STATE.view])(w);
+  trafficWatch();
+}
+
+/* ---------------- live traffic ---------------- */
+// Polls /api/traffic while the tunnels or servers page is open; the server only reads
+// counters while someone polls, and stops ~20 s after the page goes away.
+let trafficTimer = null;
+const fmtRate = (bps) => bps >= 1e9 ? (bps / 1e9).toFixed(2) + ' Gbps' : bps >= 1e6 ? (bps / 1e6).toFixed(1) + ' Mbps' : bps >= 1e3 ? (bps / 1e3).toFixed(0) + ' Kbps' : Math.round(bps) + ' bps';
+const fmtBytes = (b) => b >= 2 ** 40 ? (b / 2 ** 40).toFixed(2) + ' TB' : b >= 2 ** 30 ? (b / 2 ** 30).toFixed(2) + ' GB' : b >= 2 ** 20 ? (b / 2 ** 20).toFixed(1) + ' MB' : b >= 1024 ? (b / 1024).toFixed(0) + ' KB' : b + ' B';
+const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); return s < 60 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
+function trafficWatch() {
+  const want = STATE.view === 'tunnels' || STATE.view === 'servers';
+  if (!want) { if (trafficTimer) clearInterval(trafficTimer); trafficTimer = null; return; }
+  if (trafficTimer) { trafficTick(); return; }
+  trafficTick(); trafficTimer = setInterval(trafficTick, 2000);
+}
+async function trafficTick() {
+  if (STATE.view !== 'tunnels' && STATE.view !== 'servers') { clearInterval(trafficTimer); trafficTimer = null; return; }
+  if (document.hidden) return;
+  let d; try { d = await api('/traffic'); } catch (e) { return; }
+  const tun = d.tunnels || {}, srv = d.servers || {}, speed = d.speed || {};
+  $$('[data-traf]').forEach(el => {
+    const id = el.dataset.traf, s = tun[id], sp = speed[id];
+    const rd = $('[data-rd]', el), ru = $('[data-ru]', el), src = $('[data-src]', el), tot = $('[data-tot]', el);
+    if (!s) { rd.textContent = '…'; ru.textContent = '…'; src.textContent = 'reading counters…'; }
+    else if (s.error) { rd.textContent = '—'; ru.textContent = '—'; src.textContent = s.error; src.style.color = 'var(--crit)'; }
+    else {
+      src.style.color = ''; rd.textContent = fmtRate(s.down); ru.textContent = fmtRate(s.up);
+      src.textContent = s.source === 'iface' ? 'tunnel interface' : 'forwarded ports';
+      tot.textContent = `total ↓ ${fmtBytes(s.totalDown)} · ↑ ${fmtBytes(s.totalUp)}`;
+      drawSpark($('svg', el), s.hist || []);
+    }
+    const se = $('[data-speed]', el);
+    if (sp) se.innerHTML = sp.ok ? `speed test ${ago(sp.at)}: <b style="color:var(--accent)">↓ ${sp.downMbps.toFixed(1)}</b> / <b style="color:var(--good)">↑ ${sp.upMbps.toFixed(1)}</b> Mbps · ${sp.rttMs.toFixed(0)} ms` : `<span style="color:var(--crit)" title="${esc(sp.error || '')}">speed test failed ${ago(sp.at)}</span>`;
+  });
+  $$('[data-nic]').forEach(el => {
+    const s = srv[el.dataset.nic];
+    if (!s) { el.innerHTML = el.dataset.nic === '' ? 'live traffic…' : ''; return; }
+    if (s.error) { el.innerHTML = `<span class="faint">traffic: ${esc(s.error)}</span>`; return; }
+    el.innerHTML = `<span class="faint">${esc((s.source || '').replace('nic ', 'NIC '))}</span> <span class="dn">↓ ${fmtRate(s.down)}</span> <span class="up">↑ ${fmtRate(s.up)}</span> <span class="faint">· since boot ↓ ${fmtBytes(s.totalDown)} ↑ ${fmtBytes(s.totalUp)}</span>`;
+  });
+}
+function drawSpark(svg, hist) {
+  if (!svg) return;
+  const pts = hist.slice(-60), n = pts.length;
+  const [ad, pd, pu] = ['.ad', '.pd', '.pu'].map(c => $(c, svg));
+  if (n < 2) { [ad, pd, pu].forEach(p => p.setAttribute('d', '')); return; }
+  const max = Math.max(1, ...pts.map(p => Math.max(p.down, p.up)));
+  const x = (i) => (i / (n - 1)) * 100, y = (v) => 36 - (v / max) * 33;
+  const line = (k) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(2)},${y(p[k]).toFixed(2)}`).join('');
+  pd.setAttribute('d', line('down')); pu.setAttribute('d', line('up'));
+  ad.setAttribute('d', line('down') + `L100,38L0,38Z`);
 }
 function topbar(title, sub, actions) {
   return `<div class="topbar"><div style="display:flex;align-items:center;gap:12px">
@@ -211,6 +263,7 @@ async function loadHelpers(card) {
 function viewServers(w) {
   w.innerHTML = topbar('Servers', 'Iran and foreign servers. The panel reaches them by agent, direct SSH, jump or proxy — whichever works.',
     `<button class="btn pri" id="addSrv">+ Add server</button>`);
+  w.appendChild(h(`<div class="card pad nic" style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap"><b style="color:var(--fg)">This panel host</b><span data-nic="">live traffic…</span></div>`));
   const wrap = h(`<div class="grid cards"></div>`);
   if (!STATE.servers.length) wrap.appendChild(h(`<div class="card empty"><div class="big">🖥</div>No servers yet. Add your Iran relay server to begin.</div>`));
   STATE.servers.forEach(s => wrap.appendChild(serverCard(s)));
@@ -278,7 +331,7 @@ function serverCard(s) {
       <button class="btn sm" data-bridge="${s.id}">SSH bridge</button>
       <button class="btn sm" data-edit="${s.id}">Edit</button>
       <button class="btn sm danger" data-del="${s.id}">Delete</button>
-    </div><div data-paths="${s.id}"></div></div>`);
+    </div><div class="nic" data-nic="${s.id}"></div><div data-paths="${s.id}"></div></div>`);
 }
 async function testServer(id, btn) {
   btn.disabled = true; const o = btn.textContent; btn.textContent = 'Testing…';
@@ -379,6 +432,10 @@ function tunnelCard(t) {
     </div>
     <div class="body">
       <div class="statline"><span>Ports <b class="mono">${esc(t.ports)}</b></span><span>Iran <b data-ir>—</b></span><span>Foreign <b data-fg>—</b></span></div>
+      ${t.active ? `<div class="traf" data-traf="${t.id}">
+        <div class="rates"><span class="dn" title="foreign → Iran (users downloading)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (users uploading)">↑ <b data-ru>…</b></span><span class="faint" style="font-size:11.5px" data-src></span></div>
+        <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
+        <div class="meta"><span data-tot>total —</span><span data-speed></span></div></div>` : ''}
       <div class="method-row"><select data-method>${avail.map(m => `<option value="${m.id}"${m.id === sel ? ' selected' : ''}>${esc(m.title)} · ${esc(m.encrypt)}</option>`).join('')}</select><button class="btn sm" data-opts title="Options">⚙</button></div>
       <div class="mdesc" data-desc></div>
       <div data-optbox hidden></div>
@@ -386,6 +443,7 @@ function tunnelCard(t) {
         <button class="btn pri sm" data-apply></button>
         <button class="btn sm" data-stop ${t.active ? '' : 'disabled'}>Stop</button>
         <button class="btn sm" data-log>Logs</button>
+        <button class="btn sm" data-speedtest ${t.active ? '' : 'disabled'} title="Measure RTT, download and upload through the running tunnel">Speed test</button>
         <button class="btn ghost sm" data-edit>Edit</button>
         <button class="btn ghost sm danger" data-del>Delete</button>
       </div></div></div>`);
@@ -397,6 +455,7 @@ function tunnelCard(t) {
   applyBtn.onclick = async () => { applyBtn.disabled = true; try { const r = await api('/tunnels/apply', { ID: t.id, Method: selEl.value }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); applyBtn.disabled = false; } };
   $('[data-stop]', card).onclick = async () => { try { const r = await api('/tunnels/stop', { ID: t.id }); openLog(t, r.job); } catch (e) { alertModal('Error', e.message); } };
   $('[data-log]', card).onclick = () => openLog(t, null);
+  $('[data-speedtest]', card).onclick = async () => { try { const r = await api('/tunnels/speedtest', { ID: t.id }); openLog({ id: t.id, name: 'Speed test · ' + t.name }, r.job); } catch (e) { alertModal('Speed test', e.message); } };
   $('[data-edit]', card).onclick = () => tunnelModal(t);
   $('[data-del]', card).onclick = async (e) => { if (!confirmInline(e.target, 'Confirm delete')) return; try { await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); } catch (er) { alertModal('Error', er.message); } };
   refreshStatus(t, card);

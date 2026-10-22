@@ -121,6 +121,10 @@ type App struct {
 	benchMu  sync.Mutex
 	benchRes map[string][]BenchResult // "iran|foreign|family" -> results
 	benchRun *benchActive             // the running benchmark (nil when idle)
+
+	traffic  *trafficMon
+	speedMu  sync.Mutex
+	speedRes map[string]*SpeedResult // tunnel id -> last speed test
 }
 
 func (a *App) settings() Settings {
@@ -154,7 +158,7 @@ func teardownScript(t *Tunnel) string {
 done
 systemctl daemon-reload 2>/dev/null || true
 rm -rf %[2]s
-`, unitName(t), tunnelDir(t), shapeUnitName(t))
+%[4]s`, unitName(t), tunnelDir(t), shapeUnitName(t), acctDown(t))
 }
 
 // deploy installs a side plan on one host.

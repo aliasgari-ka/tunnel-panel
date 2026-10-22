@@ -215,7 +215,14 @@ func buildPlans(m *Method, t *Tunnel, srv, fsrv *Server, set Settings) (SidePlan
 	if !supportsFamily(m, t.Family) {
 		return SidePlan{}, SidePlan{}, fmt.Errorf("%s does not support %s", m.Title, t.Family)
 	}
-	c := &buildCtx{T: t, Srv: srv, Set: set, Opt: get, OptB: getB, D: d}
+	// port forwarders also map the speed-test port to the foreign side (see SpeedTest);
+	// the copy shares Secrets with t, so secrets created while building are kept
+	if t.Secrets == nil {
+		t.Secrets = map[string]string{}
+	}
+	tc := *t
+	tc.Ports = withProbePort(m, t)
+	c := &buildCtx{T: &tc, Srv: srv, Set: set, Opt: get, OptB: getB, D: d}
 	return m.Build(c)
 }
 

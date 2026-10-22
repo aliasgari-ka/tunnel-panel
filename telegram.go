@@ -149,6 +149,8 @@ func (b *Bot) onText(chat, text string) {
 		b.send(chat, b.statusText())
 	case "servers":
 		b.send(chat, b.serversText())
+	case "traffic", "speed":
+		b.send(chat, b.trafficText())
 	default:
 		b.send(chat, "Unknown command. Send /menu.")
 	}
@@ -163,6 +165,7 @@ func (b *Bot) helpText() string {
 		"<b>Tunnel Panel bot</b>",
 		"/status — all tunnels and their state",
 		"/servers — servers and reachability",
+		"/traffic — live traffic of every running tunnel",
 		"/menu — buttons to start, stop and switch methods",
 		"",
 		"Tap a tunnel to pick its connection method (Backhaul tcp, ipx, tun, …) and apply it.",
@@ -186,6 +189,37 @@ func (b *Bot) statusText() string {
 			state = fmt.Sprintf("▶ %s (IR %s / KH %s)", m.Title, ir, kh)
 		}
 		fmt.Fprintf(&sb, "<b>%s</b> — %s\n", esc(t.Name), state)
+	}
+	return sb.String()
+}
+
+func (b *Bot) trafficText() string {
+	b.app.Traffic()
+	time.Sleep(3 * trafficTick) // two samples are needed for a rate
+	snap := b.app.Traffic()
+	var ts []*Tunnel
+	b.app.store.View(func(st *State) { ts = append(ts, st.Tunnels...) })
+	var sb strings.Builder
+	for _, t := range ts {
+		if t.Active == "" {
+			continue
+		}
+		st := snap.Tunnels[t.ID]
+		switch {
+		case st == nil:
+			fmt.Fprintf(&sb, "<b>%s</b> — no data yet\n", esc(t.Name))
+		case st.Error != "":
+			fmt.Fprintf(&sb, "<b>%s</b> — %s\n", esc(t.Name), esc(st.Error))
+		default:
+			fmt.Fprintf(&sb, "<b>%s</b>\n  ↓ %s  ↑ %s\n  total ↓ %s  ↑ %s\n", esc(t.Name),
+				fmtRate(st.Down), fmtRate(st.Up), fmtBytes(st.TotalDown), fmtBytes(st.TotalUp))
+		}
+		if sp := b.app.speedResult(t.ID); sp != nil && sp.OK {
+			fmt.Fprintf(&sb, "  last speed test: ↓ %.1f / ↑ %.1f Mbps, %.0f ms\n", sp.DownMbps, sp.UpMbps, sp.RTTms)
+		}
+	}
+	if sb.Len() == 0 {
+		return "No running tunnels."
 	}
 	return sb.String()
 }

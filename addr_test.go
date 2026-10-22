@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 type fakeHost struct{ out string }
@@ -54,5 +56,51 @@ func TestRankBench(t *testing.T) {
 	}
 	if rs[2].Method != "b" || rs[3].Method != "s" {
 		t.Fatalf("failed should precede skipped: %+v", rs)
+	}
+}
+
+func TestAcctScriptAndRates(t *testing.T) {
+	tn := &Tunnel{ID: "abc123", Ports: "443,8080=80,2000-2010,[::1]:8443", Index: 3}
+	sc := acctScript(tn)
+	for _, want := range []string{"--dport 443", "--sport 80", "--dport 2000:2010", "--dport 8443", `echo "T abc123 $d $u"`} {
+		if want == "--sport 80" {
+			continue // listen side is 8080; the rule matches the Iran-facing port
+		}
+		if !strings.Contains(sc, want) {
+			t.Errorf("script lacks %q:\n%s", want, sc)
+		}
+	}
+	if !strings.Contains(sc, "--sport 8080") {
+		t.Errorf("expected Iran-facing port 8080 counted")
+	}
+	tm := newTrafficMon()
+	now := time.Now()
+	s := tm.stat(tm.tunnels, "x")
+	tm.update(s, "ports", "1000", "500", now)
+	tm.update(s, "ports", "1251000", "125500", now.Add(2*time.Second))
+	if s.Down != 5e6 || s.Up != 5e5 || len(s.Hist) != 1 {
+		t.Fatalf("rates: %+v", s)
+	}
+	tm.update(s, "ports", "10", "10", now.Add(4*time.Second)) // counter reset
+	if s.Down != 0 || s.TotalDown != 10 {
+		t.Fatalf("reset: %+v", s)
+	}
+	tm.update(s, "ports", "-", "-", now.Add(6*time.Second))
+	if s.Error == "" {
+		t.Fatal("expected error for missing counters")
+	}
+}
+
+func TestWithProbePort(t *testing.T) {
+	tn := &Tunnel{Ports: "443", Index: 2, Options: map[string]map[string]string{}}
+	if got := withProbePort(methodByID["backhaul"], tn); got != "443,40010" {
+		t.Fatalf("backhaul: %q", got)
+	}
+	if got := withProbePort(methodByID["gre"], tn); got != "443" {
+		t.Fatalf("gre: %q", got)
+	}
+	tn.Ports = "40010"
+	if got := withProbePort(methodByID["frp"], tn); got != "40010" {
+		t.Fatalf("dedupe: %q", got)
 	}
 }

@@ -60,7 +60,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("load store: %v", err)
 	}
-	app := &App{store: store, jobs: newJobs(), agents: newAgentHub(), agentPort: portOf(*agentAddr)}
+	app := &App{store: store, jobs: newJobs(), agents: newAgentHub(), agentPort: portOf(*agentAddr),
+		traffic: newTrafficMon(), speedRes: map[string]*SpeedResult{}}
 	app.notify = func(msg string) {
 		app.botMu.Lock()
 		bot := app.bot
