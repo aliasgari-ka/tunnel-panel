@@ -125,27 +125,22 @@ secrets {
 }
 `, conn, localPub, remotePub, d.IfID, localID, remoteID, start, psk))}
 		}
-		setup := `if ! command -v swanctl >/dev/null 2>&1; then
+		setup := `if ! command -v swanctl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && ! systemctl cat strongswan.service >/dev/null 2>&1; }; then
+  # swanctl + charon-systemd (strongswan.service) is the vici-native daemon we drive
   (apt-get update -qq && apt-get install -y -qq strongswan-swanctl charon-systemd libcharon-extra-plugins) \
   || dnf install -y strongswan || yum install -y strongswan || { echo "could not install strongSwan"; exit 1; }
 fi
-systemctl enable --now strongswan 2>/dev/null || systemctl enable --now strongswan-starter 2>/dev/null || true
-`
+` + charonUp + "tp_charon || exit 1\n"
 		up := func(self, peer string) string {
 			return fmt.Sprintf(`ip link add %[1]s type xfrm dev $(ip route show default | awk '{print $5; exit}') if_id %[2]d
 ip link set %[1]s mtu %[3]s up
-# charon must be up (its vici socket) before swanctl can load the connection
-systemctl start strongswan 2>/dev/null || systemctl start strongswan-starter 2>/dev/null || true
-for i in $(seq 1 30); do [ -S /var/run/charon.vici ] || [ -S /run/charon.vici ] && break; sleep 0.5; done
-if [ ! -S /var/run/charon.vici ] && [ ! -S /run/charon.vici ]; then
-  echo "strongSwan daemon (charon) is not running: no vici socket (strongswan: $(systemctl is-active strongswan 2>&1), strongswan-starter: $(systemctl is-active strongswan-starter 2>&1)) — run: apt install charon-systemd && systemctl enable --now strongswan"
-  exit 1
-fi
+# charon must answer on its vici socket before swanctl can load the connection
+%[4]stp_charon || exit 1
 if ! swanctl --load-all --noprompt >/tmp/tp-swanctl.log 2>&1; then
   grep -v -e '^usage' -e '^ ' /tmp/tp-swanctl.log | head -4
   exit 1
 fi
-`, d.Iface, d.IfID, c.Opt("mtu"))
+`, d.Iface, d.IfID, c.Opt("mtu"), charonUp)
 		}
 		down := fmt.Sprintf("swanctl --terminate --ike %s >/dev/null 2>&1 || true\n", conn)
 		ir, kh = kernelTunnel(c, "IPsec "+c.T.Name, up, down)
@@ -172,3 +167,33 @@ func appendDown(p *SidePlan, sh string) {
 }
 
 func itoa(i int) string { return fmt.Sprintf("%d", i) }
+
+// charonUp defines tp_charon: make sure strongSwan's charon really answers on its vici
+// socket. A socket file alone proves nothing — a crashed daemon leaves it behind and
+// swanctl then gets "Connection refused". On Debian/Ubuntu, strongswan-starter (ipsec.conf,
+// its own charon) and charon-systemd (strongswan.service) fight over UDP 500/4500 and the
+// socket when both run, so when charon-systemd is installed the starter is stopped.
+const charonUp = `tp_charon() {
+  ok() { timeout 5 swanctl --stats >/dev/null 2>&1; }
+  ok && return 0
+  if systemctl cat strongswan.service >/dev/null 2>&1; then
+    svc=strongswan
+    if systemctl is-active --quiet strongswan-starter 2>/dev/null; then
+      echo "stopping strongswan-starter: it conflicts with charon-systemd (strongswan.service)"
+    fi
+    systemctl disable --now strongswan-starter >/dev/null 2>&1 || true
+    pkill -x charon 2>/dev/null || true
+  else
+    svc=strongswan-starter
+  fi
+  systemctl stop $svc >/dev/null 2>&1 || true
+  sleep 0.5
+  rm -f /var/run/charon.vici /run/charon.vici
+  systemctl enable $svc >/dev/null 2>&1 || true
+  systemctl restart $svc >/dev/null 2>&1 || true
+  for i in $(seq 1 30); do ok && return 0; sleep 0.5; done
+  echo "strongSwan (charon) does not answer on its vici socket after restarting $svc. Its log:"
+  journalctl -u $svc -n 8 --no-pager -o cat 2>/dev/null | tail -8
+  return 1
+}
+`
