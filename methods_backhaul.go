@@ -143,12 +143,13 @@ auth.token = "%s"
 		if perr != nil {
 			return ir, kh, perr
 		}
+		// with TLS on, frp's own per-proxy encryption only encrypts everything a second time
+		enc := !c.OptB("tls")
 		for _, p := range pairs {
-			lp := p.dst
-			rp := p.listen
-			proxies += fmt.Sprintf("\n[[proxies]]\nname = \"p-%s\"\ntype = \"tcp\"\nlocalIP = \"127.0.0.1\"\nlocalPort = %s\nremotePort = %s\ntransport.useEncryption = true\ntransport.useCompression = false\n", rp, lp, rp)
+			lp, rp, host := p.dst, p.listen, p.host
+			proxies += fmt.Sprintf("\n[[proxies]]\nname = \"p-%s\"\ntype = \"tcp\"\nlocalIP = \"%s\"\nlocalPort = %s\nremotePort = %s\ntransport.useEncryption = %v\ntransport.useCompression = false\n", rp, host, lp, rp, enc)
 			if c.OptB("udp") {
-				proxies += fmt.Sprintf("\n[[proxies]]\nname = \"u-%s\"\ntype = \"udp\"\nlocalIP = \"127.0.0.1\"\nlocalPort = %s\nremotePort = %s\n", rp, lp, rp)
+				proxies += fmt.Sprintf("\n[[proxies]]\nname = \"u-%s\"\ntype = \"udp\"\nlocalIP = \"%s\"\nlocalPort = %s\nremotePort = %s\n", rp, host, lp, rp)
 			}
 		}
 		khToml := fmt.Sprintf(`serverAddr = "%s"
@@ -176,16 +177,19 @@ transport.dialServerKeepalive = 120
 
 // expandPortPairs turns "443,8080=80,2000-2010,3000-3002=4000-4002" into single
 // listen→dst pairs (a range maps with its offset; a range onto one port maps every port to it).
-func expandPortPairs(spec string, max int) ([]portSpec, error) {
-	var out []portSpec
+// A target host ("443=10.0.0.5:443") is kept in host; it defaults to 127.0.0.1.
+type portPair struct{ listen, dst, host string }
+
+func expandPortPairs(spec string, max int) ([]portPair, error) {
+	var out []portPair
 	for _, p := range splitPorts(spec) {
 		l := p.listen
 		if i := strings.LastIndex(l, ":"); i >= 0 {
 			l = l[i+1:]
 		}
-		d := p.dst
+		d, host := p.dst, "127.0.0.1"
 		if i := strings.LastIndex(d, ":"); i >= 0 {
-			d = d[i+1:]
+			host, d = strings.Trim(d[:i], "[]"), d[i+1:]
 		}
 		llo, lhi := portRange(l)
 		dlo, dhi := portRange(d)
@@ -197,7 +201,7 @@ func expandPortPairs(spec string, max int) ([]portSpec, error) {
 			if dhi > dlo {
 				dst = dlo + (x - llo)
 			}
-			out = append(out, portSpec{listen: strconv.Itoa(x), dst: strconv.Itoa(dst)})
+			out = append(out, portPair{listen: strconv.Itoa(x), dst: strconv.Itoa(dst), host: host})
 			if len(out) > max {
 				return nil, fmt.Errorf("FRP supports at most %d forwarded ports per tunnel", max)
 			}

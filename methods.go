@@ -240,9 +240,38 @@ func buildPlans(m *Method, t *Tunnel, srv, fsrv *Server, set Settings) (SidePlan
 		return ir, kh, err
 	}
 	ifc := l3Iface(m, t)
-	addInbound(&ir, t, d.KHPub, tc.Ports, ifc)
-	addInbound(&kh, t, d.IRPub, "", ifc)
+	// the side that listens for the other's tunnel connection also opens that port to
+	// everyone (the token/handshake guards it): the dialer may leave from an address other
+	// than the one saved for it (several IPs, NAT), and the peer-only rule would drop it
+	irL, khL := tunnelListenPort(m, t, get, d)
+	irPorts, khPorts := tc.Ports, khL
+	if irL != "" {
+		irPorts = strings.TrimPrefix(irPorts+","+irL, ",")
+	}
+	addInbound(&ir, t, d.KHPub, irPorts, ifc)
+	addInbound(&kh, t, d.IRPub, khPorts, ifc)
 	return ir, kh, nil
+}
+
+// tunnelListenPort is the port each side listens on for the tunnel itself ("" = none).
+func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) (ir, kh string) {
+	switch m.ID {
+	case "backhaul", "bp_reverse":
+		return portOr(get("tunnel_port"), d.BasePort), ""
+	case "frp":
+		return portOr(get("bind_port"), d.BasePort), ""
+	case "premium":
+		if get("mode") != "ipx" {
+			return portOr(get("port"), d.BasePort), ""
+		}
+	case "bp_l3":
+		p := portOr(get("port"), d.BasePort)
+		if get("dialer") == "foreign" {
+			return p, ""
+		}
+		return "", p
+	}
+	return "", ""
 }
 
 // l3Iface is the interface an L3 method's packets cross ("" for port forwarders).

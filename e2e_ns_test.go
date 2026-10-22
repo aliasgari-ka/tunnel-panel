@@ -158,7 +158,8 @@ func TestE2EMethods(t *testing.T) {
 		cases = append(cases, tc{"Direct v6 (ip6gre)", "direct6", nil},
 			tc{"Direct v6 carrier udp, GRE dropped", "direct6", map[string]string{"carrier": "udp"}})
 	} else {
-		cases = append(cases, tc{"Golden-GRE (dns)", "golden", nil})
+		cases = append(cases, tc{"Golden-GRE (dns)", "golden", nil},
+			tc{"FRP, target host 10.99.0.2", "frp", nil})
 	}
 	if os.Getenv("TP_E2E_PREMIUM") != "" && fam == "v4" {
 		cases = append(cases,
@@ -179,7 +180,7 @@ func TestE2EMethods(t *testing.T) {
 	for i, c := range cases {
 		m := methodByID[c.mid]
 		tn := &Tunnel{ID: fmt.Sprintf("e2e%d", i), Name: c.name, ServerID: "ir", ForeignID: "kh", Family: fam,
-			Ports: "28579", Index: 20 + i, Options: map[string]map[string]string{}, Secrets: map[string]string{}}
+			Ports: map[bool]string{false: "28579", true: "28579=10.99.0.2:28579"}[strings.Contains(c.name, "target host")], Index: 20 + i, Options: map[string]map[string]string{}, Secrets: map[string]string{}}
 		if c.opts != nil {
 			tn.Options[c.mid] = c.opts
 		}

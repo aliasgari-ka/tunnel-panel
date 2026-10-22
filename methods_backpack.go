@@ -125,7 +125,8 @@ func backpackPlans(c *buildCtx, irToml, khToml string) (SidePlan, SidePlan, erro
 	mk := func(toml, side string) SidePlan {
 		return SidePlan{Files: map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}}, Artifacts: []Artifact{artBackpack(c.Set)},
 			// validate before starting, so a bad option is reported by name instead of a crash loop
-			Setup: "mkdir -p /etc/backpack\n/usr/local/bin/backpack check -c " + cfg + " 2>&1 | tail -5 || exit 1\n",
+			// (the status is check's own: "check | tail" would always succeed)
+			Setup: "mkdir -p /etc/backpack\nif ! out=$(/usr/local/bin/backpack check -c " + cfg + " 2>&1); then echo \"$out\" | tail -5; exit 1; fi\n",
 			Unit:  Unit{Desc: "BackPack " + side + " " + c.T.Name, ExecStart: "/usr/local/bin/backpack -c " + cfg}}
 	}
 	return mk(irToml, "Iran"), mk(khToml, "foreign"), nil
