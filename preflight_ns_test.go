@@ -88,6 +88,14 @@ func TestPreflightWhereNS(t *testing.T) {
 		t.Error("not identified as reaching Iran without an answer")
 	}
 	sh(t, "ip netns exec tir iptables -w -D OUTPUT -p tcp --tcp-flags SYN,ACK SYN,ACK -j DROP")
+	// 2b. Iran's datacenter lets only its SSH port in from abroad (the user's case)
+	_ = st.Update(func(s *State) error { s.Servers[0].SSHPort = 2005; return nil })
+	sh(t, "ip netns exec tir iptables -w -I INPUT -p tcp --dport 2005 -j ACCEPT; ip netns exec tir setsid python3 -m http.server 2005 >/dev/null 2>&1 & sleep 1")
+	sh(t, "ip netns exec tir iptables -w -t raw -I PREROUTING -p tcp -s 10.99.0.2 --syn ! --dport 2005 -j DROP")
+	if err := run("only the SSH port 2005 open from abroad"); err == nil || !strings.Contains(err.Error(), "SSH port 2005 IS reachable") {
+		t.Error("the only-some-ports-open case was not identified")
+	}
+	sh(t, "ip netns exec tir iptables -w -t raw -D PREROUTING -p tcp -s 10.99.0.2 --syn ! --dport 2005 -j DROP; pkill -f 'http.server 2005'")
 	// 3. the foreign server dials from a second address; Iran's INPUT policy is DROP
 	sh(t, "ip -n tkh addr add 10.99.0.9/24 dev vkh; ip -n tkh route add 10.99.0.1/32 dev vkh src 10.99.0.9")
 	if err := run("foreign leaves from 10.99.0.9 (saved 10.99.0.2)"); err != nil {

@@ -37,7 +37,9 @@ func reverseTCPPort(m *Method, t *Tunnel) (key string, ok bool) {
 }
 
 // candidate tunnel ports, the panel's own default first
-var reverseCandidates = []int{443, 8443, 2053, 2083, 2087, 2096, 80, 8080, 8880}
+// (then ports datacenters that let only some ports in from abroad usually leave open)
+var reverseCandidates = []int{443, 8443, 2053, 2083, 2087, 2096, 80, 8080, 8880,
+	21, 25, 53, 110, 143, 465, 587, 993, 995, 1194, 1723, 3389, 5222, 8000, 8081, 8888, 9000, 9443, 10000, 2052, 2082, 2086, 2095}
 
 // reversePreflight returns true when it changed the tunnel's port (plans must be rebuilt).
 func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method, irHost, khHost Host) (bool, error) {
@@ -108,14 +110,20 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 	// from another address than the one saved for it), and SYNs reaching Iran are counted
 	// so a failure can say where the connections get lost
 	var up, down strings.Builder
-	for _, p := range try {
+	// multiport rules, 15 ports each: one rule per port took too long to remove
+	for i := 0; i < len(try); i += 15 {
+		chunk := try[i:min(i+15, len(try))]
+		ports := joinInts(chunk)
+		ports = strings.ReplaceAll(ports, " ", "")
 		for _, r := range []string{
-			fmt.Sprintf("INPUT -p tcp --dport %d -j ACCEPT -m comment --comment tp-preflight", p),
-			fmt.Sprintf("-t mangle PREROUTING -p tcp --syn --dport %d -m comment --comment tp-preflight-syn", p),
+			fmt.Sprintf("INPUT -p tcp -m multiport --dports %s -j ACCEPT -m comment --comment tp-preflight", ports),
+			fmt.Sprintf("PREROUTING -t mangle -p tcp --syn -m multiport --dports %s -m comment --comment tp-preflight-syn", ports),
 		} {
-			fmt.Fprintf(&up, "%s -w -I %s 2>/dev/null\n", ipt, strings.Replace(r, "-t mangle PREROUTING", "PREROUTING -t mangle", 1))
-			fmt.Fprintf(&down, "while %s -w -D %s 2>/dev/null; do :; done\n", ipt, strings.Replace(r, "-t mangle PREROUTING", "PREROUTING -t mangle", 1))
+			fmt.Fprintf(&up, "%s -w -I %s 2>/dev/null\n", ipt, r)
+			fmt.Fprintf(&down, "while %s -w -D %s 2>/dev/null; do :; done\n", ipt, r)
 		}
+	}
+	for _, p := range try {
 		fmt.Fprintf(&up, "setsid nohup %s probe serve -listen :%d -life 45 >/dev/null 2>&1 </dev/null &\n", probeBin, p)
 		fmt.Fprintf(&down, "pkill -f -- '-listen :%d -life 45' 2>/dev/null\n", p)
 	}
@@ -123,7 +131,7 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 	down.WriteString("true\n")
 	_, _ = irHost.Run(ctx, up.String(), nil)
 	defer func() {
-		cctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		_, _ = irHost.Run(cctx, down.String(), nil)
 	}()
@@ -167,6 +175,17 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 	where := fmt.Sprintf("none of its connection attempts reached the Iran server (0 SYNs counted there) — they are dropped on the way: the foreign provider's firewall/anti-DDoS for outgoing traffic (e.g. OVH Network Firewall) or Iran's filtering of connections from abroad to %s", d.IRPub)
 	if syns > 0 {
 		where = fmt.Sprintf("%d connection attempts DID reach the Iran server but got no answer — something on the Iran server drops them before the panel's rules (nftables/firewalld/a cloud firewall in front of it), or the answers are filtered on the way back", syns)
+	}
+	// the Iran server's SSH port answering from abroad means its datacenter lets only
+	// some ports in, rather than blocking everything
+	if srv != nil && syns == 0 {
+		sp := srv.SSHPort
+		if sp == 0 {
+			sp = 22
+		}
+		if o, _ := khHost.Run(ctx, fmt.Sprintf("timeout 5 bash -c '</dev/tcp/%s/%d' 2>/dev/null && echo open", d.IRPub, sp), nil); strings.TrimSpace(lastLine(o)) == "open" {
+			where = fmt.Sprintf("none of its attempts reached Iran (0 SYNs), yet the Iran server's SSH port %d IS reachable from the foreign server — so Iran's datacenter lets only certain ports in from abroad. Ask the datacenter which ports are open inbound and set that port as this method's \"Tunnel port\" (Options), or use a method where Iran dials out", sp)
+		}
 	}
 	if src != "" && src != d.KHPub {
 		where += fmt.Sprintf(" (note: the foreign server leaves from %s, not its saved %s)", src, d.KHPub)
