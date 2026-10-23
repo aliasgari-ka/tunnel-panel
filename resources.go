@@ -354,7 +354,9 @@ func (a *App) resWatch() {
 					msg := al.step(c, s.Name)
 					mu.Unlock()
 					if msg != "" {
-						a.push(msg)
+						var owner string // a user's own server: their bot hears about its load too
+						a.store.View(func(*State) { owner = s.Owner })
+						a.pushTo(owner, msg)
 					}
 				}
 			}(s)

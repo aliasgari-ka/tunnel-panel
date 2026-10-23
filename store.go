@@ -190,6 +190,9 @@ type User struct {
 	Gen int `json:"gen,omitempty"`
 	// Role "user": sees and runs only what it owns; "" or "admin": everything (see access.go)
 	Role string `json:"role,omitempty"`
+	// a user's own Telegram bot (Account page): it shows and alerts only their services
+	TelegramTok   string `json:"telegramTok,omitempty"`
+	TelegramChats string `json:"telegramChats,omitempty"` // chat ids allowed to use it, comma-separated
 }
 
 type State struct {

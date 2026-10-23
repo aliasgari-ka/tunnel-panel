@@ -157,6 +157,7 @@ func (a *App) restartBot() {
 		a.bot = nil
 	}
 	set := a.settings()
+	a.startUserBotsLocked(set.TelegramTok)
 	if set.TelegramTok == "" {
 		return
 	}

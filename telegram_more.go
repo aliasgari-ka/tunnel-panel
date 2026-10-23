@@ -22,12 +22,19 @@ func panelURL() string {
 	return ""
 }
 
-// serverPicker lists every server as a button.
-func (b *Bot) serverPicker() (string, string) {
+// serverPicker lists the servers in scope as buttons.
+func (b *Bot) serverPicker(sc string) (string, string) {
 	var rows [][]ikey
 	var row []ikey
 	b.app.store.View(func(st *State) {
+		shared := map[string]bool{}
+		if sc != "" {
+			shared = sharedServersLocked(st, sc)
+		}
 		for _, s := range st.Servers {
+			if sc != "" && s.Owner != sc && !shared[s.ID] {
+				continue
+			}
 			icon := "🇮🇷"
 			if s.Role == "foreign" {
 				icon = flagEmoji(s.Country)
@@ -41,18 +48,23 @@ func (b *Bot) serverPicker() (string, string) {
 	if len(row) > 0 {
 		rows = append(rows, row)
 	}
-	rows = append(rows, []ikey{{Text: "📊 Live resources", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}})
+	if b.owner == "" {
+		rows = append(rows, []ikey{{Text: "📊 Live resources", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}})
+	} else {
+		rows = append(rows, []ikey{{Text: "« Tunnels", Data: "home"}})
+	}
 	return "<b>🖥 Servers</b>\n<i>tap a server: test it, tune its kernel, install packages</i>", b.keyboard(rows)
 }
 
-// serverPage is one server's card.
-func (b *Bot) serverPage(srv *Server) (string, string) {
+// serverPage is one server's card; manage = its actions are offered (a server shared with
+// a user through their tunnel is read-only in their bot).
+func (b *Bot) serverPage(srv *Server, sc string, manage bool) (string, string) {
 	var c Server
 	var tunnels []string
 	b.app.store.View(func(st *State) {
 		c = *srv
 		for _, t := range st.Tunnels {
-			if t.ServerID == srv.ID || t.ForeignID == srv.ID {
+			if (t.ServerID == srv.ID || t.ForeignID == srv.ID) && tunnelInScope(sc, t) {
 				tunnels = append(tunnels, b.tunnelIcon(t)+" "+t.Name)
 			}
 		}
@@ -70,6 +82,13 @@ func (b *Bot) serverPage(srv *Server) (string, string) {
 	sb.WriteString("\n")
 	if c.Arch != "" {
 		fmt.Fprintf(&sb, "%s %s\n", esc(c.OS), esc(c.Arch))
+	}
+	if !manage {
+		fmt.Fprintf(&sb, "\n<i>the panel admin's server: it carries your tunnel(s); the admin manages it</i>\n")
+		if len(tunnels) > 0 {
+			fmt.Fprintf(&sb, "\n<b>Your tunnels</b>\n%s\n", esc(strings.Join(tunnels, "\n")))
+		}
+		return sb.String(), b.keyboard([][]ikey{{{Text: "« Servers", Data: "home:sv"}}})
 	}
 	reach := orStr(c.LastPath, "not tested yet")
 	if b.app.agents != nil && b.app.agents.online(c.ID) != nil {
@@ -92,16 +111,27 @@ func (b *Bot) serverPage(srv *Server) (string, string) {
 
 // serverAction handles the sv* buttons.
 func (b *Bot) serverAction(chat string, msg int64, kind, id string) {
+	sc := b.scope(chat)
 	srv := b.app.store.Server(id)
-	if srv == nil {
-		text, kb := b.serverPicker()
+	manage, seen := true, true
+	if srv != nil && b.owner != "" {
+		b.app.store.View(func(st *State) {
+			manage = srv.Owner == b.owner
+			seen = manage || sharedServersLocked(st, b.owner)[id]
+		})
+	}
+	if srv == nil || !seen {
+		text, kb := b.serverPicker(sc)
 		b.edit(chat, msg, "That server no longer exists.\n\n"+text, kb)
 		return
+	}
+	if !manage && kind != "sv" {
+		return // shared with this user through a tunnel: read-only
 	}
 	back := b.keyboard([][]ikey{{{Text: "« " + srv.Name, Data: "sv:" + id}}})
 	switch kind {
 	case "sv":
-		text, kb := b.serverPage(srv)
+		text, kb := b.serverPage(srv, sc, manage)
 		b.edit(chat, msg, text, kb)
 	case "svt":
 		b.slow(chat, "testing every path to "+srv.Name+"…", func() (string, string) {
@@ -247,19 +277,25 @@ func cutRunes(s string, n int) string {
 
 // dailyReport is the morning summary: tunnels, where their users are, the last day's
 // outages, and the panel's address.
-func (b *Bot) dailyReport() string {
+func (b *Bot) dailyReport(sc string) string {
 	var sb strings.Builder
 	sb.WriteString("<b>☀️ Daily report</b>\n")
-	sb.WriteString(strings.TrimSuffix(b.dashboard(), "\n<i>tap a tunnel</i>"))
+	sb.WriteString(strings.TrimSuffix(b.dashboard(sc), "\n<i>tap a tunnel</i>"))
 	sb.WriteString("\n\n")
 	var tunnels []*Tunnel
 	var outages []Outage
 	b.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
-			c := t.clone()
-			tunnels = append(tunnels, &c)
+			if tunnelInScope(sc, t) {
+				c := t.clone()
+				tunnels = append(tunnels, &c)
+			}
 		}
-		outages = append(outages, st.Outages...)
+		for _, o := range st.Outages {
+			if outageInScope(st, sc, o) {
+				outages = append(outages, o)
+			}
+		}
 	})
 	for _, t := range tunnels {
 		line := b.tunnelIcon(t) + " " + esc(t.Name)
@@ -345,7 +381,7 @@ func (b *Bot) reportLoop() {
 		}
 		sent = now.Format("2006-01-02")
 		for a := range b.admins {
-			b.sendMsg(a, b.dailyReport(), "")
+			b.sendMsg(a, b.dailyReport(b.owner), "")
 		}
 	}
 }

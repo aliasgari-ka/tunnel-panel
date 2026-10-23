@@ -779,7 +779,7 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 	a.setActive(t, m.ID)
 	j.log("DONE — hot standby: %d of %d paths running; users go through %s now", len(good), len(paths), good[0].label())
 	j.finish("ok")
-	a.push(fmt.Sprintf("✅ %s: hot standby with %d paths (active: %s)", t.Name, len(good), good[0].label()))
+	a.pushT(t, fmt.Sprintf("✅ %s: hot standby with %d paths (active: %s)", t.Name, len(good), good[0].label()))
 	return true
 }
 
@@ -976,7 +976,7 @@ func (a *App) hsReport(t *Tunnel, v *hsView, events []string) {
 			newest = at
 		}
 		if msg != "" && at > seen {
-			a.push(msg)
+			a.pushT(t, msg)
 		}
 	}
 	if newest > seen {

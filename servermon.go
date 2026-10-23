@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	_ "time/tzdata" // Tehran time even on hosts without a zoneinfo database
@@ -230,7 +231,8 @@ func (a *App) transition(m *serverMon, id, kind, name string, down bool, at time
 		m.mu.Unlock()
 		a.addOutage(Outage{ID: oid, Kind: kind, Target: id, Name: name, Start: at.Unix(), Reason: reason})
 		icon := map[string]string{"server": "🔴 Server unreachable", "panel": "⚠ Panel host offline", "ssh-v4": "🟠 SSH over IPv4 down", "ssh-v6": "🟠 SSH over IPv6 down"}[kind]
-		a.push(fmt.Sprintf("%s: %s\nsince %s (Tehran)\n%s", icon, name, clock(at), reason))
+		srvID, _, _ := strings.Cut(id, "/")
+		a.pushServer(srvID, fmt.Sprintf("%s: %s\nsince %s (Tehran)\n%s", icon, name, clock(at), reason))
 		return
 	}
 	since, oid := s.since, s.outageID

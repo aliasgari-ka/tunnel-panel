@@ -236,6 +236,7 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			httpErr(w, 400, err.Error())
 			return
 		}
+		go s.app.restartBot() // a role change starts or stops that account's own bot
 	}
 	out := []userView{}
 	s.app.store.View(func(st *State) {
@@ -299,6 +300,7 @@ func (s *Server2) userDelete(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
+	go s.app.restartBot() // the account's own bot goes with it
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 

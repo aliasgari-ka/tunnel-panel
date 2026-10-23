@@ -680,11 +680,43 @@ function wireAccount(pf) {
     } catch (e) { alertModal('Error', e.message); }
   };
 }
+// a user's own Telegram bot: it shows and alerts only their services
+function myBotHTML() {
+  return `<form class="card pad ff" id="mbf">
+      <h3>🤖 Your Telegram bot</h3>
+      <p class="muted" style="font-size:13px;margin:0">Run your tunnels from Telegram and get alerts about them — your services only.
+      <b>1.</b> Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> (/newbot) and paste its token here.
+      <b>2.</b> Save, send your bot <b>/start</b>: it answers with your chat id. <b>3.</b> Put the chat id here and save again.</p>
+      <label class="f">Bot token<input name="token" class="mono" autocomplete="off" placeholder="123456789:AAH…" data-tok></label>
+      <label class="f">Your chat id(s) <span class="faint">(comma-separated)</span><input name="chats" class="mono" placeholder="123456789" data-chats></label>
+      <div class="actions"><button class="btn pri">Save bot</button><button type="button" class="btn ghost" data-rm hidden>Remove bot</button><span class="faint" data-st style="font-size:12px"></span></div>
+    </form>`;
+}
+function wireMyBot(f) {
+  const show = (r) => {
+    $('[data-chats]', f).value = r.chats || '';
+    $('[data-tok]', f).placeholder = r.set ? 'saved — leave empty to keep it' : '123456789:AAH…';
+    $('[data-rm]', f).hidden = !r.set;
+    const st = r.state || '';
+    $('[data-st]', f).textContent = !r.set ? 'no bot yet' : st.startsWith('error') ? '🔴 Telegram refused it — ' + st.slice(7) : !st ? 'starting…'
+      : r.chats ? '🟢 ' + st + ' is running' : '🟢 ' + st + ' is running — send it /start and add your chat id';
+  };
+  const load = () => api('/mybot').then(show).catch(() => {});
+  load();
+  f.onsubmit = async (ev) => {
+    ev.preventDefault();
+    try { show(await api('/mybot', { Token: f.token.value.trim(), Chats: f.chats.value.trim() })); f.token.value = ''; toast('Bot saved'); setTimeout(load, 4000); }
+    catch (e) { alertModal('Telegram bot', e.message); }
+  };
+  $('[data-rm]', f).onclick = async () => {
+    try { show(await api('/mybot', { Remove: true })); toast('Bot removed'); } catch (e) { alertModal('Telegram bot', e.message); }
+  };
+}
 function viewSettings(w) {
   if (!isAdmin()) {
     w.innerHTML = topbar('Account', 'Your panel login. You see and run only your own servers and tunnels.');
-    const c = h(`<div class="grid" style="max-width:560px">${accountFormHTML()}</div>`);
-    w.appendChild(c); wireAccount($('#pf', c));
+    const c = h(`<div class="grid" style="max-width:560px;gap:16px">${accountFormHTML()}${myBotHTML()}</div>`);
+    w.appendChild(c); wireAccount($('#pf', c)); wireMyBot($('#mbf', c));
     return;
   }
   const s = STATE.settings;

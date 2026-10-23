@@ -266,10 +266,10 @@ func (a *App) resumeInterrupted() {
 		if !still {
 			continue // started or stopped from the panel meanwhile
 		}
-		a.push(fmt.Sprintf("🔄 %s was left down by a panel restart in the middle of applying %s — bringing it back", x.t.Name, methodTitle(x.mid)))
+		a.pushT(x.t, fmt.Sprintf("🔄 %s was left down by a panel restart in the middle of applying %s — bringing it back", x.t.Name, methodTitle(x.mid)))
 		j, err := a.ApplyRoute(x.t, x.mid, x.fam)
 		if err != nil {
-			a.push(fmt.Sprintf("❌ %s: could not resume %s — %v", x.t.Name, methodTitle(x.mid), err))
+			a.pushT(x.t, fmt.Sprintf("❌ %s: could not resume %s — %v", x.t.Name, methodTitle(x.mid), err))
 			continue
 		}
 		for j.snapshot().Status == "running" {

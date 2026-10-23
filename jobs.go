@@ -175,8 +175,9 @@ type App struct {
 	agentPort int
 	notify    func(string) // optional push (Telegram) for finished jobs
 
-	botMu sync.Mutex
-	bot   *Bot
+	botMu    sync.Mutex
+	bot      *Bot
+	userBots map[string]*Bot // username -> that account's own bot
 
 	benchMu  sync.Mutex
 	benchRes map[string][]BenchResult // "iran|foreign|family" -> results
@@ -309,7 +310,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 			a.setApplying(t, "") // ended (with an error): nothing to resume after a restart
 			j.log("ERROR: "+f, x...)
 			j.finish("error")
-			a.push(fmt.Sprintf("❌ %s: %s failed — %s", t.Name, mid, fmt.Sprintf(f, x...)))
+			a.pushT(t, fmt.Sprintf("❌ %s: %s failed — %s", t.Name, mid, fmt.Sprintf(f, x...)))
 		}
 		srv := a.store.Server(t.ServerID)
 		m := methodByID[mid]
@@ -441,7 +442,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		a.setActive(t, mid)
 		j.log("DONE — %s is active on both servers", m.Title)
 		j.finish("ok")
-		a.push(fmt.Sprintf("✅ %s now runs %s", t.Name, m.Title))
+		a.pushT(t, fmt.Sprintf("✅ %s now runs %s", t.Name, m.Title))
 		// a first verdict for the card now, not at the monitor's next round (reverse links
 		// need a few seconds to dial in)
 		go func() {
@@ -522,7 +523,7 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 		a.setActive(t, "")
 		j.log("stopped")
 		j.finish("ok")
-		a.push("⏹ " + t.Name + " stopped")
+		a.pushT(t, "⏹ "+t.Name+" stopped")
 	}()
 	return j, nil
 }

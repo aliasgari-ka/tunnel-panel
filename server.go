@@ -62,6 +62,7 @@ func (a *App) routes() http.Handler {
 	g := func(path, kind string, h http.HandlerFunc) { mux.HandleFunc(path, s.auth(s.json(s.guard(kind, h)))) }
 	g("/api/me", "self", s.me)
 	g("/api/password", "self", s.password)
+	g("/api/mybot", "self", s.myBot)
 	g("/api/settings", "self", s.settings) // GET: what a user needs; POST: admin (in the handler)
 	g("/api/methods", "self", s.listMethods)
 	g("/api/servers", "self", s.servers)
@@ -428,6 +429,9 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpErr(w, 400, err.Error())
 		return
+	}
+	if name != user {
+		go s.app.restartBot() // a user's own bot belongs to the account by name
 	}
 	s.setCookie(w, r, name) // this browser stays signed in; every other session has ended
 	writeJSON(w, map[string]string{"ok": "1", "user": name})
