@@ -227,11 +227,22 @@ func shortReason(e string) string {
 		return "pings pass, data stalls (MTU?)"
 	case strings.Contains(e, "no traffic passes"):
 		return "no traffic passes"
+	case strings.HasPrefix(e, "probe unavailable"):
+		// "probe unavailable — … (why)": the why is what helps
+		if i := strings.Index(e, " ("); i > 0 {
+			e = "no throughput probe: " + strings.TrimSuffix(e[i+2:], ")")
+		}
+		return cutRunes(e, 160)
 	}
-	if len(e) > 70 {
-		e = e[:70] + "…"
+	return cutRunes(e, 70)
+}
+
+// cutRunes shortens s to n runes (never inside a UTF-8 character).
+func cutRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
 	}
-	return e
+	return s
 }
 
 // dailyReport is the morning summary: tunnels, where their users are, the last day's

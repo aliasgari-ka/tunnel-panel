@@ -193,13 +193,15 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		// the probe binary on both ends + a probe server on the foreign side for the whole run
 		probeOK := pushArtifacts(ctx, j, "IR", irHost, []Artifact{probeArt}) == nil &&
 			pushArtifacts(ctx, j, "KH", khHost, []Artifact{probeArt}) == nil
+		probeWhy := "" // why there's no probe, for the results (not only the job log)
 		if probeOK {
 			if perr := probeStarted(ctx, khHost, probeServerUp(probePort)); perr != nil {
 				j.log("WARNING: probe server on the foreign side: %v — falling back to ping only (no throughput)", perr)
-				probeOK = false
+				probeOK, probeWhy = false, "the probe server on the foreign side didn't start: "+firstLine(perr.Error())
 			}
 		} else {
 			j.log("WARNING: could not install the probe — falling back to ping only (no throughput)")
+			probeWhy = "the probe couldn't be installed"
 		}
 		defer func() { _, _ = khHost.Run(context.Background(), probeServerDown(probePort), nil) }()
 
@@ -227,6 +229,9 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				continue
 			}
 			err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r)
+			if err != nil && probeWhy != "" && strings.HasPrefix(err.Error(), "probe unavailable") {
+				err = fmt.Errorf("%v (%s)", err, probeWhy)
+			}
 			// (only when it deployed but carried nothing: a config or start error would just repeat)
 			if err != nil && m.Alts != nil && (strings.Contains(err.Error(), "no traffic passes") || strings.Contains(err.Error(), "can't run on this")) && ctx.Err() == nil {
 				// the default carrier passes nothing here: try the method's other carriers
