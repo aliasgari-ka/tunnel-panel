@@ -1005,7 +1005,12 @@ document.addEventListener('click', (e) => { $$('details.more[open]').forEach(d =
 // the phone menu button (no inline handlers: the page runs under a CSP without 'unsafe-inline' scripts)
 document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.menu-toggle')) $('#side').classList.toggle('open'); });
 // keep an open ⋯ menu above the next card (browsers without :has()), and close it once an item is picked
-document.addEventListener('toggle', (e) => { const d = e.target; if (!d.matches || !d.matches('details.more')) return; const c = d.closest('.card'); if (c) c.classList.toggle('raised', d.open); }, true);
+document.addEventListener('toggle', (e) => {
+  const d = e.target; if (!d.matches || !d.matches('details.more')) return;
+  const c = d.closest('.card'); if (c) c.classList.toggle('raised', d.open);
+  // and its page section: each one is a layer (page-in animation), so the next one covered the menu's lower items
+  const sec = [...$$('.main > *')].find(x => x.contains(d)); if (sec) sec.classList.toggle('raised', d.open);
+}, true);
 document.addEventListener('click', (e) => { const mi = e.target.closest && e.target.closest('details.more .mi'); if (mi) setTimeout(() => { const d = mi.closest('details.more'); if (d && !mi.dataset.armed) d.removeAttribute('open'); }, 0); });
 function serverCard(s) {
   const isIran = (s.role || 'iran') === 'iran';
