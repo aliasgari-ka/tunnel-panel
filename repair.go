@@ -155,6 +155,12 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 		// only paths that ran and died count: a path whose method never came up on this
 		// route (Failed at deploy) rebuilt the tunnel — and cut its users — after every
 		// update, without ever coming up either
+		case bad > 0 && bad < len(v.OK) && v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active]:
+			// users are on a working path and the switcher moves them if it dies: rebuilding
+			// the whole tunnel for a dead standby path would cut them for nothing (seen live:
+			// xe108 rebuilt after every update because one path never passes data there)
+			j.log("· %s: %d of %d standby paths down — users are on a working one; left alone", name, bad, len(v.OK))
+			return "", ""
 		case bad > 0:
 			why = fmt.Sprintf("%d of %d paths down", bad, len(v.OK)+failedPaths)
 		case strings.Contains(out, "OLD"):
