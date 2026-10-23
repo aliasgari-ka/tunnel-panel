@@ -30,7 +30,7 @@ async function boot() {
     if (!s.configured) return renderAuth('register', s.panelName);
     const me = await api('/me');
     if (!me.user) return renderAuth('login', s.panelName);
-    STATE.user = me.user; STATE.version = me.version || "";
+    STATE.user = me.user; STATE.role = me.role || 'admin'; STATE.version = me.version || "";
     await loadAll();
     renderShell();
   } catch (e) { renderAuth('login'); }
@@ -41,6 +41,7 @@ async function loadAll() {
   STATE.helpers = (helpers || []).map(x => x.name); STATE.hostArch = (settings && settings.hostArch) || 'amd64';
   STATE.methods = methods || []; STATE.servers = servers || []; STATE.tunnels = tunnels || [];
   STATE.settings = (settings && settings.settings) || {}; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
+  STATE.users = isAdmin() ? await api('/users').catch(() => []) : [];
 }
 const iranServers = () => STATE.servers.filter(s => (s.role || 'iran') === 'iran');
 const foreignServers = () => STATE.servers.filter(s => s.role === 'foreign');
@@ -69,6 +70,13 @@ function methodMissing(m, t) {
   return miss.map(a => m.helper + '-' + a).join(', ');
 }
 const serverById = (id) => STATE.servers.find(s => s.id === id);
+// accounts: the admin sees everything (and can narrow the view to one account); a user only
+// ever gets their own servers and tunnels from the panel
+const isAdmin = () => STATE.role !== 'user';
+// the admin's account filter: '' = everything, '-' = the admin's own, else a username
+const shownOwner = (o) => !isAdmin() || !STATE.ownerFilter || (STATE.ownerFilter === '-' ? !o : o === STATE.ownerFilter);
+const ownerChip = (o) => isAdmin() && o ? `<span class="chip own" title="belongs to the account ${esc(o)}">👤 ${esc(o)}</span>` : '';
+const panelHostOpt = () => isAdmin() ? '<option value="">this panel host</option>' : '';
 const serverName = (id) => id ? (serverById(id)?.name || '(deleted)') : 'this panel host';
 // flag emoji from an ISO-3166 alpha-2 country code (regional indicator letters)
 function flag(cc) {
@@ -308,17 +316,19 @@ const quantumBg = (() => {
 /* ---------------- shell ---------------- */
 function renderShell() {
   document.body.innerHTML = '';
-  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['routes', 'Routes', '🔀'], ['bench', 'Benchmark', '📊'], ['settings', 'Settings', '⚙']];
+  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['routes', 'Routes', '🔀'], ['bench', 'Benchmark', '📊'],
+    ...(isAdmin() ? [['users', 'Users', '👥'], ['settings', 'Settings', '⚙']] : [['settings', 'Account', '👤']])];
   const shell = h(`<div class="shell">
     <aside class="side" id="side">
       <div class="brand"><div class="dot"></div><div><b>${esc(STATE.settings.panelName || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
       <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span class="ni">${n[2]}</span><span class="nl">${n[1]}</span>${n[0] === 'tunnels' && STATE.tunnels.length ? `<em class="nb" title="running / all">${STATE.tunnels.filter(t => t.active).length}/${STATE.tunnels.length}</em>` : ''}</button>`).join('')}</nav>
       <div class="foot">
         <div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div>
-        <a class="btn sm bkbtn" href="/api/backup" download title="Download a backup of the whole panel: servers, tunnels, settings, users (keep the file private). Restore it under Settings.">💾 Backup now</a>
+        ${isAdmin() && (STATE.users || []).length > 1 ? `<label class="f vf" title="show the servers and tunnels of one account">👁 View<select id="ownerSel"><option value="">All accounts</option><option value="-">My own</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join('')}</select></label>` : ''}
+        ${isAdmin() ? '' : '<!--'}<a class="btn sm bkbtn" href="/api/backup" download title="Download a backup of the whole panel: servers, tunnels, settings, users (keep the file private). Restore it under Settings.">💾 Backup now</a>${isAdmin() ? '' : '-->'}
         <button class="btn ghost sm" id="themeBtn">◐ Theme</button>
         <button class="btn ghost sm" id="bgBtn" title="Animated background on/off">✦ Live background</button>
-        <div class="faint" style="font-size:11px;padding:0 8px">Signed in as <b>${esc(STATE.user)}</b>${STATE.version ? `<br>version <span class="mono">${esc(STATE.version)}</span>` : ''}</div>
+        <div class="faint" style="font-size:11px;padding:0 8px">Signed in as <b>${esc(STATE.user)}</b>${isAdmin() ? ' <span class="chip own">admin</span>' : ''}${STATE.version ? `<br>version <span class="mono">${esc(STATE.version)}</span>` : ''}</div>
         <button class="btn ghost sm" id="logout">Sign out</button>
       </div></aside>
     <main class="main" id="work"></main></div>`);
@@ -326,6 +336,8 @@ function renderShell() {
   $$('.nav button', shell).forEach(b => b.onclick = () => { STATE.view = b.dataset.v; paintNav(); renderView(); $('#side').classList.remove('open'); });
   $('#logout').onclick = async () => { await api('/logout', {}); location.reload(); };
   $('#themeBtn').onclick = toggleTheme;
+  const os = $('#ownerSel', shell);
+  if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { STATE.ownerFilter = os.value; renderView(); }; }
   $$('[data-acc]', shell).forEach(b => b.onclick = () => setAccent(b.dataset.acc));
   paintAccent();
   $('#bgBtn').onclick = () => quantumBg.toggle();
@@ -368,7 +380,7 @@ function countUp(root) {
 function renderView() {
   const w = $('#work'); w.innerHTML = '';
   w.classList.remove('enter'); void w.offsetWidth; w.classList.add('enter'); // replay the page-in animation
-  ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, bench: viewBench, settings: viewSettings }[STATE.view])(w);
+  ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, bench: viewBench, settings: viewSettings, users: viewUsers }[STATE.view])(w);
   trafficWatch();
   healthWatch();
 }
@@ -386,8 +398,8 @@ async function viewRoutes(w) {
   try { [hist, skip] = await Promise.all([api('/bench/history'), api('/routes/skip')]); } catch (e) {}
   const pairs = new Map();
   const key = (i, f) => i + '|' + (f || '');
-  STATE.tunnels.forEach(t => { const k = key(t.serverId, t.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: t.serverId, foreign: t.foreignId || '', tunnels: [] }); pairs.get(k).tunnels.push(t); });
-  hist.forEach(r => { const k = key(r.iranId, r.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: r.iranId, foreign: r.foreignId || '', tunnels: [] }); });
+  STATE.tunnels.filter(t => shownOwner(t.owner)).forEach(t => { const k = key(t.serverId, t.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: t.serverId, foreign: t.foreignId || '', tunnels: [] }); pairs.get(k).tunnels.push(t); });
+  hist.filter(r => shownOwner((serverById(r.iranId) || {}).owner)).forEach(r => { const k = key(r.iranId, r.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: r.iranId, foreign: r.foreignId || '', tunnels: [] }); });
   box.innerHTML = '';
   if (!pairs.size) { box.appendChild(h('<div class="card empty"><div class="big">🔀</div>No tunnels or benchmarks yet.</div>')); return; }
   const srvLabel = (id, fb) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : fb; };
@@ -632,7 +644,44 @@ function alertModal(title, msg) {
 function confirmInline(btn, msg) { if (btn.dataset.armed) return true; btn.dataset.armed = '1'; const o = btn.textContent; btn.textContent = msg; setTimeout(() => { if (btn.isConnected) { btn.textContent = o; delete btn.dataset.armed; } }, 2500); return false; }
 
 /* ---------------- settings ---------------- */
+// the signed-in account: username and/or password (every role)
+function accountFormHTML() {
+  return `<form class="card pad ff" id="pf">
+      <h3>👤 Account</h3>
+      <p class="muted" style="font-size:13px;margin:0">Change the panel login — the username, the password, or both. Every other signed-in browser is signed out.</p>
+      <label class="f">Username<input name="user" autocomplete="username" value="${esc(STATE.user || '')}" maxlength="32"></label>
+      <label class="f">New password <span class="faint">(min 8 — leave empty to keep it)</span><span class="pw"><input name="new" type="password" autocomplete="new-password" data-strength><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span><small class="fhelp" data-meter></small></label>
+      <label class="f">Current password <span class="faint">(required)</span><span class="pw"><input name="old" type="password" autocomplete="current-password" required><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span></label>
+      <div class="actions"><button class="btn pri">Save account</button><button type="button" class="btn ghost" data-genpw title="fill in a strong random password (shown so you can copy it)">🎲 Generate a strong password</button></div>
+    </form>`;
+}
+function wireAccount(pf) {
+  wirePasswordUX(pf);
+  $('[data-genpw]', pf).onclick = () => {
+    const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_.';
+    const pw = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => abc[b % abc.length]).join('');
+    const el = pf.new; el.value = pw; el.type = 'text'; el.dispatchEvent(new Event('input')); el.select();
+    toast('Strong password filled in — copy it before you save');
+  };
+  pf.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    const newUser = (fd.user || '').trim() !== STATE.user ? (fd.user || '').trim() : '';
+    try {
+      const r = await api('/password', { Old: fd.old, New: fd.new, NewUser: newUser });
+      STATE.user = r.user || STATE.user; pf.old.value = ''; pf.new.value = '';
+      toast(newUser && fd.new ? 'Username and password updated' : newUser ? 'Username updated' : 'Password updated');
+      renderShell();
+    } catch (e) { alertModal('Error', e.message); }
+  };
+}
 function viewSettings(w) {
+  if (!isAdmin()) {
+    w.innerHTML = topbar('Account', 'Your panel login. You see and run only your own servers and tunnels.');
+    const c = h(`<div class="grid" style="max-width:560px">${accountFormHTML()}</div>`);
+    w.appendChild(c); wireAccount($('#pf', c));
+    return;
+  }
   const s = STATE.settings;
   w.innerHTML = topbar('Settings', 'This panel host, downloads, the dial-back agent and Telegram.');
   const card = h(`<div class="grid" style="max-width:660px;gap:16px">
@@ -658,6 +707,12 @@ function viewSettings(w) {
       <label class="row f"><input type="checkbox" name="telegramBackup" value="on" ${s.telegramBackup === 'on' ? 'checked' : ''}> Send the daily backup to the admin chat too</label>
       <div><button class="btn pri">Save settings</button></div>
     </form>
+    <form class="card pad ff" id="domf">
+      <h3>🌐 Panel address (HTTPS)</h3>
+      <p class="muted" style="font-size:13px;margin:0">Domains the panel answers on, comma-separated — each gets a free Let's Encrypt certificate on its first visit, renewed automatically before it expires. Point each domain's DNS (A record) at this server; behind Cloudflare use <b>DNS only</b> (grey cloud) or let port 80 through. Saving restarts the panel (tunnels keep running).</p>
+      <label class="f">Domains<input name="Domains" class="mono" placeholder="panel.example.com, 1-2-3-4.sslip.io" data-dom></label>
+      <div class="actions"><button class="btn pri">Save &amp; restart the panel</button><span class="faint" data-domnow style="font-size:12px"></span></div>
+    </form>
     <div class="card pad" id="bkCard">
       <h3>Backup &amp; restore</h3>
       <p class="muted" style="font-size:13px;margin:6px 0">One file with everything: servers (with their SSH passwords/keys), tunnels and their secrets, settings, users and history. A copy is also kept every day on this host (the last 14, next to the panel's state in <span class="mono">backups/</span>). Keep the file private.</p>
@@ -670,14 +725,7 @@ function viewSettings(w) {
       <p class="muted" style="font-size:13px;margin:6px 0">Agents verify the panel with this pin. It never changes unless you delete the panel's agent key.</p>
       <div class="codebox"><code>${esc(STATE.agentPin)}</code></div>
     </div>
-    <form class="card pad ff" id="pf">
-      <h3>👤 Account</h3>
-      <p class="muted" style="font-size:13px;margin:0">Change the panel login — the username, the password, or both. Every other signed-in browser is signed out.</p>
-      <label class="f">Username<input name="user" autocomplete="username" value="${esc(STATE.user || '')}" maxlength="32"></label>
-      <label class="f">New password <span class="faint">(min 8 — leave empty to keep it)</span><span class="pw"><input name="new" type="password" autocomplete="new-password" data-strength><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span><small class="fhelp" data-meter></small></label>
-      <label class="f">Current password <span class="faint">(required)</span><span class="pw"><input name="old" type="password" autocomplete="current-password" required><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span></label>
-      <div class="actions"><button class="btn pri">Save account</button><button type="button" class="btn ghost" data-genpw title="fill in a strong random password (shown so you can copy it)">🎲 Generate a strong password</button></div>
-    </form>
+    ${accountFormHTML()}
     <div class="card pad" id="helperCard"><h3>Helper binaries</h3><div class="muted" style="font-size:13px">Loading…</div></div>
   </div>`);
   w.appendChild(card);
@@ -686,24 +734,19 @@ function viewSettings(w) {
     const fd = Object.fromEntries(new FormData(ev.target));
     try { await api('/settings', fd); await loadAll(); toast('Settings saved'); renderView(); } catch (e) { alertModal('Error', e.message); }
   };
-  const pf = $('#pf');
-  wirePasswordUX(pf);
-  $('[data-genpw]', pf).onclick = () => {
-    const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_.';
-    const pw = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => abc[b % abc.length]).join('');
-    const el = pf.new; el.value = pw; el.type = 'text'; el.dispatchEvent(new Event('input')); el.select();
-    toast('Strong password filled in — copy it before you save');
-  };
-  pf.onsubmit = async (ev) => {
+  wireAccount($('#pf', card));
+  const domf = $('#domf', card);
+  api('/domain').then(r => {
+    const cur = r.tls === 'self' ? '' : r.tls || '';
+    $('[data-dom]', domf).value = cur;
+    $('[data-domnow]', domf).textContent = r.tls === 'self' ? 'now: self-signed HTTPS' : r.tls ? 'now: ' + r.tls : 'now: plain HTTP';
+  }).catch(() => {});
+  domf.onsubmit = async (ev) => {
     ev.preventDefault();
-    const fd = Object.fromEntries(new FormData(ev.target));
-    const newUser = (fd.user || '').trim() !== STATE.user ? (fd.user || '').trim() : '';
     try {
-      const r = await api('/password', { Old: fd.old, New: fd.new, NewUser: newUser });
-      STATE.user = r.user || STATE.user; pf.old.value = ''; pf.new.value = '';
-      toast(newUser && fd.new ? 'Username and password updated' : newUser ? 'Username updated' : 'Password updated');
-      renderShell();
-    } catch (e) { alertModal('Error', e.message); }
+      const r = await api('/domain', { Domains: $('[data-dom]', domf).value });
+      alertModal('Panel address', `Saved — the panel restarts in a few seconds.\n\nOpen it at ${r.url}\n(the first visit fetches the certificate, which can take a few seconds)${r.note ? '\n\n⚠ ' + r.note : ''}`);
+    } catch (e) { alertModal('Panel address', e.message); }
   };
   const bkf = $('#bkfile', card);
   $('#bkpick', card).onclick = () => bkf.click();
@@ -752,23 +795,85 @@ async function loadHelpers(card) {
   };
 }
 
+/* ---------------- users (admin) ---------------- */
+// Accounts: an admin sees and runs everything; a user only the servers and tunnels given to
+// it (or that it adds itself). Give an account its servers with 👤 Account… on a server card.
+function viewUsers(w) {
+  w.innerHTML = topbar('Users', 'Panel accounts. A user sees and runs only its own servers and tunnels; admins see the whole network.',
+    '<button class="btn pri" id="addUser">+ New user</button>');
+  const list = h('<div class="grid cards"></div>');
+  w.appendChild(list);
+  const paint = () => {
+    list.innerHTML = '';
+    (STATE.users || []).forEach(u => list.appendChild(h(`<div class="card ucard${u.username === STATE.user ? ' me' : ''}">
+      <div class="uav">${esc((u.username[0] || '?').toUpperCase())}</div>
+      <div class="ubody"><h3>${esc(u.username)} ${u.role === 'admin' ? '<span class="chip own">admin</span>' : '<span class="chip">user</span>'}${u.username === STATE.user ? ' <span class="faint">(you)</span>' : ''}</h3>
+        <div class="faint" style="font-size:12.5px">${u.servers} server${u.servers === 1 ? '' : 's'} · ${u.tunnels} tunnel${u.tunnels === 1 ? '' : 's'}</div></div>
+      <div class="uact">${u.username === STATE.user ? '' : `<button class="btn sm" data-view="${esc(u.username)}" title="show only this account's servers and tunnels">👁 View</button>
+        <button class="btn sm" data-edit="${esc(u.username)}">✎ Edit</button><button class="btn sm ghost danger" data-del="${esc(u.username)}">🗑</button>`}</div></div>`)));
+    $$('[data-view]', list).forEach(b => b.onclick = () => { STATE.ownerFilter = b.dataset.view; STATE.view = 'tunnels'; renderShell(); });
+    $$('[data-edit]', list).forEach(b => b.onclick = () => userModal(STATE.users.find(u => u.username === b.dataset.edit)));
+    $$('[data-del]', list).forEach(b => b.onclick = async () => {
+      if (!confirmInline(b, 'Delete?')) return;
+      try { await api('/users/delete', { Username: b.dataset.del }); STATE.users = await api('/users'); paint(); toast('Account deleted'); } catch (e) { alertModal('Delete account', e.message); }
+    });
+  };
+  paint();
+  $('#addUser').onclick = () => userModal(null);
+}
+function userModal(u) {
+  const m = modal(`<h2>${u ? 'Edit ' + esc(u.username) : 'New user'}</h2>
+    <form class="ff" id="uf">
+      <label class="f">Username<input name="Username" value="${esc(u ? u.username : '')}" ${u ? 'readonly' : 'required'} maxlength="32" autocomplete="off"></label>
+      <label class="f">Role<select name="Role"><option value="user"${!u || u.role === 'user' ? ' selected' : ''}>👤 User — only its own servers and tunnels</option><option value="admin"${u && u.role === 'admin' ? ' selected' : ''}>🛡 Admin — the whole network</option></select></label>
+      <label class="f">Password ${u ? '<span class="faint">(leave empty to keep it; a new one signs the user out)</span>' : '<span class="faint">(min 8)</span>'}<span class="pw"><input name="Password" type="password" autocomplete="new-password" data-strength${u ? '' : ' required minlength="8"'}><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span><small class="fhelp" data-meter></small></label>
+      <div class="actions" style="justify-content:space-between"><button type="button" class="btn ghost" data-gen>🎲 Generate</button><div class="actions"><button type="button" class="btn ghost" data-x>Cancel</button><button class="btn pri">Save</button></div></div>
+    </form>`);
+  wirePasswordUX(m);
+  $('[data-x]', m).onclick = () => m.remove();
+  $('[data-gen]', m).onclick = () => {
+    const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+    const el = $('[name=Password]', m); el.value = Array.from(crypto.getRandomValues(new Uint8Array(14)), b => abc[b % abc.length]).join(''); el.type = 'text'; el.dispatchEvent(new Event('input')); el.select();
+  };
+  $('#uf', m).onsubmit = async (ev) => {
+    ev.preventDefault();
+    const fd = Object.fromEntries(new FormData(ev.target));
+    try { STATE.users = await api('/users', fd); m.remove(); toast(u ? 'Account saved' : 'Account created — give the user its servers with 👤 Account… on a server card'); renderShell(); }
+    catch (e) { alertModal('Account', e.message); }
+  };
+}
+// the admin moves a server or tunnel to another account
+function ownerModal(kind, id) {
+  const x = kind === 'server' ? serverById(id) : STATE.tunnels.find(t => t.id === id);
+  if (!x) return;
+  const m = modal(`<h2>👤 Account of ${esc(x.name)}</h2>
+    <p class="muted" style="font-size:13px">That account sees it and can run it; other users don't see it. Admins always see everything.${kind === 'server' ? ' Its tunnels keep their own account — move them too.' : ''}</p>
+    <label class="f">Account<select data-o><option value="">me (admin)</option>${(STATE.users || []).filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}"${x.owner === u.username ? ' selected' : ''}>${esc(u.username)}${u.role === 'admin' ? ' (admin)' : ''}</option>`).join('')}</select></label>
+    <div class="actions" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost" data-x>Cancel</button><button class="btn pri" data-s>Save</button></div>`);
+  $('[data-x]', m).onclick = () => m.remove();
+  $('[data-s]', m).onclick = async () => {
+    try { await api('/owner', { Kind: kind, ID: id, Owner: $('[data-o]', m).value }); m.remove(); await loadAll(); renderView(); toast('Saved'); } catch (e) { alertModal('Account', e.message); }
+  };
+}
+
 /* ---------------- servers ---------------- */
 // Two clearly separate groups: Iran (entry) and foreign (exit, incl. this panel host).
 function viewServers(w) {
   w.innerHTML = topbar('Servers', 'Iran servers (users connect here) and foreign servers (traffic exits there), with their live load.');
-  const ir = iranServers(), fg = foreignServers();
+  const ir = iranServers().filter(x => shownOwner(x.owner)), fg = foreignServers().filter(x => shownOwner(x.owner));
+  const hostShown = isAdmin() && (!STATE.ownerFilter || STATE.ownerFilter === '-'); // the panel host is the admin's
   const sec = (key, title, sub, n, add) => h(`<section class="group">
     <div class="ghd"><div><h2>${title} <span class="count">${n}</span></h2><p>${sub}</p></div><button class="btn pri sm" data-add="${key}">${add}</button></div>
     <div class="grid cards" data-list="${key}"></div></section>`);
   const irSec = sec('iran', '🇮🇷 Iran servers', 'Entry side — users connect here; the tunnel forwards their traffic abroad.', ir.length, '+ Add Iran server');
-  const fgSec = sec('foreign', '🌍 Foreign servers', 'Exit side — your services (xray/v2ray…) run here. This panel host counts as one.', fg.length + 1, '+ Add foreign server');
+  const fgSec = sec('foreign', '🌍 Foreign servers', `Exit side — your services (xray/v2ray…) run here.${hostShown ? ' This panel host counts as one.' : ''}`, fg.length + (hostShown ? 1 : 0), '+ Add foreign server');
   const irList = $('[data-list=iran]', irSec), fgList = $('[data-list=foreign]', fgSec);
   if (!ir.length) irList.appendChild(h(`<div class="card empty small"><div class="big">🇮🇷</div>No Iran server yet — add one to start building tunnels.</div>`));
   ir.forEach(x => irList.appendChild(serverCard(x)));
-  fgList.appendChild(panelHostCard());
+  if (hostShown) fgList.appendChild(panelHostCard());
   fg.forEach(x => fgList.appendChild(serverCard(x)));
   w.appendChild(irSec); w.appendChild(fgSec);
-  w.appendChild(outageSection());
+  if (isAdmin()) w.appendChild(outageSection());
   $$('[data-add]', w).forEach(b => b.onclick = () => serverModal({ role: b.dataset.add }));
   $$('[data-edit]', w).forEach(b => b.onclick = () => serverModal(STATE.servers.find(x => x.id === b.dataset.edit)));
   $$('[data-del]', w).forEach(b => b.onclick = async () => { if (!confirmInline(b, 'Click again to delete')) return; try { await api('/servers/delete', { ID: b.dataset.del }); await loadAll(); renderView(); } catch (e) { alertModal('Error', e.message); } });
@@ -776,6 +881,7 @@ function viewServers(w) {
   $$('[data-agent]', w).forEach(b => b.onclick = () => agentModal(b.dataset.agent));
   $$('[data-bridge]', w).forEach(b => b.onclick = () => bridgeModal(b.dataset.bridge));
   $$('[data-optz]', w).forEach(b => b.onclick = () => optimizeModal(b.dataset.optz));
+  $$('[data-own]', w).forEach(b => b.onclick = () => ownerModal('server', b.dataset.own));
   $$('[data-prep]', w).forEach(b => b.onclick = () => prepareServer(b.dataset.prep));
 }
 // Outage log: every server (SSH port checked every few seconds) and tunnel outage, with
@@ -871,7 +977,7 @@ function serverCard(s) {
   const n = STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id).length;
   const sub = [s.city, s.os && s.arch ? `${s.os} ${s.arch}` : ''].filter(Boolean).join(' · ');
   return h(`<div class="card scard ${isIran ? 'ir' : 'fg'}">
-    <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${esc(s.name || '(unnamed)')}</h3><small>${esc(sub || (isIran ? 'Iran · entry' : 'foreign · exit'))}</small></div></div>${status}</div>
+    <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${esc(s.name || '(unnamed)')} ${ownerChip(s.owner)}</h3><small>${esc(sub || (isIran ? 'Iran · entry' : 'foreign · exit'))}</small></div></div>${status}</div>
     <dl class="kv">
       <dt>IPv4</dt><dd class="mono">${esc(s.ipv4 || '—')}</dd>
       <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'read on test'))}</dd>
@@ -890,7 +996,8 @@ function serverCard(s) {
       ${moreMenu([
         { label: '⚡ Optimize kernel', attr: `data-optz="${s.id}"` },
         isIran ? { label: '📡 Agent install command', attr: `data-agent="${s.id}"` } : null,
-        { label: '🔑 SSH bridge', attr: `data-bridge="${s.id}"` },
+        isAdmin() ? { label: '🔑 SSH bridge', attr: `data-bridge="${s.id}"` } : null,
+        isAdmin() ? { label: '👤 Account…', attr: `data-own="${s.id}"` } : null,
         { label: '✎ Edit', attr: `data-edit="${s.id}"` },
         { label: '🗑 Delete', attr: `data-del="${s.id}"`, danger: true },
       ])}
@@ -954,12 +1061,13 @@ function serverModal(s) {
         <label class="f">SSH port<input name="sshPort" type="number" class="mono" value="${s.sshPort || 22}"></label>
       </div>
       <div class="two"><label class="f">SSH user<input name="sshUser" class="mono" value="${esc(s.sshUser || 'root')}"></label><label class="f">Country <span class="faint">(auto; 2-letter override)</span><input name="country" class="mono" maxlength="2" value="${esc(s.country || '')}" placeholder="auto"></label></div>
+      ${isAdmin() && !s.id && (STATE.users || []).length > 1 ? `<label class="f">Account <span class="faint">(who sees and runs it)</span><select name="owner"><option value="">me (admin)</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}"${STATE.ownerFilter === u.username ? ' selected' : ''}>${esc(u.username)}</option>`).join('')}</select></label>` : ''}
       <label class="f">Password <span class="faint">(leave blank to keep)</span><input name="password" type="password" value="${esc(s.password || '')}"></label>
       <label class="f">or Private key (PEM)<textarea name="privateKey" rows="2" class="mono">${esc(s.privateKey || '')}</textarea></label>
       <details><summary class="muted" style="font-size:13px;cursor:pointer">Advanced reach options</summary>
         <div class="ff" style="margin-top:10px">
           <label class="f">Proxy for SSH <span class="faint">socks5:// or http://</span><input name="proxy" class="mono" value="${esc(s.proxy || '')}"></label>
-          <label class="f">Force jump via<select name="via"><option value="">auto (try all servers)</option>${STATE.servers.filter(x => x.id !== s.id).map(x => `<option value="${x.id}"${s.via === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+          <label class="f">Force jump via<select name="via"><option value="">auto (try all servers)</option>${STATE.servers.filter(x => x.id !== s.id && (x.owner || '') === (s.owner || (isAdmin() ? '' : STATE.user))).map(x => `<option value="${x.id}"${s.via === x.id ? ' selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
         </div></details>
       <div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" id="cancel">Cancel</button><button class="btn pri">Save</button></div>
     </form>`, true);
@@ -977,7 +1085,7 @@ function serverModal(s) {
 // Summary strip, then tunnels grouped by their Iran server.
 function viewTunnels(w) {
   w.innerHTML = topbar('Tunnels', 'Each tunnel links one Iran server to one foreign server. Pick a connection method and switch any time.',
-    `<button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button><button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
+    `${isAdmin() ? '' : '<!--'}<button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button>${isAdmin() ? '' : '-->'}<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
   const run = STATE.tunnels.filter(t => t.active).length;
   w.appendChild(h(`<div class="summary">
     <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="cu" data-cu="${run}">0</span><span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
@@ -1017,14 +1125,14 @@ function viewTunnels(w) {
       if (shown && none) none.remove();
     };
     $('[data-q]', bar).oninput = (e) => { STATE.tunSearch = e.target.value; applySearch(); };
-    STATE.tunnels.filter(t => (!STATE.tunFilter || t.serverId === STATE.tunFilter) && (!STATE.tunRunning || t.active))
+    STATE.tunnels.filter(t => shownOwner(t.owner) && (!STATE.tunFilter || t.serverId === STATE.tunFilter) && (!STATE.tunRunning || t.active))
       .sort((x, y) => (!!y.active - !!x.active) || x.name.localeCompare(y.name))
       .forEach(t => grid.appendChild(tunnelCard(t)));
     w.appendChild(grid);
     applySearch();
   }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
-  $('#repairTun').onclick = async () => {
+  if ($('#repairTun')) $('#repairTun').onclick = async () => {
     try { const r = await api('/repair', {}); openLog({ id: 'repair', name: 'Repair' }, r.job); } catch (e) { alertModal('Repair', e.message); }
   };
 }
@@ -1039,7 +1147,7 @@ function tunnelCard(t) {
   const fl = (s, d) => s && s.country ? flag(s.country) : d;
   const miss = methodMissing(active || selM, t);
   const card = h(`<div class="card tc${t.active ? ' live' : ''}" data-id="${t.id}">
-    <div class="tc-h"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
+    <div class="tc-h"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${ownerChip(t.owner)}${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     <div class="tc-r" title="${esc(serverName(t.serverId))} → ${esc(fg ? fg.name : 'this panel host')}">
       <span class="sd" data-ir></span><span class="nm">${fl(ir, '🇮🇷')} ${esc(serverName(t.serverId))}</span>
       <span class="ln${t.active ? ' on' : ''}"></span>
@@ -1060,6 +1168,7 @@ function tunnelCard(t) {
         t.active ? { label: '🚀 Speed test', attr: 'data-speedtest' } : null,
         t.active ? { label: '🩺 Diagnose', attr: 'data-diag' } : null,
         t.active ? { label: '🔎 Trace connections (30 s)', attr: 'data-trace' } : null,
+        isAdmin() ? { label: '👤 Account…', attr: 'data-own' } : null,
         { label: '✎ Edit tunnel', attr: 'data-edit' },
         { label: '🗑 Delete tunnel', attr: 'data-del', danger: true }])}
     </div></div>`);
@@ -1072,6 +1181,7 @@ function tunnelCard(t) {
   on('[data-diag]', () => tunnelJob(t, '/tunnels/diagnose', 'Diagnose'));
   on('[data-trace]', () => tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'));
   on('[data-edit]', () => tunnelModal(t));
+  on('[data-own]', () => ownerModal('tunnel', t.id));
   on('[data-del]', async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { const r = await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); if (r.warning) alertModal('Deleted — with a warning', r.warning); } catch (er) { alertModal('Error', er.message); } });
   refreshStatus(t, card);
   return card;
@@ -1271,7 +1381,7 @@ function renderOpts(box, t, mid) {
 function tunnelModal(t) {
   t = t || {};
   const sh = t.shape || {};
-  const foreignOpts = `<option value="">this panel host</option>` + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
+  const foreignOpts = panelHostOpt() + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
   const m = modal(`<h2>${t.id ? 'Edit tunnel' : 'New tunnel'}</h2>
     <form class="ff" id="tf">
       <label class="f">Name<input name="name" value="${esc(t.name || '')}" required></label>
@@ -1284,6 +1394,7 @@ function tunnelModal(t) {
         <label class="f">Ports <span class="faint">443,8080=80,2000-2010</span><input name="ports" class="mono" value="${esc(t.ports || '443')}"></label>
       </div>
       <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
+      ${isAdmin() && !t.id && (STATE.users || []).length > 1 ? `<label class="f">Account <span class="faint">(who sees and runs it — use that account's servers)</span><select name="owner"><option value="">me (admin)</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}"${STATE.ownerFilter === u.username ? ' selected' : ''}>${esc(u.username)}</option>`).join('')}</select></label>` : ''}
       <label class="row f"><input type="checkbox" id="tFail"${t.noFailover ? '' : ' checked'}> 🔁 Automatic failover <span class="faint" style="font-weight:500">— if the tunnel is down for 5 min, switch to a working method / IPv4⇄IPv6 path; re-check the original every hour and switch back when it works</span></label>
       <label class="row f"><input type="checkbox" id="tHot"${t.hotStandby ? ' checked' : ''}> ⚡ Hot standby <span class="faint" style="font-weight:500">— keep every compatible method (IPv4 and IPv6) running; users go through the chosen one and a switcher on the Iran server moves them to the best working path within seconds (no SSH needed), and back after ${60}s of stability. Order: this route's benchmark. Applies on the next Start/Re-apply.</span></label>
       <label class="row f" style="margin-inline-start:22px"><input type="checkbox" id="tHsAuto"${t.hsAuto ? ' checked' : ''}> 🤖 Auto — also move users to a clearly better path when theirs gets slow or lossy <span class="faint" style="font-weight:500">(off = manual: the chosen path, left only while it is down; switchable any time from the tunnel's window or the bot)</span></label>
@@ -1330,7 +1441,7 @@ function viewBench(w) {
     <form class="card pad ff" id="bf" style="max-width:640px">
       <div class="two">
         <label class="f">Iran server<select name="iran">${iranServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
-        <label class="f">Foreign server<select name="foreign"><option value="">this panel host</option>${foreignServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
+        <label class="f">Foreign server<select name="foreign">${panelHostOpt()}${foreignServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
       </div>
       <div class="two">
         <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>

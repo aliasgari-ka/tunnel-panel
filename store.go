@@ -34,6 +34,7 @@ type Settings struct {
 // Server is a remote Iran server reached over SSH.
 type Server struct {
 	ID         string `json:"id"`
+	Owner      string `json:"owner,omitempty"` // account it belongs to ("" = the admin's)
 	Name       string `json:"name"`
 	IPv4       string `json:"ipv4"`
 	IPv6       string `json:"ipv6"`
@@ -64,6 +65,7 @@ type Server struct {
 // Tunnel links one Iran server with this (foreign) server.
 type Tunnel struct {
 	ID        string                       `json:"id"`
+	Owner     string                       `json:"owner,omitempty"` // account it belongs to ("" = the admin's)
 	Name      string                       `json:"name"`
 	ServerID  string                       `json:"serverId"`  // Iran server
 	ForeignID string                       `json:"foreignId"` // foreign server ("" = this panel host)
@@ -184,6 +186,8 @@ type User struct {
 	// Gen is part of every session's signature: sign-out and a password change bump it, so
 	// the sessions issued before stop working (a stolen cookie included)
 	Gen int `json:"gen,omitempty"`
+	// Role "user": sees and runs only what it owns; "" or "admin": everything (see access.go)
+	Role string `json:"role,omitempty"`
 }
 
 type State struct {

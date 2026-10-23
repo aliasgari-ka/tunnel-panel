@@ -161,8 +161,9 @@ func clientCtx(ctx context.Context, sh *SSHHost) error {
 func (a *App) otherServers(exclude string) []*Server {
 	var out []*Server
 	a.store.View(func(st *State) {
+		owner := ownerOfLocked(st, exclude) // only servers of the same account are jump hosts
 		for _, s := range st.Servers {
-			if s.ID != exclude && (s.Prepared || (a.agents != nil && a.agents.online(s.ID) != nil)) {
+			if s.ID != exclude && s.Owner == owner && (s.Prepared || (a.agents != nil && a.agents.online(s.ID) != nil)) {
 				out = append(out, s)
 			}
 		}

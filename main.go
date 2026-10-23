@@ -23,6 +23,14 @@ func main() {
 		fmt.Println("tunnel-panel " + version)
 		return
 	}
+	// set-domain: tunnel-panel set-domain panel.example.com[,other] — HTTPS on those domains
+	if len(os.Args) > 1 && os.Args[1] == "set-domain" {
+		if err := setDomainCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// agent subcommand: tunnel-panel agent --connect host:port --token T --pin P
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		fs := flag.NewFlagSet("agent", flag.ExitOnError)
@@ -133,6 +141,7 @@ func main() {
 		}
 	})
 	cookieSecure = *tlsMode != "" && *tlsMode != "self"
+	panelTLS = *tlsMode
 	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))
 }
 

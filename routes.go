@@ -62,12 +62,23 @@ func (s *Server2) routeSkip(w http.ResponseWriter, r *http.Request) {
 			httpErr(w, 400, "bad request")
 			return
 		}
+		if user, admin := s.who(r); !s.pairVisible(user, admin, in.Iran, in.Foreign) {
+			httpErr(w, 404, "not found")
+			return
+		}
 		s.app.setRouteSkip(in.Iran, in.Foreign, in.Method, in.Family, in.Skip)
 		s.app.routeSkipChanged(in.Iran, in.Foreign)
 	}
 	out := map[string][]string{}
+	user, admin := s.who(r)
 	s.app.store.View(func(st *State) {
 		for k, v := range st.RouteSkip {
+			if !admin {
+				iran, foreign, _ := strings.Cut(k, "|")
+				if foreign == "" || !visible(user, admin, ownerOfLocked(st, iran)) || !visible(user, admin, ownerOfLocked(st, foreign)) {
+					continue
+				}
+			}
 			out[k] = append([]string(nil), v...)
 		}
 	})

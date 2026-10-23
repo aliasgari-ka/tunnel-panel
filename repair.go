@@ -152,8 +152,11 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 		switch {
 		case err != nil:
 			why = "switcher not running: " + err.Error()
-		case bad > 0 || failedPaths > 0:
-			why = fmt.Sprintf("%d of %d paths down", bad+failedPaths, len(v.OK)+failedPaths)
+		// only paths that ran and died count: a path whose method never came up on this
+		// route (Failed at deploy) rebuilt the tunnel — and cut its users — after every
+		// update, without ever coming up either
+		case bad > 0:
+			why = fmt.Sprintf("%d of %d paths down", bad, len(v.OK)+failedPaths)
 		case strings.Contains(out, "OLD"):
 			why, switcherOnly = "older switcher", true
 		}
