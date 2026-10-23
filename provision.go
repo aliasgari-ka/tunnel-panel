@@ -187,13 +187,14 @@ command -v ethtool >/dev/null 2>&1 || pk="$pk ethtool"
 command -v iptables >/dev/null 2>&1 || pk="$pk iptables"
 command -v openssl >/dev/null 2>&1 || pk="$pk openssl"
 command -v ping >/dev/null 2>&1 || pk="$pk iputils-ping"
+command -v conntrack >/dev/null 2>&1 || pk="$pk conntrack"
 if [ -z "$pk" ]; then echo "packages: all present"; exit 0; fi
 echo "installing:$pk"
 if command -v apt-get >/dev/null 2>&1; then
   timeout 600 apt-get update -qq >/dev/null 2>&1 || true
   timeout 900 apt-get install -y -qq $pk >/dev/null 2>&1 || echo "WARNING: apt could not install some of:$pk"
 elif command -v dnf >/dev/null 2>&1; then
-  timeout 900 dnf install -y strongswan ethtool iptables openssl iputils >/dev/null 2>&1 || echo "WARNING: dnf install failed"
+  timeout 900 dnf install -y strongswan ethtool iptables openssl iputils conntrack-tools >/dev/null 2>&1 || echo "WARNING: dnf install failed"
 fi
 command -v swanctl >/dev/null 2>&1 && echo "strongSwan: ok" || echo "strongSwan: missing (IPsec will install it on first use)"
 `

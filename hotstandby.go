@@ -517,8 +517,11 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 
 // hsConntrackSetup installs the conntrack tool the switcher clears a dead path's
 // connections with (without it they wait for the client's own timeout).
-const hsConntrackSetup = `command -v conntrack >/dev/null 2>&1 || { (command -v apt-get >/dev/null 2>&1 && timeout 300 apt-get install -y -qq conntrack) || (command -v dnf >/dev/null 2>&1 && timeout 300 dnf install -y conntrack-tools) || true; } >/dev/null 2>&1
-command -v conntrack >/dev/null 2>&1 || echo "note: no conntrack tool — users of a failed path reconnect on their own timeout"
+// It installs in the background, so a slow mirror never holds up the apply.
+const hsConntrackSetup = `if ! command -v conntrack >/dev/null 2>&1; then
+  echo "note: installing the conntrack tool in the background (until then users of a failed path reconnect on their own timeout)"
+  nohup sh -c '(command -v apt-get >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq conntrack) || (command -v dnf >/dev/null 2>&1 && timeout 300 dnf install -y conntrack-tools)' >/dev/null 2>&1 &
+fi
 true
 `
 
