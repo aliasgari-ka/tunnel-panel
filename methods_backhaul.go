@@ -187,7 +187,7 @@ auth.method = "token"
 auth.token = "%s"
 transport.protocol = "%s"
 transport.tls.enable = %s
-transport.poolCount = 10
+transport.poolCount = 32
 transport.dialServerKeepalive = 120
 %s`, d.IRPub, bp, tok, proto, c.Opt("tls"), proxies)
 

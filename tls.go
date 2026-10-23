@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
@@ -36,7 +37,7 @@ func serve(addr, tlsMode, dir string, handler http.Handler) error {
 			return err
 		}
 		fmt.Printf("Panel: https://%s  (self-signed — your browser will warn once)\n", addr)
-		srv := &http.Server{Addr: addr, Handler: handler, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
+		srv := &http.Server{Addr: addr, Handler: handler, ErrorLog: quietTLSLog, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
 		return srv.ListenAndServeTLS("", "")
 	default:
 		m := &autocert.Manager{
@@ -50,9 +51,22 @@ func serve(addr, tlsMode, dir string, handler http.Handler) error {
 				http.ListenAndServe(":80", m.HTTPHandler(redirectHTTPS(tlsMode))))
 		}()
 		fmt.Printf("Panel: https://%s/  (Let's Encrypt; needs ports 80 and 443 open and DNS pointing here)\n", tlsMode)
-		srv := &http.Server{Addr: ":443", Handler: handler, TLSConfig: m.TLSConfig()}
+		srv := &http.Server{Addr: ":443", Handler: handler, ErrorLog: quietTLSLog, TLSConfig: m.TLSConfig()}
 		return srv.ListenAndServeTLS("", "")
 	}
+}
+
+// quietTLSLog drops "TLS handshake error" lines: internet scanners hit the panel's port all
+// day (no SNI, old TLS versions, plain HTTP) and they buried the panel's own log lines.
+var quietTLSLog = log.New(quietTLSWriter{}, "", log.LstdFlags)
+
+type quietTLSWriter struct{}
+
+func (quietTLSWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "TLS handshake error") {
+		return len(p), nil
+	}
+	return os.Stderr.Write(p)
 }
 
 func redirectHTTPS(host string) http.Handler {
