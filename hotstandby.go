@@ -20,7 +20,7 @@ import (
 
 const (
 	hsEvery    = 2  // seconds between checks on the Iran server
-	hsFails    = 2  // failed checks in a row before the active path is abandoned
+	hsFails    = 3  // failed checks in a row before the active path is abandoned (one lost check is no outage)
 	hsFailback = 60 // seconds a better path must work before the users move back
 )
 
@@ -319,7 +319,8 @@ const (
 	hsStandby  = 5    // standby paths are checked every this many checks (active: every check)
 	hsSpeedMB  = 2    // one speed measurement (download, foreign → Iran)
 	hsSpeedSec = 7200 // the active path's speed is measured this often (auto mode)
-	hsHold     = 300  // seconds after an automatic move before the next one
+	hsHold     = 600  // seconds after an automatic move before the next one
+	hsPlanMax  = 3    // planned moves (back to the chosen path, auto improvements) per hour
 	hsLossBad  = 50   // ‰: active path loss that counts as degraded (5 %)
 	hsSpeedMin = 1000 // kbit/s: active path speed that counts as degraded
 )
@@ -361,13 +362,22 @@ flush() { bash flush-$1.sh >/dev/null 2>&1; flushed[$1]=1; }
 cost() { echo $(( ${qr[$1]:-999} + ${ql[$1]:-0} * 5 / 2 )); } # ms, 1 % loss ≈ 25 ms
 mb() { printf '%d.%d' $(($1 / 1000)) $((($1 % 1000) / 100)); }
 pc() { printf '%d.%d' $((${1:-0} / 10)) $((${1:-0} % 10)); }
-stable() { [ "${ok[$1]}" = 1 ] && [ $((now - ${since[$1]:-$now})) -ge $BACK ]; }
+# a path that keeps dropping must stay up longer before users go (back) to it: BACK, doubled
+# for every drop in the last 30 min (at most 30 min)
+drops() { local t c=0 keep=""; for t in ${dropat[$1]}; do [ $((now - t)) -lt 1800 ] && { keep="$keep $t"; c=$((c + 1)); }; done; dropat[$1]=$keep; echo $c; }
+need() { local c=$(drops $1) w=$BACK; while [ $c -gt 1 ] && [ $w -lt 1800 ]; do w=$((w * 2)); c=$((c - 1)); done; [ $w -gt 1800 ] && w=1800; echo $w; }
+stable() { [ "${ok[$1]}" = 1 ] && [ $((now - ${since[$1]:-$now})) -ge $(need $1) ]; }
+# planned moves (back to the chosen path, auto improvements) at most PLANMAX an hour; a
+# failure is always handled
+budget() { local t c=0 keep=""; for t in $planat; do [ $((now - t)) -lt 3600 ] && { keep="$keep $t"; c=$((c + 1)); }; done; planat=$keep; [ $c -lt $PLANMAX ]; }
+planned() { planat="$planat $now"; use "$@"; }
+backmsg() { local c=$(drops $1); echo "path $1 worked for $(need $1)s$([ $c -gt 0 ] && echo " (it dropped ${c}× in the last 30 min)")"; }
 measure() { # measure <kind> <from> <why> <k...>: speed tests in the background
   local kind=$1 from=$2 why=$3; shift 3
   echo "$kind $from $why" > cmp.run; rm -f cmp.done
   ( for k in "$@"; do s=$(timeout 20 $P probe speed -addr ${A[$k]} -max $SPMB -secs 10 2>/dev/null); echo "$k ${s:-0}"; done > cmp.tmp; mv cmp.tmp cmp.done ) &
 }
-declare -a ok since fails qr ql sp spb spat flushed
+declare -a ok since fails qr ql sp spb spat flushed dropat
 active=-1
 rm -f cmp.run cmp.done cmp.tmp
 bash base.sh >/dev/null 2>&1
@@ -399,6 +409,7 @@ while true; do
         if [ "${ls:--1}" -ge 0 ]; then if [ -z "${ql[$k]}" ]; then ql[$k]=$((ls * 10)); else ql[$k]=$(( (ql[$k] + ls * 10) / 2 )); fi; fi
       else
         [ "${ok[$k]}" = 0 ] || since[$k]=$now; ok[$k]=0; fails[$k]=$(( ${fails[$k]:-0} + 1 ))
+        [ ${fails[$k]} = $FAILS ] && dropat[$k]="${dropat[$k]} $now"
         # connections still draining on a path that just died: clear them, so they reconnect
         [ $k != $active ] && [ ${fails[$k]} -ge $FAILS ] && [ "${flushed[$k]}" != 1 ] && flush $k
       fi
@@ -419,10 +430,10 @@ while true; do
     [ $best -ge 0 ] && use $best "path $active failed $FAILS checks in a row"
   elif [ "${ok[$active]}" = 1 ] && [ "$M" != auto ]; then
     # manual: back to the chosen path (the pinned one, else the first) once it is stable
-    if [ $active != $P0 ] && stable $P0; then use $P0 "path $P0 worked for ${BACK}s"
+    if [ $active != $P0 ] && stable $P0 && budget; then planned $P0 "$(backmsg $P0)"
     elif [ "${ok[$P0]}" != 1 ]; then
       for ((k=0; k<active; k++)); do
-        [ $k != $P0 ] && stable $k && { use $k "path $k worked for ${BACK}s"; break; }
+        [ $k != $P0 ] && stable $k && budget && { planned $k "$(backmsg $k)"; break; }
       done
     fi
   elif [ "${ok[$active]}" = 1 ] && [ -f cmp.done ]; then
@@ -448,11 +459,12 @@ while true; do
         fi
         [ $win = 1 ] && [ $sc -gt $bs ] && { best=$c; bs=$sc; }
       done < cmp.done
-      if [ $best -ge 0 ]; then
-        use $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
+      if [ $best -ge 0 ] && budget; then
+        planned $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
         hold=$((now + HOLD)); backoff=600
       else
-        ev keep "$a" "$a" "compared ${why:-paths}: none clearly better ($(mb $sa) Mbit/s here)"
+        if [ $best -ge 0 ]; then ev keep "$a" "$a" "path $best is better, but $PLANMAX planned moves this hour already — staying"
+        else ev keep "$a" "$a" "compared ${why:-paths}: none clearly better ($(mb $sa) Mbit/s here)"; fi
         cmpat=$((now + backoff)); backoff=$((backoff * 2)); [ $backoff -gt 7200 ] && backoff=7200; cmploss=${ql[$a]:-0}
       fi
     fi
@@ -481,7 +493,7 @@ while true; do
     fi
   fi
   lastpin=$P0
-  n=$((n + 1)); [ $((n % 20)) = 0 ] && { tune; bash base.sh >/dev/null 2>&1; }
+  n=$((n + 1)); [ $((n % 20)) = 0 ] && { tune; bash base.sh >/dev/null 2>&1; for ((k=0; k<N; k++)); do drops $k >/dev/null; done; }
   sleep $EVERY
 done
 `
@@ -494,8 +506,8 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 	for _, s := range splitPorts(t.Ports) {
 		ports = append(ports, strings.ReplaceAll(s.listen, "-", ":"))
 	}
-	conf := fmt.Sprintf("# tunnel %q\nP=%s\nN=%d\nEVERY=%d\nFAILS=%d\nBACK=%d\nPORTS=%q\nSBY=%d\nSPMB=%d\nSPEVERY=%d\nHOLD=%d\nLOSSBAD=%d\nSPMIN=%d\n",
-		t.Name, probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "), hsStandby, hsSpeedMB, hsSpeedSec, hsHold, hsLossBad, hsSpeedMin)
+	conf := fmt.Sprintf("# tunnel %q\nP=%s\nN=%d\nEVERY=%d\nFAILS=%d\nBACK=%d\nPORTS=%q\nSBY=%d\nSPMB=%d\nSPEVERY=%d\nHOLD=%d\nLOSSBAD=%d\nSPMIN=%d\nPLANMAX=%d\n",
+		t.Name, probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "), hsStandby, hsSpeedMB, hsSpeedSec, hsHold, hsLossBad, hsSpeedMin, hsPlanMax)
 	files := map[string]FileSpec{
 		dir + "/switch.sh": {Content: []byte(hsSwitcher), Mode: 0o755},
 		dir + "/conf":      {Content: []byte(conf), Mode: 0o644},
@@ -831,8 +843,8 @@ func hsEventText(t *Tunnel, e string) (int64, string) {
 		if strings.HasPrefix(reason, "auto: ") {
 			return at, fmt.Sprintf("⚡ %s: auto mode moved the users to %s — better than %s (%s), %s (Tehran)", t.Name, name(f[3]), name(f[2]), strings.TrimPrefix(reason, "auto: "), clock(time.Unix(at, 0)))
 		}
-		if strings.Contains(reason, "worked for") {
-			return at, fmt.Sprintf("↩ %s back on %s (it was stable for %ds) — from %s, %s (Tehran)", t.Name, name(f[3]), hsFailback, name(f[2]), clock(time.Unix(at, 0)))
+		if i := strings.Index(reason, "worked for "); i >= 0 {
+			return at, fmt.Sprintf("↩ %s back on %s (it was stable for %s) — from %s, %s (Tehran)", t.Name, name(f[3]), reason[i+len("worked for "):], name(f[2]), clock(time.Unix(at, 0)))
 		}
 		return at, fmt.Sprintf("🔀 %s switched to %s — %s (%s), %s (Tehran)", t.Name, name(f[3]), name(f[2]), strings.ReplaceAll(reason, "path "+f[2]+" ", ""), clock(time.Unix(at, 0)))
 	case "kernel":
