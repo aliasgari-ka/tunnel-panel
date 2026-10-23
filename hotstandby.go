@@ -95,6 +95,14 @@ func hsForwarderOK(t *Tunnel) bool {
 	return true
 }
 
+// hsCandidate: m over f can be a standby path of t (the user didn't leave it out on this route).
+func (a *App) hsCandidate(t *Tunnel, m *Method, f string) bool {
+	if !supportsFamily(m, f) || m.ID == "spoof" || (hsOnly != nil && !contains(hsOnly, m.ID)) || a.routeSkipped(t.ServerID, t.ForeignID, m.ID, f) {
+		return false
+	}
+	return benchIsL3(m, t.Options[m.ID]) || hsForwarderOK(t)
+}
+
 // hsPlan lists the paths: the chosen method first, then every compatible method over every
 // family the route has, best benchmark score first. Indices of existing paths are kept.
 func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
@@ -122,10 +130,7 @@ func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
 	for _, f := range a.routeFamilies(t) {
 		for _, m := range methods {
 			pos++
-			if !supportsFamily(m, f) || m.ID == "spoof" || (m.ID == mid && f == fam) || (hsOnly != nil && !contains(hsOnly, m.ID)) || a.routeSkipped(t.ServerID, t.ForeignID, m.ID, f) {
-				continue
-			}
-			if !benchIsL3(m, t.Options[m.ID]) && !hsForwarderOK(t) {
+			if (m.ID == mid && f == fam) || !a.hsCandidate(t, m, f) {
 				continue
 			}
 			s, ok := score[m.ID+"|"+f]

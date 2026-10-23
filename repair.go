@@ -110,6 +110,24 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 		return "skipped", "foreign unreachable"
 	}
 
+	if hot && npaths > 0 {
+		// methods left out (or put back) on the route since the last apply
+		if drop, add := a.hsPathDiff(t); len(drop)+len(add) > 0 {
+			j.log("· %s: paths differ from the route's choices (%d left out, %d put back) — updating them", name, len(drop), len(add))
+			pj, err := a.hsUpdatePaths(t)
+			if err != nil {
+				return "failed", "path update: " + err.Error()
+			}
+			for pj != nil && pj.snapshot().Status == "running" && ctx.Err() == nil {
+				time.Sleep(2 * time.Second)
+			}
+			if pj != nil && pj.snapshot().Status != "ok" {
+				return "failed", "path update " + pj.snapshot().Status
+			}
+			return "fixed", "paths updated to the route's choices"
+		}
+	}
+
 	why := ""
 	switcherOnly := false
 	if hot && npaths > 0 {

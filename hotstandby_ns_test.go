@@ -222,6 +222,39 @@ except Exception as e:
 	all := allMsgs()
 	step("auto move reported", strings.Contains(all, "auto mode moved the users"))
 
+	// leaving a method out on the route takes it out of the running switcher (no rebuild),
+	// putting it back starts it again
+	waitJob := func(pj *Job) string {
+		if pj == nil {
+			return "none"
+		}
+		for pj.snapshot().Status == "running" {
+			time.Sleep(time.Second)
+		}
+		return pj.snapshot().Status
+	}
+	npaths := func() int { n := 0; st.View(func(*State) { n = len(tn.Paths) }); return n }
+	before := npaths()
+	hasPath := func(mid string) (ok bool) { // in the list (FRP can't download its binary offline: it is there as failed)
+		st.View(func(*State) {
+			for _, p := range tn.Paths {
+				ok = ok || p.Method == mid && p.Family == "v4"
+			}
+		})
+		return
+	}
+	a.setRouteSkip("ir", "kh", "frp", "v4", true)
+	s1 := waitJob(func() *Job { j, _ := a.hsUpdatePaths(tn); return j }())
+	sw := sh(t, "grep -c . /etc/netns/tir/tunnel-panel/t/hs1hs/targets")
+	step("left out FRP → path removed ("+s1+", paths "+strconv.Itoa(before)+"→"+strconv.Itoa(npaths())+", switcher targets "+sw+")",
+		s1 == "ok" && !hasPath("frp") && npaths() == before-1 && sw == strconv.Itoa(npaths()))
+	step("users still pass after the update", user())
+	a.setRouteSkip("ir", "kh", "frp", "v4", false)
+	s2 := waitJob(func() *Job { j, _ := a.hsUpdatePaths(tn); return j }())
+	step("FRP put back → path added ("+s2+", paths "+strconv.Itoa(npaths())+")", s2 == "ok" && hasPath("frp") && npaths() == before)
+	s3 := waitJob(func() *Job { j, _ := a.hsUpdatePaths(tn); return j }())
+	step("nothing to change → no job ("+s3+")", s3 == "none")
+
 	j, _ := a.Stop(tn)
 	for j.snapshot().Status == "running" {
 		time.Sleep(time.Second)

@@ -403,7 +403,7 @@ async function viewRoutes(w) {
       try {
         skip = await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on });
         card.replaceWith(buildCard(p));
-        toast(on ? `${methodTitle(method)} (${famName(family)}) left out on this route — hot standby drops it on the next Re-apply` : `${methodTitle(method)} (${famName(family)}) is back on this route`);
+        toast(on ? `${methodTitle(method)} (${famName(family)}) left out on this route — running hot-standby tunnels drop it in about 20 s` : `${methodTitle(method)} (${famName(family)}) is back on this route — running hot-standby tunnels add it in about 20 s`);
       } catch (er) { alertModal('Routes', er.message); }
     };
     $$('[data-skip]', card).forEach(b => b.onclick = () => setSkip(b.dataset.skip, true));

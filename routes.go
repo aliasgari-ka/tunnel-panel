@@ -1,6 +1,13 @@
 package main
 
-import "net/http"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
 
 // Per-route exclusions: methods the user doesn't want between two servers (one that
 // misbehaves on that route, or one they don't trust) are left out of everything automatic
@@ -56,6 +63,7 @@ func (s *Server2) routeSkip(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.app.setRouteSkip(in.Iran, in.Foreign, in.Method, in.Family, in.Skip)
+		s.app.routeSkipChanged(in.Iran, in.Foreign)
 	}
 	out := map[string][]string{}
 	s.app.store.View(func(st *State) {
@@ -64,4 +72,230 @@ func (s *Server2) routeSkip(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	writeJSON(w, out)
+}
+
+// A change of a route's exclusions reaches the hot-standby tunnels running there by itself:
+// a left-out path is stopped and taken out of the switcher, one put back is started and
+// added — without a rebuild, so users on the other paths aren't cut. It waits a little
+// (several ⊘ in a row become one update) and runs as a job on each tunnel.
+const routeSkipDelay = 20 * time.Second
+
+var routeSkipTimers = struct {
+	sync.Mutex
+	m map[string]*time.Timer
+}{m: map[string]*time.Timer{}}
+
+func (a *App) routeSkipChanged(iran, foreign string) {
+	k := routeKey(iran, foreign)
+	routeSkipTimers.Lock()
+	defer routeSkipTimers.Unlock()
+	if t := routeSkipTimers.m[k]; t != nil {
+		t.Stop()
+	}
+	routeSkipTimers.m[k] = time.AfterFunc(routeSkipDelay, func() {
+		routeSkipTimers.Lock()
+		delete(routeSkipTimers.m, k)
+		routeSkipTimers.Unlock()
+		var ts []*Tunnel
+		a.store.View(func(st *State) {
+			for _, t := range st.Tunnels {
+				if t.ServerID == iran && t.ForeignID == foreign && t.Active != "" && t.HotStandby && len(t.Paths) > 0 {
+					ts = append(ts, t)
+				}
+			}
+		})
+		for _, t := range ts {
+			if _, err := a.hsUpdatePaths(t); err != nil {
+				a.push(fmt.Sprintf("⚠ %s: the route's left-out methods are applied on its next Start/Re-apply (%v)", t.Name, err))
+			}
+		}
+	})
+}
+
+// hsPathDiff: the running paths now left out on the route, and the methods put back that
+// aren't running.
+func (a *App) hsPathDiff(t *Tunnel) (drop, add []HSPath) {
+	var paths []HSPath
+	a.store.View(func(*State) { paths = append([]HSPath(nil), t.Paths...) })
+	have := map[string]bool{}
+	for _, p := range paths {
+		have[p.Method+"|"+p.Family] = true
+		if a.routeSkipped(t.ServerID, t.ForeignID, p.Method, p.Family) {
+			drop = append(drop, p)
+		}
+	}
+	for _, f := range a.routeFamilies(t) {
+		for _, m := range methods {
+			if !have[m.ID+"|"+f] && a.hsCandidate(t, m, f) {
+				add = append(add, HSPath{Method: m.ID, Family: f})
+			}
+		}
+	}
+	return drop, add
+}
+
+// hsUpdatePaths brings a running hot-standby tunnel's paths in line with its route's
+// exclusions (nil job: nothing to change).
+func (a *App) hsUpdatePaths(t *Tunnel) (*Job, error) {
+	drop, add := a.hsPathDiff(t)
+	if len(drop)+len(add) == 0 {
+		return nil, nil
+	}
+	j, err := a.jobs.start(t.ID, "paths")
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		defer a.jobs.done(j)
+		ctx, cancel := j.context(20 * time.Minute)
+		defer cancel()
+		if err := a.hsUpdatePathsRun(ctx, j, t, drop, add); err != nil {
+			j.log("ERROR: %v", err)
+			j.finish("failed")
+			a.push(fmt.Sprintf("⚠ %s: updating its paths to the route's choices failed: %v", t.Name, err))
+			return
+		}
+		j.finish("ok")
+	}()
+	return j, nil
+}
+
+func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add []HSPath) error {
+	srv := a.store.Server(t.ServerID)
+	if srv == nil {
+		return fmt.Errorf("Iran server not found")
+	}
+	ir, _, err := a.reach(ctx, srv, nil)
+	if err != nil {
+		return fmt.Errorf("Iran server: %w", err)
+	}
+	kh, _, err := a.foreignHost(ctx, t, nil)
+	if err != nil {
+		return fmt.Errorf("foreign server: %w", err)
+	}
+	var left []HSPath
+	a.store.View(func(*State) {
+		for _, p := range t.Paths {
+			gone := false
+			for _, d := range drop {
+				if d.Method == p.Method && d.Family == p.Family {
+					gone = true
+				}
+			}
+			if !gone {
+				left = append(left, p)
+			}
+		}
+	})
+	// new paths get a free index, like hsPlan gives them
+	_ = a.store.Update(func(st *State) error {
+		used := pendingIndices(st)
+		for _, o := range st.Tunnels {
+			used[o.Index] = true
+			for _, p := range o.Paths {
+				used[p.Index] = true
+			}
+		}
+		for i := range add {
+			for n := 1; n < 250; n++ {
+				if !used[n] {
+					add[i].Index, used[n] = n, true
+					break
+				}
+			}
+		}
+		return nil
+	})
+	var added []HSPath
+	for _, p := range add {
+		if p.Index == 0 {
+			continue
+		}
+		p.Opts = a.routeOpts(t, p.Method, p.Family)
+		pt, pm := pathTunnel(t, p), methodByID[p.Method]
+		j.log("== adding %s ==", p.label())
+		err := func() error {
+			irP, khP, err := a.build(pm, pt, srv)
+			if err != nil {
+				return err
+			}
+			if changed, err := a.reversePreflight(ctx, j, pt, pm, ir, kh); err != nil {
+				return err
+			} else if changed {
+				if irP, khP, err = a.build(pm, pt, srv); err != nil {
+					return err
+				}
+				p.Opts = pt.Options[pm.ID]
+			}
+			if err := a.deploy(ctx, j, "KH", kh, pt, khP); err != nil {
+				return fmt.Errorf("foreign: %w", err)
+			}
+			if err := a.deploy(ctx, j, "IR", ir, pt, irP); err != nil {
+				return fmt.Errorf("Iran: %w", err)
+			}
+			return nil
+		}()
+		if err != nil {
+			j.log("  ✕ left out: %v", err)
+			p.Failed = err.Error()
+			_, _ = ir.Run(ctx, teardownScript(pt), nil)
+			_, _ = kh.Run(ctx, teardownScript(pt), nil)
+		} else {
+			j.log("  ✓ up")
+		}
+		added = append(added, p)
+	}
+	var good []HSPath
+	for _, p := range append(append([]HSPath(nil), left...), added...) {
+		if p.Failed == "" {
+			good = append(good, p)
+		}
+	}
+	if len(good) == 0 {
+		return fmt.Errorf("no path would be left — put a method back on the route first")
+	}
+	// the switcher moves to the new list first, then the left-out paths stop: users on one
+	// of them go over to the first path the moment the switcher restarts
+	var names []string
+	_ = a.store.Update(func(*State) error {
+		t.Paths = append(left, added...)
+		pinned := false
+		for _, p := range good {
+			pinned = pinned || p.Method+"|"+p.Family == t.HSPin
+		}
+		if !pinned {
+			t.HSPin = ""
+		}
+		for _, d := range drop {
+			if d.Method == t.Active && d.Family == t.Family {
+				t.Active, t.Family = good[0].Method, good[0].Family
+			}
+			names = append(names, d.label())
+		}
+		return nil
+	})
+	j.log("== switcher: %d paths ==", len(good))
+	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), a.hsSwitcherPlan(t, good)); err != nil {
+		return fmt.Errorf("switcher: %w", err)
+	}
+	for _, d := range drop {
+		pt := pathTunnel(t, d)
+		j.log("stopping %s (left out on this route)", d.label())
+		_, _ = ir.Run(ctx, teardownScript(pt), nil)
+		_, _ = kh.Run(ctx, teardownScript(pt), nil)
+	}
+	var msg []string
+	if len(names) > 0 {
+		msg = append(msg, "removed "+strings.Join(names, ", "))
+	}
+	if len(added) > 0 {
+		var an []string
+		for _, p := range added {
+			an = append(an, p.label())
+		}
+		msg = append(msg, "added "+strings.Join(an, ", "))
+	}
+	j.log("DONE — %s; %d paths running", strings.Join(msg, "; "), len(good))
+	a.push(fmt.Sprintf("🔀 %s: paths updated to this route's choices — %s (%d running)", t.Name, strings.Join(msg, "; "), len(good)))
+	return nil
 }
