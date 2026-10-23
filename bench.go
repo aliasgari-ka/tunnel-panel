@@ -342,7 +342,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   if timeout 1 bash -c '</dev/tcp/127.0.0.1/%[1]d' 2>/dev/null; then echo probe-up; exit 0; fi
   sleep 0.3
 done
-echo "probe-failed: the probe server does not listen on port %[1]d: $(tail -c 300 /tmp/tp-probe-%[1]d.log 2>/dev/null | tr '\n' ' ')"
+echo "probe-failed: the probe server does not listen on port %[1]d: $(tail -c 300 /tmp/tp-probe-%[1]d.log 2>/dev/null | tr '\n' ' ')$(h=$(ss -Hltnp "( sport = :%[1]d )" 2>/dev/null | grep -o 'users:.*' | head -1); [ -n "$h" ] && echo " — the port is held by $h")"
 `, port, probeBin, life)
 }
 
