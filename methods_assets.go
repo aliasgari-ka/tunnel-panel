@@ -154,7 +154,11 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 // ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and only box64
 // (not qemu-user) can open ipx's packet socket. Get box64 if the distro has it, else stop
 // with what to do — a unit that is "active" but carries nothing helps nobody.
-func ipxEmuCheck(mode string) string {
+// box64Release is where the release workflow publishes box64 for arm64 (built from pinned
+// upstream source on Ubuntu 22.04), for distros that don't package it.
+const box64Release = "https://github.com/aliasgari-ka/tunnel-panel/releases/latest/download/box64-arm64"
+
+func ipxEmuCheck(mode, ghPrefix string) string {
 	if mode != "ipx" {
 		return ""
 	}
@@ -165,6 +169,19 @@ func ipxEmuCheck(mode string) string {
     apt-get install -y -qq box64 >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq box64 >/dev/null 2>&1; } || true
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y box64 >/dev/null 2>&1 || true
+  fi
+  if ! command -v box64 >/dev/null 2>&1 && [ "$(uname -m)" = aarch64 ]; then
+    echo "no box64 package — installing the panel release's box64 build"
+    T=$(mktemp -d)
+    if curl -fsSL --retry 2 --max-time 300 -o "$T/box64" ` + shq(ghPrefix+box64Release) + ` &&
+       curl -fsSL --retry 2 --max-time 30 -o "$T/box64.sha256" ` + shq(ghPrefix+box64Release+".sha256") + ` &&
+       (cd "$T" && sed 's#  *[^ ]*$#  box64#' box64.sha256 | sha256sum -c - >/dev/null 2>&1) &&
+       chmod 0755 "$T/box64" && "$T/box64" --version >/dev/null 2>&1; then
+      install -m0755 "$T/box64" /usr/local/bin/box64 && echo "box64 installed: $(box64 --version 2>/dev/null | head -1)"
+    else
+      echo "could not download/verify box64 from the panel's GitHub release"
+    fi
+    rm -rf "$T"
   fi
   if ! command -v box64 >/dev/null 2>&1; then
     echo "Premium ipx can't run on this $(uname -m) server: there is no arm64 v2 core, the amd64 core runs under qemu-user (which can't open ipx's packet socket), and this distro has no box64 package ($(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}"))."
@@ -400,7 +417,7 @@ sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
 			sp := SidePlan{
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
-				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode),
+				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode, c.Set.GitHubProxy),
 				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg, RestartSec: premiumRestartSec},
 				Check:     premiumLicenseCheck,
 			}
