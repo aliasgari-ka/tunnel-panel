@@ -241,7 +241,10 @@ func iranPorts(t *Tunnel, mid string) map[int]string {
 func portClash(st *State, t *Tunnel, mid string) error {
 	mine := iranPorts(t, mid)
 	for _, o := range st.Tunnels {
-		if o.ID == t.ID || o.ServerID != t.ServerID {
+		// a hot-standby path (ID "<tunnel>x<index>") of o is o itself: its first path takes
+		// o's own tunnel port, which used to be refused as a clash with o — and so the
+		// tunnel's own (often best) method never became a hot-standby path
+		if o.ID == t.ID || o.ServerID != t.ServerID || strings.HasPrefix(t.ID, o.ID+"x") {
 			continue
 		}
 		for p, what := range iranPorts(o, "") {

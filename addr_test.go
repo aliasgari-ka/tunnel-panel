@@ -275,6 +275,12 @@ func TestPortClash(t *testing.T) {
 		{&Tunnel{ID: "a", ServerID: "ir", Ports: "443", Index: 4, Selected: "gre"}, ""},           // itself
 		{&Tunnel{ID: "x", ServerID: "ir", Ports: "7000", Index: 9, Selected: "backhaul",
 			Options: map[string]map[string]string{"backhaul": {"tunnel_port": "443"}}}, `"usa"`}, // reverse port on a forwarded one
+		// rev's own hot-standby path with rev's tunnel port is not a clash with rev …
+		{&Tunnel{ID: "bx6", ServerID: "ir", Index: 6, Active: "backhaul",
+			Options: map[string]map[string]string{"backhaul": {"tunnel_port": "8443"}}}, ""},
+		// … but another tunnel's path on that port still is
+		{&Tunnel{ID: "ax9", ServerID: "ir", Index: 9, Active: "backhaul",
+			Options: map[string]map[string]string{"backhaul": {"tunnel_port": "8443"}}}, `"rev"`},
 	}
 	for i, c := range cases {
 		err := portClash(st, c.t, "")
