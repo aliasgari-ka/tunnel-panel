@@ -575,9 +575,12 @@ func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	if err != nil {
 		return "unreachable", kh, ""
 	}
-	if t.HotStandby && len(t.Paths) > 0 {
+	var hot bool
+	var seen int64
+	a.store.View(func(*State) { hot, seen = t.HotStandby && len(t.Paths) > 0, t.HSSeen })
+	if hot {
 		// the switcher's own verdict: the path it keeps the users on works
-		v, events, err := a.hsRead(ctx, h, t, t.HSSeen)
+		v, events, err := a.hsRead(ctx, h, t, seen)
 		a.hsReport(t, v, events)
 		switch {
 		case err != nil:

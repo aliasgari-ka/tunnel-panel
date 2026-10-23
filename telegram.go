@@ -346,6 +346,7 @@ func (b *Bot) statusText() string {
 	hs := b.health(ts)
 	var sb strings.Builder
 	for _, t := range ts {
+		t := b.snap(t)
 		m := methodByID[t.Active]
 		if m == nil {
 			fmt.Fprintf(&sb, "⏹ <b>%s</b> — stopped\n", esc(t.Name))
@@ -369,6 +370,7 @@ func (b *Bot) trafficText() string {
 	b.app.store.View(func(st *State) { ts = append(ts, st.Tunnels...) })
 	var sb strings.Builder
 	for _, t := range ts {
+		t := b.snap(t)
 		if t.Active == "" {
 			continue
 		}
@@ -474,7 +476,7 @@ func (b *Bot) tunnelList() string {
 		rows = [][]ikey{{{Text: "no tunnels yet — create one in the panel", Data: "noop"}}}
 	}
 	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "🖥 Servers", Data: "home:res"}, {Text: "📉 Outages", Data: "home:out"}})
-	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "💾 Backup", Data: "home:bk"}, {Text: "🔄", Data: "home"}})
+	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "💾 Backup", Data: "home:bk"}, {Text: "🛠 Repair", Data: "home:rp"}, {Text: "🔄", Data: "home"}})
 	return b.keyboard(rows)
 }
 
@@ -555,8 +557,17 @@ func (b *Bot) benchHistoryText() string {
 	return sb.String()
 }
 
+// snap is a copy of t taken under the store lock: the pages read many fields, and an apply
+// or the monitor changes them meanwhile.
+func (b *Bot) snap(t *Tunnel) *Tunnel {
+	var c Tunnel
+	b.app.store.View(func(*State) { c = t.clone() })
+	return &c
+}
+
 // tunnelPage is one tunnel's card with its actions.
 func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
+	t = b.snap(t)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s <b>%s</b>\n%s → %s · ports <code>%s</code> · %s\n", b.tunnelIcon(t), esc(t.Name), esc(serverName(b.app, t.ServerID)), esc(foreignName(b.app, t)), esc(t.Ports), t.Family)
 	if r, ok := b.app.cachedHealth(t.ID); ok && r != "" && t.Active != "" {
@@ -658,6 +669,7 @@ func isMenuButton(s string) bool {
 
 // optionsPage lists a method's settings with their current values.
 func (b *Bot) optionsPage(t *Tunnel, mid string) (string, string) {
+	t = b.snap(t)
 	m := methodByID[mid]
 	get, _ := resolveOptions(m, t.Options[m.ID])
 	var rows [][]ikey
@@ -738,6 +750,7 @@ func famName(f string) string {
 // methodPicker lists the methods that work over fam, L3 tunnels and port forwarders apart,
 // with a row on top to switch between the route's families.
 func (b *Bot) methodPicker(t *Tunnel, fam string, fams []string) (string, string) {
+	t = b.snap(t)
 	best := ""
 	for _, r := range b.app.benchResults(t.ServerID, t.ForeignID, fam) {
 		if r.Recommended {
@@ -863,6 +876,15 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 	case "home:out":
 		b.sendMsg(chat, b.outagesText(), "")
 		return
+	case "home:rp":
+		j, err := b.app.Repair("from the bot")
+		if err != nil {
+			b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
+			return
+		}
+		b.sendMsg(chat, "🛠 Checking every running tunnel; the ones with a problem are applied again. The summary comes here when it's done.", "")
+		_ = j
+		return
 	case "home:res":
 		b.slow(chat, "reading every server…", func() (string, string) {
 			return b.app.resourcesText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}}})
@@ -878,6 +900,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		b.edit(chat, msg, "That tunnel no longer exists.\n\n"+b.dashboard(), b.tunnelList())
 		return
 	}
+	v := b.snap(t) // reads; actions take the live t
 	job := func(j *Job, err error, title string) {
 		if err != nil {
 			b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
@@ -891,7 +914,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		b.edit(chat, msg, text, kb)
 	case "m": // method picker: pick the address family on top, then a method (★ = benchmark winner)
 		fams := b.app.routeFamilies(t)
-		fam := t.Family
+		fam := v.Family
 		if len(parts) > 2 && contains(fams, parts[2]) {
 			fam = parts[2]
 		} else if !contains(fams, fam) && len(fams) > 0 {
@@ -908,14 +931,14 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 			fam = parts[3]
 		}
 		if fam == "" {
-			fam = t.Family
+			fam = v.Family
 		}
 		j, err := b.app.ApplyRoute(t, parts[2], fam)
-		job(j, err, "Applying "+methodTitle(parts[2])+" over "+famName(fam)+" to "+t.Name)
+		job(j, err, "Applying "+methodTitle(parts[2])+" over "+famName(fam)+" to "+v.Name)
 	case "o": // the method's settings
-		mid := t.Active
+		mid := v.Active
 		if mid == "" {
-			mid = t.Selected
+			mid = v.Selected
 		}
 		if methodByID[mid] == nil {
 			b.sendMsg(chat, "Pick a method first (⇄ Method).", "")
@@ -934,7 +957,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 			return
 		}
 		fd := m.Fields[fi]
-		get, _ := resolveOptions(m, t.Options[m.ID])
+		get, _ := resolveOptions(m, v.Options[m.ID])
 		switch {
 		case parts[0] == "ov" && len(f) == 5:
 			oi, _ := strconv.Atoi(f[4])
@@ -963,7 +986,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 			b.sendMsg(chat, fmt.Sprintf("Send the new value for <b>%s</b> (%s)\nnow: <code>%s</code>\nsend <code>-</code> for the default (%s)", esc(fd.Label), esc(m.Title), esc(orStr(cur, "default")), esc(orStr(fd.Default, "auto"))), "")
 		}
 	case "sq": // confirm before stopping
-		b.edit(chat, msg, "Stop <b>"+esc(t.Name)+"</b>? Users on its ports lose the connection.",
+		b.edit(chat, msg, "Stop <b>"+esc(v.Name)+"</b>? Users on its ports lose the connection.",
 			b.keyboard([][]ikey{{{Text: "⏹ Yes, stop it", Data: "s:" + t.ID}, {Text: "Cancel", Data: "t:" + t.ID}}}))
 	case "s":
 		if id := b.app.jobs.running(t.ID); id != "" {
@@ -974,34 +997,34 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		}
 		b.app.clearFailover(t)
 		j, err := b.app.Stop(t)
-		job(j, err, "Stopping "+t.Name)
+		job(j, err, "Stopping "+v.Name)
 	case "dg":
 		j, err := b.app.Diagnose(t)
-		job(j, err, "Diagnose "+t.Name)
+		job(j, err, "Diagnose "+v.Name)
 	case "sp":
 		j, err := b.app.SpeedTest(t, 5)
-		job(j, err, "Speed test "+t.Name)
+		job(j, err, "Speed test "+v.Name)
 	case "tr":
 		j, err := b.app.Trace(t, 30)
 		if err == nil {
-			b.sendMsg(chat, "🔎 Tracing <b>"+esc(t.Name)+"</b> for 30 s — connect your client now.", "")
+			b.sendMsg(chat, "🔎 Tracing <b>"+esc(v.Name)+"</b> for 30 s — connect your client now.", "")
 		}
-		job(j, err, "Trace "+t.Name)
+		job(j, err, "Trace "+v.Name)
 	case "st":
-		b.slow(chat, "checking "+t.Name+"…", func() (string, string) {
+		b.slow(chat, "checking "+v.Name+"…", func() (string, string) {
 			h := b.health([]*Tunnel{t})[t.ID]
-			return fmt.Sprintf("%s <b>%s</b>: IR %s · KH %s · link %s", healthIcon(h), esc(t.Name), h[0], h[1], orStr(h[2], "n/a")), ""
+			return fmt.Sprintf("%s <b>%s</b>: IR %s · KH %s · link %s", healthIcon(h), esc(v.Name), h[0], h[1], orStr(h[2], "n/a")), ""
 		})
 	case "hm": // hot standby manual / auto, live on the switcher
 		auto := len(parts) > 2 && parts[2] == "1"
-		b.slow(chat, "switching "+t.Name+"…", func() (string, string) {
+		b.slow(chat, "switching "+v.Name+"…", func() (string, string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
 			r, err := b.app.setHSMode(ctx, t, auto)
 			if err != nil {
 				return "⚠ " + esc(err.Error()), ""
 			}
-			return "✓ <b>" + esc(t.Name) + "</b>: " + esc(r), ""
+			return "✓ <b>" + esc(v.Name) + "</b>: " + esc(r), ""
 		})
 		text, kb := b.tunnelPage(t)
 		b.edit(chat, msg, text, kb)
@@ -1010,24 +1033,24 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		if len(parts) > 2 {
 			k, _ = strconv.Atoi(parts[2])
 		}
-		good := hsGood(t)
+		good := hsGood(v)
 		if k < 0 || k >= len(good) {
 			return
 		}
-		b.slow(chat, "switching "+t.Name+"…", func() (string, string) {
+		b.slow(chat, "switching "+v.Name+"…", func() (string, string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
 			r, err := b.app.hsPinTo(ctx, t, good[k].Method+"|"+good[k].Family)
 			if err != nil {
 				return "⚠ " + esc(err.Error()), ""
 			}
-			return "✓ <b>" + esc(t.Name) + "</b>: " + esc(r), ""
+			return "✓ <b>" + esc(v.Name) + "</b>: " + esc(r), ""
 		})
 	case "hh": // hot standby itself (takes effect on the next apply)
 		on := len(parts) > 2 && parts[2] == "1"
 		_ = b.app.store.Update(func(*State) error { t.HotStandby = on; return nil })
 		text, kb := b.tunnelPage(t)
-		if t.Active != "" {
+		if b.snap(t).Active != "" {
 			text += "\n<i>Press ↻ Re-apply to " + map[bool]string{true: "start every path", false: "go back to one path"}[on] + ".</i>"
 		}
 		b.edit(chat, msg, text, kb)
@@ -1045,7 +1068,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		for i := range lines {
 			lines[i] = esc(lines[i])
 		}
-		b.sendMsg(chat, fmt.Sprintf("📜 <b>%s</b> — last job (%s, %s)\n<pre>%s</pre>", esc(t.Name), s.Kind, s.Status, strings.Join(lines, "\n")), "")
+		b.sendMsg(chat, fmt.Sprintf("📜 <b>%s</b> — last job (%s, %s)\n<pre>%s</pre>", esc(v.Name), s.Kind, s.Status, strings.Join(lines, "\n")), "")
 	}
 }
 

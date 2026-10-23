@@ -812,7 +812,7 @@ function serverModal(s) {
 // Summary strip, then tunnels grouped by their Iran server.
 function viewTunnels(w) {
   w.innerHTML = topbar('Tunnels', 'Each tunnel links one Iran server to one foreign server. Pick a connection method and switch any time.',
-    `<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
+    `<button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button><button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
   const run = STATE.tunnels.filter(t => t.active).length;
   w.appendChild(h(`<div class="summary">
     <div class="stat"><small>Running tunnels</small><b>${run}<span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
@@ -844,6 +844,9 @@ function viewTunnels(w) {
     w.appendChild(grid);
   }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
+  $('#repairTun').onclick = async () => {
+    try { const r = await api('/repair', {}); openLog({ id: 'repair', name: 'Repair' }, r.job); } catch (e) { alertModal('Repair', e.message); }
+  };
 }
 // Compact card: who ⇄ who, state, live traffic and the three everyday buttons.
 // Everything else (method, options, tests) lives in the Manage window.

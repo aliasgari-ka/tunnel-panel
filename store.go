@@ -133,6 +133,16 @@ func (t *Tunnel) clone() Tunnel {
 		}
 		cp.Options[k] = in
 	}
+	cp.Paths = make([]HSPath, len(t.Paths))
+	for i, p := range t.Paths {
+		cp.Paths[i] = p
+		if p.Opts != nil {
+			cp.Paths[i].Opts = make(map[string]string, len(p.Opts))
+			for k, v := range p.Opts {
+				cp.Paths[i].Opts[k] = v
+			}
+		}
+	}
 	cp.Secrets = make(map[string]string, len(t.Secrets))
 	for k, v := range t.Secrets {
 		cp.Secrets[k] = v
@@ -187,7 +197,9 @@ type State struct {
 	RouteSkip map[string][]string `json:"routeSkip,omitempty"`
 	// Cleanups: teardowns a server missed while unreachable (see cleanup.go)
 	Cleanups []Cleanup `json:"cleanups,omitempty"`
-	Outages  []Outage  `json:"outages,omitempty"` // servers/tunnels down, newest last
+	// LastVersion is the panel version that ran last (a new one repairs tunnels once)
+	LastVersion string   `json:"lastVersion,omitempty"`
+	Outages     []Outage `json:"outages,omitempty"` // servers/tunnels down, newest last
 }
 
 // FailoverState is the original path of a tunnel that was moved to a backup.

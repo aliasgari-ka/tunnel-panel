@@ -349,6 +349,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
+# tp-switcher 3
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -752,6 +753,13 @@ func hsGood(t *Tunnel) []HSPath {
 	return out
 }
 
+// hsGoodNow is hsGood and the chosen path, read under the store lock (an apply rewrites
+// Paths while the health monitor and the bot read them).
+func (a *App) hsGoodNow(t *Tunnel) (good []HSPath, pin string) {
+	a.store.View(func(*State) { good, pin = hsGood(t), t.HSPin })
+	return
+}
+
 // hsView is the switcher's state as the panel last read it.
 type hsView struct {
 	Active int       `json:"active"`
@@ -780,14 +788,15 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 		return nil, nil, fmt.Errorf("switcher state unreadable: %v", err)
 	}
 	v := &hsView{Active: -1, Read: time.Now().Unix()}
-	for _, p := range hsGood(t) {
+	good, pin := a.hsGoodNow(t)
+	for _, p := range good {
 		v.Paths = append(v.Paths, p.label())
 	}
 	v.OK = make([]bool, len(v.Paths))
 	v.Pin = -1
-	for k, p := range hsGood(t) {
+	for k, p := range good {
 		v.Keys = append(v.Keys, p.Method+"|"+p.Family)
-		if t.HSPin == p.Method+"|"+p.Family {
+		if pin == p.Method+"|"+p.Family {
 			v.Pin = k
 		}
 	}
@@ -843,13 +852,12 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 }
 
 // hsEventText turns "epoch switch from to reason…" into a message line.
-func hsEventText(t *Tunnel, e string) (int64, string) {
+func hsEventText(t *Tunnel, good []HSPath, e string) (int64, string) {
 	f := strings.Fields(e)
 	if len(f) < 4 {
 		return 0, ""
 	}
 	at, _ := strconv.ParseInt(f[0], 10, 64)
-	good := hsGood(t)
 	name := func(s string) string {
 		if k, err := strconv.Atoi(s); err == nil && k >= 0 && k < len(good) {
 			return good[k].label()
@@ -917,18 +925,26 @@ func (a *App) hsReport(t *Tunnel, v *hsView, events []string) {
 		a.hsViews[t.ID] = v
 		a.healthMu.Unlock()
 	}
-	newest := t.HSSeen
+	good, _ := a.hsGoodNow(t)
+	var seen int64
+	a.store.View(func(*State) { seen = t.HSSeen })
+	newest := seen
 	for _, e := range events {
-		at, msg := hsEventText(t, e)
+		at, msg := hsEventText(t, good, e)
 		if at > newest {
 			newest = at
 		}
-		if msg != "" && at > t.HSSeen {
+		if msg != "" && at > seen {
 			a.push(msg)
 		}
 	}
-	if newest > t.HSSeen {
-		_ = a.store.Update(func(*State) error { t.HSSeen = newest; return nil })
+	if newest > seen {
+		_ = a.store.Update(func(*State) error {
+			if newest > t.HSSeen {
+				t.HSSeen = newest
+			}
+			return nil
+		})
 	}
 }
 

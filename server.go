@@ -91,6 +91,7 @@ func (a *App) routes() http.Handler {
 	p("/api/bench/active", s.benchActive)
 	p("/api/bench/history", s.benchHistory)
 	p("/api/routes/skip", s.routeSkip)
+	p("/api/repair", s.repair)
 	p("/api/outages", s.outages)
 	p("/api/backup", s.backup)
 	p("/api/helpers", s.helpers)
@@ -980,6 +981,16 @@ func (s *Server2) tunnelHSPin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"ok": msg})
+}
+
+// repair re-applies every running tunnel that has a problem (see repair.go).
+func (s *Server2) repair(w http.ResponseWriter, r *http.Request) {
+	j, err := s.app.Repair("from the panel")
+	if err != nil {
+		httpErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"job": j.ID})
 }
 
 func (s *Server2) tunnelStatus(w http.ResponseWriter, r *http.Request) {

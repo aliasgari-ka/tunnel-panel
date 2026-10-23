@@ -96,7 +96,7 @@ func TestBotEveryButton(t *testing.T) {
 	for _, txt := range []string{"/start", "/menu", "/help", btnStatus, btnTunnels, btnTraffic, btnServers, "/status", "/tunnels", "/traffic", "/servers", "hello", "/nonsense"} {
 		b.onText("42", txt)
 	}
-	cbs := []string{"home", "home:st", "home:bh", "home:bk", "home:out", "home:res", "noop"}
+	cbs := []string{"home", "home:st", "home:bh", "home:bk", "home:out", "home:res", "home:rp", "home:rp", "noop"}
 	for _, id := range []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc"} {
 		for _, c := range []string{"t:", "m:", "m:%:v6", "m:%:v4", "o:", "sq:", "dg:", "sp:", "tr:", "st:", "lg:", "hm:%:0", "hm:%:1", "hp:%:0", "hp:%:2", "hp:%:9", "hh:%:1", "hh:%:0", "s:"} {
 			if strings.Contains(c, "%") {
