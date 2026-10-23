@@ -237,7 +237,7 @@ func shortReason(e string) string {
 func (b *Bot) dailyReport() string {
 	var sb strings.Builder
 	sb.WriteString("<b>☀️ Daily report</b>\n")
-	sb.WriteString(b.dashboard())
+	sb.WriteString(strings.TrimSuffix(b.dashboard(), "\n<i>tap a tunnel</i>"))
 	sb.WriteString("\n\n")
 	var tunnels []*Tunnel
 	var outages []Outage
@@ -265,24 +265,31 @@ func (b *Bot) dailyReport() string {
 		}
 		sb.WriteString(line + "\n")
 	}
-	since, n, longest := time.Now().Add(-24*time.Hour).Unix(), 0, int64(0)
+	// outages of the last day by kind (tunnel / server / panel), each with its longest
+	since := time.Now().Add(-24 * time.Hour).Unix()
+	count, longest := map[string]int{}, map[string]int64{}
 	for _, o := range outages {
 		if o.Start < since {
 			continue
 		}
-		n++
+		count[o.Kind]++
 		end := o.End
 		if end == 0 {
 			end = time.Now().Unix()
 		}
-		if d := end - o.Start; d > longest {
-			longest = d
+		if d := end - o.Start; d > longest[o.Kind] {
+			longest[o.Kind] = d
 		}
 	}
-	if n == 0 {
+	if len(count) == 0 {
 		sb.WriteString("\n✅ no outage in the last 24 h")
 	} else {
-		fmt.Fprintf(&sb, "\n📉 %d outage(s) in the last 24 h, the longest %s", n, (time.Duration(longest) * time.Second).String())
+		sb.WriteString("\n📉 <b>Last 24 h</b>")
+		for _, k := range []string{"tunnel", "server", "panel"} {
+			if count[k] > 0 {
+				fmt.Fprintf(&sb, "\n• %s outages: %d, the longest %s", k, count[k], (time.Duration(longest[k]) * time.Second).String())
+			}
+		}
 	}
 	if u := panelURL(); u != "" {
 		fmt.Fprintf(&sb, "\n🌐 %s", esc(u))
