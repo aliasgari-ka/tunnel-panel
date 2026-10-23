@@ -329,6 +329,10 @@ func probeServerUp(port int) string { return probeServerUpLife(port, 2700) }
 // tunnel speed test and a benchmark never kill each other's server).
 func probeServerUpLife(port, life int) string {
 	return fmt.Sprintf(`pkill -f -- '-listen :%[1]d -life' 2>/dev/null || true
+# the old server exits a moment after the signal: starting the new one before that failed
+# with "address already in use" (seen live), so wait until it is gone (force after 3 s)
+for i in $(seq 1 15); do pgrep -f -- '-listen :%[1]d -life' >/dev/null 2>&1 || break; sleep 0.2; done
+pkill -9 -f -- '-listen :%[1]d -life' 2>/dev/null || true
 iptables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 ip6tables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 setsid nohup %[2]s probe serve -listen :%[1]d -life %[3]d >/tmp/tp-probe-%[1]d.log 2>&1 </dev/null &

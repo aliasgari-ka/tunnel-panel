@@ -22,3 +22,16 @@ func TestIPXEmuCheckScript(t *testing.T) {
 		t.Fatalf("bash -n: %v %s", err, out)
 	}
 }
+
+// The probe-server start waits for the previous server to exit before binding its port.
+func TestProbeServerUpScript(t *testing.T) {
+	s := probeServerUpLife(41002, 60)
+	if !strings.Contains(s, "pgrep -f -- '-listen :41002 -life'") || strings.Index(s, "pgrep") > strings.Index(s, "setsid") {
+		t.Errorf("no wait for the old probe server before starting:\n%s", s)
+	}
+	cmd := exec.Command("bash", "-n")
+	cmd.Stdin = strings.NewReader(s)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bash -n: %v %s", err, out)
+	}
+}
