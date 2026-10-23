@@ -228,6 +228,47 @@ func (a *App) relayOutdated(ctx context.Context, h Host) bool {
 	return got != "" && got != hex.EncodeToString(sum[:])
 }
 
+// resumeInterrupted brings back tunnels an apply had taken down when the panel stopped in
+// the middle of it (a restart or an update): they would otherwise stay down, and Repair only
+// looks at running tunnels. It waits a little so the servers have been checked first.
+func (a *App) resumeInterrupted() {
+	type todo struct {
+		t        *Tunnel
+		mid, fam string
+	}
+	var ts []todo
+	a.store.View(func(st *State) {
+		for _, t := range st.Tunnels {
+			if t.Applying != "" && t.Active == "" {
+				ts = append(ts, todo{t, t.Applying, t.Family})
+			}
+		}
+	})
+	if len(ts) == 0 {
+		return
+	}
+	time.Sleep(45 * time.Second)
+	for _, x := range ts {
+		if methodByID[x.mid] == nil || a.jobs.running(x.t.ID) != "" {
+			continue
+		}
+		var still bool
+		a.store.View(func(*State) { still = x.t.Applying != "" && x.t.Active == "" })
+		if !still {
+			continue // started or stopped from the panel meanwhile
+		}
+		a.push(fmt.Sprintf("🔄 %s was left down by a panel restart in the middle of applying %s — bringing it back", x.t.Name, methodTitle(x.mid)))
+		j, err := a.ApplyRoute(x.t, x.mid, x.fam)
+		if err != nil {
+			a.push(fmt.Sprintf("❌ %s: could not resume %s — %v", x.t.Name, methodTitle(x.mid), err))
+			continue
+		}
+		for j.snapshot().Status == "running" {
+			time.Sleep(2 * time.Second) // one at a time
+		}
+	}
+}
+
 // repairAfterUpdate runs Repair once when this version starts for the first time, after
 // the server monitor and the health checks had a few minutes to see the servers.
 func (a *App) repairAfterUpdate() {

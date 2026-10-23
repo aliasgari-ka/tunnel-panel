@@ -305,6 +305,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		ctx, cancel := j.context(20 * time.Minute)
 		defer cancel()
 		fail := func(f string, x ...any) {
+			a.setApplying(t, "") // ended (with an error): nothing to resume after a restart
 			j.log("ERROR: "+f, x...)
 			j.finish("error")
 			a.push(fmt.Sprintf("❌ %s: %s failed — %s", t.Name, mid, fmt.Sprintf(f, x...)))
@@ -382,6 +383,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		if t.Active != "" {
 			j.log("stopping current method (%s) on both servers", t.Active)
 		}
+		a.setApplying(t, mid)
 		_, _ = irHost.Run(ctx, teardownScript(t), func(l string) { j.log("[IR] %s", l) })
 		_, _ = khHost.Run(ctx, teardownScript(t), func(l string) { j.log("[KH] %s", l) })
 		j.tornDown.Store(t.Active != "")
@@ -483,6 +485,7 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 		return nil, err
 	}
 	a.clearHealth(t.ID)
+	a.setApplying(t, "") // stopped on purpose: nothing to resume
 	go func() {
 		defer a.jobs.done(j)
 		// Stop must run even right after a cancelled job, so it never inherits one
@@ -523,11 +526,17 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 	return j, nil
 }
 
+// setApplying records (or, with "", clears) the method an apply is bringing up.
+func (a *App) setApplying(t *Tunnel, mid string) {
+	_ = a.store.Update(func(*State) error { t.Applying = mid; return nil })
+}
+
 func (a *App) setActive(t *Tunnel, mid string) {
 	_ = a.store.Update(func(*State) error {
 		t.Active = mid
 		if mid != "" {
 			t.Selected = mid
+			t.Applying = "" // it is up: the apply is over
 		}
 		t.LastJob = time.Now().Format(time.RFC3339)
 		t.Updated = time.Now().Unix()
