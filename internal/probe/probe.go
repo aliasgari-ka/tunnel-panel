@@ -157,7 +157,9 @@ func handle(c net.Conn) {
 		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
 		}
-		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		// (the client closes once it has the report; on a slow path the forwarder may still
+		// be delivering buffered data, so give it time)
+		_ = c.SetReadDeadline(time.Now().Add(15 * time.Second))
 		_, _ = io.Copy(io.Discard, c)
 	case 'D', 'L':
 		var s [1]byte
@@ -293,11 +295,13 @@ func bw(addr string, secs int, max int64) (*BWResult, error) {
 		got <- reply{l, err}
 	}()
 	buf := make([]byte, 64<<10)
-	deadline := time.Now().Add(time.Duration(secs+15) * time.Second)
+	start := time.Now()
+	deadline := start.Add(time.Duration(secs+15) * time.Second)
 	sent := int64(0)
 	for {
-		if max > 0 && sent >= max {
-			// enough: the far end reports once all of it has arrived
+		// enough sent, or the far end's counting window is over: stop sending (more data would
+		// only pile up unread and get the connection reset) and wait for its report
+		if (max > 0 && sent >= max) || (max > 0 && time.Since(start) > time.Duration(secs)*time.Second+500*time.Millisecond) {
 			select {
 			case rp := <-got:
 				return parseBW(rp.line, fmt.Errorf("no throughput report from the far end (%v)", rp.err))

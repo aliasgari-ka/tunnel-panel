@@ -355,7 +355,37 @@ details.rt-more{margin-top:12px}details.rt-more>summary{cursor:pointer;list-styl
 .rt-card{animation:rise .3s ease-out both}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}}
 .tc{animation:rise .35s ease-out both}.tgrid .tc:nth-child(2){animation-delay:.04s}.tgrid .tc:nth-child(3){animation-delay:.08s}.tgrid .tc:nth-child(4){animation-delay:.12s}.tgrid .tc:nth-child(n+5){animation-delay:.16s}
-.main{animation:fadein .25s ease-out}@keyframes fadein{from{opacity:.4}}
+/* ---- modern pass: glass surfaces, live borders, page transitions ---- */
+.main.enter>*{animation:rise .32s cubic-bezier(.2,.7,.2,1) both}
+.main.enter>*:nth-child(2){animation-delay:.03s}.main.enter>*:nth-child(3){animation-delay:.06s}.main.enter>*:nth-child(n+4){animation-delay:.09s}
+@media(min-width:861px){
+  .side{background:color-mix(in srgb,var(--panel) 78%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+  .shell{background:linear-gradient(to right,transparent 231px,var(--line) 231px 232px,transparent 232px)}
+  .card,.stat,.rtile{background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+}
+.brand b{font-size:15.5px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.nav button{padding:8px 10px}
+.ni{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:9px;background:var(--panel-2);font-size:15px;transition:.15s}
+.nav button.on .ni{background:var(--grad);box-shadow:0 4px 12px var(--glow)}
+.nav button:hover .ni{transform:scale(1.06)}
+.nl{flex:1}
+.nb{font-style:normal;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;background:var(--good-soft);color:var(--good)}
+.stat{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:12px;align-items:center;padding:14px 16px}
+.stat .si{grid-row:1/3;font-style:normal;display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:var(--accent-soft);font-size:19px}
+.stat small{align-self:end}.stat b{align-self:start}
+.tc.live{position:relative;isolation:isolate}
+.tc.live::before{content:"";position:absolute;inset:-1px;border-radius:inherit;padding:1px;background:conic-gradient(from var(--ang,0deg),transparent 0 70%,var(--good) 80%,transparent 90%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:spin 4s linear infinite;pointer-events:none;z-index:-1}
+.tc.live.down::before{display:none}
+@property --ang{syntax:"<angle>";inherits:false;initial-value:0deg}
+@keyframes spin{to{--ang:360deg}}
+.btn.pri{border-radius:999px;position:relative;overflow:hidden}
+.btn.pri::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.28) 50%,transparent 70%);transform:translateX(-120%);transition:transform .6s}
+.btn.pri:hover::after{transform:translateX(120%)}
+.skel{border-radius:var(--radius);background:linear-gradient(90deg,var(--panel-2) 25%,color-mix(in srgb,var(--panel-2) 60%,var(--panel)) 50%,var(--panel-2) 75%) 0 0/200% 100%;animation:shimmer 1.2s linear infinite}
+@keyframes shimmer{to{background-position:-200% 0}}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--faint) 40%,transparent);border-radius:10px;border:2px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:var(--accent);background-clip:content-box}
+.pill{backdrop-filter:none}
+.chip{border-radius:999px}
 .tc-r .ln.on{border-top:0;height:2px;border-radius:2px;background:linear-gradient(90deg,var(--good) 0 55%,color-mix(in srgb,var(--good) 25%,transparent) 55%) 0 0/24px 2px repeat-x;animation:flow 1.1s linear infinite}
 .tc.down .tc-r .ln.on{background:none;border-top:2px dashed var(--crit);animation:none}
 @keyframes flow{to{background-position:24px 0}}

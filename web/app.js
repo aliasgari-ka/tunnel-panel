@@ -312,7 +312,7 @@ function renderShell() {
   const shell = h(`<div class="shell">
     <aside class="side" id="side">
       <div class="brand"><div class="dot"></div><div><b>${esc(STATE.settings.panelName || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
-      <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span>${n[2]}</span>${n[1]}</button>`).join('')}</nav>
+      <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span class="ni">${n[2]}</span><span class="nl">${n[1]}</span>${n[0] === 'tunnels' && STATE.tunnels.length ? `<em class="nb" title="running / all">${STATE.tunnels.filter(t => t.active).length}/${STATE.tunnels.length}</em>` : ''}</button>`).join('')}</nav>
       <div class="foot">
         <div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div>
         <a class="btn sm bkbtn" href="/api/backup" download title="Download a backup of the whole panel: servers, tunnels, settings, users (keep the file private). Restore it under Settings.">💾 Backup now</a>
@@ -354,8 +354,20 @@ function paintAccent() {
 }
 try { const a = localStorage.getItem('tp-accent'); if (a && /^#[0-9a-f]{6}$/i.test(a)) setAccent(a); } catch (e) {}
 
+// numbers in [data-cu] count up from 0 (once per page draw)
+function countUp(root) {
+  const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  $$('[data-cu]', root).forEach(el => {
+    const to = +el.dataset.cu || 0;
+    if (reduce || to < 2) { el.textContent = to; return; }
+    const t0 = performance.now(), dur = 600;
+    const step = (now) => { const k = Math.min(1, (now - t0) / dur); el.textContent = Math.round(to * (1 - Math.pow(1 - k, 3))); if (k < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  });
+}
 function renderView() {
   const w = $('#work'); w.innerHTML = '';
+  w.classList.remove('enter'); void w.offsetWidth; w.classList.add('enter'); // replay the page-in animation
   ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, bench: viewBench, settings: viewSettings }[STATE.view])(w);
   trafficWatch();
   healthWatch();
@@ -368,7 +380,7 @@ function renderView() {
 const ageTxt = (u) => { const s = Math.floor(Date.now() / 1000) - u; return s < 3600 ? `${Math.max(1, Math.floor(s / 60))} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 async function viewRoutes(w) {
   w.innerHTML = topbar('Routes', 'Each server pair: its tunnels, and how every method does between the two servers.');
-  const box = h('<div class="grid" style="gap:18px"><div class="muted">loading…</div></div>');
+  const box = h('<div class="grid" style="gap:18px"><div class="skel" style="height:120px"></div><div class="skel" style="height:220px"></div></div>');
   w.appendChild(box);
   let hist = [], skip = {};
   try { [hist, skip] = await Promise.all([api('/bench/history'), api('/routes/skip')]); } catch (e) {}
@@ -968,11 +980,12 @@ function viewTunnels(w) {
     `<button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button><button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
   const run = STATE.tunnels.filter(t => t.active).length;
   w.appendChild(h(`<div class="summary">
-    <div class="stat"><small>Running tunnels</small><b>${run}<span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
-    <div class="stat"><small>Live download ↓</small><b class="dn" data-sum-dn>—</b></div>
-    <div class="stat"><small>Live upload ↑</small><b class="up" data-sum-up>—</b></div>
-    <div class="stat"><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + 1}<span> foreign</span></b></div>
+    <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="cu" data-cu="${run}">0</span><span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
+    <div class="stat"><i class="si">⬇</i><small>Live download</small><b class="dn" data-sum-dn>—</b></div>
+    <div class="stat"><i class="si">⬆</i><small>Live upload</small><b class="up" data-sum-up>—</b></div>
+    <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + 1}<span> foreign</span></b></div>
   </div>`));
+  countUp(w);
   if (!STATE.tunnels.length) {
     w.appendChild(h(`<div class="card empty"><div class="big">🛰</div>${iranServers().length ? 'No tunnels yet — press <b>+ New tunnel</b>.' : 'Start on the <b>Servers</b> page: add an Iran server, then create a tunnel here.'}</div>`));
   }

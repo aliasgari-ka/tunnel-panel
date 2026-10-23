@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCappedTests(t *testing.T) {
@@ -70,5 +71,48 @@ func TestCappedTests(t *testing.T) {
 	up, err = bw(fw.Addr().String(), 10, 1<<20)
 	if err != nil || up.Bytes < 1<<20 || up.Mbps <= 0 {
 		t.Fatalf("capped upload through a forwarder: %+v %v", up, err)
+	}
+
+	// a slow forwarder (≈2 Mbit/s, like a weak route): the 8 MB cap is never reached within
+	// the 1 s window; the upload still ends with a report instead of a reset
+	slow, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Close()
+	go func() {
+		for {
+			in, err := slow.Accept()
+			if err != nil {
+				return
+			}
+			out, err := net.Dial("tcp", addr)
+			if err != nil {
+				in.Close()
+				return
+			}
+			go func() { _, _ = io.Copy(in, out); in.Close(); out.Close() }()
+			go func() {
+				buf := make([]byte, 16<<10)
+				for {
+					n, err := in.Read(buf)
+					if n > 0 {
+						if _, werr := out.Write(buf[:n]); werr != nil {
+							break
+						}
+						time.Sleep(60 * time.Millisecond) // ~2 Mbit/s
+					}
+					if err != nil {
+						break
+					}
+				}
+				in.Close()
+				out.Close()
+			}()
+		}
+	}()
+	up, err = bw(slow.Addr().String(), 1, 8<<20)
+	if err != nil || up.Bytes == 0 || up.Mbps <= 0 || up.Mbps > 20 {
+		t.Fatalf("capped upload through a slow forwarder: %+v %v", up, err)
 	}
 }
