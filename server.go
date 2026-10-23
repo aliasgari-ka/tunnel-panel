@@ -471,6 +471,12 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if in.TelegramReport = strings.TrimSpace(in.TelegramReport); in.TelegramReport != "" {
+		if _, e := time.Parse("15:04", in.TelegramReport); e != nil || len(in.TelegramReport) != 5 {
+			httpErr(w, 400, "Daily report time: HH:MM in Tehran time, e.g. 09:00 (blank = off)")
+			return
+		}
+	}
 	if in.LocalIPv4, err = normIP(in.LocalIPv4, false); err != nil {
 		httpErr(w, 400, "IPv4: "+err.Error())
 		return

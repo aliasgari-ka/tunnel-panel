@@ -122,9 +122,11 @@ func (b *Bot) Run() {
 		{"command": "menu", "description": "main menu"},
 		{"command": "status", "description": "all tunnels, health included"},
 		{"command": "traffic", "description": "live traffic"},
-		{"command": "servers", "description": "servers and reachability"},
+		{"command": "servers", "description": "servers: test, kernel tuning, packages"},
+		{"command": "report", "description": "the daily report, now"},
 	})
 	_, _ = b.api("setMyCommands", url.Values{"commands": {string(cmds)}})
+	go b.reportLoop()
 	offset := 0
 	for {
 		select {
@@ -282,10 +284,10 @@ func (b *Bot) onText(chat, text string) {
 	case text == btnTraffic || strings.EqualFold(text, "/traffic") || strings.EqualFold(text, "/speed"):
 		b.slow(chat, "measuring traffic…", func() (string, string) { return b.trafficText(), "" })
 	case text == btnServers || strings.EqualFold(text, "/servers"):
-		// the same as the inline 🖥 Servers: live resources, plus how each server is reached
-		b.slow(chat, "reading every server…", func() (string, string) {
-			return b.app.resourcesText() + "\n\n" + b.serversText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}}})
-		})
+		text, kb := b.serverPicker()
+		b.sendMsg(chat, text, kb)
+	case strings.EqualFold(text, "/report"):
+		b.sendMsg(chat, b.dailyReport(), "")
 	default:
 		b.sendMsg(chat, "Use the buttons below, or /menu.", b.replyKeyboard())
 	}
@@ -295,9 +297,10 @@ func (b *Bot) helpText() string {
 	return strings.Join([]string{
 		"<b>Tunnel Panel bot</b>",
 		"📋 Status — every tunnel with its health",
-		"🛰 Tunnels — start, stop, switch method, speed test, diagnose, trace",
+		"🛰 Tunnels — start, stop, switch method, speed test, diagnose, trace, benchmark its route",
 		"📈 Traffic — live traffic",
-		"🖥 Servers — servers and how they are reached",
+		"🖥 Servers — test the connection, kernel tuning, install packages",
+		"☀️ /report — the daily report now (set its time in the panel: Settings → Telegram)",
 		"",
 		"🔔 You get a message when a tunnel goes down, when it is failed over and when it comes back.",
 	}, "\n")
@@ -431,7 +434,8 @@ func esc(s string) string {
 
 type ikey struct {
 	Text string `json:"text"`
-	Data string `json:"callback_data"`
+	Data string `json:"callback_data,omitempty"`
+	URL  string `json:"url,omitempty"` // a link button instead of a callback
 }
 
 func (b *Bot) keyboard(rows [][]ikey) string {
@@ -475,8 +479,13 @@ func (b *Bot) tunnelList() string {
 	if len(rows) == 0 {
 		rows = [][]ikey{{{Text: "no tunnels yet — create one in the panel", Data: "noop"}}}
 	}
-	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "🖥 Servers", Data: "home:res"}, {Text: "📉 Outages", Data: "home:out"}})
+	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "🖥 Servers", Data: "home:sv"}, {Text: "📉 Outages", Data: "home:out"}})
 	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "💾 Backup", Data: "home:bk"}, {Text: "🛠 Repair", Data: "home:rp"}, {Text: "🔄", Data: "home"}})
+	last := []ikey{{Text: "☀️ Report", Data: "home:rep"}}
+	if u := panelURL(); u != "" {
+		last = append(last, ikey{Text: "🌐 Open panel", URL: u})
+	}
+	rows = append(rows, last)
 	return b.keyboard(rows)
 }
 
@@ -652,7 +661,7 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 	} else {
 		rows = append(rows, []ikey{{Text: "⚡ Hot standby on", Data: "hh:" + t.ID + ":1"}})
 	}
-	rows = append(rows, []ikey{{Text: "📜 Last log", Data: "lg:" + t.ID}})
+	rows = append(rows, []ikey{{Text: "📜 Last log", Data: "lg:" + t.ID}, {Text: "📊 Benchmark route", Data: "bq:" + t.ID}})
 	rows = append(rows, []ikey{{Text: "« Tunnels", Data: "home"}})
 	return sb.String(), b.keyboard(rows)
 }
@@ -887,12 +896,24 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		return
 	case "home:res":
 		b.slow(chat, "reading every server…", func() (string, string) {
-			return b.app.resourcesText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}}})
+			return b.app.resourcesText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Servers", Data: "home:sv"}}})
 		})
+		return
+	case "home:sv":
+		text, kb := b.serverPicker()
+		b.edit(chat, msg, text, kb)
+		return
+	case "home:rep":
+		b.sendMsg(chat, b.dailyReport(), "")
 		return
 	}
 	parts := strings.SplitN(data, ":", 4)
 	if len(parts) < 2 {
+		return
+	}
+	switch parts[0] {
+	case "sv", "svt", "svo", "svoa", "svp": // a server, not a tunnel
+		b.serverAction(chat, msg, parts[0], parts[1])
 		return
 	}
 	t := b.app.store.Tunnel(parts[1])
@@ -1054,6 +1075,11 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 			text += "\n<i>Press ↻ Re-apply to " + map[bool]string{true: "start every path", false: "go back to one path"}[on] + ".</i>"
 		}
 		b.edit(chat, msg, text, kb)
+	case "bq": // confirm before a route benchmark (a few minutes, some test traffic)
+		b.edit(chat, msg, fmt.Sprintf("📊 Measure every method between the servers of <b>%s</b> over %s?\nIt takes a few minutes and runs on a spare slot — the tunnel and its users are not touched.", esc(v.Name), famName(v.Family)),
+			b.keyboard([][]ikey{{{Text: "📊 Yes, benchmark", Data: "bqy:" + t.ID}, {Text: "Cancel", Data: "t:" + t.ID}}}))
+	case "bqy":
+		b.startRouteBench(chat, t)
 	case "lg":
 		j := b.app.jobs.latestFor(t.ID)
 		if j == nil {

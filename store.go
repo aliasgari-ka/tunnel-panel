@@ -29,6 +29,8 @@ type Settings struct {
 	AutoBench string `json:"autoBench"`
 	// TelegramBackup "on": the daily backup is also sent to the admin chat
 	TelegramBackup string `json:"telegramBackup"`
+	// TelegramReport "HH:MM" (Tehran time): the bot's daily report; "" = off
+	TelegramReport string `json:"telegramReport,omitempty"`
 }
 
 // Server is a remote Iran server reached over SSH.
