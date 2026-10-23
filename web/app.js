@@ -75,9 +75,11 @@ function renderAuth(mode, name) {
     <div class="brand"><div class="dot"></div><div><b>${esc(name || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
     <h2 style="text-align:center;margin-bottom:6px">${reg ? 'Create admin account' : 'Sign in'}</h2>
     <p class="muted" style="text-align:center;margin:0 0 18px">${reg ? 'First run — set your panel login.' : 'Enter your credentials.'}</p>
+      ${reg ? `<div class="mdesc" style="margin-bottom:12px">Enter the <b>setup code</b> the installer printed. Lost it? On the server run <span class="mono">tunnel-panel setup-code</span></div>` : ''}
     <form class="ff" id="af">
       <label class="f">Username<input name="u" autocomplete="username" required></label>
       <label class="f">Password<input name="p" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required></label>
+      ${reg ? '<label class="f">Setup code<input name="c" class="mono" autocomplete="one-time-code" placeholder="xxxx-xxxx-xxxx" required></label>' : ''}
       <button class="btn pri" style="justify-content:center;padding:11px">${reg ? 'Create account' : 'Sign in'}</button>
       <div id="aerr" style="color:var(--crit);min-height:16px;font-size:13px"></div>
     </form></div></div>`);
@@ -85,7 +87,7 @@ function renderAuth(mode, name) {
   quantumBg.start();
   $('#af').onsubmit = async (ev) => {
     ev.preventDefault();
-    try { await api(reg ? '/register' : '/login', { username: ev.target.u.value, password: ev.target.p.value }); location.reload(); }
+    try { await api(reg ? '/register' : '/login', { username: ev.target.u.value, password: ev.target.p.value, code: reg ? ev.target.c.value : '' }); location.reload(); }
     catch (e) { $('#aerr').textContent = e.message; }
   };
 }
@@ -464,7 +466,7 @@ function drawSpark(svg, hist) {
 }
 function topbar(title, sub, actions) {
   return `<div class="topbar"><div style="display:flex;align-items:center;gap:12px">
-    <button class="btn ghost sm menu-toggle" onclick="document.getElementById('side').classList.toggle('open')">☰</button>
+    <button class="btn ghost sm menu-toggle">☰</button>
     <div><h1>${esc(title)}</h1><p>${esc(sub)}</p></div></div><div class="actions">${actions || ''}</div></div>`;
 }
 function modal(inner, wide) {
@@ -691,6 +693,8 @@ function moreMenu(items) {
     `<button class="mi${i.danger ? ' danger' : ''}" ${i.attr}>${i.label}</button>`).join('')}</div></details>`;
 }
 document.addEventListener('click', (e) => { $$('details.more[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
+// the phone menu button (no inline handlers: the page runs under a CSP without 'unsafe-inline' scripts)
+document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.menu-toggle')) $('#side').classList.toggle('open'); });
 // keep an open ⋯ menu above the next card (browsers without :has()), and close it once an item is picked
 document.addEventListener('toggle', (e) => { const d = e.target; if (!d.matches || !d.matches('details.more')) return; const c = d.closest('.card'); if (c) c.classList.toggle('raised', d.open); }, true);
 document.addEventListener('click', (e) => { const mi = e.target.closest && e.target.closest('details.more .mi'); if (mi) setTimeout(() => { const d = mi.closest('details.more'); if (d && !mi.dataset.armed) d.removeAttribute('open'); }, 0); });

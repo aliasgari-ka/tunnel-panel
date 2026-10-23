@@ -71,7 +71,7 @@ var methodSpoofTunnel = &Method{
 		bin := "/opt/spoof-tunnel/spoof"
 		dir := tunnelDir(c.T)
 		irPath, khPath := dir+"/spoof.json", dir+"/spoof.json"
-		art := Artifact{Name: "spoof-tunnel", Dest: bin, Mode: 0o755, Fetch: fmt.Sprintf(`
+		art := Artifact{Name: "spoof-tunnel-latest", Dest: bin, Mode: 0o755, Fetch: fmt.Sprintf(`
 VER=$(curl -fsSLI -o /dev/null -w '%%{url_effective}' https://github.com/ParsaKSH/spoof-tunnel/releases/latest | sed 's#.*/tag/##')
 [ -n "$VER" ] || VER=v3.1.0
 curl -fL --retry 3 -o "$OUT" "%shttps://github.com/ParsaKSH/spoof-tunnel/releases/download/${VER}/spoof-linux-${ARCH}"`, c.Set.GitHubProxy)}

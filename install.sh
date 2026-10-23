@@ -132,6 +132,9 @@ sleep 1
 systemctl is-active --quiet tunnel-panel && echo "==> running $($DEST --version 2>/dev/null)" || { echo "tunnel-panel failed to start:"; journalctl -u tunnel-panel -n 20 --no-pager; exit 1; }
 
 IP=$(curl -fsS4 --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+# the first admin account needs this one-time code (empty once an account exists)
+CODE=""; for i in 1 2 3; do CODE=$($DEST setup-code -data "$DATA" 2>/dev/null); [ -n "$CODE" ] && break; sleep 1; done
+if [ -z "$CODE" ] && ! grep -q '"username"' "$DATA/state.json" 2>/dev/null; then CODE="(run: $DEST setup-code)"; fi
 SCHEME=http; OPENHOST="${IP}:${PORT}"
 if [ "$TLS" = "self" ]; then SCHEME=https; fi
 if [ -n "$TLS" ] && [ "$TLS" != "self" ]; then SCHEME=https; OPENHOST="$TLS"; fi
@@ -141,7 +144,8 @@ cat <<EOF
  Tunnel Panel is running.
    Open:        ${SCHEME}://${OPENHOST}/
    Agent port:  ${AGENT_PORT}  (Iran servers dial back to this)
-   On first visit you create the admin account.
+${CODE:+   Setup code:  ${CODE}   (needed once, to create the admin account)
+}${CODE:-   Sign in with your admin account.}
  Service:  systemctl status tunnel-panel
  Data:     ${DATA}
 ==============================================================

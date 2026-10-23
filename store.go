@@ -167,19 +167,27 @@ func (t *Tunnel) secret(key string) string {
 type User struct {
 	Username string `json:"username"`
 	Hash     string `json:"hash"`
+	// Gen is part of every session's signature: sign-out and a password change bump it, so
+	// the sessions issued before stop working (a stolen cookie included)
+	Gen int `json:"gen,omitempty"`
 }
 
 type State struct {
-	Settings     Settings      `json:"settings"`
-	Users        []User        `json:"users"`
-	Servers      []*Server     `json:"servers"`
-	Tunnels      []*Tunnel     `json:"tunnels"`
-	Secret       string        `json:"secret"`
+	Settings Settings  `json:"settings"`
+	Users    []User    `json:"users"`
+	Servers  []*Server `json:"servers"`
+	Tunnels  []*Tunnel `json:"tunnels"`
+	Secret   string    `json:"secret"`
+	// SetupCode is needed to create the first admin account (printed by the installer and
+	// in the log), so whoever finds a fresh panel first can't take it over
+	SetupCode    string        `json:"setupCode,omitempty"`
 	BenchHistory []BenchRecord `json:"benchHistory,omitempty"`
 	// RouteSkip: per server pair ("iran|foreign"), the "method|family" paths the user took
 	// out — never benchmarked, deployed as a hot-standby path or used for failover there
 	RouteSkip map[string][]string `json:"routeSkip,omitempty"`
-	Outages   []Outage            `json:"outages,omitempty"` // servers/tunnels down, newest last
+	// Cleanups: teardowns a server missed while unreachable (see cleanup.go)
+	Cleanups []Cleanup `json:"cleanups,omitempty"`
+	Outages  []Outage  `json:"outages,omitempty"` // servers/tunnels down, newest last
 }
 
 // FailoverState is the original path of a tunnel that was moved to a backup.
@@ -215,6 +223,21 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
+// newSetupCode is 12 characters that are easy to read and type (no 0/O, 1/l/I).
+func newSetupCode() string {
+	const abc = "abcdefghjkmnpqrstuvwxyz23456789"
+	b := make([]byte, 12)
+	_, _ = rand.Read(b)
+	out := make([]byte, 0, 14)
+	for i, x := range b {
+		if i == 4 || i == 8 {
+			out = append(out, '-')
+		}
+		out = append(out, abc[int(x)%len(abc)])
+	}
+	return string(out)
+}
+
 func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
@@ -236,6 +259,9 @@ func LoadStore(dir string) (*Store, error) {
 	}
 	if st.S.Secret == "" {
 		st.S.Secret = randHex(32)
+	}
+	if len(st.S.Users) == 0 && st.S.SetupCode == "" {
+		st.S.SetupCode = newSetupCode()
 	}
 	if st.S.Settings.PanelName == "" {
 		st.S.Settings.PanelName = "Tunnel Panel"
@@ -343,7 +369,7 @@ func (s *Store) tunnelLocked(st *State, id string) *Tunnel {
 
 // nextIndexLocked picks the smallest free tunnel index (1..249; 250+ reserved for benchmarks).
 func (s *Store) nextIndexLocked(st *State) int {
-	used := map[int]bool{}
+	used := pendingIndices(st) // numbers whose leftovers still sit on an unreachable server
 	for _, t := range st.Tunnels {
 		used[t.Index] = true
 		for _, p := range t.Paths {
@@ -355,7 +381,7 @@ func (s *Store) nextIndexLocked(st *State) int {
 			return i
 		}
 	}
-	return 249
+	return 0 // all 249 slots taken (250 is the benchmark's): the caller refuses
 }
 
 // Update runs fn under the store lock and persists the result.

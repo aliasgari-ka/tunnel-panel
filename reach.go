@@ -89,14 +89,24 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 			cands = append(cands, cand{"jump via " + via.Name, a.jumpDial(ctx, via), false})
 		}
 	} else {
-		// auto: try every other reachable server as a jump host
+		// auto: try every other server as a jump host — not the ones the server monitor
+		// sees down right now (each would cost a full connect timeout)
 		for _, other := range a.otherServers(srv.ID) {
+			if !a.serverReachable(other.ID) {
+				continue
+			}
 			cands = append(cands, cand{"jump via " + other.Name, a.jumpDial(ctx, other), false})
 		}
 	}
 
 	var lastErr error
 	for _, c := range cands {
+		if err := ctx.Err(); err != nil { // the caller gave up (a status page, the bot): stop trying
+			if lastErr != nil {
+				return nil, "", fmt.Errorf("%w (then gave up: %v)", lastErr, err)
+			}
+			return nil, "", err
+		}
 		key := srv.ID + "|" + c.path
 		reachCache.Lock()
 		cached := reachCache.m[key]
@@ -110,7 +120,7 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		logf("trying %s", c.path)
 		sh := newSSHHost(a.store, srv, c.dial)
 		sh.v6 = c.v6
-		if _, err := sh.client(); err != nil {
+		if err := clientCtx(ctx, sh); err != nil {
 			lastErr = fmt.Errorf("%s: %w", c.path, err)
 			logf("  %s failed: %v", c.path, err)
 			continue
@@ -124,6 +134,27 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		lastErr = fmt.Errorf("no SSH path available")
 	}
 	return nil, "", lastErr
+}
+
+// clientCtx connects sh but gives up when ctx ends (a connect + handshake can take 35 s);
+// a connection that completes later is closed.
+func clientCtx(ctx context.Context, sh *SSHHost) error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := sh.client()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		go func() {
+			if <-done == nil {
+				sh.Close()
+			}
+		}()
+		return ctx.Err()
+	}
 }
 
 // otherServers returns servers that could act as jump hosts (reachable, not the target).

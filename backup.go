@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -91,6 +92,9 @@ func (a *App) restoreBackup(data []byte) (string, error) {
 	}
 	if st.Secret == "" || (len(st.Servers) == 0 && len(st.Tunnels) == 0 && len(st.Users) == 0) {
 		return "", fmt.Errorf("this file doesn't look like a Tunnel Panel backup")
+	}
+	if err := checkBackup(&st); err != nil {
+		return "", fmt.Errorf("this backup has invalid data (%v) — not restored", err)
 	}
 	if a.jobs.anyRunning() {
 		return "", fmt.Errorf("a job is still running — wait for it to finish, then restore")
@@ -183,6 +187,42 @@ func (b *Bot) sendDocument(chat, name string, data []byte, caption string) error
 	out, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(out), `"ok":true`) {
 		return fmt.Errorf("telegram: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+var backupIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,40}$`)
+
+// checkBackup refuses a backup whose values the panel would never have written itself: they
+// end up in pages, file names and scripts.
+func checkBackup(st *State) error {
+	for _, s := range st.Servers {
+		if s == nil || !backupIDRe.MatchString(s.ID) {
+			return fmt.Errorf("server id")
+		}
+		if s.Role != "" && s.Role != "iran" && s.Role != "foreign" {
+			return fmt.Errorf("server %s role", s.ID)
+		}
+	}
+	for _, t := range st.Tunnels {
+		if t == nil || !backupIDRe.MatchString(t.ID) || (t.ServerID != "" && !backupIDRe.MatchString(t.ServerID)) || (t.ForeignID != "" && !backupIDRe.MatchString(t.ForeignID)) {
+			return fmt.Errorf("tunnel id")
+		}
+		if t.Family == "" {
+			t.Family = "v4" // from before tunnels had a family
+		}
+		if t.Family != "v4" && t.Family != "v6" {
+			return fmt.Errorf("tunnel %s family", t.ID)
+		}
+		if t.Index < 1 || t.Index > 250 {
+			return fmt.Errorf("tunnel %s index", t.ID)
+		}
+		if err := validatePorts(t.Ports, nil); t.Ports != "" && err != nil {
+			return fmt.Errorf("tunnel %s ports: %v", t.ID, err)
+		}
+		if err := validateOptions(t.Options); err != nil {
+			return fmt.Errorf("tunnel %s options: %v", t.ID, err)
+		}
 	}
 	return nil
 }

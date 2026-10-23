@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -36,6 +37,24 @@ func main() {
 	//   tunnel-panel reset-password [-data DIR] [-user NAME] [-password PASS]
 	// With -password it sets that password (creating the account if none exists);
 	// without it, it clears all accounts so the next visit shows "Create admin account".
+	// setup-code prints the code the first admin account needs (nothing once one exists).
+	if len(os.Args) > 1 && os.Args[1] == "setup-code" {
+		fs := flag.NewFlagSet("setup-code", flag.ExitOnError)
+		d := fs.String("data", envOr("TP_DATA", "/etc/tunnel-panel"), "data directory")
+		_ = fs.Parse(os.Args[2:])
+		// read only: the running service owns state.json
+		var st struct {
+			Users     []json.RawMessage `json:"users"`
+			SetupCode string            `json:"setupCode"`
+		}
+		if b, err := os.ReadFile(filepath.Join(*d, "state.json")); err == nil {
+			_ = json.Unmarshal(b, &st)
+		}
+		if len(st.Users) == 0 && st.SetupCode != "" {
+			fmt.Println(st.SetupCode)
+		}
+		return
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "reset-password" || os.Args[1] == "passwd") {
 		fs := flag.NewFlagSet("reset-password", flag.ExitOnError)
 		d := fs.String("data", envOr("TP_DATA", "/etc/tunnel-panel"), "data directory")
@@ -106,6 +125,12 @@ func main() {
 	go app.resWatch()
 
 	fmt.Printf("Tunnel Panel %s (agent %s, data %s, %d methods)\n", version, *agentAddr, *dir, len(methods))
+	store.View(func(st *State) {
+		if len(st.Users) == 0 && st.SetupCode != "" {
+			fmt.Printf("No admin account yet — create it in the panel with the setup code:  %s\n", st.SetupCode)
+		}
+	})
+	cookieSecure = *tlsMode != "" && *tlsMode != "self"
 	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))
 }
 
@@ -142,11 +167,12 @@ func resetPassword(dir, user, pass string) error {
 		return fmt.Errorf("open data dir %s: %w", dir, err)
 	}
 	if pass == "" {
-		if err := store.Update(func(st *State) error { st.Users = nil; return nil }); err != nil {
+		code := newSetupCode()
+		if err := store.Update(func(st *State) error { st.Users, st.SetupCode = nil, code; return nil }); err != nil {
 			return err
 		}
-		fmt.Println("All accounts cleared. Open the panel and create a new admin account.")
-		fmt.Println("Restart the service:  systemctl restart tunnel-panel")
+		fmt.Println("All accounts cleared. Restart the service:  systemctl restart tunnel-panel")
+		fmt.Println("Then open the panel and create the admin account with this setup code:  " + code)
 		return nil
 	}
 	if len(pass) < 8 {
@@ -160,6 +186,7 @@ func resetPassword(dir, user, pass string) error {
 		for i := range st.Users {
 			if st.Users[i].Username == user {
 				st.Users[i].Hash = string(hash)
+				st.Users[i].Gen++ // sessions from before the reset end
 				return nil
 			}
 		}

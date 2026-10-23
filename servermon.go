@@ -201,6 +201,9 @@ func (a *App) checkServer(m *serverMon, s *Server, addr string, pause time.Durat
 	if !alive && a.agents != nil && a.agents.online(s.ID) != nil {
 		alive = true // SSH is filtered, but the server is alive and talking to the panel
 	}
+	if alive {
+		go a.runCleanups(s.ID) // what it missed while it was unreachable (no-op when nothing)
+	}
 	a.transition(m, s.ID, "server", s.Name, !alive, first, reason)
 }
 

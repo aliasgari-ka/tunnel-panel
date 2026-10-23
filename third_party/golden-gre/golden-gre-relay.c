@@ -274,7 +274,7 @@ static void wire_flush(void) {
   int ng = 0;
   for (int i = 0; i < nw;) {
     size_t sz = wiov[i].iov_len;
-    int n = 1, cap = sz <= GSO_FRAME ? (int)(GSO_BYTES / sz) : 1;
+    int n = 1, cap = sz && sz <= GSO_FRAME ? (int)(GSO_BYTES / sz) : 1;
     if (cap > GSO_MAX) cap = GSO_MAX;
     while (i + n < nw && n < cap && wiov[i + n].iov_len <= sz)
       if (wiov[i + n++].iov_len < sz) break;  // a shorter frame may only end a run
@@ -404,6 +404,7 @@ static void local_flush(void) {
 }
 
 static void local_emit(const uint8_t *p, size_t len) {
+  if (!len) { ADD(nbad, 1); return; }  // an empty tunnel packet means nothing (and would divide by zero below)
   memcpy(lbuf[nl], p, len);
   liov[nl] = (struct iovec){lbuf[nl], len};
   lmsg[nl].msg_hdr = (struct msghdr){.msg_name = &reply, .msg_namelen = sizeof reply, .msg_iov = &liov[nl], .msg_iovlen = 1};
@@ -681,6 +682,8 @@ static void fec_input(const uint8_t *p, size_t len) {
 static pthread_mutex_t reply_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct sockaddr_in reply_shared;
 static int reply_known;
+static struct sockaddr_in reply_fixed;  // --reply: the only local sender accepted (the kernel's FOU socket)
+static int have_reply_fixed;
 
 static void set_reply(const struct sockaddr_in *a) {
   pthread_mutex_lock(&reply_mu);
@@ -722,7 +725,9 @@ static void *local_to_wire(void *arg) {  // tunnel packets -> FEC -> facade -> p
       double cap = rate / 4.0;
       if (tokens > cap) tokens = cap;
       if (tokens < 1) {  // out of budget: sleep out the deficit instead of pulling more frames
-        struct timespec ts = {0, (long)(1000000.0 * (1 - tokens) / rate) + 100000};
+        double ns = 1000000.0 * (1 - tokens) / rate + 100000;  // a big deficit can exceed a second:
+        if (ns > 2e9) ns = 2e9;                                 // nanosleep refuses tv_nsec >= 1e9
+        struct timespec ts = {(time_t)(ns / 1e9), (long)(ns - (double)(time_t)(ns / 1e9) * 1e9)};
         nanosleep(&ts, NULL);
         continue;
       }
@@ -731,11 +736,18 @@ static void *local_to_wire(void *arg) {  // tunnel packets -> FEC -> facade -> p
       recv_setup(b, MAXPAY);
       int n = recvmmsg(loc, b->msgs, BATCH, MSG_DONTWAIT, NULL);
       for (int i = 0; i < n; i++) {
-        if (memcmp(&b->names[i], &last, sizeof last)) {  // the tunnel's address: tell the other direction
+        if ((b->msgs[i].msg_hdr.msg_flags & MSG_TRUNC) || !b->msgs[i].msg_len) { ADD(nbad, 1); continue; }
+        if (have_reply_fixed) {
+          // with --reply only the tunnel itself may send: any other local process could otherwise
+          // push packets to the peer, or (without --reply) take over where inbound packets go
+          if (b->names[i].sin_port != reply_fixed.sin_port || b->names[i].sin_addr.s_addr != reply_fixed.sin_addr.s_addr) {
+            ADD(nbad, 1);
+            continue;
+          }
+        } else if (memcmp(&b->names[i], &last, sizeof last)) {  // the tunnel's address: tell the other direction
           last = b->names[i];
           set_reply(&last);
         }
-        if (b->msgs[i].msg_hdr.msg_flags & MSG_TRUNC) { ADD(nbad, 1); continue; }
         send_tunnel_packet(b->bufs[i], b->msgs[i].msg_len);
       }
       wire_flush();
@@ -746,6 +758,43 @@ static void *local_to_wire(void *arg) {  // tunnel packets -> FEC -> facade -> p
     }
   }
   return NULL;
+}
+
+// Replay protection for keyed frames: the peer's nonce is its random per-process prefix plus a
+// counter, so a sliding window over the counter (per prefix) drops a frame seen before. A prefix the
+// peer has moved away from (it restarted) is retired and never accepted again, so old captured
+// frames can't be played back by switching prefixes. Only the receiving thread touches this.
+#define RWIN 1024
+static uint8_t rx_pre[16], rx_old[8][16];
+static uint64_t rx_top, rx_bits[RWIN / 64];
+static int rx_have, rx_nold;
+
+static int replay_ok(const uint8_t *n) {
+  uint64_t c = 0;
+  for (int i = 16; i < 24; i++) c = c << 8 | n[i];
+  if (!rx_have || memcmp(n, rx_pre, 16)) {
+    for (int i = 0; i < rx_nold && i < 8; i++)
+      if (!memcmp(n, rx_old[i], 16)) return 0;
+    if (rx_have) memcpy(rx_old[rx_nold++ % 8], rx_pre, 16);
+    memcpy(rx_pre, n, 16);
+    memset(rx_bits, 0, sizeof rx_bits);
+    rx_top = c;
+    rx_have = 1;
+    rx_bits[(c % RWIN) / 64] |= 1ULL << (c % 64);
+    return 1;
+  }
+  if (c > rx_top) {
+    uint64_t d = c - rx_top;
+    if (d >= RWIN) memset(rx_bits, 0, sizeof rx_bits);
+    else for (uint64_t x = rx_top + 1; x <= c; x++) rx_bits[(x % RWIN) / 64] &= ~(1ULL << (x % 64));
+    rx_top = c;
+  } else if (rx_top - c >= RWIN) {
+    return 0;  // too old to tell
+  }
+  uint64_t *w = &rx_bits[(c % RWIN) / 64], bit = 1ULL << (c % 64);
+  if (*w & bit) return 0;
+  *w |= bit;
+  return 1;
 }
 
 static void *wire_to_local(void *arg) {  // peer -> facade -> FEC -> tunnel
@@ -767,6 +816,7 @@ static void *wire_to_local(void *arg) {  // peer -> facade -> FEC -> tunnel
         uint8_t *p = b->bufs[i];
         size_t len = b->msgs[i].msg_len;
         if (b->names[i].sin_addr.s_addr != peer_addr) continue;
+        if (b->msgs[i].msg_hdr.msg_flags & MSG_TRUNC) { ADD(nbad, 1); continue; }  // cut short: not a whole frame
         if (is_dns) {
           // keyed: the tag decides, so no constant question to match on; legacy: match the fixed question
           if (len <= DNS_HDR || (!keyed && memcmp(p + 12, QUESTION, sizeof QUESTION))) { ADD(nbad, 1); continue; }
@@ -788,7 +838,8 @@ static void *wire_to_local(void *arg) {  // peer -> facade -> FEC -> tunnel
         }
         uint8_t pt[BUF];
         if (keyed) {  // nonce || ciphertext || tag; a verifying tag is what marks the frame as ours
-          if (len < NONCE + TAG) { ADD(nbad, 1); continue; }
+          if (len <= NONCE + TAG) { ADD(nbad, 1); continue; }  // nothing inside
+          if (!memcmp(p, nonce_base, sizeof nonce_base)) { ADD(nbad, 1); continue; }  // our own frame, reflected back
           size_t ctlen = len - NONCE - TAG;
           if (crypto_aead_unlock(pt, p + NONCE + ctlen, key, p, NULL, 0, p + NONCE, ctlen)) {
             static int warned;  // a key mismatch drops every frame: say why once instead of going quiet
@@ -796,6 +847,7 @@ static void *wire_to_local(void *arg) {  // peer -> facade -> FEC -> tunnel
             ADD(nbad, 1);
             continue;
           }
+          if (!replay_ok(p)) { ADD(nbad, 1); continue; }  // authentic, but seen before
           p = pt;
           len = ctlen;
         }
@@ -990,6 +1042,8 @@ int main(int argc, char **argv) {
     *rcolon = 0;
     struct sockaddr_in r = mkaddr(rip, atoi(rcolon + 1));
     set_reply(&r);
+    reply_fixed = r;
+    have_reply_fixed = 1;
   }
   char rot[64] = "";
   if (rotate) snprintf(rot, sizeof rot, ", rotate %d", rotate);

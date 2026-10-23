@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"debug/elf"
 	"encoding/base64"
 	"encoding/hex"
@@ -103,6 +104,9 @@ func securityHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		// a second line behind esc(): even a missed escape can't run script in a page that
+		// can run commands as root on every server (inline styles are used, inline scripts not)
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 		h.ServeHTTP(w, r)
 	})
 }
@@ -153,11 +157,32 @@ func (s *Server2) json(h http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server2) sign(user string, exp int64) string {
 	var secret string
-	s.app.store.View(func(st *State) { secret = st.Secret })
+	gen := 0
+	s.app.store.View(func(st *State) {
+		secret = st.Secret
+		for _, u := range st.Users {
+			if u.Username == user {
+				gen = u.Gen
+			}
+		}
+	})
 	mac := hmac.New(sha256.New, []byte(secret))
-	fmt.Fprintf(mac, "%s|%d", user, exp)
+	fmt.Fprintf(mac, "%s|%d|%d", user, exp, gen)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// bumpGen ends every session of user issued so far.
+func (s *Server2) bumpGen(st *State, user string) {
+	for i := range st.Users {
+		if st.Users[i].Username == user {
+			st.Users[i].Gen++
+		}
+	}
+}
+
+// cookieSecure: the panel runs with a trusted certificate (Let's Encrypt), so the session
+// cookie can be Secure. Not with a self-signed one: browsers then refuse to store it.
+var cookieSecure bool
 
 func (s *Server2) setCookie(w http.ResponseWriter, r *http.Request, user string) {
 	exp := time.Now().Add(72 * time.Hour).Unix()
@@ -169,7 +194,7 @@ func (s *Server2) setCookie(w http.ResponseWriter, r *http.Request, user string)
 	// self-signed-HTTPS origin (shown as "Not secure"), which caused a login loop. The
 	// cookie is still HttpOnly + SameSite=Lax; use --ip-ssl/--domain for a trusted cert.
 	http.SetCookie(w, &http.Cookie{Name: "tp_session", Value: val, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, MaxAge: 72 * 3600})
+		SameSite: http.SameSiteLaxMode, MaxAge: 72 * 3600, Secure: cookieSecure && r.TLS != nil})
 }
 
 func (s *Server2) currentUser(r *http.Request) string {
@@ -238,7 +263,11 @@ func (s *Server2) tooManyFailures(ip string, add bool) bool {
 	if add {
 		keep = append(keep, time.Now())
 	}
-	s.failures[ip] = keep
+	if len(keep) == 0 {
+		delete(s.failures, ip) // or the map keeps every address that ever tried
+	} else {
+		s.failures[ip] = keep
+	}
 	return len(keep) >= 5
 }
 
@@ -250,21 +279,40 @@ func (s *Server2) setupState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"configured": configured, "panelName": name})
 }
 
+// register creates the first admin account; it needs the setup code (installer output,
+// the log, or `tunnel-panel setup-code` on the server).
 func (s *Server2) register(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Username, Password string }
+	ip := clientIP(r)
+	if s.tooManyFailures(ip, false) {
+		httpErr(w, 429, "Too many failed attempts. Wait 5 minutes and try again.")
+		return
+	}
+	var in struct{ Username, Password, Code string }
 	if err := readJSON(r, &in); err != nil || strings.TrimSpace(in.Username) == "" || len(in.Password) < 8 {
 		httpErr(w, 400, "Username and a password of at least 8 characters are required.")
 		return
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	badCode := false
 	err := s.app.store.Update(func(st *State) error {
 		if len(st.Users) > 0 {
 			return fmt.Errorf("already configured")
 		}
+		code := strings.ToLower(strings.TrimSpace(in.Code))
+		if st.SetupCode == "" || subtle.ConstantTimeCompare([]byte(code), []byte(st.SetupCode)) != 1 {
+			badCode = true
+			return fmt.Errorf("wrong setup code — it was printed by the installer; on the server run:  tunnel-panel setup-code")
+		}
 		st.Users = append(st.Users, User{Username: in.Username, Hash: string(hash)})
+		st.SetupCode = ""
 		return nil
 	})
 	if err != nil {
+		if badCode {
+			s.tooManyFailures(ip, true)
+			httpErr(w, 403, err.Error())
+			return
+		}
 		httpErr(w, 409, err.Error())
 		return
 	}
@@ -300,7 +348,12 @@ func (s *Server2) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 
+// logout ends the session for good: the signature generation moves on, so this cookie (and
+// any copy of it) is refused from now on — on every browser this account is signed in.
 func (s *Server2) logout(w http.ResponseWriter, r *http.Request) {
+	if u := s.currentUser(r); u != "" {
+		_ = s.app.store.Update(func(st *State) error { s.bumpGen(st, u); return nil })
+	}
 	http.SetCookie(w, &http.Cookie{Name: "tp_session", Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, map[string]string{"ok": "1"})
 }
@@ -324,6 +377,7 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 				}
 				h, _ := bcrypt.GenerateFromPassword([]byte(in.New), bcrypt.DefaultCost)
 				st.Users[i].Hash = string(h)
+				st.Users[i].Gen++ // sessions from before the change end
 				return nil
 			}
 		}
@@ -333,6 +387,7 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
+	s.setCookie(w, r, user) // this browser stays signed in; every other session has ended
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 
@@ -351,6 +406,16 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var err error
+	// both end up inside shell scripts run as root: only what they really look like
+	if v := strings.TrimSpace(in.FRPVersion); v != "" && !frpVerRe.MatchString(v) {
+		httpErr(w, 400, "FRP version: use a version number like 0.61.1 (blank = latest)")
+		return
+	}
+	if v := strings.TrimSpace(in.GitHubProxy); v != "" && !ghProxyRe.MatchString(v) {
+		httpErr(w, 400, "GitHub download prefix: a plain URL like https://ghproxy.net/ (letters, digits, . - _ / : only)")
+		return
+	}
+	in.FRPVersion, in.GitHubProxy = strings.TrimSpace(in.FRPVersion), strings.TrimSpace(in.GitHubProxy)
 	if v := strings.TrimSpace(in.AutoBench); v != "" {
 		if n, e := strconv.Atoi(v); e != nil || n < 0 || n > 720 {
 			httpErr(w, 400, "Automatic benchmark: hours must be 0 (off) to 720")
@@ -660,6 +725,11 @@ func validatePorts(spec string, reserved map[int]string) error {
 		if lo < 1 || hi > 65535 || lo > hi {
 			return fmt.Errorf("%q is out of range.", p.listen)
 		}
+		if p.dst != p.listen {
+			if d, _ := strconv.Atoi(p.dst); d < 1 || d > 65535 {
+				return fmt.Errorf("%q: the destination port %s is out of range (1-65535).", raw, p.dst)
+			}
+		}
 		for port, what := range reserved {
 			if port >= lo && port <= hi {
 				return fmt.Errorf("Port %d is used by %s on the Iran server; forwarding it would lock you out.", port, what)
@@ -719,7 +789,9 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 	err := s.app.store.Update(func(st *State) error {
 		if in.ID == "" {
 			in.ID = newID()
-			in.Index = s.app.store.nextIndexLocked(st)
+			if in.Index = s.app.store.nextIndexLocked(st); in.Index == 0 {
+				return fmt.Errorf("All 249 tunnel slots are in use (hot-standby paths take one each) — delete a tunnel first.")
+			}
 			in.Updated = time.Now().Unix()
 			in.Active, in.Secrets, in.Failover = "", nil, nil
 			in.Shape = normalizeShape(in.Shape)
@@ -1279,7 +1351,20 @@ func (s *Server2) helperFetch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "source": res.Source, "sha256": res.SHA256, "size": res.Size, "note": res.Note})
 }
 
-var optTextRe = regexp.MustCompile(`^[A-Za-z0-9_.:/@,= -]*$`)
+var (
+	optTextRe = regexp.MustCompile(`^[A-Za-z0-9_.:/@,=-]*$`)
+	frpVerRe  = regexp.MustCompile(`^v?[0-9]{1,3}(\.[0-9]{1,3}){1,3}$`)
+	ghProxyRe = regexp.MustCompile(`^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$`)
+	// text options with a known shape, checked by key
+	optShape = map[string]*regexp.Regexp{
+		"fec":           regexp.MustCompile(`^([0-9]{1,3}:[0-9]{1,3})?$`),
+		"sni":           regexp.MustCompile(`^[A-Za-z0-9.-]{0,253}$`),
+		"sni_domain":    regexp.MustCompile(`^[A-Za-z0-9.-]{0,253}$`),
+		"xdp_interface": regexp.MustCompile(`^[A-Za-z0-9_.@-]{0,15}$`),
+	}
+	// numbers with a narrower sensible range than a port
+	optRange = map[string][2]int{"mtu": {576, 9000}, "mux_con": {1, 64}}
+)
 
 // validateOptions checks method options before they reach configs and shell scripts:
 // numbers must be numbers, selects one of their choices, free text a safe charset.
@@ -1297,8 +1382,12 @@ func validateOptions(opts map[string]map[string]string) error {
 			switch f.Type {
 			case "number":
 				if v != "" {
-					if n, err := strconv.Atoi(v); err != nil || n < 0 || n > 65535 {
+					n, err := strconv.Atoi(v)
+					if err != nil || n < 0 || n > 65535 {
 						return fmt.Errorf("%s: %s must be a number", m.Title, f.Label)
+					}
+					if r, ok := optRange[k]; ok && (n < r[0] || n > r[1]) {
+						return fmt.Errorf("%s: %s must be between %d and %d", m.Title, f.Label, r[0], r[1])
 					}
 				}
 			case "bool":
@@ -1310,6 +1399,12 @@ func validateOptions(opts map[string]map[string]string) error {
 					return fmt.Errorf("%s: %s must be one of %s", m.Title, f.Label, strings.Join(f.Options, ", "))
 				}
 			default:
+				if re := optShape[k]; re != nil && !re.MatchString(v) {
+					return fmt.Errorf("%s: %s %q doesn't look right", m.Title, f.Label, v)
+				}
+				if strings.HasSuffix(k, "_ip") && v != "" && net.ParseIP(v) == nil {
+					return fmt.Errorf("%s: %s must be an IP address", m.Title, f.Label)
+				}
 				if !optTextRe.MatchString(v) || len(v) > 200 {
 					return fmt.Errorf("%s: %s contains characters that aren't allowed", m.Title, f.Label)
 				}

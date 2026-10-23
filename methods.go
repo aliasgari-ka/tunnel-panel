@@ -52,7 +52,14 @@ func renderUnit(u Unit) string {
 		typ = "simple"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[Unit]\nDescription=%s\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=%s\n", u.Desc, typ)
+	// (no control characters: a newline in a name would add a line to the unit)
+	desc := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, u.Desc)
+	fmt.Fprintf(&b, "[Unit]\nDescription=%s\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=%s\n", desc, typ)
 	if u.RemainAfterExit {
 		b.WriteString("RemainAfterExit=yes\n")
 	}

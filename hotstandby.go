@@ -147,7 +147,7 @@ func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
 	}
 	// indices: the primary path keeps the tunnel's own; others keep theirs or get a free one
 	_ = a.store.Update(func(st *State) error {
-		used := map[int]bool{}
+		used := pendingIndices(st)
 		for _, o := range st.Tunnels {
 			used[o.Index] = true
 			if o.ID != t.ID {

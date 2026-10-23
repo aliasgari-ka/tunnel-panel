@@ -54,7 +54,7 @@ done`)
 		}
 		t.Logf("%s %s", map[bool]string{true: "✓", false: "✕"}[ok], name)
 	}
-	j, err := a.Bench(BenchRequest{IranID: "ir", ForeignID: "kh", Family: "v4", Methods: []string{"premium", "gre"}, Seconds: 2, MaxMB: 2})
+	j, err := a.Bench(BenchRequest{IranID: "ir", ForeignID: "kh", Family: "v4", Methods: strings.Split(orStr(os.Getenv("TP_BENCHALT_METHODS"), "premium,gre"), ","), Seconds: 2, MaxMB: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,14 +70,17 @@ done`)
 	for _, r := range a.benchResults("ir", "kh", "v4") {
 		res[r.Method] = r
 	}
-	for _, mid := range []string{"premium"} {
+	for _, mid := range strings.Split(orStr(os.Getenv("TP_BENCHALT_METHODS"), "premium,gre"), ",") {
+		if mid == "gre" {
+			continue
+		}
 		r := res[mid]
 		step(mid+" works with another carrier ("+r.Title+")", r.OK && len(r.Opts) > 0)
 	}
 	step("Plain GRE passes as is", res["gre"].OK && len(res["gre"].Opts) == 0)
 
 	// hot standby takes the carriers the benchmark found
-	hsOnly = []string{"gre", "premium"}
+	hsOnly = strings.Split(orStr(os.Getenv("TP_BENCHALT_METHODS"), "premium,gre"), ",")
 	defer func() { hsOnly = nil }()
 	tn := st.Tunnel("hs2")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)

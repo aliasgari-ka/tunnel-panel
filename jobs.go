@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +20,9 @@ type Job struct {
 	mu      sync.Mutex
 	onLine  func(string)
 	cancel  context.CancelFunc
+	// tornDown: an apply got as far as taking the previous method down (ApplyRoute then
+	// brings that one back if the new one fails)
+	tornDown atomic.Bool
 }
 
 // context returns the job's context; Jobs.cancel ends it, which kills whatever
@@ -373,6 +377,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		}
 		_, _ = irHost.Run(ctx, teardownScript(t), func(l string) { j.log("[IR] %s", l) })
 		_, _ = khHost.Run(ctx, teardownScript(t), func(l string) { j.log("[KH] %s", l) })
+		j.tornDown.Store(t.Active != "")
 		a.setActive(t, "")
 
 		// the ports this method binds on Iran must really be free now; a user port another
@@ -448,16 +453,18 @@ func (a *App) purge(parent context.Context, t *Tunnel) string {
 	defer cancel()
 	var warn []string
 	if srv := a.store.Server(t.ServerID); srv != nil {
-		if h, _, err := a.reach(ctx, srv, nil); err == nil {
-			_, _ = h.Run(ctx, teardownScript(t), nil)
-		} else {
-			warn = append(warn, "Iran server unreachable — leftovers may remain there")
+		if h, _, err := a.reach(ctx, srv, nil); err != nil || !a.teardownOn(ctx, h, t.ServerID, t, nil) {
+			a.deferCleanup(t.ServerID, t)
+			warn = append(warn, "Iran server unreachable — its leftovers are removed automatically once it answers again")
 		}
 	}
 	if h, _, err := a.foreignHost(ctx, t, nil); err == nil {
-		_, _ = h.Run(ctx, teardownScript(t), nil)
+		if !a.teardownOn(ctx, h, t.ForeignID, t, nil) {
+			warn = append(warn, "foreign server didn't finish the cleanup — it is retried automatically once it answers again")
+		}
 	} else {
-		warn = append(warn, "foreign server unreachable — leftovers may remain there")
+		a.deferCleanup(t.ForeignID, t)
+		warn = append(warn, "foreign server unreachable — its leftovers are removed automatically once it answers again")
 	}
 	return strings.Join(warn, "; ")
 }
@@ -477,15 +484,29 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 		if srv := a.store.Server(t.ServerID); srv != nil {
 			if irHost, path, err := a.reach(ctx, srv, j); err == nil {
 				j.log("Iran reachable via %s", path)
-				_, _ = irHost.Run(ctx, teardownScript(t)+hsTeardown(t), func(l string) { j.log("[IR] %s", l) })
+				if !a.teardownOn(ctx, irHost, t.ServerID, t, func(l string) {
+					if l != "TP-TEARDOWN-DONE" {
+						j.log("[IR] %s", l)
+					}
+				}) {
+					j.log("WARNING: the Iran side didn't finish stopping — it is finished automatically as soon as the server answers again")
+				}
 			} else {
-				j.log("WARNING: Iran unreachable (%v) — only the foreign side was stopped", err)
+				a.deferCleanup(t.ServerID, t)
+				j.log("WARNING: Iran unreachable (%v) — only the foreign side was stopped; the Iran side is stopped automatically as soon as it answers again", err)
 			}
 		}
 		if kh, _, err := a.foreignHost(ctx, t, j); err == nil {
-			_, _ = kh.Run(ctx, teardownScript(t)+hsTeardown(t), func(l string) { j.log("[KH] %s", l) })
+			if !a.teardownOn(ctx, kh, t.ForeignID, t, func(l string) {
+				if l != "TP-TEARDOWN-DONE" {
+					j.log("[KH] %s", l)
+				}
+			}) {
+				j.log("WARNING: the foreign side didn't finish stopping — finished automatically as soon as it answers again")
+			}
 		} else {
-			j.log("WARNING: foreign server unreachable (%v)", err)
+			a.deferCleanup(t.ForeignID, t)
+			j.log("WARNING: foreign server unreachable (%v) — stopped there automatically as soon as it answers again", err)
 		}
 		a.setActive(t, "")
 		j.log("stopped")

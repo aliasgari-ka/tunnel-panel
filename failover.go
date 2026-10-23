@@ -282,17 +282,21 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 	if m == nil {
 		return nil, fmt.Errorf("unknown method")
 	}
-	if fam == "" {
-		fam = t.Family
-	}
+	// one consistent read: a Stop or apply running now changes these under the lock
+	var old, prev, pin string
+	var hot, running bool
+	a.store.View(func(*State) {
+		old, prev, pin, hot = t.Family, t.Active, t.HSPin, t.HotStandby
+		if fam == "" {
+			fam = t.Family
+		}
+		running = hot && prev != "" && len(t.Paths) > 0 && hsIndex(t, mid, fam) >= 0
+	})
 	// hot standby: another running path (or back to the tunnel's own from a chosen one) is
 	// a selector swap, not a rebuild — nobody is cut
-	if t.HotStandby && t.Active != "" && len(t.Paths) > 0 && hsIndex(t, mid, fam) >= 0 {
-		if (mid != t.Active || fam != t.Family) || t.HSPin != "" {
-			return a.hsSwitchJob(t, mid, fam)
-		}
+	if running && (mid != prev || fam != old || pin != "") {
+		return a.hsSwitchJob(t, mid, fam)
 	}
-	old := t.Family
 	if err := a.switchFamily(t, m, fam); err != nil {
 		return nil, err
 	}
@@ -307,7 +311,31 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 		return nil, err
 	}
 	a.clearFailover(t)
+	if prev != "" && !hot && (prev != mid || old != fam) {
+		go a.restoreOnFail(j, t, prev, old, mid)
+	}
 	return j, nil
+}
+
+// restoreOnFail: switching a running tunnel to another method took the old one down, and
+// the new one failed — bring the old one back instead of leaving the users without a tunnel.
+func (a *App) restoreOnFail(j *Job, t *Tunnel, prev, prevFam, tried string) {
+	for j.snapshot().Status == "running" {
+		time.Sleep(time.Second)
+	}
+	active := ""
+	a.store.View(func(*State) { active = t.Active })
+	if j.snapshot().Status != "error" || !j.tornDown.Load() || active != "" {
+		return // it worked, was cancelled, or failed before touching the running tunnel
+	}
+	for i := 0; i < 30 && a.jobs.running(t.ID) != ""; i++ {
+		time.Sleep(time.Second)
+	}
+	a.push(fmt.Sprintf("↩ %s: %s failed — bringing back %s (%s), which ran before", t.Name, methodTitle(tried), methodTitle(prev), famName(prevFam)))
+	a.setFamily(t, prevFam)
+	if _, err := a.Apply(t, prev); err != nil {
+		a.push(fmt.Sprintf("❌ %s: could not bring back %s: %v", t.Name, methodTitle(prev), err))
+	}
 }
 
 // setFamily switches a stopped-or-being-replaced tunnel's underlay family.
