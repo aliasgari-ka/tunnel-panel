@@ -349,14 +349,21 @@ log_level = "info"
 		if mode == "anytls" || mode == "wssmux" {
 			certGen = fmt.Sprintf("[ -f %[1]s/cert.crt ] || openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -x509 -days 365 -sha256 -keyout %[1]s/cert.key -out %[1]s/cert.crt -subj \"/CN=cdn.example.com\"\n", certDir)
 		}
-		fixIface := func(cfg string) string {
-			return "sed -i \"s/IFACE/$(ip route show default | awk '{print $5; exit}')/\" " + cfg + " 2>/dev/null || true\n"
+		// ipx sends raw packets on the interface the route to the peer server leaves by —
+		// not the default route's, which on a server with a VPN, a proxy tun or a second NIC
+		// is another interface, and then nothing arrives
+		fixIface := func(cfg, peer string) string {
+			return fmt.Sprintf(`dev=$(ip -4 route get %s 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)
+[ -n "$dev" ] || dev=$(ip route show default | awk '{print $5; exit}')
+[ -n "$dev" ] || { echo "no route to %s on this server — ipx needs one"; exit 1; }
+sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
+`, peer, peer, cfg)
 		}
-		mk := func(toml, cfg, side string) SidePlan {
+		mk := func(toml, cfg, side, peer string) SidePlan {
 			sp := SidePlan{
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
-				Setup:     sysctlBBR + certGen + fixIface(cfg) + ipxEmuCheck(mode),
+				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode),
 				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg},
 			}
 			if mode == "ipx" {
@@ -372,6 +379,6 @@ log_level = "info"
 			}
 			return sp
 		}
-		return mk(irToml, irCfg, "Iran"), mk(khToml, khCfg, "foreign"), nil
+		return mk(irToml, irCfg, "Iran", d.KHPub), mk(khToml, khCfg, "foreign", d.IRPub), nil
 	},
 }

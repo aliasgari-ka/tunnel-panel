@@ -68,9 +68,11 @@ func (b *Bot) send(chat, text string) {
 }
 
 // push broadcasts a status line to every admin (used for job notifications).
+// push sends a notification (plain text: names and errors in it may hold &, < or >, which
+// would make Telegram reject the whole HTML message and the alert would be lost).
 func (b *Bot) push(text string) {
 	for a := range b.admins {
-		b.send(a, text)
+		b.send(a, esc(text))
 	}
 }
 
@@ -218,7 +220,7 @@ func clip(s string) string {
 
 // slow runs fn while showing a placeholder, then edits the placeholder with the result.
 func (b *Bot) slow(chat, wait string, fn func() (string, string)) {
-	id := b.sendMsg(chat, "⏳ "+wait, "")
+	id := b.sendMsg(chat, "⏳ "+esc(wait), "")
 	text, markup := fn()
 	b.edit(chat, id, text, markup)
 }
@@ -250,7 +252,10 @@ func (b *Bot) onText(chat, text string) {
 	case text == btnTraffic || strings.EqualFold(text, "/traffic") || strings.EqualFold(text, "/speed"):
 		b.slow(chat, "measuring traffic…", func() (string, string) { return b.trafficText(), "" })
 	case text == btnServers || strings.EqualFold(text, "/servers"):
-		b.sendMsg(chat, b.serversText(), "")
+		// the same as the inline 🖥 Servers: live resources, plus how each server is reached
+		b.slow(chat, "reading every server…", func() (string, string) {
+			return b.app.resourcesText() + "\n\n" + b.serversText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}}})
+		})
 	default:
 		b.sendMsg(chat, "Use the buttons below, or /menu.", b.replyKeyboard())
 	}
@@ -366,7 +371,7 @@ func (b *Bot) serversText() string {
 				online = " · agent online"
 			}
 			addr := orStr(s.IPv4, s.IPv6)
-			fmt.Fprintf(&sb, "%s <b>%s</b> (%s) <code>%s</code>%s\n    %s\n", flagEmoji(s.Country), esc(s.Name), s.Role, esc(addr), online, esc(orStr(s.LastPath, "not tested")))
+			fmt.Fprintf(&sb, "%s <b>%s</b> (%s) <code>%s</code>%s\n    %s\n", flagEmoji(s.Country), esc(s.Name), orStr(s.Role, "iran"), esc(addr), online, esc(orStr(s.LastPath, "not tested")))
 		}
 	})
 	if sb.Len() == 0 {
@@ -380,6 +385,9 @@ func flagEmoji(cc string) string {
 		return "🖥"
 	}
 	cc = strings.ToUpper(cc)
+	if cc[0] < 'A' || cc[0] > 'Z' || cc[1] < 'A' || cc[1] > 'Z' {
+		return "🌐"
+	}
 	return string(rune(0x1F1E6+int(cc[0])-'A')) + string(rune(0x1F1E6+int(cc[1])-'A'))
 }
 
@@ -774,7 +782,7 @@ func (b *Bot) methodPicker(t *Tunnel, fam string, fams []string) (string, string
 
 // watchJob reports a job's outcome to the chat when it ends (the important lines only).
 func (b *Bot) watchJob(chat string, j *Job, title string) {
-	msg := b.sendMsg(chat, "⏳ "+title+"…", "")
+	msg := b.sendMsg(chat, "⏳ "+esc(title)+"…", "")
 	go func() {
 		deadline := time.Now().Add(30 * time.Minute)
 		for time.Now().Before(deadline) {

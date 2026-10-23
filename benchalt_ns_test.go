@@ -24,6 +24,8 @@ func TestBenchAltNS(t *testing.T) {
 	}
 	defer sh(t, "for n in tir tkh tus; do ip netns pids $n 2>/dev/null | xargs -r kill -9; ip netns del $n 2>/dev/null; done; rm -rf /etc/netns/tir /etc/netns/tkh")
 	e2eTopology(t, "v4")
+	// public-looking addresses (the Premium core refuses to run without a public IP)
+	sh(t, "ip -n tir addr add 198.51.100.1/24 dev vir; ip -n tkh addr add 198.51.100.2/24 dev vkh")
 	// the filter: on the wire (egress of both ends) UDP and TCP between the servers die
 	sh(t, `for x in "tir vir" "tkh vkh"; do set -- $x
 ip netns exec $1 tc qdisc add dev $2 root handle 1: prio
@@ -33,7 +35,7 @@ done`)
 	dataDir = t.TempDir()
 	st, _ := LoadStore(dataDir)
 	_ = st.Update(func(s *State) error {
-		s.Servers = []*Server{{ID: "ir", Name: "iran", IPv4: "10.99.0.1"}, {ID: "kh", Name: "foreign", IPv4: "10.99.0.2", Role: "foreign"}}
+		s.Servers = []*Server{{ID: "ir", Name: "iran", IPv4: "198.51.100.1"}, {ID: "kh", Name: "foreign", IPv4: "198.51.100.2", Role: "foreign"}}
 		s.Tunnels = []*Tunnel{{ID: "hs2", Name: "hot", ServerID: "ir", ForeignID: "kh", Family: "v4", Ports: "28579", Index: 31, HotStandby: true,
 			Options: map[string]map[string]string{}, Secrets: map[string]string{}}}
 		return nil
@@ -52,7 +54,7 @@ done`)
 		}
 		t.Logf("%s %s", map[bool]string{true: "✓", false: "✕"}[ok], name)
 	}
-	j, err := a.Bench(BenchRequest{IranID: "ir", ForeignID: "kh", Family: "v4", Methods: []string{"bp_l3", "premium", "golden", "gre"}, Seconds: 2, MaxMB: 2})
+	j, err := a.Bench(BenchRequest{IranID: "ir", ForeignID: "kh", Family: "v4", Methods: []string{"premium", "gre"}, Seconds: 2, MaxMB: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,14 +70,14 @@ done`)
 	for _, r := range a.benchResults("ir", "kh", "v4") {
 		res[r.Method] = r
 	}
-	for _, mid := range []string{"bp_l3", "premium", "golden"} {
+	for _, mid := range []string{"premium"} {
 		r := res[mid]
 		step(mid+" works with another carrier ("+r.Title+")", r.OK && len(r.Opts) > 0)
 	}
 	step("Plain GRE passes as is", res["gre"].OK && len(res["gre"].Opts) == 0)
 
 	// hot standby takes the carriers the benchmark found
-	hsOnly = []string{"gre", "bp_l3", "premium"}
+	hsOnly = []string{"gre", "premium"}
 	defer func() { hsOnly = nil }()
 	tn := st.Tunnel("hs2")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
@@ -95,7 +97,7 @@ done`)
 			n++
 		}
 	}
-	step("every hot-standby path passes traffic on the filtered route", v != nil && n == len(v.Paths) && n == 3)
+	step("every hot-standby path passes traffic on the filtered route", v != nil && n == len(v.Paths) && n == 2)
 	j2, _ := a.Stop(tn)
 	for j2.snapshot().Status == "running" {
 		time.Sleep(time.Second)

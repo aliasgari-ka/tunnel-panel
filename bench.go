@@ -224,7 +224,8 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				continue
 			}
 			err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r)
-			if err != nil && m.Alts != nil && !strings.HasPrefix(err.Error(), "not tested") && ctx.Err() == nil {
+			// (only when it deployed but carried nothing: a config or start error would just repeat)
+			if err != nil && m.Alts != nil && strings.Contains(err.Error(), "no traffic passes") && ctx.Err() == nil {
 				// the default carrier passes nothing here: try the method's other carriers
 				first, tried := err, []string{}
 				for _, alt := range m.Alts(req.Family) {
