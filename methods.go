@@ -124,6 +124,8 @@ type Field struct {
 	Default string   `json:"default"`
 	Help    string   `json:"help"`
 	Options []string `json:"options,omitempty"`
+	// Advanced fields are folded away in the UI; their defaults are what the method always used.
+	Advanced bool `json:"advanced,omitempty"`
 }
 
 // Method is one tunnelling technique.
@@ -133,6 +135,7 @@ type Method struct {
 	Desc     string                                         `json:"desc"`
 	Families []string                                       `json:"families"` // v4, v6
 	Encrypt  string                                         `json:"encrypt"`  // short note shown as a badge
+	Group    string                                         `json:"group"`    // family the UI lists it under (see methodGroups)
 	Fields   []Field                                        `json:"fields"`
 	Helper   string                                         `json:"helper,omitempty"` // embedded/uploaded binary "<helper>-<arch>" both hosts need
 	Build    func(c *buildCtx) (ir, kh SidePlan, err error) `json:"-"`
@@ -211,7 +214,22 @@ func deriveFor(t *Tunnel, srv, fsrv *Server, set Settings) derived {
 var methods []*Method
 var methodByID = map[string]*Method{}
 
+// methodGroups puts related methods together in the UI (all Backhaul cores in one place;
+// the UI lists the groups in this order: Backhaul, BackPack, Kernel, Other).
+var methodGroups = map[string]string{
+	"backhaul": "Backhaul", "premium": "Backhaul", "premium1": "Backhaul",
+	"bp_reverse": "BackPack", "bp_l3": "BackPack",
+	"gre": "Kernel GRE / IPsec", "direct6": "Kernel GRE / IPsec", "ipsec6": "Kernel GRE / IPsec",
+	"frp": "Other", "golden": "Other", "spoof": "Other",
+}
+
 func register(m *Method) {
+	if m.Group == "" {
+		m.Group = methodGroups[m.ID]
+	}
+	if m.Group == "" {
+		m.Group = "Other"
+	}
 	methods = append(methods, m)
 	methodByID[m.ID] = m
 }

@@ -494,8 +494,11 @@ func (a *App) SpeedTest(t *Tunnel, secs int) (*Job, error) {
 		if benchIsL3(m, t.Options[m.ID]) {
 			target = fmt.Sprintf("%s:%d", d.KHv4, port)
 		}
-		_, _ = khHost.Run(ctx, probeServerUpLife(port, 120), nil)
 		defer func() { _, _ = khHost.Run(context.Background(), probeServerDown(port), nil) }()
+		if err := probeStarted(ctx, khHost, probeServerUpLife(port, 120)); err != nil {
+			fail("probe server on the foreign side: %v", err)
+			return
+		}
 		j.log("testing %s through %s (%s)", t.Name, m.Title, target)
 		rt, err := runProbe[probeRTT](ctx, irHost, fmt.Sprintf("probe rtt -addr %s -n 15", target), 25)
 		if err != nil {

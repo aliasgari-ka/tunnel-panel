@@ -248,6 +248,13 @@ var methodPremium = &Method{
 		{Key: "algorithm", Label: "IPX cipher", Type: "select", Default: "aes-256-gcm", Options: []string{"aes-256-gcm", "chacha20-poly1305", "aes-128-gcm"}},
 		{Key: "mtu", Label: "TUN MTU (ipx)", Type: "number", Default: "1280",
 			Help: "lower it (1200, 1100) if download works but upload/handshakes stall — the Iran→foreign path drops big packets"},
+		{Key: "heartbeat_interval", Label: "Heartbeat interval (s)", Type: "number", Default: "10", Advanced: true},
+		{Key: "heartbeat_timeout", Label: "Heartbeat timeout (s)", Type: "number", Default: "25",
+			Help: "must be longer than the interval; lower = a dead link is noticed sooner", Advanced: true},
+		{Key: "connection_pool", Label: "Connection pool (non-ipx)", Type: "number", Default: "8", Advanced: true},
+		{Key: "mux_concurrency", Label: "Mux concurrency (tcpmux / wssmux)", Type: "number", Default: "8", Advanced: true},
+		{Key: "channel_size", Label: "Channel size (non-ipx)", Type: "number", Default: "4096", Advanced: true},
+		{Key: "log_level", Label: "Log level", Type: "select", Default: "info", Options: []string{"debug", "info", "warn", "error"}, Advanced: true},
 	},
 	// the default tcp profile is hand-made TCP segments without a handshake, which stateful
 	// filtering drops; gre passes wherever Plain GRE does
@@ -260,6 +267,12 @@ var methodPremium = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		mode := c.Opt("mode")
+		hbi, _ := strconv.Atoi(c.Opt("heartbeat_interval"))
+		hbt, _ := strconv.Atoi(c.Opt("heartbeat_timeout"))
+		if hbi < 1 || hbt <= hbi {
+			return ir, kh, fmt.Errorf("Backhaul Premium: the heartbeat timeout (%d s) must be longer than the interval (%d s)", hbt, hbi)
+		}
+		logLevel := c.Opt("log_level")
 		dir := tunnelDir(c.T)
 		bin := "/opt/backhaul-premium/backhaul_premium"
 		core := Artifact{Name: "backhaul_premium", Asset: "backhaul_premium", Dest: bin, Mode: 0o755}
@@ -273,8 +286,8 @@ var methodPremium = &Method{
 			ipxCommon := func(self, peer string) string {
 				return fmt.Sprintf(`[transport]
 type = "tun"
-heartbeat_interval = 10
-heartbeat_timeout = 25
+heartbeat_interval = %d
+heartbeat_timeout = %d
 
 [tun]
 encapsulation = "ipx"
@@ -299,8 +312,8 @@ batch_size = 2048
 so_sndbuf = 0
 
 [logging]
-log_level = "info"
-`, d.Idx, self, peer, d.BasePort, c.Opt("mtu"), alg, psk)
+log_level = "%s"
+`, hbi, hbt, d.Idx, self, peer, d.BasePort, c.Opt("mtu"), alg, psk, logLevel)
 			}
 			irToml = fmt.Sprintf("[ipx]\nmode = \"server\"\nprofile = %q\nlisten_ip = %q\ndst_ip = %q\ninterface = \"IFACE\"\n\n", prof, d.IRPub, d.KHPub) +
 				ipxCommon(d.IRv4, d.KHv4) + fmt.Sprintf("\n[ports]\nforwarder = \"iptables\"\nmapping = [%s]\n", portsTOML(c.T.Ports))
@@ -311,7 +324,7 @@ log_level = "info"
 			port := portOr(c.Opt("port"), d.BasePort)
 			muxBlock, tlsBlock, tlsClient := "", "", ""
 			if mode == "tcpmux" || mode == "wssmux" {
-				muxBlock = "\n[mux]\nmux_version = 2\nmux_framesize = 32768\nmux_recievebuffer = 4194304\nmux_streambuffer = 2097152\nmux_concurrency = 8\n"
+				muxBlock = "\n[mux]\nmux_version = 2\nmux_framesize = 32768\nmux_recievebuffer = 4194304\nmux_streambuffer = 2097152\nmux_concurrency = " + c.Opt("mux_concurrency") + "\n"
 			}
 			if mode == "anytls" || mode == "wssmux" {
 				tlsBlock = fmt.Sprintf("\n[tls]\nsni = %q\ntls_cert = %q\ntls_key = %q\n", c.Opt("sni"), certDir+"/cert.crt", certDir+"/cert.key")
@@ -326,8 +339,8 @@ bind_addr = ":%s"
 type = "%s"
 nodelay = true
 keepalive_period = 40
-heartbeat_interval = 10
-heartbeat_timeout = 25
+heartbeat_interval = %d
+heartbeat_timeout = %d
 %s
 [security]
 token = "%s"
@@ -335,14 +348,14 @@ token = "%s"
 [tuning]
 auto_tuning = true
 tuning_profile = "balanced"
-channel_size = 4096
+channel_size = %s
 
 [logging]
-log_level = "info"
+log_level = "%s"
 
 [ports]
 mapping = [%s]
-`, port, mode, muxBlock, tok, tlsBlock, portsTOML(c.T.Ports))
+`, port, mode, hbi, hbt, muxBlock, tok, tlsBlock, c.Opt("channel_size"), logLevel, portsTOML(c.T.Ports))
 			khToml = fmt.Sprintf(`[dialer]
 remote_addr = "%s:%s"
 dial_timeout = 10
@@ -352,9 +365,9 @@ retry_interval = 3
 type = "%s"
 nodelay = true
 keepalive_period = 40
-connection_pool = 8
-heartbeat_interval = 10
-heartbeat_timeout = 25
+connection_pool = %s
+heartbeat_interval = %d
+heartbeat_timeout = %d
 %s
 [security]
 token = "%s"
@@ -362,11 +375,11 @@ token = "%s"
 [tuning]
 auto_tuning = true
 tuning_profile = "balanced"
-channel_size = 4096
+channel_size = %s
 
 [logging]
-log_level = "info"
-`, d.IRPub, port, mode, muxBlock, tok, tlsClient)
+log_level = "%s"
+`, d.IRPub, port, mode, c.Opt("connection_pool"), hbi, hbt, muxBlock, tok, tlsClient, c.Opt("channel_size"), logLevel)
 		}
 
 		certGen := ""

@@ -363,21 +363,49 @@ func (s *Server2) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"user": s.currentUser(r), "version": version})
 }
 
+var usernameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,32}$`)
+
+// password changes the signed-in account's password and/or username (NewUser); both need
+// the current password, and every other session of the account ends.
 func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Old, New string }
-	if err := readJSON(r, &in); err != nil || len(in.New) < 8 {
+	var in struct{ Old, New, NewUser string }
+	if err := readJSON(r, &in); err != nil {
+		httpErr(w, 400, "bad request")
+		return
+	}
+	in.NewUser = strings.TrimSpace(in.NewUser)
+	if in.New == "" && in.NewUser == "" {
+		httpErr(w, 400, "Enter a new password or a new username.")
+		return
+	}
+	if in.New != "" && len(in.New) < 8 {
 		httpErr(w, 400, "The new password must be at least 8 characters.")
 		return
 	}
+	if in.NewUser != "" && !usernameRe.MatchString(in.NewUser) {
+		httpErr(w, 400, "A username is 1–32 characters: letters, digits and . _ @ -")
+		return
+	}
 	user := s.currentUser(r)
+	name := user
 	err := s.app.store.Update(func(st *State) error {
 		for i, u := range st.Users {
 			if u.Username == user {
 				if bcrypt.CompareHashAndPassword([]byte(u.Hash), []byte(in.Old)) != nil {
 					return fmt.Errorf("The current password is wrong.")
 				}
-				h, _ := bcrypt.GenerateFromPassword([]byte(in.New), bcrypt.DefaultCost)
-				st.Users[i].Hash = string(h)
+				if in.NewUser != "" && in.NewUser != user {
+					for _, o := range st.Users {
+						if o.Username == in.NewUser {
+							return fmt.Errorf("The username %q is taken.", in.NewUser)
+						}
+					}
+					st.Users[i].Username, name = in.NewUser, in.NewUser
+				}
+				if in.New != "" {
+					h, _ := bcrypt.GenerateFromPassword([]byte(in.New), bcrypt.DefaultCost)
+					st.Users[i].Hash = string(h)
+				}
 				st.Users[i].Gen++ // sessions from before the change end
 				return nil
 			}
@@ -388,8 +416,8 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
-	s.setCookie(w, r, user) // this browser stays signed in; every other session has ended
-	writeJSON(w, map[string]string{"ok": "1"})
+	s.setCookie(w, r, name) // this browser stays signed in; every other session has ended
+	writeJSON(w, map[string]string{"ok": "1", "user": name})
 }
 
 // ---- settings ----
@@ -1374,7 +1402,9 @@ var (
 		"xdp_interface": regexp.MustCompile(`^[A-Za-z0-9_.@-]{0,15}$`),
 	}
 	// numbers with a narrower sensible range than a port
-	optRange = map[string][2]int{"mtu": {576, 9000}, "mux_con": {1, 64}}
+	optRange = map[string][2]int{"mtu": {576, 9000}, "mux_con": {1, 64}, "mux_concurrency": {1, 64},
+		"keepalive_period": {5, 600}, "heartbeat": {2, 300}, "heartbeat_interval": {1, 120}, "heartbeat_timeout": {3, 600},
+		"channel_size": {64, 65535}, "connection_pool": {1, 128}}
 )
 
 // validateOptions checks method options before they reach configs and shell scripts:

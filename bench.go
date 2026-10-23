@@ -194,7 +194,10 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		probeOK := pushArtifacts(ctx, j, "IR", irHost, []Artifact{probeArt}) == nil &&
 			pushArtifacts(ctx, j, "KH", khHost, []Artifact{probeArt}) == nil
 		if probeOK {
-			_, _ = khHost.Run(ctx, probeServerUp(probePort), nil)
+			if perr := probeStarted(ctx, khHost, probeServerUp(probePort)); perr != nil {
+				j.log("WARNING: probe server on the foreign side: %v — falling back to ping only (no throughput)", perr)
+				probeOK = false
+			}
 		} else {
 			j.log("WARNING: could not install the probe — falling back to ping only (no throughput)")
 		}
@@ -328,9 +331,30 @@ func probeServerUpLife(port, life int) string {
 	return fmt.Sprintf(`pkill -f -- '-listen :%[1]d -life' 2>/dev/null || true
 iptables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 ip6tables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
-setsid nohup %[2]s probe serve -listen :%[1]d -life %[3]d >/dev/null 2>&1 </dev/null &
-sleep 0.5; echo probe-up
+setsid nohup %[2]s probe serve -listen :%[1]d -life %[3]d >/tmp/tp-probe-%[1]d.log 2>&1 </dev/null &
+# report whether it really listens: a probe that can't start (wrong binary, port taken)
+# otherwise shows up later as "connection refused" inside every tunnel test
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if timeout 1 bash -c '</dev/tcp/127.0.0.1/%[1]d' 2>/dev/null; then echo probe-up; exit 0; fi
+  sleep 0.3
+done
+echo "probe-failed: the probe server does not listen on port %[1]d: $(tail -c 300 /tmp/tp-probe-%[1]d.log 2>/dev/null | tr '\n' ' ')"
 `, port, probeBin, life)
+}
+
+// probeStarted runs probeServerUp(Life) and turns a probe that doesn't listen into an error.
+func probeStarted(ctx context.Context, h Host, script string) error {
+	out, err := h.Run(ctx, script, nil)
+	if strings.Contains(out, "probe-up") {
+		return nil
+	}
+	if i := strings.Index(out, "probe-failed: "); i >= 0 {
+		return fmt.Errorf("%s", strings.TrimSpace(out[i+len("probe-failed: "):]))
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("the probe server did not start")
 }
 
 func probeServerDown(port int) string {
