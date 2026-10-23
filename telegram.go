@@ -1079,7 +1079,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		b.edit(chat, msg, fmt.Sprintf("📊 Measure every method between the servers of <b>%s</b> over %s?\nIt takes a few minutes and runs on a spare slot — the tunnel and its users are not touched.", esc(v.Name), famName(v.Family)),
 			b.keyboard([][]ikey{{{Text: "📊 Yes, benchmark", Data: "bqy:" + t.ID}, {Text: "Cancel", Data: "t:" + t.ID}}}))
 	case "bqy":
-		b.startRouteBench(chat, t)
+		b.startRouteBench(chat, msg, t)
 	case "lg":
 		j := b.app.jobs.latestFor(t.ID)
 		if j == nil {

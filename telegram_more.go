@@ -176,16 +176,18 @@ func lastLines(s string, n int) string {
 }
 
 // startRouteBench measures every method between the tunnel's two servers over its family
-// (on the spare slot: running tunnels aren't touched) and reports the ranking.
-func (b *Bot) startRouteBench(chat string, t *Tunnel) {
+// (on the spare slot: running tunnels aren't touched) and reports the ranking in msg, the
+// confirm message, so its button can't start a second run.
+func (b *Bot) startRouteBench(chat string, msg int64, t *Tunnel) {
 	var iran, foreign, fam, name string
 	b.app.store.View(func(*State) { iran, foreign, fam, name = t.ServerID, t.ForeignID, t.Family, t.Name })
+	back := b.keyboard([][]ikey{{{Text: "« " + name, Data: "t:" + t.ID}}})
 	j, err := b.app.Bench(BenchRequest{IranID: iran, ForeignID: foreign, Family: fam, Seconds: 3, MaxMB: 8})
 	if err != nil {
-		b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
+		b.edit(chat, msg, "⚠ "+esc(err.Error()), back)
 		return
 	}
-	msg := b.sendMsg(chat, "⏳ 📊 Benchmarking the route of <b>"+esc(name)+"</b> ("+famName(fam)+") — a few minutes; live tunnels are not touched…", "")
+	b.edit(chat, msg, "⏳ 📊 Benchmarking the route of <b>"+esc(name)+"</b> ("+famName(fam)+") — a few minutes; live tunnels are not touched…", "")
 	go func() {
 		deadline := time.Now().Add(90 * time.Minute)
 		for time.Now().Before(deadline) {
@@ -210,7 +212,7 @@ func (b *Bot) startRouteBench(chat string, t *Tunnel) {
 					fmt.Fprintf(&sb, "✕ %s — %s\n", esc(r.Title), esc(shortReason(r.Error)))
 				}
 			}
-			b.edit(chat, msg, sb.String(), b.keyboard([][]ikey{{{Text: "« " + name, Data: "t:" + t.ID}}}))
+			b.edit(chat, msg, sb.String(), back)
 			return
 		}
 	}()
@@ -265,30 +267,40 @@ func (b *Bot) dailyReport() string {
 		}
 		sb.WriteString(line + "\n")
 	}
-	// outages of the last day by kind (tunnel / server / panel), each with its longest
+	// outages of the last day by kind, each with its longest; ssh-v4/ssh-v6 (the panel
+	// losing SSH to a server) count together
 	since := time.Now().Add(-24 * time.Hour).Unix()
 	count, longest := map[string]int{}, map[string]int64{}
 	for _, o := range outages {
 		if o.Start < since {
 			continue
 		}
-		count[o.Kind]++
+		k := o.Kind
+		if strings.HasPrefix(k, "ssh") {
+			k = "ssh"
+		}
+		count[k]++
 		end := o.End
 		if end == 0 {
 			end = time.Now().Unix()
 		}
-		if d := end - o.Start; d > longest[o.Kind] {
-			longest[o.Kind] = d
+		if d := end - o.Start; d > longest[k] {
+			longest[k] = d
 		}
 	}
 	if len(count) == 0 {
 		sb.WriteString("\n✅ no outage in the last 24 h")
 	} else {
 		sb.WriteString("\n📉 <b>Last 24 h</b>")
-		for _, k := range []string{"tunnel", "server", "panel"} {
-			if count[k] > 0 {
-				fmt.Fprintf(&sb, "\n• %s outages: %d, the longest %s", k, count[k], (time.Duration(longest[k]) * time.Second).String())
+		kinds := []struct{ k, title string }{{"tunnel", "tunnel outages"}, {"server", "server outages"}, {"ssh", "panel lost SSH to a server"}, {"panel", "panel outages"}}
+		for _, x := range kinds {
+			if count[x.k] > 0 {
+				fmt.Fprintf(&sb, "\n• %s: %d, the longest %s", x.title, count[x.k], (time.Duration(longest[x.k]) * time.Second).String())
+				delete(count, x.k)
 			}
+		}
+		for k, n := range count {
+			fmt.Fprintf(&sb, "\n• %s: %d, the longest %s", esc(k), n, (time.Duration(longest[k]) * time.Second).String())
 		}
 	}
 	if u := panelURL(); u != "" {
