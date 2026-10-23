@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -160,4 +163,37 @@ func TestBotEveryButton(t *testing.T) {
 		}
 	}
 	t.Logf("%d Telegram calls checked", len(f.calls))
+}
+
+// pickyTG rejects any HTML message, like Telegram does with markup it can't parse.
+type pickyTG struct {
+	mu   sync.Mutex
+	sent []url.Values
+}
+
+func (f *pickyTG) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	f.mu.Lock()
+	f.sent = append(f.sent, r.PostForm)
+	f.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	if r.PostForm.Get("parse_mode") == "HTML" {
+		_, _ = w.Write([]byte(`{"ok":false,"description":"Bad Request: can't parse entities: Unsupported start tag \"x\" at byte offset 3"}`))
+		return
+	}
+	_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":5}}`))
+}
+
+func TestBotPlainFallback(t *testing.T) {
+	f := &pickyTG{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	b := newBot(&App{store: &Store{}, jobs: newJobs()}, "TOKEN", "42")
+	b.base = srv.URL
+	id := b.sendMsg("42", "<b>tunnel</b> A &amp; B is <x> down", "")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id != 5 || len(f.sent) != 2 || f.sent[1].Get("parse_mode") != "" || f.sent[1].Get("text") != "tunnel A & B is  down" {
+		t.Fatalf("id %d, calls %d, retry %v", id, len(f.sent), f.sent)
+	}
 }

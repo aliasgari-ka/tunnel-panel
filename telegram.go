@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,9 +59,37 @@ func (b *Bot) api(method string, params url.Values) (json.RawMessage, error) {
 		return nil, err
 	}
 	if !out.OK {
+		// a message whose HTML Telegram can't parse is sent again as plain text rather
+		// than lost (an alert must arrive even if some name or error breaks the markup)
+		if strings.Contains(out.Description, "can't parse entities") && params.Get("parse_mode") == "HTML" {
+			plain := url.Values{}
+			for k, v := range params {
+				plain[k] = v
+			}
+			plain.Del("parse_mode")
+			plain.Set("text", htmlToText(params.Get("text")))
+			if params.Get("caption") != "" {
+				plain.Set("caption", htmlToText(params.Get("caption")))
+			}
+			log.Printf("telegram %s: %s — sent again as plain text", method, out.Description)
+			return b.api(method, plain)
+		}
+		// "not modified" is the normal answer to an unchanged refresh; everything else is
+		// worth seeing in the journal (blocked bot, bad chat id, too long, flood limit…)
+		if !strings.Contains(out.Description, "message is not modified") {
+			log.Printf("telegram %s: %s", method, out.Description)
+		}
 		return nil, fmt.Errorf("telegram: %s", out.Description)
 	}
 	return out.Result, nil
+}
+
+var htmlTagRE = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+
+// htmlToText is what a message says without its markup.
+func htmlToText(s string) string {
+	s = htmlTagRE.ReplaceAllString(s, "")
+	return strings.NewReplacer("&lt;", "<", "&gt;", ">", "&quot;", `"`, "&amp;", "&").Replace(s)
 }
 
 func (b *Bot) send(chat, text string) {
