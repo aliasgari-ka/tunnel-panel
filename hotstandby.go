@@ -122,7 +122,7 @@ func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
 	for _, f := range a.routeFamilies(t) {
 		for _, m := range methods {
 			pos++
-			if !supportsFamily(m, f) || m.ID == "spoof" || (m.ID == mid && f == fam) || (hsOnly != nil && !contains(hsOnly, m.ID)) {
+			if !supportsFamily(m, f) || m.ID == "spoof" || (m.ID == mid && f == fam) || (hsOnly != nil && !contains(hsOnly, m.ID)) || a.routeSkipped(t.ServerID, t.ForeignID, m.ID, f) {
 				continue
 			}
 			if !benchIsL3(m, t.Options[m.ID]) && !hsForwarderOK(t) {

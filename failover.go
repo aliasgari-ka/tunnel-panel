@@ -43,7 +43,7 @@ func (a *App) failoverCandidates(t *Tunnel) []pathChoice {
 	add := func(mid, fam string) {
 		p := pathChoice{mid, fam}
 		m := methodByID[mid]
-		if m == nil || seen[p] || mid == "spoof" || !supportsFamily(m, fam) || !has(fam) {
+		if m == nil || seen[p] || mid == "spoof" || !supportsFamily(m, fam) || !has(fam) || a.routeSkipped(t.ServerID, t.ForeignID, mid, fam) {
 			return
 		}
 		seen[p] = true

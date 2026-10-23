@@ -176,7 +176,10 @@ type State struct {
 	Tunnels      []*Tunnel     `json:"tunnels"`
 	Secret       string        `json:"secret"`
 	BenchHistory []BenchRecord `json:"benchHistory,omitempty"`
-	Outages      []Outage      `json:"outages,omitempty"` // servers/tunnels down, newest last
+	// RouteSkip: per server pair ("iran|foreign"), the "method|family" paths the user took
+	// out — never benchmarked, deployed as a hot-standby path or used for failover there
+	RouteSkip map[string][]string `json:"routeSkip,omitempty"`
+	Outages   []Outage            `json:"outages,omitempty"` // servers/tunnels down, newest last
 }
 
 // FailoverState is the original path of a tunnel that was moved to a backup.

@@ -6,28 +6,29 @@
 <title>Tunnel Panel</title>
 <style>
 :root{
-  --bg:#fbf6f2; --panel:#ffffff; --panel-2:#f7eee7; --line:#ecdccf;
-  --fg:#1d120c; --muted:#6e5a4c; --faint:#9a8576;
-  --accent:#d4560b; --accent-fg:#ffffff; --accent-soft:#fde3d1;
-  --good:#1f9254; --good-soft:#d9f0e2; --warn:#b7791f; --crit:#c8102e; --crit-soft:#fadadd;
+  --bg:#f4f5f7; --panel:#ffffff; --panel-2:#f1f3f6; --line:#e2e5ea;
+  --fg:#1f2430; --muted:#5b6472; --faint:#8a93a0;
+  --accent:#3d6fd9; --accent-fg:#ffffff; --accent-soft:#e7eefc;
+  --good:#2f8a5b; --good-soft:#e2f2e9; --warn:#a8741a; --crit:#c2414b; --crit-soft:#f8e5e6;
   --mono:"Vazirmatn",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   --sans:"Vazirmatn",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-  --radius:12px; --shadow:0 1px 2px rgba(40,16,4,.06),0 6px 20px rgba(40,16,4,.07);
+  --radius:12px; --shadow:0 1px 2px rgba(20,30,50,.05),0 2px 8px rgba(20,30,50,.04);
   color-scheme:light;
 }
+/* calm, low-glare colours: neutral grey-blue surfaces, one soft accent, muted status colours */
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --bg:#0a0605; --panel:#160e0b; --panel-2:#22150f; --line:#3a2419;
-  --fg:#f7ede6; --muted:#c0a594; --faint:#86695a;
-  --accent:#ff8a2a; --accent-fg:#2a0c00; --accent-soft:#3d1d0c;
-  --good:#45d483; --good-soft:#123026; --warn:#f0c060; --crit:#ff4f6d; --crit-soft:#3a1219;
-  --shadow:0 1px 2px rgba(0,0,0,.35),0 10px 30px rgba(0,0,0,.45); color-scheme:dark;
+  --bg:#16191e; --panel:#1c2026; --panel-2:#242930; --line:#2f353d;
+  --fg:#d8dce2; --muted:#a0a8b3; --faint:#6f7884;
+  --accent:#7ea3e6; --accent-fg:#10151d; --accent-soft:#243149;
+  --good:#6cbf8f; --good-soft:#1d3127; --warn:#d6ad62; --crit:#e07a80; --crit-soft:#3a2427;
+  --shadow:0 1px 2px rgba(0,0,0,.22); color-scheme:dark;
 }}
 :root[data-theme="dark"]{
-  --bg:#0a0605; --panel:#160e0b; --panel-2:#22150f; --line:#3a2419;
-  --fg:#f7ede6; --muted:#c0a594; --faint:#86695a;
-  --accent:#ff8a2a; --accent-fg:#2a0c00; --accent-soft:#3d1d0c;
-  --good:#45d483; --good-soft:#123026; --warn:#f0c060; --crit:#ff4f6d; --crit-soft:#3a1219;
-  --shadow:0 1px 2px rgba(0,0,0,.35),0 10px 30px rgba(0,0,0,.45); color-scheme:dark;
+  --bg:#16191e; --panel:#1c2026; --panel-2:#242930; --line:#2f353d;
+  --fg:#d8dce2; --muted:#a0a8b3; --faint:#6f7884;
+  --accent:#7ea3e6; --accent-fg:#10151d; --accent-soft:#243149;
+  --good:#6cbf8f; --good-soft:#1d3127; --warn:#d6ad62; --crit:#e07a80; --crit-soft:#3a2427;
+  --shadow:0 1px 2px rgba(0,0,0,.22); color-scheme:dark;
 }
 @font-face{font-family:"Vazirmatn";src:url("/fonts/vazirmatn.woff2") format("woff2");font-weight:100 900;font-display:swap}
 *{box-sizing:border-box}
@@ -44,7 +45,7 @@ input,select,textarea{font-family:inherit;font-size:14px}
 #qbg{position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}
 .side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:4px;padding:18px 14px;position:sticky;top:0;height:100vh}
 .brand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px}
-.brand .dot{width:28px;height:28px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#fff3c4,#ffb347 25%,#ff5f1f 55%,#8a1200 90%);box-shadow:0 0 14px rgba(255,110,20,.55),0 0 0 1px var(--line)}
+.brand .dot{width:26px;height:26px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
 .brand b{font-size:15px}.brand small{display:block;color:var(--faint);font-size:11px;font-weight:500}
 .nav{display:flex;flex-direction:column;gap:2px}
 .nav button{display:flex;align-items:center;gap:10px;background:none;border:0;color:var(--muted);padding:9px 11px;border-radius:9px;text-align:start;width:100%;font-weight:550}
@@ -64,7 +65,7 @@ input,select,textarea{font-family:inherit;font-size:14px}
 .btn.ghost{background:none;border-color:transparent;color:var(--muted)}
 .btn.ghost:hover{background:var(--panel-2);color:var(--fg)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
-.card{background:color-mix(in srgb,var(--panel) 90%,transparent);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
 .modal .card,.drawer .panel{background:var(--panel)}
 .auth{position:relative;z-index:1}
 .card.pad{padding:18px}
@@ -128,8 +129,7 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .stat b{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}.stat b span{font-size:13px;color:var(--muted);font-weight:600}
 .stat .dn{color:var(--accent)}.stat .up{color:var(--good)}
 /* server cards */
-.scard{padding:16px;display:flex;flex-direction:column;gap:12px;border-top:3px solid var(--line)}
-.scard.ir{border-top-color:var(--good)}.scard.fg,.scard.host{border-top-color:var(--accent)}
+.scard{padding:16px;display:flex;flex-direction:column;gap:12px}
 .sh{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
 .sname{display:flex;gap:10px;align-items:center;min-width:0}.sname h3{overflow-wrap:anywhere}
 .sname small{color:var(--faint);font-size:12px}
@@ -148,7 +148,7 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .rbar .rl{color:var(--faint);font-weight:650}
 .rbar .rt{height:7px;border-radius:4px;background:color-mix(in srgb,var(--faint) 22%,transparent);overflow:hidden}
 .rbar .rt i{display:block;height:100%;background:var(--good);border-radius:4px;transition:width .4s}
-.rbar.warn .rt i{background:var(--warn,#d98a1f)}
+.rbar.warn .rt i{background:var(--warn)}
 .rbar.crit .rt i{background:var(--crit)}
 .rbar .rv{text-align:end;font-variant-numeric:tabular-nums;font-weight:650}
 .rbar .rx{grid-column:2/4;font-size:11px;margin-top:-3px}
@@ -184,6 +184,10 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .rt-ts{display:flex;flex-direction:column;gap:6px}
 .rt-t{padding:8px 10px;border-radius:9px;background:var(--panel-2);border-inline-start:3px solid var(--line)}
 .rt-t.ok{border-color:var(--good)}.rt-t.bad{border-color:var(--crit)}.rt-t.bad .st{color:var(--crit)}.rt-t.ok .st{color:var(--good)}
+.rt-m{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.rt-m .btn{padding:2px 8px;opacity:.55}.rt-m:hover .btn{opacity:1}
+.rt-off{margin-top:6px;font-size:12px;display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.rt-off .chip{border:1px dashed var(--line);cursor:pointer;text-decoration:line-through;text-decoration-color:var(--faint)}
 .rt-bs{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 details.more{position:relative}
 .card.raised,.card:has(details.more[open]){position:relative;z-index:35}
@@ -284,7 +288,6 @@ summary::-webkit-details-marker{display:none}
   .tgrid,.grid.cards{grid-template-columns:1fr}
   /* phones: no blur behind cards (it is what trapped the ⋯ menu under the next card, and it is slow
      over the animated background); the ⋯ menu opens as a bottom sheet with big touch targets */
-  .card{-webkit-backdrop-filter:none;backdrop-filter:none;background:color-mix(in srgb,var(--panel) 96%,transparent)}
   details.more[open]>summary::before{content:"";position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:68}
   details.more .pop{position:fixed;inset-inline:10px;top:auto;bottom:calc(10px + env(safe-area-inset-bottom));z-index:70;min-width:0;padding:8px;border-radius:14px;max-height:70vh;overflow:auto}
   .mi{padding:13px 12px;font-size:15px}

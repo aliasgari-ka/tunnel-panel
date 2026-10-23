@@ -97,8 +97,9 @@ function renderAuth(mode, name) {
 // paused while the tab is hidden, a still frame for prefers-reduced-motion, toggle in
 // the sidebar.
 const quantumBg = (() => {
-  let cv, ctx, raf = 0, last = 0, W = 0, H = 0, dpr = 1, on = true, time = 0;
-  try { on = localStorage.getItem('tp-bg') !== 'off'; } catch (e) {}
+  let cv, ctx, raf = 0, last = 0, W = 0, H = 0, dpr = 1, on = false, time = 0;
+  // off unless turned on: a moving, glowing background tires the eyes on a page you watch for hours
+  on = false; try { on = localStorage.getItem('tp-bg') === 'on'; } catch (e) {}
   const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   // ---- molten texture (equirectangular, seamless in longitude) ----
   const TW = 512, TH = 256;
@@ -316,11 +317,11 @@ function renderView() {
 // failover uses — the pair's latest benchmark ranking, per address family.
 const ageTxt = (u) => { const s = Math.floor(Date.now() / 1000) - u; return s < 3600 ? `${Math.max(1, Math.floor(s / 60))} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 async function viewRoutes(w) {
-  w.innerHTML = topbar('Routes', 'Each Iran ⇄ foreign pair: which tunnels and paths are connected, which one carries the users, and the order a Re-apply, hot standby or failover picks paths in (the latest benchmark of that pair).');
+  w.innerHTML = topbar('Routes', 'Each server pair: what is connected, and the order paths are used in. ⊘ leaves a method out on that route.');
   const box = h('<div class="grid" style="gap:16px"><div class="muted">loading…</div></div>');
   w.appendChild(box);
-  let hist = [];
-  try { hist = await api('/bench/history'); } catch (e) {}
+  let hist = [], skip = {};
+  try { [hist, skip] = await Promise.all([api('/bench/history'), api('/routes/skip')]); } catch (e) {}
   const pairs = new Map();
   const key = (i, f) => i + '|' + (f || '');
   STATE.tunnels.forEach(t => { const k = key(t.serverId, t.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: t.serverId, foreign: t.foreignId || '', tunnels: [] }); pairs.get(k).tunnels.push(t); });
@@ -346,14 +347,23 @@ async function viewRoutes(w) {
     }).join('') || '<div class="faint">no tunnel on this pair</div>';
     const fams = ['v4', 'v6'].map(f => {
       const r = hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f);
-      if (!r) return `<div class="rt-b"><div class="lbl">${famName(f)}</div><div class="faint" style="font-size:12.5px">not benchmarked yet</div></div>`;
-      const rows = r.results.filter(x => !x.skipped).map((x, i) => `<div class="${x.ok ? '' : 'bad'}">${x.ok ? (x.recommended ? '★' : (i + 1) + '.') : '✕'} ${esc(x.title)} ${x.ok ? `<span class="faint">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} Mbps · ${x.rttMs.toFixed(0)} ms</span>` : errMore(x.error || 'failed', 90)}</div>`).join('');
-      return `<div class="rt-b"><div class="lbl">${famName(f)} · benchmark ${ageTxt(r.at)}</div><div class="hsl">${rows}</div></div>`;
+      const off = (skip[key(p.iran, p.foreign)] || []).filter(x => x.endsWith('|' + f)).map(x => x.split('|')[0]);
+      const offRow = off.length ? `<div class="rt-off"><span class="faint">Left out on this route:</span> ${off.map(mid => `<button type="button" class="chip" data-unskip="${esc(mid)}|${f}" title="put it back — benchmarked, used for hot standby and failover again">${esc(methodTitle(mid))} ↺</button>`).join(' ')}</div>` : '';
+      if (!r) return `<div class="rt-b"><div class="lbl">${famName(f)}</div><div class="faint" style="font-size:12.5px">not benchmarked yet</div>${offRow}</div>`;
+      const rows = r.results.filter(x => !x.skipped && !off.includes(x.method)).map((x, i) => `<div class="rt-m ${x.ok ? '' : 'bad'}"><span>${x.ok ? (x.recommended ? '★' : (i + 1) + '.') : '✕'} ${esc(x.title)} ${x.ok ? `<span class="faint">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} Mbps · ${x.rttMs.toFixed(0)} ms</span>` : errMore(x.error || 'failed', 90)}</span><button type="button" class="btn sm ghost" data-skip="${esc(x.method)}|${f}" title="leave this method out on this route: not benchmarked, not started as a hot-standby path, not used for failover">⊘</button></div>`).join('');
+      return `<div class="rt-b"><div class="lbl">${famName(f)} · benchmark ${ageTxt(r.at)}</div><div class="hsl">${rows}</div>${offRow}</div>`;
     }).join('');
     const card = h(`<div class="card" style="padding:14px 16px">
       <div class="tc-h"><h3>${srvLabel(p.iran, 'Iran')} ⇄ ${srvLabel(p.foreign, '🖥 this panel host')}</h3><button class="btn sm" data-rb>📊 Benchmark now</button></div>
       <div class="lbl" style="margin-top:8px">Tunnels &amp; paths</div><div class="rt-ts">${tunnels}</div>
       <div class="lbl" style="margin-top:10px">Order a Re-apply / hot standby / failover uses (best first)</div><div class="rt-bs">${fams}</div></div>`);
+    const setSkip = async (v, on) => {
+      const [method, family] = v.split('|');
+      try { await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on }); toast(on ? `${methodTitle(method)} left out on this route — hot standby drops it on the next Re-apply` : `${methodTitle(method)} is back on this route`); viewRoutes(w); }
+      catch (er) { alertModal('Routes', er.message); }
+    };
+    $$('[data-skip]', card).forEach(b => b.onclick = () => setSkip(b.dataset.skip, true));
+    $$('[data-unskip]', card).forEach(b => b.onclick = () => setSkip(b.dataset.unskip, false));
     $('[data-rb]', card).onclick = async (e) => {
       const fam = (p.tunnels[0] && p.tunnels[0].family) || 'v4';
       try { const r = await api('/bench/start', { iranId: p.iran, foreignId: p.foreign, family: fam, seconds: 3 }); toast('Benchmark started'); openLog({ id: 'bench', name: 'Benchmark' }, r.job); } catch (er) { alertModal('Benchmark', er.message); }
@@ -578,7 +588,7 @@ async function loadHelpers(card) {
 /* ---------------- servers ---------------- */
 // Two clearly separate groups: Iran (entry) and foreign (exit, incl. this panel host).
 function viewServers(w) {
-  w.innerHTML = topbar('Servers', 'Iran servers are where users connect; foreign servers are where traffic exits. The panel reaches each one by agent, SSH, jump host or proxy — whichever works.');
+  w.innerHTML = topbar('Servers', 'Iran servers (users connect here) and foreign servers (traffic exits there), with their live load.');
   const ir = iranServers(), fg = foreignServers();
   const sec = (key, title, sub, n, add) => h(`<section class="group">
     <div class="ghd"><div><h2>${title} <span class="count">${n}</span></h2><p>${sub}</p></div><button class="btn pri sm" data-add="${key}">${add}</button></div>
@@ -897,8 +907,8 @@ function hsBox(t) {
   const v = t.hs;
   if (!t.hotStandby) return '';
   const auto = !!t.hsAuto;
-  const seg = `<div class="seg" data-hsmode><button type="button" data-auto="0" class="${auto ? '' : 'on'}" title="users stay on the path you chose; only when it is down they move to the best working one, and back once it has been stable for 60 s">✋ Manual</button><button type="button" data-auto="1" class="${auto ? 'on' : ''}" title="the switcher also moves users to a clearly better path when the current one gets slow or lossy">🤖 Auto · best path</button></div>
-    <div class="faint" style="font-size:12px;margin:-4px 0 6px">${auto ? 'Auto: latency + packet loss are watched all the time, the speed of the users\' path every 2 hours (2 MB); when it gets slow or lossy the best few paths are measured the same way and users move to a clearly better one. No ping-pong: after a move it waits 10 min, at most 3 planned moves an hour, and a path that keeps dropping must stay up longer. Light on traffic: standby paths are checked every 10 s, and repeated comparisons back off up to 2 h.' : 'Manual: users stay on the chosen path; they move only when it is down (3 failed checks in a row), and come back once it has been stable for 60 s — longer for a path that keeps dropping (doubled per drop in 30 min, up to 30 min), at most 3 planned moves an hour.'}</div>`;
+  const seg = `<div class="seg" data-hsmode><button type="button" data-auto="0" class="${auto ? '' : 'on'}" title="${esc('Manual: ' + 'users stay on the chosen path and move only when it is down (3 failed checks). They come back after 60 s of stability — longer for a path that keeps dropping (doubled per drop in 30 min, up to 30 min). At most 3 planned moves an hour.')}">✋ Manual</button><button type="button" data-auto="1" class="${auto ? 'on' : ''}" title="${esc('Auto: ' + "Latency and loss are watched all the time, the speed of the users' path every 2 hours (2 MB). When it gets slow or lossy the best few paths are measured and users move to a clearly better one. No ping-pong: 10 min wait after a move, at most 3 planned moves an hour. Light on traffic: standby paths are checked every 10 s.")}">🤖 Auto · best path</button></div>
+    <div class="faint" style="font-size:12px;margin:-4px 0 6px">${auto ? 'Moves users to a clearly better path when theirs gets slow or lossy.' : 'Users stay on the chosen path; they move only when it is down.'} <span title="${esc(auto ? "Latency and loss are watched all the time, the speed of the users' path every 2 hours (2 MB). When it gets slow or lossy the best few paths are measured and users move to a clearly better one. No ping-pong: 10 min wait after a move, at most 3 planned moves an hour. Light on traffic: standby paths are checked every 10 s." : 'users stay on the chosen path and move only when it is down (3 failed checks). They come back after 60 s of stability — longer for a path that keeps dropping (doubled per drop in 30 min, up to 30 min). At most 3 planned moves an hour.')}" style="cursor:help">ⓘ</span></div>`;
   if (!v || !v.paths) return `<div class="lbl">⚡ Hot standby</div>${seg}<div class="faint" style="font-size:12px">every compatible path starts on the next Start/Re-apply.</div>`;
   const q = (i) => {
     const out = [];
@@ -909,7 +919,7 @@ function hsBox(t) {
   };
   return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; the users' path is checked every 2 s on the Iran server)</span></div>${seg}<div class="hsl">${v.paths.map((p, i) =>
     `<div class="${v.ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}">${v.ok[i] ? '✓' : '✕'} ${esc(p)}${q(i)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}${i === v.active ? ' <b>← users</b>' : (v.ok[i] && v.keys ? ` <button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}</div>`).join('')}</div>
-    <div class="faint" style="font-size:11.5px;margin-top:4px">Switching is seamless: new connections take the new path, open ones finish on the old one (it keeps running); only a path that died has its connections reset, so clients reconnect at once.</div>`;
+    <div class="faint" style="font-size:11.5px;margin-top:4px" title="New connections take the new path; open ones finish on the old one (it keeps running). Only a path that died has its connections reset, so clients reconnect at once.">Switching is seamless — nobody is cut. ⓘ</div>`;
 }
 function hsWire(t, m) {
   $$('[data-hspin]', m).forEach(b => b.onclick = async () => {
@@ -1122,7 +1132,7 @@ function tunnelModal(t) {
 // navigation, and /bench/active lets a fresh page (or reload) re-attach to a running job.
 let benchTimer = null;
 function viewBench(w) {
-  w.innerHTML = topbar('Route benchmark', 'Measure every method between two servers — latency, jitter, loss and throughput — and get a recommendation.');
+  w.innerHTML = topbar('Route benchmark', 'Measure every method between two servers and get a recommendation.');
   const card = h(`<div class="grid" style="gap:16px">
     <form class="card pad ff" id="bf" style="max-width:640px">
       <div class="two">

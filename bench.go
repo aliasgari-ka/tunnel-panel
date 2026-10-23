@@ -210,6 +210,12 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				r.Kind = "l3"
 			}
 			j.log("── [%d/%d] %s ──", i+1, len(cands), m.Title)
+			if len(req.Methods) == 0 && a.routeSkipped(req.IranID, req.ForeignID, m.ID, req.Family) {
+				r.Skipped, r.Error = true, "excluded on this route"
+				j.log("   skipped: excluded on this route (Routes page)")
+				out = append(out, r)
+				continue
+			}
 			if m.ID == "spoof" {
 				r.Skipped = true
 				r.Error = "UDP-only pipe with forged source IPs — set it up on a tunnel and test with your UDP app"

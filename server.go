@@ -89,6 +89,7 @@ func (a *App) routes() http.Handler {
 	p("/api/bench/results", s.benchResults)
 	p("/api/bench/active", s.benchActive)
 	p("/api/bench/history", s.benchHistory)
+	p("/api/routes/skip", s.routeSkip)
 	p("/api/outages", s.outages)
 	p("/api/backup", s.backup)
 	p("/api/helpers", s.helpers)
