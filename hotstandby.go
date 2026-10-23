@@ -301,22 +301,46 @@ func hsBase(t *Tunnel, paths []HSPath) string {
 // far tunnel address, for a forwarder the ones REDIRECTed to its internal ports.
 func hsFlush(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
 	var b strings.Builder
-	b.WriteString("command -v conntrack >/dev/null 2>&1 || exit 0\n")
 	pt := pathTunnel(t, p)
 	if m := methodByID[p.Method]; m != nil && benchIsL3(m, pt.Options[m.ID]) {
-		fmt.Fprintf(&b, "conntrack -D --reply-src %s >/dev/null 2>&1\n", deriveFor(pt, srv, fsrv, set).KHv4)
+		ip := deriveFor(pt, srv, fsrv, set).KHv4
+		// forwarded connections: drop their NAT entries, so the next packet takes the new path
+		// (where the far end answers it with a reset and the app reconnects). Without the
+		// conntrack tool, reset them here on their next packet instead, for a while.
+		fmt.Fprintf(&b, `if command -v conntrack >/dev/null 2>&1; then
+  conntrack -D --reply-src %[1]s >/dev/null 2>&1
+else
+  r="-p tcp -m conntrack --ctstate ESTABLISHED --ctreplsrc %[1]s -m comment --comment %[2]s -j REJECT --reject-with tcp-reset"
+  iptables -w -C FORWARD $r 2>/dev/null || iptables -w -I FORWARD $r
+  (sleep 50; iptables -w -D FORWARD $r 2>/dev/null) >/dev/null 2>&1 &
+fi
+`, ip, hsFlushTag(t))
 	} else {
+		// users' connections end on this server, on the forwarder's own sockets: close them
+		// now. An app waiting for a push (a chat app's open connection) sends nothing and would
+		// otherwise sit on the dead path until its own keepalive gives up, a minute or more.
+		var sp []string
+		for j := range splitPorts(t.Ports) {
+			sp = append(sp, fmt.Sprintf("sport = :%d", hsInternal(p, j)))
+		}
+		fmt.Fprintf(&b, "ss -K -t state established '( %s )' >/dev/null 2>&1 || true\n", strings.Join(sp, " or "))
+		b.WriteString("if command -v conntrack >/dev/null 2>&1; then\n")
 		for j := range splitPorts(t.Ports) {
 			for _, proto := range []string{"tcp", "udp"} {
-				fmt.Fprintf(&b, "conntrack -D -p %s --reply-port-src %d >/dev/null 2>&1\n", proto, hsInternal(p, j))
+				fmt.Fprintf(&b, "  conntrack -D -p %s --reply-port-src %d >/dev/null 2>&1\n", proto, hsInternal(p, j))
 			}
 		}
+		b.WriteString("fi\n")
 	}
 	b.WriteString("exit 0\n")
 	return b.String()
 }
 
-func hsSelectDown(t *Tunnel) string { return portForwardDownV4(hsTag(t)) }
+func hsFlushTag(t *Tunnel) string { return "tp-hsflush-" + t.ID }
+
+func hsSelectDown(t *Tunnel) string {
+	return portForwardDownV4(hsTag(t)) + fmt.Sprintf("iptables -w -S FORWARD 2>/dev/null | grep -- '--comment %s ' | sed 's/^-A/-D/' | while read -r r; do iptables -w $r; done\ntrue\n", hsFlushTag(t))
+}
 
 // hsTarget is where the switcher checks path p end to end (through the tunnel).
 func hsTarget(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
@@ -349,7 +373,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 3
+# tp-switcher 4
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -358,6 +382,10 @@ mapfile -t TL < targets
 for ((k=0; k<N; k++)); do read -r A[$k] H[$k] <<< "${TL[$k]}"; done
 ev() { echo "$(date +%s) $*" >> events.log; tail -n 300 events.log > events.tmp && mv events.tmp events.log; }
 tune() {
+  # without the conntrack tool, connections on a path that died wait for their own timeout
+  if [ -z "$ctwarn" ] && ! command -v conntrack >/dev/null 2>&1; then
+    ctwarn=1; ev kernel - - "the conntrack tool is missing (apt install conntrack): after a switch, users of the dead path reconnect only when their app times out"
+  fi
   # what the tunnels need from the kernel, kept in place while they run
   [ "$(cat /proc/sys/net/ipv4/ip_forward)" = 1 ] || sysctl -qw net.ipv4.ip_forward=1
   for f in /proc/sys/net/ipv4/conf/*/rp_filter; do [ "$(cat $f 2>/dev/null)" = 1 ] && echo 2 > $f 2>/dev/null; done
@@ -416,8 +444,10 @@ while true; do
     rm -f c$k
     if [ $k = $active ] || [ $all = 1 ] || [ $((n % SBY)) = 0 ]; then
       pa=""
-      if [ "$M" = auto ] && [ -n "${H[$k]}" ] && { { [ $k = $active ] && [ $((n % 5)) = 0 ]; } || [ $((n % (SBY * 3))) = 0 ]; }; then pa="-ping ${H[$k]} -pn 10"; fi
-      ( r=$(timeout 6 $P probe check -addr ${A[$k]} -n 2 $pa 2>/dev/null); echo "${r:-down}" > c$k ) &
+      if [ "$M" = auto ] && [ -n "${H[$k]}" ] && { { [ $k = $active ] && [ $((n % 5)) = 0 ]; } || [ $((n % (SBY * 3))) = 0 ]; }; then pa="-ping ${H[$k]} -pn 6"; fi
+      # 3 s per check (5 with pings): a dead path must not hold the whole round up
+      to=3; [ -n "$pa" ] && to=5
+      ( r=$(timeout $to $P probe check -addr ${A[$k]} -n 2 $pa 2>/dev/null); echo "${r:-down}" > c$k ) &
       pids+=($!)
     fi
   done
@@ -485,6 +515,9 @@ while true; do
       if [ $best -ge 0 ] && budget; then
         planned $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
         hold=$((now + HOLD)); backoff=600
+        # off a heavily lossy path, the connections already open move too (after a moment for
+        # what is in flight): they would go on lagging there
+        [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && ( sleep 15; bash flush-$a.sh ) >/dev/null 2>&1 &
       else
         if [ $best -ge 0 ]; then ev keep "$a" "$a" "path $best is better, but $PLANMAX planned moves this hour already — staying"
         else ev keep "$a" "$a" "compared ${why:-paths}: none clearly better ($(mb $sa) Mbit/s here)"; fi
@@ -517,7 +550,9 @@ while true; do
   fi
   lastpin=$P0
   n=$((n + 1)); [ $((n % 20)) = 0 ] && { tune; bash base.sh >/dev/null 2>&1; for ((k=0; k<N; k++)); do drops $k >/dev/null; done; }
-  sleep $EVERY
+  # the users' path just missed a check: look again at once instead of after EVERY, so a dead
+  # path is left within seconds (still FAILS misses in a row, so a single lost check isn't one)
+  if [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -gt 0 ]; then sleep 0.3; else sleep $EVERY; fi
 done
 `
 

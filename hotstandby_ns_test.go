@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,7 +94,7 @@ func TestHotStandbyNS(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 	t.Logf("   switched after %s", time.Since(t0).Round(time.Second))
-	step("GRE blocked → switcher moved the users off GRE within 30 s", active() != "0" && time.Since(t0) < 30*time.Second)
+	step("GRE blocked → switcher moved the users off GRE within 15 s", active() != "0" && time.Since(t0) < 15*time.Second)
 	step("users pass on the standby", user())
 
 	sh(t, "ip netns exec tkh iptables -w -t raw -D PREROUTING -p 47 -j DROP")
@@ -143,6 +144,46 @@ func TestHotStandbyNS(t *testing.T) {
 	_, _ = a.hsPinTo(ctx, tn, "")
 	for i := 0; i < 15 && active() != "0"; i++ {
 		time.Sleep(time.Second)
+	}
+
+	// an idle connection (a chat app waiting for a push) on a forwarder path that dies must be
+	// closed at once, so the app reconnects, instead of waiting for its own keepalive
+	bh := -1
+	for k, p := range hsGood(tn) {
+		if p.Method == "backhaul" {
+			bh = k
+		}
+	}
+	if bh >= 0 {
+		_, _ = a.hsPinTo(ctx, tn, "backhaul|v4")
+		for i := 0; i < 20 && active() != strconv.Itoa(bh); i++ {
+			time.Sleep(time.Second)
+		}
+		sh(t, `rm -f /tmp/hs-idle.out; (ip netns exec tus timeout 90 python3 -c '
+import socket, time
+s = socket.create_connection(("10.98.0.1", 28579)); t = time.time()
+try:
+    d = s.recv(1); print("closed" if not d else "data", round(time.time() - t, 1))
+except Exception as e:
+    print("reset", type(e).__name__, round(time.time() - t, 1))
+' > /tmp/hs-idle.out 2>&1) >/dev/null 2>&1 &`)
+		time.Sleep(3 * time.Second)
+		sh(t, "ip netns exec tkh iptables -w -I OUTPUT -p tcp -d 10.99.0.1 --dport 40000:60000 -j DROP")
+		t4 := time.Now()
+		for i := 0; i < 60 && strings.TrimSpace(sh(t, "cat /tmp/hs-idle.out 2>/dev/null")) == ""; i++ {
+			time.Sleep(time.Second)
+		}
+		got := strings.TrimSpace(sh(t, "cat /tmp/hs-idle.out 2>/dev/null"))
+		t.Logf("   idle connection on Backhaul after its path died: %q after %s (users now on path %s)", got, time.Since(t4).Round(time.Second), active())
+		step("idle connection on the dead forwarder path is closed within 20 s", got != "" && !strings.HasPrefix(got, "data") && time.Since(t4) < 20*time.Second)
+		step("new connections pass on the path it moved to", user())
+		sh(t, "ip netns exec tkh iptables -w -D OUTPUT -p tcp -d 10.99.0.1 --dport 40000:60000 -j DROP")
+		_, _ = a.hsPinTo(ctx, tn, "")
+		for i := 0; i < 90 && active() != "0"; i++ {
+			time.Sleep(time.Second)
+		}
+	} else {
+		t.Log("   (no Backhaul path running: idle-connection check skipped)")
 	}
 
 	_, _, link := a.Health(ctx, tn)
