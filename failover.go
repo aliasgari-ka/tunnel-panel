@@ -136,7 +136,10 @@ func (a *App) verifyPath(ctx context.Context, t *Tunnel) (bool, string) {
 			return false, "probe: " + err.Error()
 		}
 		port := probePortFor(t)
-		_, _ = kh.Run(ctx, probeServerUpLife(port, 90), nil)
+		if err := probeStarted(ctx, kh, probeServerUpLife(port, 90)); err != nil {
+			_, _ = kh.Run(context.Background(), probeServerDown(port), nil)
+			return false, "probe server on the foreign side: " + err.Error()
+		}
 		target := fmt.Sprintf("127.0.0.1:%d", port)
 		if l3 {
 			target = fmt.Sprintf("%s:%d", d.KHv4, port)

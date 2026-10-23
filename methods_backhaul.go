@@ -25,6 +25,15 @@ var methodBackhaul = &Method{
 		{Key: "mux_con", Label: "Mux concurrency", Type: "number", Default: "8"},
 		{Key: "nodelay", Label: "TCP nodelay", Type: "bool", Default: "true"},
 		{Key: "sniffer", Label: "Traffic sniffer", Type: "bool", Default: "false"},
+		{Key: "accept_udp", Label: "Carry UDP", Type: "select", Default: "auto", Options: []string{"auto", "true", "false"},
+			Help: "auto = on for the tcp transport only (the other transports ignore it)", Advanced: true},
+		{Key: "connection_pool", Label: "Connection pool (foreign)", Type: "number", Default: "8",
+			Help: "idle connections kept open towards Iran; raise for many short-lived connections", Advanced: true},
+		{Key: "keepalive_period", Label: "TCP keepalive (s)", Type: "number", Default: "75", Advanced: true},
+		{Key: "heartbeat", Label: "Heartbeat (s)", Type: "number", Default: "40",
+			Help: "lower = a dead link is noticed sooner, a little more control traffic", Advanced: true},
+		{Key: "channel_size", Label: "Channel size", Type: "number", Default: "4096", Advanced: true},
+		{Key: "log_level", Label: "Log level", Type: "select", Default: "info", Options: []string{"debug", "info", "warn", "error"}, Advanced: true},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		return backhaulPlans(c, "/opt/backhaul/backhaul", artBackhaul(c.Set), "Backhaul", "/opt/backhaul")
@@ -69,32 +78,36 @@ func backhaulPlans(c *buildCtx, bin string, art Artifact, title, certDir string)
 		if isTLS {
 			tlsSrv = "tls_cert = \"" + certDir + "/server.crt\"\ntls_key = \"" + certDir + "/server.key\"\n"
 		}
+		udp := tr == "tcp"
+		if v := c.Opt("accept_udp"); v == "true" || v == "false" {
+			udp = v == "true"
+		}
 		// server (Iran): exposes mapped ports; targets default to foreign 127.0.0.1
 		irToml := fmt.Sprintf(`[server]
 bind_addr = "%s"
 transport = "%s"
 token = "%s"
 nodelay = %s
-keepalive_period = 75
-heartbeat = 40
-channel_size = 4096
+keepalive_period = %s
+heartbeat = %s
+channel_size = %s
 accept_udp = %v
 sniffer = %s
-log_level = "info"
+log_level = "%s"
 %s%sports = [%s]
-`, bind, tr, tok, c.Opt("nodelay"), tr == "tcp", c.Opt("sniffer"), muxBlock, tlsSrv, portsTOML(c.T.Ports))
+`, bind, tr, tok, c.Opt("nodelay"), c.Opt("keepalive_period"), c.Opt("heartbeat"), c.Opt("channel_size"), udp, c.Opt("sniffer"), c.Opt("log_level"), muxBlock, tlsSrv, portsTOML(c.T.Ports))
 
 		khToml := fmt.Sprintf(`[client]
 remote_addr = "%s:%s"
 transport = "%s"
 token = "%s"
-connection_pool = 8
-keepalive_period = 75
+connection_pool = %s
+keepalive_period = %s
 dial_timeout = 10
 retry_interval = 3
 nodelay = %s
-log_level = "info"
-%s`, bracket(d.IRPub), tp, tr, tok, c.Opt("nodelay"), muxBlock)
+log_level = "%s"
+%s`, bracket(d.IRPub), tp, tr, tok, c.Opt("connection_pool"), c.Opt("keepalive_period"), c.Opt("nodelay"), c.Opt("log_level"), muxBlock)
 
 		dir := tunnelDir(c.T)
 		irCfg, khCfg := dir+"/backhaul.toml", dir+"/backhaul.toml"

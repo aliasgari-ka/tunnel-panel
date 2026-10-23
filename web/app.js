@@ -45,6 +45,19 @@ async function loadAll() {
 const iranServers = () => STATE.servers.filter(s => (s.role || 'iran') === 'iran');
 const foreignServers = () => STATE.servers.filter(s => s.role === 'foreign');
 const methodsFor = (fam) => STATE.methods.filter(m => m.families.includes(fam));
+// method families, in the order the UI lists them (all Backhaul cores together)
+const GROUPS = ['Backhaul', 'BackPack', 'Kernel GRE / IPsec', 'Other'];
+const GROUP_ICON = { 'Backhaul': '🚀', 'BackPack': '🎒', 'Kernel GRE / IPsec': '🧩', 'Other': '🔧' };
+const groupOf = (m) => (m && m.group) || 'Other';
+const groupRank = (g) => { const i = GROUPS.indexOf(g); return i < 0 ? GROUPS.length : i; };
+const groupIcon = (m) => GROUP_ICON[groupOf(m)] || '🔧';
+// <optgroup>s of methods, one per family; opt(m) renders one <option>
+function groupedOptions(ms, opt) {
+  const by = {};
+  ms.forEach(m => (by[groupOf(m)] = by[groupOf(m)] || []).push(m));
+  return Object.keys(by).sort((a, b) => groupRank(a) - groupRank(b))
+    .map(g => `<optgroup label="${esc((GROUP_ICON[g] || '🔧') + ' ' + g)}">${by[g].map(opt).join('')}</optgroup>`).join('');
+}
 // uname -m → release arch, as the server does (goArch)
 const archOf = (u) => /^(aarch64|arm64)$/.test(u || '') ? 'arm64' : /^(x86_64|amd64)$/.test(u || '') ? 'amd64' : (u || '');
 // what a method still needs for this tunnel's two hosts ("" = ready): arch-specific helper binaries
@@ -68,6 +81,22 @@ const serverFlag = (id) => { const s = serverById(id); return s && s.country ? f
 const serverLabel = (s) => (s.country ? flag(s.country) + ' ' : '') + s.name;
 
 /* ---------------- auth ---------------- */
+// 👁 show/hide on password fields, and a strength hint under new passwords
+function wirePasswordUX(root) {
+  $$('[data-eye]', root).forEach(b => b.onclick = () => { const i = b.previousElementSibling; i.type = i.type === 'password' ? 'text' : 'password'; });
+  $$('[data-strength]', root).forEach(i => {
+    const meter = $('[data-meter]', i.closest('label'));
+    if (!meter) return;
+    i.oninput = () => {
+      const v = i.value;
+      if (!v) { meter.textContent = ''; return; }
+      const kinds = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter(r => r.test(v)).length;
+      const score = v.length < 8 ? 0 : (v.length >= 14 ? 2 : 1) + (kinds >= 3 ? 1 : 0);
+      meter.textContent = ['too short (min 8)', 'okay', 'good', 'strong'][score];
+      meter.style.color = ['var(--crit)', 'var(--warn)', 'var(--good)', 'var(--good)'][score];
+    };
+  });
+}
 function renderAuth(mode, name) {
   const reg = mode === 'register';
   document.body.innerHTML = '';
@@ -78,13 +107,14 @@ function renderAuth(mode, name) {
       ${reg ? `<div class="mdesc" style="margin-bottom:12px">Enter the <b>setup code</b> the installer printed. Lost it? On the server run <span class="mono">tunnel-panel setup-code</span></div>` : ''}
     <form class="ff" id="af">
       <label class="f">Username<input name="u" autocomplete="username" required></label>
-      <label class="f">Password<input name="p" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required></label>
+      <label class="f">Password<span class="pw"><input name="p" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required${reg ? ' minlength="8" data-strength' : ''}><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span>${reg ? '<small class="fhelp" data-meter></small>' : ''}</label>
       ${reg ? '<label class="f">Setup code<input name="c" class="mono" autocomplete="one-time-code" placeholder="xxxx-xxxx-xxxx" required></label>' : ''}
       <button class="btn pri" style="justify-content:center;padding:11px">${reg ? 'Create account' : 'Sign in'}</button>
       <div id="aerr" style="color:var(--crit);min-height:16px;font-size:13px"></div>
     </form></div></div>`);
   document.body.appendChild(el);
   quantumBg.start();
+  wirePasswordUX(el);
   $('#af').onsubmit = async (ev) => {
     ev.preventDefault();
     try { await api(reg ? '/register' : '/login', { username: ev.target.u.value, password: ev.target.p.value, code: reg ? ev.target.c.value : '' }); location.reload(); }
@@ -284,6 +314,8 @@ function renderShell() {
       <div class="brand"><div class="dot"></div><div><b>${esc(STATE.settings.panelName || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
       <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span>${n[2]}</span>${n[1]}</button>`).join('')}</nav>
       <div class="foot">
+        <div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div>
+        <a class="btn sm bkbtn" href="/api/backup" download title="Download a backup of the whole panel: servers, tunnels, settings, users (keep the file private). Restore it under Settings.">💾 Backup now</a>
         <button class="btn ghost sm" id="themeBtn">◐ Theme</button>
         <button class="btn ghost sm" id="bgBtn" title="Animated background on/off">✦ Live background</button>
         <div class="faint" style="font-size:11px;padding:0 8px">Signed in as <b>${esc(STATE.user)}</b>${STATE.version ? `<br>version <span class="mono">${esc(STATE.version)}</span>` : ''}</div>
@@ -294,6 +326,8 @@ function renderShell() {
   $$('.nav button', shell).forEach(b => b.onclick = () => { STATE.view = b.dataset.v; paintNav(); renderView(); $('#side').classList.remove('open'); });
   $('#logout').onclick = async () => { await api('/logout', {}); location.reload(); };
   $('#themeBtn').onclick = toggleTheme;
+  $$('[data-acc]', shell).forEach(b => b.onclick = () => setAccent(b.dataset.acc));
+  paintAccent();
   $('#bgBtn').onclick = () => quantumBg.toggle();
   quantumBg.start();
   paintNav(); renderView();
@@ -305,6 +339,20 @@ function toggleTheme() {
   try { localStorage.setItem('tp-theme', next); } catch (e) {}
 }
 try { const t = localStorage.getItem('tp-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+// accent colour (per browser): the theme's own, or one of these
+const ACCENTS = ['', '#6d5dfc', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899'];
+function setAccent(c) {
+  const r = document.documentElement.style;
+  if (c) { r.setProperty('--accent', c); r.setProperty('--accent-soft', `color-mix(in srgb, ${c} 16%, var(--panel))`); r.setProperty('--accent-fg', '#fff'); }
+  else { r.removeProperty('--accent'); r.removeProperty('--accent-soft'); r.removeProperty('--accent-fg'); }
+  try { localStorage.setItem('tp-accent', c); } catch (e) {}
+  paintAccent();
+}
+function paintAccent() {
+  let c = ''; try { c = localStorage.getItem('tp-accent') || ''; } catch (e) {}
+  $$('[data-acc]').forEach(b => b.classList.toggle('on', b.dataset.acc === c));
+}
+try { const a = localStorage.getItem('tp-accent'); if (a && /^#[0-9a-f]{6}$/i.test(a)) setAccent(a); } catch (e) {}
 
 function renderView() {
   const w = $('#work'); w.innerHTML = '';
@@ -370,7 +418,9 @@ async function viewRoutes(w) {
     off.forEach(v => { const [mid, f] = v.split('|'); if (fams.includes(f)) (rank[mid] = rank[mid] || {})[f] = (rank[mid] || {})[f] || { pos: 0, r: null }; });
     // a method's best position on either family (left out or failed: at the end)
     const best = (mid) => Math.min(999, ...fams.filter(f => !off.includes(mid + '|' + f)).map(f => (rank[mid][f] && rank[mid][f].pos) || 999));
-    const mids = Object.keys(rank).sort((a, b) => best(a) - best(b) || methodTitle(a).localeCompare(methodTitle(b)));
+    // grouped by method family (all Backhaul cores together), best first within a family
+    const gOf = (mid) => groupOf(STATE.methods.find(x => x.id === mid));
+    const mids = Object.keys(rank).sort((a, b) => groupRank(gOf(a)) - groupRank(gOf(b)) || best(a) - best(b) || methodTitle(a).localeCompare(methodTitle(b)));
     const cell = (mid, f) => {
       const m = STATE.methods.find(x => x.id === mid);
       if (m && !m.families.includes(f)) return `<td class="rt-c na" data-f="${famName(f)}"><span class="faint">— ${famName(f)} not supported</span></td>`;
@@ -386,7 +436,8 @@ async function viewRoutes(w) {
       return `<td class="rt-c ${x.ok ? 'good' : 'bad'}" data-f="${famName(f)}">${body}<button type="button" class="btn sm ghost" data-skip="${esc(mid)}|${f}" title="leave it out on this route: not benchmarked, not a hot-standby path, not used for failover">⊘</button></td>`;
     };
     const methodsTbl = mids.length ? `<table class="rt-tbl"><thead><tr><th>Method</th>${fams.map(f => `<th>${famName(f)}${bench[f] ? ` <span class="faint">· ${ageTxt(bench[f].at)}</span>` : ' <span class="faint">· not benchmarked</span>'}</th>`).join('')}</tr></thead>
-      <tbody>${mids.map(mid => `<tr><td class="rt-mn">${esc(methodTitle(mid))}</td>${fams.map(f => cell(mid, f)).join('')}</tr>`).join('')}</tbody></table>
+      <tbody>${mids.map((mid, i) => (i === 0 || gOf(mids[i - 1]) !== gOf(mid) ? `<tr class="rt-grp"><td colspan="${fams.length + 1}">${GROUP_ICON[gOf(mid)] || '🔧'} ${esc(gOf(mid))}</td></tr>` : '') +
+        `<tr><td class="rt-mn">${esc(methodTitle(mid))}</td>${fams.map(f => cell(mid, f)).join('')}</tr>`).join('')}</tbody></table>
       <div class="faint rt-leg">★ best · numbers = the order hot standby and failover use · ⊘ leave out on this route · ↺ put back · tap ✕ for the whole error</div>`
       : '<div class="faint" style="font-size:12.5px">No benchmark yet — press 📊 to measure every method between these two servers.</div>';
 
@@ -583,10 +634,12 @@ function viewSettings(w) {
       <div class="codebox"><code>${esc(STATE.agentPin)}</code></div>
     </div>
     <form class="card pad ff" id="pf">
-      <h3>Change password</h3>
-      <label class="f">Current<input name="old" type="password" autocomplete="current-password"></label>
-      <label class="f">New (min 8)<input name="new" type="password" autocomplete="new-password"></label>
-      <div><button class="btn">Update password</button></div>
+      <h3>👤 Account</h3>
+      <p class="muted" style="font-size:13px;margin:0">Change the panel login — the username, the password, or both. Every other signed-in browser is signed out.</p>
+      <label class="f">Username<input name="user" autocomplete="username" value="${esc(STATE.user || '')}" maxlength="32"></label>
+      <label class="f">New password <span class="faint">(min 8 — leave empty to keep it)</span><span class="pw"><input name="new" type="password" autocomplete="new-password" data-strength><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span><small class="fhelp" data-meter></small></label>
+      <label class="f">Current password <span class="faint">(required)</span><span class="pw"><input name="old" type="password" autocomplete="current-password" required><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span></label>
+      <div class="actions"><button class="btn pri">Save account</button><button type="button" class="btn ghost" data-genpw title="fill in a strong random password (shown so you can copy it)">🎲 Generate a strong password</button></div>
     </form>
     <div class="card pad" id="helperCard"><h3>Helper binaries</h3><div class="muted" style="font-size:13px">Loading…</div></div>
   </div>`);
@@ -596,10 +649,24 @@ function viewSettings(w) {
     const fd = Object.fromEntries(new FormData(ev.target));
     try { await api('/settings', fd); await loadAll(); toast('Settings saved'); renderView(); } catch (e) { alertModal('Error', e.message); }
   };
-  $('#pf').onsubmit = async (ev) => {
+  const pf = $('#pf');
+  wirePasswordUX(pf);
+  $('[data-genpw]', pf).onclick = () => {
+    const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_.';
+    const pw = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => abc[b % abc.length]).join('');
+    const el = pf.new; el.value = pw; el.type = 'text'; el.dispatchEvent(new Event('input')); el.select();
+    toast('Strong password filled in — copy it before you save');
+  };
+  pf.onsubmit = async (ev) => {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
-    try { await api('/password', { Old: fd.old, New: fd.new }); ev.target.reset(); toast('Password updated'); } catch (e) { alertModal('Error', e.message); }
+    const newUser = (fd.user || '').trim() !== STATE.user ? (fd.user || '').trim() : '';
+    try {
+      const r = await api('/password', { Old: fd.old, New: fd.new, NewUser: newUser });
+      STATE.user = r.user || STATE.user; pf.old.value = ''; pf.new.value = '';
+      toast(newUser && fd.new ? 'Username and password updated' : newUser ? 'Username updated' : 'Password updated');
+      renderShell();
+    } catch (e) { alertModal('Error', e.message); }
   };
   const bkf = $('#bkfile', card);
   $('#bkpick', card).onclick = () => bkf.click();
@@ -890,19 +957,33 @@ function viewTunnels(w) {
     STATE.tunnels.forEach(t => counts[t.serverId] = (counts[t.serverId] || 0) + 1);
     const ids = Object.keys(counts).sort((x, y) => serverName(x).localeCompare(serverName(y)));
     if (STATE.tunFilter && !counts[STATE.tunFilter]) STATE.tunFilter = '';
-    if (ids.length > 1) {
-      const bar = h(`<div class="filters"><button class="fchip${!STATE.tunFilter ? ' on' : ''}" data-f="">All <b>${STATE.tunnels.length}</b></button>${ids.map(id => {
+    const bar = h(`<div class="filters">
+      <input class="inp search" type="search" data-q placeholder="🔍 Search name, server, port, method…" value="${esc(STATE.tunSearch || '')}">
+      <button class="fchip${STATE.tunRunning ? ' on' : ''}" data-run title="show only running tunnels">● Running <b>${run}</b></button>
+      ${ids.length > 1 ? `<button class="fchip${!STATE.tunFilter ? ' on' : ''}" data-f="">All <b>${STATE.tunnels.length}</b></button>${ids.map(id => {
         const sv = serverById(id);
         return `<button class="fchip${STATE.tunFilter === id ? ' on' : ''}" data-f="${id}">${sv && sv.country ? flag(sv.country) : '🇮🇷'} ${esc(serverName(id))} <b>${counts[id]}</b></button>`;
-      }).join('')}</div>`);
-      $$('[data-f]', bar).forEach(b => b.onclick = () => { STATE.tunFilter = b.dataset.f; renderView(); });
-      w.appendChild(bar);
-    }
+      }).join('')}` : ''}</div>`);
+    $$('[data-f]', bar).forEach(b => b.onclick = () => { STATE.tunFilter = b.dataset.f; renderView(); });
+    $('[data-run]', bar).onclick = () => { STATE.tunRunning = !STATE.tunRunning; renderView(); };
+    w.appendChild(bar);
     const grid = h(`<div class="grid tgrid"></div>`);
-    STATE.tunnels.filter(t => !STATE.tunFilter || t.serverId === STATE.tunFilter)
+    // the search filters the cards in place (no redraw: the live traffic keeps running)
+    const hay = (t) => [t.name, t.ports, serverName(t.serverId), serverName(t.foreignId), methodTitle(t.active || t.selected), groupOf(STATE.methods.find(x => x.id === (t.active || t.selected))), famName(t.family)].join(' ').toLowerCase();
+    const applySearch = () => {
+      const q = (STATE.tunSearch || '').trim().toLowerCase();
+      let shown = 0;
+      $$('.tc', grid).forEach(c => { const t = STATE.tunnels.find(x => x.id === c.dataset.id); const ok = !q || (t && hay(t).includes(q)); c.hidden = !ok; if (ok) shown++; });
+      let none = $('.nomatch', w);
+      if (!shown && !none) { none = h('<div class="card empty small nomatch">No tunnel matches this search.</div>'); grid.after(none); }
+      if (shown && none) none.remove();
+    };
+    $('[data-q]', bar).oninput = (e) => { STATE.tunSearch = e.target.value; applySearch(); };
+    STATE.tunnels.filter(t => (!STATE.tunFilter || t.serverId === STATE.tunFilter) && (!STATE.tunRunning || t.active))
       .sort((x, y) => (!!y.active - !!x.active) || x.name.localeCompare(y.name))
       .forEach(t => grid.appendChild(tunnelCard(t)));
     w.appendChild(grid);
+    applySearch();
   }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
   $('#repairTun').onclick = async () => {
@@ -926,7 +1007,7 @@ function tunnelCard(t) {
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
-    <div class="tc-m"><span class="chip mth" title="${esc((active || selM)?.title || '')}">${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(t.family)}</span>${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : (t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>')}</div>
+    <div class="tc-m"><span class="chip mth" title="${esc(groupOf(active || selM) + ' · ' + ((active || selM)?.title || ''))}">${(active || selM) ? groupIcon(active || selM) + ' ' : ''}${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(t.family)}</span>${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : (t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>')}</div>
     ${t.active ? `<div class="traf mini" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
@@ -1037,7 +1118,7 @@ function manageTunnel(t) {
   const pick = () => { const [mid, fam] = selEl.value.split('|'); return { mid, fam, x: STATE.methods.find(y => y.id === mid) }; };
   // the family switch fills the list with that family's methods (keeping the method when it exists there too)
   const fill = (fam, want) => {
-    selEl.innerHTML = choices.filter(c => c.fam === fam).map(c => { const v = `${c.m.id}|${fam}`; return `<option value="${v}"${c.m.id === want ? ' selected' : ''}>${esc(c.m.title)} · ${esc(c.m.encrypt)}${methodMissing(c.m, t) ? ' ⚠ needs upload' : ''}${c.m.id === t.active && fam === t.family ? ' ✓ running' : ''}</option>`; }).join('');
+    selEl.innerHTML = groupedOptions(choices.filter(c => c.fam === fam).map(c => c.m), x => { const v = `${x.id}|${fam}`; return `<option value="${v}"${x.id === want ? ' selected' : ''}>${esc(x.title)} · ${esc(x.encrypt)}${methodMissing(x, t) ? ' ⚠ needs upload' : ''}${x.id === t.active && fam === t.family ? ' ✓ running' : ''}</option>`; });
     $$('[data-fams] button', m).forEach(b => b.classList.toggle('on', b.dataset.f === fam));
   };
   fill(sel.split('|')[1] || t.family, sel.split('|')[0]);
@@ -1132,15 +1213,21 @@ function renderOpts(box, t, mid) {
   const m = STATE.methods.find(x => x.id === mid);
   if (!m || !m.fields?.length) { box.innerHTML = `<div class="opts one"><div class="muted">No options for this method.</div></div>`; return; }
   const saved = (t.options && t.options[mid]) || {};
-  box.innerHTML = `<div class="opts${m.fields.length < 2 ? ' one' : ''}">${m.fields.map(f => {
+  const field = (f) => {
     const v = saved[f.key] !== undefined ? saved[f.key] : f.default;
-    if (f.type === 'bool') return `<label class="row f" style="grid-column:1/-1"><input type="checkbox" data-k="${f.key}"${String(v) === 'true' ? ' checked' : ''}> ${esc(f.label)}</label>`;
-    if (f.type === 'select') return `<label class="f">${esc(f.label)}<select data-k="${f.key}">${f.options.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
-    return `<label class="f">${esc(f.label)}${f.help ? ` <span class="faint">${esc(f.help)}</span>` : ''}<input data-k="${f.key}" class="mono" value="${esc(v)}"></label>`;
-  }).join('')}<div style="grid-column:1/-1;display:flex;justify-content:flex-end"><button class="btn sm pri" data-save>Save options</button></div></div>`;
+    const help = f.help ? `<small class="fhelp">${esc(f.help)}</small>` : '';
+    if (f.type === 'bool') return `<label class="row f" style="grid-column:1/-1"><input type="checkbox" data-k="${f.key}"${String(v) === 'true' ? ' checked' : ''}> ${esc(f.label)}${help}</label>`;
+    if (f.type === 'select') return `<label class="f">${esc(f.label)}<select data-k="${f.key}">${f.options.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>${help}</label>`;
+    return `<label class="f">${esc(f.label)}<input data-k="${f.key}" class="mono" value="${esc(v)}"${f.type === 'number' ? ` inputmode="numeric" placeholder="${esc(f.default || 'auto')}"` : ''}>${help}</label>`;
+  };
+  const basic = m.fields.filter(f => !f.advanced), adv = m.fields.filter(f => f.advanced);
+  box.innerHTML = `<div class="opts${basic.length < 2 ? ' one' : ''}">${basic.map(field).join('')}
+    ${adv.length ? `<details class="advopts" style="grid-column:1/-1"><summary>🎛 Advanced tuning <span class="faint">(${adv.length}) — the defaults are what this method always used</span></summary><div class="opts inner">${adv.map(field).join('')}</div></details>` : ''}
+    <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px"><button class="btn sm ghost" data-reset title="back to the method's defaults (saved when you press Save)">↺ Defaults</button><button class="btn sm pri" data-save>Save options</button></div></div>`;
+  $('[data-reset]', box).onclick = () => m.fields.forEach(f => { const el = $(`[data-k="${f.key}"]`, box); if (!el) return; if (el.type === 'checkbox') el.checked = String(f.default) === 'true'; else el.value = f.default; });
   $('[data-save]', box).onclick = async () => {
     const opts = {}; $$('[data-k]', box).forEach(el => opts[el.dataset.k] = el.type === 'checkbox' ? String(el.checked) : el.value);
-    try { await api('/tunnels/save', tunnelBody(t, { options: { [mid]: opts } })); await loadAll(); renderView(); toast('Options saved'); } catch (e) { alertModal('Error', e.message); }
+    try { await api('/tunnels/save', tunnelBody(t, { options: { [mid]: opts } })); await loadAll(); renderView(); toast('Options saved — Re-apply the tunnel to use them'); } catch (e) { alertModal('Error', e.message); }
   };
 }
 function tunnelModal(t) {
