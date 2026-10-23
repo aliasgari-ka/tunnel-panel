@@ -13,7 +13,10 @@
 // buffers in the tunnel do not inflate it. 'D' + seconds = the server sends for that
 // long and the client measures (download direction, foreign -> Iran). 'L' + seconds + 4
 // bytes of KiB (big endian) = like 'D', but at most that much (-max: tests that must not
-// cost the servers much traffic).
+// cost the servers much traffic). 'C' + seconds + 4 bytes of KiB = like 'B', but the server
+// also stops at that many bytes and answers on the open connection: a half-close (FIN) to
+// end the upload is dropped or turned into a reset by many port forwarders (Backhaul, FRP,
+// BackPack), and the report never came back.
 package probe
 
 import (
@@ -113,16 +116,24 @@ func handle(c net.Conn) {
 	switch hdr[0] {
 	case 'E':
 		_, _ = io.Copy(c, c)
-	case 'B':
+	case 'B', 'C':
 		var s [1]byte
 		if _, err := io.ReadFull(c, s[:]); err != nil {
 			return
+		}
+		limit := int64(math.MaxInt64)
+		if hdr[0] == 'C' {
+			var kb [4]byte
+			if _, err := io.ReadFull(c, kb[:]); err != nil {
+				return
+			}
+			limit = int64(binary.BigEndian.Uint32(kb[:])) << 10
 		}
 		dur := time.Duration(s[0]) * time.Second
 		buf := make([]byte, 256<<10)
 		var total int64
 		var start time.Time
-		for {
+		for total < limit {
 			if !start.IsZero() {
 				_ = c.SetReadDeadline(start.Add(dur))
 			}
@@ -141,6 +152,13 @@ func handle(c net.Conn) {
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		fmt.Fprintf(c, "%d %.4f\n", total, el)
+		// end gracefully: closing with unread data in the socket sends a reset, which can
+		// overtake the report on its way through a forwarder
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, _ = io.Copy(io.Discard, c)
 	case 'D', 'L':
 		var s [1]byte
 		if _, err := io.ReadFull(c, s[:]); err != nil {
@@ -256,7 +274,13 @@ func bw(addr string, secs int, max int64) (*BWResult, error) {
 		return nil, err
 	}
 	defer c.Close()
-	if _, err := c.Write([]byte{'B', byte(secs)}); err != nil {
+	req := []byte{'B', byte(secs)}
+	if max > 0 {
+		// the far end stops counting at max and reports on the open connection (no half-close)
+		req = []byte{'C', byte(secs), 0, 0, 0, 0}
+		binary.BigEndian.PutUint32(req[2:], uint32(max>>10))
+	}
+	if _, err := c.Write(req); err != nil {
 		return nil, err
 	}
 	type reply struct {
@@ -273,10 +297,7 @@ func bw(addr string, secs int, max int64) (*BWResult, error) {
 	sent := int64(0)
 	for {
 		if max > 0 && sent >= max {
-			// enough: end the stream; the far end reports what it received
-			if tc, ok := c.(*net.TCPConn); ok {
-				_ = tc.CloseWrite()
-			}
+			// enough: the far end reports once all of it has arrived
 			select {
 			case rp := <-got:
 				return parseBW(rp.line, fmt.Errorf("no throughput report from the far end (%v)", rp.err))

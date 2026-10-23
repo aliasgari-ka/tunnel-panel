@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -42,5 +43,32 @@ func TestCappedTests(t *testing.T) {
 	}
 	if r := check("127.0.0.1:1", 2, "", 0); r != "down" {
 		t.Errorf("check of a closed port: %q", r)
+	}
+
+	// through a forwarder that tears the whole connection down when the client half-closes
+	// (as Backhaul / FRP / BackPack reverse did): the capped upload still gets its report
+	fw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fw.Close()
+	go func() {
+		for {
+			in, err := fw.Accept()
+			if err != nil {
+				return
+			}
+			out, err := net.Dial("tcp", addr)
+			if err != nil {
+				in.Close()
+				return
+			}
+			go func() { _, _ = io.Copy(in, out); in.Close(); out.Close() }()
+			go func() { _, _ = io.Copy(out, in); in.Close(); out.Close() }()
+		}
+	}()
+	up, err = bw(fw.Addr().String(), 10, 1<<20)
+	if err != nil || up.Bytes < 1<<20 || up.Mbps <= 0 {
+		t.Fatalf("capped upload through a forwarder: %+v %v", up, err)
 	}
 }
