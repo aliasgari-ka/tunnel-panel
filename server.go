@@ -412,6 +412,8 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					st.Users[i].Username, name = in.NewUser, in.NewUser
+					// what the account owns follows the new name (ownership is by username)
+					renameOwnerLocked(st, user, in.NewUser)
 				}
 				if in.New != "" {
 					h, _ := bcrypt.GenerateFromPassword([]byte(in.New), bcrypt.DefaultCost)
@@ -508,6 +510,8 @@ type serverView struct {
 	*Server
 	AgentOnline bool   `json:"agentOnline"`
 	AgentHost   string `json:"agentHost,omitempty"`
+	// Shared: another account's server that carries one of this user's tunnels (read-only)
+	Shared bool `json:"shared,omitempty"`
 }
 
 func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
@@ -515,7 +519,15 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 		out := []serverView{}
 		user, admin := s.who(r)
 		s.app.store.View(func(st *State) {
+			var shared map[string]bool
+			if !admin {
+				shared = sharedServersLocked(st, user)
+			}
 			for _, x := range st.Servers {
+				if shared[x.ID] {
+					out = append(out, serverView{Server: sharedView(x), Shared: true})
+					continue
+				}
 				if !visible(user, admin, x.Owner) {
 					continue
 				}
@@ -853,12 +865,22 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 	}
 	user, admin := s.who(r)
 	srv := s.app.store.Server(in.ServerID)
-	if srv == nil || !s.serverVisible(user, admin, in.ServerID) {
+	// a user may keep their tunnel on the servers it already runs on, even when those are
+	// the admin's (the admin set the tunnel up for them); moving it needs their own servers
+	samePair := false
+	if !admin && in.ID != "" {
+		if old := s.app.store.Tunnel(in.ID); old != nil {
+			s.app.store.View(func(*State) {
+				samePair = old.Owner == user && old.ServerID == in.ServerID && old.ForeignID == in.ForeignID
+			})
+		}
+	}
+	if srv == nil || (!samePair && !s.serverVisible(user, admin, in.ServerID)) {
 		httpErr(w, 400, "Pick an Iran server.")
 		return
 	}
 	// a user's tunnel ends on one of their foreign servers, never on the panel host
-	if !admin && (in.ForeignID == "" || !s.serverVisible(user, admin, in.ForeignID)) {
+	if !admin && !samePair && (in.ForeignID == "" || !s.serverVisible(user, admin, in.ForeignID)) {
 		httpErr(w, 400, "Pick one of your foreign servers.")
 		return
 	}
@@ -1286,7 +1308,7 @@ func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
 	s.app.store.View(func(st *State) {
 		for i := len(st.BenchHistory) - 1; i >= 0; i-- {
 			b := st.BenchHistory[i]
-			if admin || (visible(user, admin, ownerOfLocked(st, b.IranID)) && visible(user, admin, ownerOfLocked(st, b.ForeignID))) {
+			if pairVisibleLocked(st, user, admin, b.IranID, b.ForeignID) {
 				out = append(out, b)
 			}
 		}

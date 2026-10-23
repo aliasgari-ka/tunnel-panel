@@ -60,13 +60,58 @@ func (s *Server2) tunnelVisible(user string, admin bool, id string) bool {
 	return visible(user, admin, owner)
 }
 
-// pairVisible: both servers of a route are this account's (a user's routes never end on the
-// panel host, which is the admin's).
+// pairVisible: both servers of a route are this account's, or one of its tunnels runs
+// between them (a tunnel the admin set up for the user on the admin's servers). A user's
+// routes never end on the panel host, which is the admin's.
 func (s *Server2) pairVisible(user string, admin bool, iran, foreign string) bool {
 	if admin {
 		return true
 	}
-	return iran != "" && foreign != "" && s.serverVisible(user, admin, iran) && s.serverVisible(user, admin, foreign)
+	ok := false
+	s.app.store.View(func(st *State) { ok = pairVisibleLocked(st, user, admin, iran, foreign) })
+	return ok
+}
+
+func pairVisibleLocked(st *State, user string, admin bool, iran, foreign string) bool {
+	if admin {
+		return true
+	}
+	if user == "" || iran == "" || foreign == "" {
+		return false
+	}
+	if visible(user, admin, ownerOfLocked(st, iran)) && visible(user, admin, ownerOfLocked(st, foreign)) {
+		return true
+	}
+	for _, t := range st.Tunnels {
+		if t.Owner == user && t.ServerID == iran && t.ForeignID == foreign {
+			return true
+		}
+	}
+	return false
+}
+
+// sharedServersLocked: servers that aren't the user's but carry one of the user's tunnels.
+// The user sees them read-only (name, place, addresses — never how the panel logs in) so
+// their tunnels show where they run and which address to connect to.
+func sharedServersLocked(st *State, user string) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range st.Tunnels {
+		if user == "" || t.Owner != user {
+			continue
+		}
+		for _, id := range []string{t.ServerID, t.ForeignID} {
+			if id != "" && ownerOfLocked(st, id) != user {
+				out[id] = true
+			}
+		}
+	}
+	return out
+}
+
+// sharedView is what a user may see of a server that isn't theirs.
+func sharedView(x *Server) *Server {
+	return &Server{ID: x.ID, Owner: x.Owner, Name: x.Name, IPv4: x.IPv4, IPv6: x.IPv6, Arch: x.Arch, OS: x.OS,
+		Prepared: x.Prepared, CreatedAt: x.CreatedAt, Role: x.Role, Country: x.Country, City: x.City}
 }
 
 // guard checks the object a request names before the handler runs. kind:
@@ -310,4 +355,21 @@ func ownerOfLocked(st *State, serverID string) string {
 		}
 	}
 	return ""
+}
+
+// renameOwnerLocked moves everything owned by from to to (an account renamed itself).
+func renameOwnerLocked(st *State, from, to string) {
+	if from == "" {
+		return
+	}
+	for _, x := range st.Servers {
+		if x.Owner == from {
+			x.Owner = to
+		}
+	}
+	for _, t := range st.Tunnels {
+		if t.Owner == from {
+			t.Owner = to
+		}
+	}
 }

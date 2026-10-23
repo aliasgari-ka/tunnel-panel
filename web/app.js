@@ -39,7 +39,10 @@ async function loadAll() {
   const [methods, servers, tunnels, settings, helpers] = await Promise.all([
     api('/methods'), api('/servers'), api('/tunnels'), api('/settings'), api('/helpers').catch(() => [])]);
   STATE.helpers = (helpers || []).map(x => x.name); STATE.hostArch = (settings && settings.hostArch) || 'amd64';
-  STATE.methods = methods || []; STATE.servers = servers || []; STATE.tunnels = tunnels || [];
+  STATE.methods = methods || []; STATE.tunnels = tunnels || [];
+  // a user also gets the admin's servers that carry their tunnels (shared, read-only): they
+  // name where a tunnel runs but aren't the user's to manage
+  STATE.servers = (servers || []).filter(s => !s.shared); STATE.shared = (servers || []).filter(s => s.shared);
   STATE.settings = (settings && settings.settings) || {}; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
   STATE.users = isAdmin() ? await api('/users').catch(() => []) : [];
 }
@@ -69,7 +72,9 @@ function methodMissing(m, t) {
   const miss = [...new Set(arches)].filter(a => !(STATE.helpers || []).includes(m.helper + '-' + a));
   return miss.map(a => m.helper + '-' + a).join(', ');
 }
-const serverById = (id) => STATE.servers.find(s => s.id === id);
+const serverById = (id) => STATE.servers.find(s => s.id === id) || (STATE.shared || []).find(s => s.id === id);
+// the tunnel's own servers when they're shared ones (the pickers list only the user's servers)
+const sharedOpts = (role, cur) => (STATE.shared || []).filter(s => s.id === cur && (s.role || 'iran') === role).map(s => `<option value="${s.id}" selected>${esc(serverLabel(s))} · shared</option>`).join('');
 // accounts: the admin sees everything (and can narrow the view to one account); a user only
 // ever gets their own servers and tunnels from the panel
 const isAdmin = () => STATE.role !== 'user';
@@ -1092,7 +1097,7 @@ function viewTunnels(w) {
     <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="cu" data-cu="${run}">0</span><span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
     <div class="stat"><i class="si">⬇</i><small>Live download</small><b class="dn" data-sum-dn>—</b></div>
     <div class="stat"><i class="si">⬆</i><small>Live upload</small><b class="up" data-sum-up>—</b></div>
-    <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + 1}<span> foreign</span></b></div>
+    <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + (isAdmin() ? 1 : 0)}<span> foreign</span></b></div>
   </div>`));
   countUp(w);
   if (!STATE.tunnels.length) {
@@ -1382,12 +1387,12 @@ function renderOpts(box, t, mid) {
 function tunnelModal(t) {
   t = t || {};
   const sh = t.shape || {};
-  const foreignOpts = panelHostOpt() + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
+  const foreignOpts = panelHostOpt() + sharedOpts('foreign', t.foreignId) + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
   const m = modal(`<h2>${t.id ? 'Edit tunnel' : 'New tunnel'}</h2>
     <form class="ff" id="tf">
       <label class="f">Name<input name="name" value="${esc(t.name || '')}" required></label>
       <div class="two">
-        <label class="f">Iran server<select name="serverId" required>${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('')}</select></label>
+        <label class="f">Iran server<select name="serverId" required>${sharedOpts('iran', t.serverId)}${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('')}</select></label>
         <label class="f">Foreign server<select name="foreignId">${foreignOpts}</select></label>
       </div>
       <div class="two">
@@ -1441,8 +1446,8 @@ function viewBench(w) {
   const card = h(`<div class="grid" style="gap:16px">
     <form class="card pad ff" id="bf" style="max-width:640px">
       <div class="two">
-        <label class="f">Iran server<select name="iran">${iranServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
-        <label class="f">Foreign server<select name="foreign">${panelHostOpt()}${foreignServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
+        <label class="f">Iran server<select name="iran">${[...iranServers(), ...(STATE.shared || []).filter(s => (s.role || 'iran') === 'iran')].map(s => `<option value="${s.id}">${esc(serverLabel(s))}${s.shared ? ' · shared' : ''}</option>`).join('')}</select></label>
+        <label class="f">Foreign server<select name="foreign">${panelHostOpt()}${[...foreignServers(), ...(STATE.shared || []).filter(s => s.role === 'foreign')].map(s => `<option value="${s.id}">${esc(serverLabel(s))}${s.shared ? ' · shared' : ''}</option>`).join('')}</select></label>
       </div>
       <div class="two">
         <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>
