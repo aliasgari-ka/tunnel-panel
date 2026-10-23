@@ -193,13 +193,15 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		// the probe binary on both ends + a probe server on the foreign side for the whole run
 		probeOK := pushArtifacts(ctx, j, "IR", irHost, []Artifact{probeArt}) == nil &&
 			pushArtifacts(ctx, j, "KH", khHost, []Artifact{probeArt}) == nil
+		probeWhy := "" // why there's no probe, for the results (not only the job log)
 		if probeOK {
 			if perr := probeStarted(ctx, khHost, probeServerUp(probePort)); perr != nil {
 				j.log("WARNING: probe server on the foreign side: %v — falling back to ping only (no throughput)", perr)
-				probeOK = false
+				probeOK, probeWhy = false, "the probe server on the foreign side didn't start: "+firstLine(perr.Error())
 			}
 		} else {
 			j.log("WARNING: could not install the probe — falling back to ping only (no throughput)")
+			probeWhy = "the probe couldn't be installed"
 		}
 		defer func() { _, _ = khHost.Run(context.Background(), probeServerDown(probePort), nil) }()
 
@@ -227,6 +229,9 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				continue
 			}
 			err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r)
+			if err != nil && probeWhy != "" && strings.HasPrefix(err.Error(), "probe unavailable") {
+				err = fmt.Errorf("%v (%s)", err, probeWhy)
+			}
 			// (only when it deployed but carried nothing: a config or start error would just repeat)
 			if err != nil && m.Alts != nil && (strings.Contains(err.Error(), "no traffic passes") || strings.Contains(err.Error(), "can't run on this")) && ctx.Err() == nil {
 				// the default carrier passes nothing here: try the method's other carriers
@@ -342,7 +347,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   if timeout 1 bash -c '</dev/tcp/127.0.0.1/%[1]d' 2>/dev/null; then echo probe-up; exit 0; fi
   sleep 0.3
 done
-echo "probe-failed: the probe server does not listen on port %[1]d: $(tail -c 300 /tmp/tp-probe-%[1]d.log 2>/dev/null | tr '\n' ' ')$(h=$(ss -Hltnp "( sport = :%[1]d )" 2>/dev/null | grep -o 'users:.*' | head -1); [ -n "$h" ] && echo " — the port is held by $h")"
+echo "probe-failed: the probe server does not listen on port %[1]d: $(tail -c 300 /tmp/tp-probe-%[1]d.log 2>/dev/null | tr '\n' ' ')$(h=$(ss -Hltnp "( sport = :%[1]d )" 2>/dev/null | grep -o 'users:.*' | head -1); [ -n "$h" ] && echo " — the port is held by $h")$(c=$(ss -Htnp state established "( sport = :%[1]d )" 2>/dev/null | head -1 | awk '{print $4" → "$5" "$6}'); [ -n "$c" ] && echo " — an outgoing connection uses it as its local port ($c): re-apply Kernel tuning on this server to keep the panel's ports out of the ephemeral range")"
 `, port, probeBin, life)
 }
 

@@ -29,6 +29,8 @@ type Settings struct {
 	AutoBench string `json:"autoBench"`
 	// TelegramBackup "on": the daily backup is also sent to the admin chat
 	TelegramBackup string `json:"telegramBackup"`
+	// TelegramReport "HH:MM" (Tehran time): the bot's daily report; "" = off
+	TelegramReport string `json:"telegramReport,omitempty"`
 }
 
 // Server is a remote Iran server reached over SSH.
@@ -188,6 +190,9 @@ type User struct {
 	Gen int `json:"gen,omitempty"`
 	// Role "user": sees and runs only what it owns; "" or "admin": everything (see access.go)
 	Role string `json:"role,omitempty"`
+	// a user's own Telegram bot (Account page): it shows and alerts only their services
+	TelegramTok   string `json:"telegramTok,omitempty"`
+	TelegramChats string `json:"telegramChats,omitempty"` // chat ids allowed to use it, comma-separated
 }
 
 type State struct {

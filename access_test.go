@@ -213,3 +213,103 @@ func TestUserAdmin(t *testing.T) {
 		t.Error("deleted user can still sign in")
 	}
 }
+
+// A tunnel the admin set up for a user on the admin's servers: the user sees those servers
+// read-only, can edit the tunnel in place and measure its route, and keeps it on a rename.
+func TestUserTunnelOnAdminServers(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	h, _ := bcrypt.GenerateFromPassword([]byte("password1"), bcrypt.MinCost)
+	_ = st.Update(func(s *State) error {
+		s.Users = []User{{Username: "boss", Hash: string(h)}, {Username: "ali", Hash: string(h), Role: roleUser}}
+		s.Servers = []*Server{
+			{ID: "s1", Name: "admin-iran", IPv4: "192.0.2.1", Role: "iran", Password: "rootpw", SSHPort: 2222},
+			{ID: "s2", Name: "admin-de", IPv4: "198.51.100.2", Role: "foreign", PrivateKey: "KEY", Proxy: "socks5://p:q@h:1"},
+			{ID: "s3", Name: "other-iran", IPv4: "192.0.2.3", Role: "iran"},
+			{ID: "s4", Name: "ali-iran", IPv4: "192.0.2.4", Role: "iran", Owner: "ali"},
+		}
+		s.Tunnels = []*Tunnel{
+			{ID: "t1", Name: "for ali", ServerID: "s1", ForeignID: "s2", Family: "v4", Ports: "443", Index: 1, Owner: "ali"},
+			{ID: "t2", Name: "admin's", ServerID: "s3", ForeignID: "s2", Family: "v4", Ports: "8443", Index: 2},
+		}
+		return nil
+	})
+	s := &Server2{app: &App{store: st, jobs: newJobs(), agents: newAgentHub()}, failures: map[string][]time.Time{}}
+	cookie := func(u string) *http.Cookie {
+		w := httptest.NewRecorder()
+		s.login(w, httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"`+u+`","password":"password1"}`)))
+		for _, k := range w.Result().Cookies() {
+			if k.Name == "tp_session" {
+				return k
+			}
+		}
+		t.Fatalf("no session for %s", u)
+		return nil
+	}
+	ali := cookie("ali")
+	call := func(c *http.Cookie, h http.HandlerFunc, method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(c)
+		h(w, r)
+		return w
+	}
+
+	// the servers of ali's tunnel come back marked shared, without any way in
+	w := call(ali, s.servers, "GET", "/api/servers", "")
+	var list []struct {
+		ID, Name, Password, PrivateKey, Proxy string
+		SSHPort                               int
+		Shared                                bool
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &list)
+	got := map[string]bool{}
+	for _, x := range list {
+		got[x.ID] = x.Shared
+		if x.Shared && (x.Password != "" || x.PrivateKey != "" || x.Proxy != "" || x.SSHPort != 0) {
+			t.Errorf("shared server %s leaks how to log in: %+v", x.ID, x)
+		}
+	}
+	if len(got) != 3 || !got["s1"] || !got["s2"] || got["s4"] {
+		t.Errorf("user's server list: %v", got)
+	}
+	if strings.Contains(w.Body.String(), "rootpw") || strings.Contains(w.Body.String(), "KEY") {
+		t.Errorf("secrets in the user's server list: %s", w.Body.String())
+	}
+	// shared servers aren't the user's to manage
+	ok := func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]string{"ok": "1"}) }
+	if w := call(ali, s.guard("server", ok), "POST", "/x", `{"ID":"s1"}`); w.Code != 404 {
+		t.Errorf("user managing a shared server: %d", w.Code)
+	}
+	// editing the tunnel in place works; moving it to the admin's other server doesn't
+	if w := call(ali, s.tunnelSave, "POST", "/api/tunnels/save", `{"ID":"t1","name":"renamed","serverId":"s1","foreignId":"s2","ports":"443"}`); w.Code != 200 {
+		t.Errorf("edit in place: %d %s", w.Code, w.Body.String())
+	}
+	if w := call(ali, s.tunnelSave, "POST", "/api/tunnels/save", `{"ID":"t1","name":"moved","serverId":"s3","foreignId":"s2","ports":"443"}`); w.Code != 400 {
+		t.Errorf("moving onto another admin server: %d", w.Code)
+	}
+	if w := call(ali, s.tunnelSave, "POST", "/api/tunnels/save", `{"name":"new","serverId":"s1","foreignId":"s2","ports":"9443"}`); w.Code != 400 {
+		t.Errorf("new tunnel on shared servers: %d", w.Code)
+	}
+	// the route of their tunnel is theirs to measure, other routes on those servers aren't
+	if !s.pairVisible("ali", false, "s1", "s2") || s.pairVisible("ali", false, "s3", "s2") {
+		t.Errorf("pair visibility")
+	}
+	// renaming the account keeps the tunnel (ownership is by username)
+	if w := call(ali, s.password, "POST", "/api/password", `{"old":"password1","newUser":"ali2"}`); w.Code != 200 {
+		t.Fatalf("rename: %d %s", w.Code, w.Body.String())
+	}
+	st.View(func(x *State) {
+		for _, tn := range x.Tunnels {
+			if tn.ID == "t1" && tn.Owner != "ali2" {
+				t.Errorf("tunnel owner after rename: %q", tn.Owner)
+			}
+		}
+		for _, sv := range x.Servers {
+			if sv.ID == "s4" && sv.Owner != "ali2" {
+				t.Errorf("server owner after rename: %q", sv.Owner)
+			}
+		}
+	})
+}

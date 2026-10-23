@@ -49,50 +49,80 @@ type TestResult struct {
 	Paths []PathResult `json:"paths"`
 }
 
-// TestServer probes agent + SSH paths and records which works, fastest first.
+// TestServer probes agent + SSH paths and records which works, fastest first. The paths
+// are probed at once and a path still pending when ctx ends counts as timed out: an SSH
+// dial through a jump host doesn't follow ctx and can hang for minutes on a blocked route.
 func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
-	var res TestResult
-	var okHost Host
-	probe := func(name string, h Host) {
-		pr := PathResult{Path: name}
-		start := time.Now()
-		out, err := h.Run(ctx, "echo ok; uname -m; . /etc/os-release 2>/dev/null; echo ID=$ID", nil)
-		pr.ms = time.Since(start).Milliseconds()
-		if err != nil {
-			pr.Info = err.Error()
-		} else {
-			pr.OK = true
-			pr.Info = fmt.Sprintf("%dms", pr.ms)
-			arch, os2 := "", ""
-			for _, l := range strings.Split(out, "\n") {
-				l = strings.TrimSpace(l)
-				if l != "" && l != "ok" && arch == "" && !strings.HasPrefix(l, "ID=") {
-					arch = l
-				}
-				if strings.HasPrefix(l, "ID=") {
-					os2 = strings.TrimPrefix(l, "ID=")
-				}
-			}
-			if res.Arch == "" {
-				res.Arch, res.OS = arch, os2
-			}
-			if okHost == nil {
-				okHost = h
-			}
-		}
-		res.Paths = append(res.Paths, pr)
+	type cand struct {
+		name string
+		h    Host
 	}
-
+	var cands []cand
 	if a.agents != nil && a.agents.online(srv.ID) != nil {
-		probe("agent (dial-back)", AgentHost{hub: a.agents, serverID: srv.ID})
+		cands = append(cands, cand{"agent (dial-back)", AgentHost{hub: a.agents, serverID: srv.ID}})
 	}
 	// SSH paths
 	if srv.Proxy != "" {
-		probe("SSH via proxy", newSSHHost(a.store, srv, proxyDial(srv.Proxy)))
+		cands = append(cands, cand{"SSH via proxy", newSSHHost(a.store, srv, proxyDial(srv.Proxy))})
 	}
-	probe("direct SSH", newSSHHost(a.store, srv, directDial))
+	cands = append(cands, cand{"direct SSH", newSSHHost(a.store, srv, directDial)})
 	for _, via := range a.otherServers(srv.ID) {
-		probe("jump via "+via.Name, newSSHHost(a.store, srv, a.jumpDial(ctx, via)))
+		cands = append(cands, cand{"jump via " + via.Name, newSSHHost(a.store, srv, a.jumpDial(ctx, via))})
+	}
+
+	type probed struct {
+		i        int
+		pr       PathResult
+		arch, os string
+	}
+	ch := make(chan probed, len(cands))
+	for i, c := range cands {
+		go func(i int, c cand) {
+			r := probed{i: i, pr: PathResult{Path: c.name}}
+			start := time.Now()
+			out, err := c.h.Run(ctx, "echo ok; uname -m; . /etc/os-release 2>/dev/null; echo ID=$ID", nil)
+			r.pr.ms = time.Since(start).Milliseconds()
+			if err != nil {
+				r.pr.Info = err.Error()
+			} else {
+				r.pr.OK = true
+				r.pr.Info = fmt.Sprintf("%dms", r.pr.ms)
+				for _, l := range strings.Split(out, "\n") {
+					l = strings.TrimSpace(l)
+					if l != "" && l != "ok" && r.arch == "" && !strings.HasPrefix(l, "ID=") {
+						r.arch = l
+					}
+					if strings.HasPrefix(l, "ID=") {
+						r.os = strings.TrimPrefix(l, "ID=")
+					}
+				}
+			}
+			ch <- r
+		}(i, c)
+	}
+	got := make([]*probed, len(cands))
+wait:
+	for n := 0; n < len(cands); n++ {
+		select {
+		case r := <-ch:
+			got[r.i] = &r
+		case <-ctx.Done():
+			break wait
+		}
+	}
+
+	var res TestResult
+	var okHost Host
+	for i, c := range cands {
+		r := got[i]
+		if r == nil {
+			res.Paths = append(res.Paths, PathResult{Path: c.name, Info: "timed out"})
+			continue
+		}
+		if r.pr.OK && okHost == nil {
+			okHost, res.Arch, res.OS = c.h, r.arch, r.os
+		}
+		res.Paths = append(res.Paths, r.pr)
 	}
 
 	for _, p := range res.Paths {
@@ -111,7 +141,9 @@ func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
 			return nil
 		})
 		// missing IPs are read from the server itself; first contact also pre-installs binaries
-		a.autoSetup(ctx, srv, okHost)
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+		defer cancel()
+		a.autoSetup(sctx, srv, okHost)
 	}
 	return res
 }
@@ -125,6 +157,7 @@ func (a *App) restartBot() {
 		a.bot = nil
 	}
 	set := a.settings()
+	a.startUserBotsLocked(set.TelegramTok)
 	if set.TelegramTok == "" {
 		return
 	}

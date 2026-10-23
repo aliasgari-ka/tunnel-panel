@@ -39,7 +39,10 @@ async function loadAll() {
   const [methods, servers, tunnels, settings, helpers] = await Promise.all([
     api('/methods'), api('/servers'), api('/tunnels'), api('/settings'), api('/helpers').catch(() => [])]);
   STATE.helpers = (helpers || []).map(x => x.name); STATE.hostArch = (settings && settings.hostArch) || 'amd64';
-  STATE.methods = methods || []; STATE.servers = servers || []; STATE.tunnels = tunnels || [];
+  STATE.methods = methods || []; STATE.tunnels = tunnels || [];
+  // a user also gets the admin's servers that carry their tunnels (shared, read-only): they
+  // name where a tunnel runs but aren't the user's to manage
+  STATE.servers = (servers || []).filter(s => !s.shared); STATE.shared = (servers || []).filter(s => s.shared);
   STATE.settings = (settings && settings.settings) || {}; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
   STATE.users = isAdmin() ? await api('/users').catch(() => []) : [];
 }
@@ -69,7 +72,9 @@ function methodMissing(m, t) {
   const miss = [...new Set(arches)].filter(a => !(STATE.helpers || []).includes(m.helper + '-' + a));
   return miss.map(a => m.helper + '-' + a).join(', ');
 }
-const serverById = (id) => STATE.servers.find(s => s.id === id);
+const serverById = (id) => STATE.servers.find(s => s.id === id) || (STATE.shared || []).find(s => s.id === id);
+// the tunnel's own servers when they're shared ones (the pickers list only the user's servers)
+const sharedOpts = (role, cur) => (STATE.shared || []).filter(s => s.id === cur && (s.role || 'iran') === role).map(s => `<option value="${s.id}" selected>${esc(serverLabel(s))} · shared</option>`).join('');
 // accounts: the admin sees everything (and can narrow the view to one account); a user only
 // ever gets their own servers and tunnels from the panel
 const isAdmin = () => STATE.role !== 'user';
@@ -675,11 +680,43 @@ function wireAccount(pf) {
     } catch (e) { alertModal('Error', e.message); }
   };
 }
+// a user's own Telegram bot: it shows and alerts only their services
+function myBotHTML() {
+  return `<form class="card pad ff" id="mbf">
+      <h3>🤖 Your Telegram bot</h3>
+      <p class="muted" style="font-size:13px;margin:0">Run your tunnels from Telegram and get alerts about them — your services only.
+      <b>1.</b> Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> (/newbot) and paste its token here.
+      <b>2.</b> Save, send your bot <b>/start</b>: it answers with your chat id. <b>3.</b> Put the chat id here and save again.</p>
+      <label class="f">Bot token<input name="token" class="mono" autocomplete="off" placeholder="123456789:AAH…" data-tok></label>
+      <label class="f">Your chat id(s) <span class="faint">(comma-separated)</span><input name="chats" class="mono" placeholder="123456789" data-chats></label>
+      <div class="actions"><button class="btn pri">Save bot</button><button type="button" class="btn ghost" data-rm hidden>Remove bot</button><span class="faint" data-st style="font-size:12px"></span></div>
+    </form>`;
+}
+function wireMyBot(f) {
+  const show = (r) => {
+    $('[data-chats]', f).value = r.chats || '';
+    $('[data-tok]', f).placeholder = r.set ? 'saved — leave empty to keep it' : '123456789:AAH…';
+    $('[data-rm]', f).hidden = !r.set;
+    const st = r.state || '';
+    $('[data-st]', f).textContent = !r.set ? 'no bot yet' : st.startsWith('error') ? '🔴 Telegram refused it — ' + st.slice(7) : !st ? 'starting…'
+      : r.chats ? '🟢 ' + st + ' is running' : '🟢 ' + st + ' is running — send it /start and add your chat id';
+  };
+  const load = () => api('/mybot').then(show).catch(() => {});
+  load();
+  f.onsubmit = async (ev) => {
+    ev.preventDefault();
+    try { show(await api('/mybot', { Token: f.token.value.trim(), Chats: f.chats.value.trim() })); f.token.value = ''; toast('Bot saved'); setTimeout(load, 4000); }
+    catch (e) { alertModal('Telegram bot', e.message); }
+  };
+  $('[data-rm]', f).onclick = async () => {
+    try { show(await api('/mybot', { Remove: true })); toast('Bot removed'); } catch (e) { alertModal('Telegram bot', e.message); }
+  };
+}
 function viewSettings(w) {
   if (!isAdmin()) {
     w.innerHTML = topbar('Account', 'Your panel login. You see and run only your own servers and tunnels.');
-    const c = h(`<div class="grid" style="max-width:560px">${accountFormHTML()}</div>`);
-    w.appendChild(c); wireAccount($('#pf', c));
+    const c = h(`<div class="grid" style="max-width:560px;gap:16px">${accountFormHTML()}${myBotHTML()}</div>`);
+    w.appendChild(c); wireAccount($('#pf', c)); wireMyBot($('#mbf', c));
     return;
   }
   const s = STATE.settings;
@@ -705,6 +742,7 @@ function viewSettings(w) {
       </div>
       <div class="faint" style="font-size:12px">Message your bot <b>/start</b>; it replies with your chat id if you're not yet an admin. The bot can start, stop and switch every tunnel.</div>
       <label class="row f"><input type="checkbox" name="telegramBackup" value="on" ${s.telegramBackup === 'on' ? 'checked' : ''}> Send the daily backup to the admin chat too</label>
+      <label class="f">☀️ Daily report at <span class="faint">(HH:MM, Tehran time — tunnels, their paths and the last day's outages; blank = off)</span><input name="telegramReport" class="mono" placeholder="09:00" maxlength="5" value="${esc(s.telegramReport || '')}"></label>
       <div><button class="btn pri">Save settings</button></div>
     </form>
     <form class="card pad ff" id="domf">
@@ -1091,7 +1129,7 @@ function viewTunnels(w) {
     <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="cu" data-cu="${run}">0</span><span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
     <div class="stat"><i class="si">⬇</i><small>Live download</small><b class="dn" data-sum-dn>—</b></div>
     <div class="stat"><i class="si">⬆</i><small>Live upload</small><b class="up" data-sum-up>—</b></div>
-    <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + 1}<span> foreign</span></b></div>
+    <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + (isAdmin() ? 1 : 0)}<span> foreign</span></b></div>
   </div>`));
   countUp(w);
   if (!STATE.tunnels.length) {
@@ -1381,12 +1419,12 @@ function renderOpts(box, t, mid) {
 function tunnelModal(t) {
   t = t || {};
   const sh = t.shape || {};
-  const foreignOpts = panelHostOpt() + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
+  const foreignOpts = panelHostOpt() + sharedOpts('foreign', t.foreignId) + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
   const m = modal(`<h2>${t.id ? 'Edit tunnel' : 'New tunnel'}</h2>
     <form class="ff" id="tf">
       <label class="f">Name<input name="name" value="${esc(t.name || '')}" required></label>
       <div class="two">
-        <label class="f">Iran server<select name="serverId" required>${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('')}</select></label>
+        <label class="f">Iran server<select name="serverId" required>${sharedOpts('iran', t.serverId)}${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('')}</select></label>
         <label class="f">Foreign server<select name="foreignId">${foreignOpts}</select></label>
       </div>
       <div class="two">
@@ -1440,8 +1478,8 @@ function viewBench(w) {
   const card = h(`<div class="grid" style="gap:16px">
     <form class="card pad ff" id="bf" style="max-width:640px">
       <div class="two">
-        <label class="f">Iran server<select name="iran">${iranServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
-        <label class="f">Foreign server<select name="foreign">${panelHostOpt()}${foreignServers().map(s => `<option value="${s.id}">${esc(serverLabel(s))}</option>`).join('')}</select></label>
+        <label class="f">Iran server<select name="iran">${[...iranServers(), ...(STATE.shared || []).filter(s => (s.role || 'iran') === 'iran')].map(s => `<option value="${s.id}">${esc(serverLabel(s))}${s.shared ? ' · shared' : ''}</option>`).join('')}</select></label>
+        <label class="f">Foreign server<select name="foreign">${panelHostOpt()}${[...foreignServers(), ...(STATE.shared || []).filter(s => s.role === 'foreign')].map(s => `<option value="${s.id}">${esc(serverLabel(s))}${s.shared ? ' · shared' : ''}</option>`).join('')}</select></label>
       </div>
       <div class="two">
         <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>

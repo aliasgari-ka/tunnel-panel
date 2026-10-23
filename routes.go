@@ -117,7 +117,7 @@ func (a *App) routeSkipChanged(iran, foreign string) {
 		})
 		for _, t := range ts {
 			if _, err := a.hsUpdatePaths(t); err != nil {
-				a.push(fmt.Sprintf("⚠ %s: the route's left-out methods are applied on its next Start/Re-apply (%v)", t.Name, err))
+				a.pushT(t, fmt.Sprintf("⚠ %s: the route's left-out methods are applied on its next Start/Re-apply (%v)", t.Name, err))
 			}
 		}
 	})
@@ -163,7 +163,7 @@ func (a *App) hsUpdatePaths(t *Tunnel) (*Job, error) {
 		if err := a.hsUpdatePathsRun(ctx, j, t, drop, add); err != nil {
 			j.log("ERROR: %v", err)
 			j.finish("failed")
-			a.push(fmt.Sprintf("⚠ %s: updating its paths to the route's choices failed: %v", t.Name, err))
+			a.pushT(t, fmt.Sprintf("⚠ %s: updating its paths to the route's choices failed: %v", t.Name, err))
 			return
 		}
 		j.finish("ok")
@@ -307,6 +307,6 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		msg = append(msg, "added "+strings.Join(an, ", "))
 	}
 	j.log("DONE — %s; %d paths running", strings.Join(msg, "; "), len(good))
-	a.push(fmt.Sprintf("🔀 %s: paths updated to this route's choices — %s (%d running)", t.Name, strings.Join(msg, "; "), len(good)))
+	a.pushT(t, fmt.Sprintf("🔀 %s: paths updated to this route's choices — %s (%d running)", t.Name, strings.Join(msg, "; "), len(good)))
 	return nil
 }

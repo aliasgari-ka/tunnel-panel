@@ -12,15 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
 
 // Bot is a long-polling Telegram bot that drives the panel. No inbound webhook is
 // needed, so it works on a server with no public HTTP. Only admin chat ids may command it.
+//
+// The admin's bot (owner "") shows everything, or one account's services after 👤 Accounts;
+// a user's own bot (owner = the username, token from their Account page) shows only theirs.
 type Bot struct {
 	app    *App
 	token  string
+	owner  string       // "" = the admin's bot; else the account this bot belongs to
+	asUser sync.Map     // admin's bot: chatID -> the account it views as
+	state  atomic.Value // "@name" once Telegram accepted the token, "error: …" if it didn't
 	admins map[string]bool
 	client *http.Client
 	stop   chan struct{}
@@ -47,7 +54,8 @@ func (b *Bot) api(method string, params url.Values) (json.RawMessage, error) {
 	u := b.base + "/bot" + b.token + "/" + method
 	resp, err := b.client.PostForm(u, params)
 	if err != nil {
-		return nil, err
+		// a network error quotes the URL, which holds the token: keep it out of logs and pages
+		return nil, fmt.Errorf("%s", strings.ReplaceAll(err.Error(), b.token, "<token>"))
 	}
 	defer resp.Body.Close()
 	var out struct {
@@ -110,6 +118,7 @@ func (b *Bot) Run() {
 	me, err := b.api("getMe", nil)
 	if err != nil {
 		fmt.Printf("telegram bot: %v\n", err)
+		b.state.Store("error: " + err.Error())
 		return
 	}
 	var who struct {
@@ -117,14 +126,17 @@ func (b *Bot) Run() {
 	}
 	_ = json.Unmarshal(me, &who)
 	fmt.Printf("telegram bot @%s started\n", who.Username)
+	b.state.Store("@" + who.Username)
 	// the command list Telegram shows next to the input box
 	cmds, _ := json.Marshal([]map[string]string{
 		{"command": "menu", "description": "main menu"},
 		{"command": "status", "description": "all tunnels, health included"},
 		{"command": "traffic", "description": "live traffic"},
-		{"command": "servers", "description": "servers and reachability"},
+		{"command": "servers", "description": "servers: test, kernel tuning, packages"},
+		{"command": "report", "description": "the daily report, now"},
 	})
 	_, _ = b.api("setMyCommands", url.Values{"commands": {string(cmds)}})
+	go b.reportLoop()
 	offset := 0
 	for {
 		select {
@@ -257,7 +269,11 @@ func (b *Bot) slow(chat, wait string, fn func() (string, string)) {
 
 func (b *Bot) onText(chat, text string) {
 	if !b.authed(chat) {
-		b.send(chat, "Not authorized. Add this chat id in the panel settings:\n<code>"+chat+"</code>")
+		where := "the panel settings (Settings → Telegram bot)"
+		if b.owner != "" {
+			where = "the panel: Account → Your Telegram bot"
+		}
+		b.send(chat, "Not authorized. Add this chat id in "+where+":\n<code>"+chat+"</code>")
 		return
 	}
 	fields := strings.Fields(text)
@@ -268,39 +284,51 @@ func (b *Bot) onText(chat, text string) {
 		b.typedOption(chat, w.(optWait), strings.TrimSpace(text))
 		return
 	}
+	sc := b.scope(chat)
 	switch strings.ToLower(strings.TrimPrefix(fields[0], "/")) {
 	case "start", "help", "menu":
 		b.sendMsg(chat, b.helpText(), b.replyKeyboard())
-		b.sendMsg(chat, b.dashboard(), b.tunnelList())
+		b.sendMsg(chat, b.dashboard(sc), b.tunnelList(sc))
 		return
+	case "as", "accounts":
+		if b.owner == "" {
+			text, kb := b.accountPicker(chat)
+			b.sendMsg(chat, text, kb)
+			return
+		}
 	}
 	switch {
 	case text == btnStatus || strings.EqualFold(text, "/status"):
-		b.slow(chat, "checking every tunnel…", func() (string, string) { return b.statusText(), "" })
+		b.slow(chat, "checking every tunnel…", func() (string, string) { return b.statusText(sc), "" })
 	case text == btnTunnels || strings.EqualFold(text, "/tunnels"):
-		b.sendMsg(chat, b.dashboard(), b.tunnelList())
+		b.sendMsg(chat, b.dashboard(sc), b.tunnelList(sc))
 	case text == btnTraffic || strings.EqualFold(text, "/traffic") || strings.EqualFold(text, "/speed"):
-		b.slow(chat, "measuring traffic…", func() (string, string) { return b.trafficText(), "" })
+		b.slow(chat, "measuring traffic…", func() (string, string) { return b.trafficText(sc), "" })
 	case text == btnServers || strings.EqualFold(text, "/servers"):
-		// the same as the inline 🖥 Servers: live resources, plus how each server is reached
-		b.slow(chat, "reading every server…", func() (string, string) {
-			return b.app.resourcesText() + "\n\n" + b.serversText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}}})
-		})
+		text, kb := b.serverPicker(sc)
+		b.sendMsg(chat, text, kb)
+	case strings.EqualFold(text, "/report"):
+		b.sendMsg(chat, b.dailyReport(sc), "")
 	default:
 		b.sendMsg(chat, "Use the buttons below, or /menu.", b.replyKeyboard())
 	}
 }
 
 func (b *Bot) helpText() string {
-	return strings.Join([]string{
+	lines := []string{
 		"<b>Tunnel Panel bot</b>",
 		"📋 Status — every tunnel with its health",
-		"🛰 Tunnels — start, stop, switch method, speed test, diagnose, trace",
+		"🛰 Tunnels — start, stop, switch method, speed test, diagnose, trace, benchmark its route",
 		"📈 Traffic — live traffic",
-		"🖥 Servers — servers and how they are reached",
-		"",
-		"🔔 You get a message when a tunnel goes down, when it is failed over and when it comes back.",
-	}, "\n")
+		"🖥 Servers — test the connection, kernel tuning, install packages",
+		"☀️ /report — the daily report now",
+	}
+	if b.owner == "" {
+		lines = append(lines, "👤 /accounts — one account's services, as that user sees them (or everyone's)")
+	} else {
+		lines[0] = "<b>Tunnel Panel bot</b> · 👤 " + esc(b.owner)
+	}
+	return strings.Join(append(lines, "", "🔔 You get a message when a tunnel goes down, when it is failed over and when it comes back."), "\n")
 }
 
 // health checks every running tunnel in parallel.
@@ -337,9 +365,8 @@ func healthIcon(h [3]string) string {
 	return "🟢"
 }
 
-func (b *Bot) statusText() string {
-	var ts []*Tunnel
-	b.app.store.View(func(st *State) { ts = append(ts, st.Tunnels...) })
+func (b *Bot) statusText(sc string) string {
+	ts := b.tunnelsIn(sc)
 	if len(ts) == 0 {
 		return "No tunnels yet."
 	}
@@ -362,12 +389,11 @@ func (b *Bot) statusText() string {
 	return sb.String()
 }
 
-func (b *Bot) trafficText() string {
+func (b *Bot) trafficText(sc string) string {
 	b.app.Traffic()
 	time.Sleep(3 * trafficTick) // two samples are needed for a rate
 	snap := b.app.Traffic()
-	var ts []*Tunnel
-	b.app.store.View(func(st *State) { ts = append(ts, st.Tunnels...) })
+	ts := b.tunnelsIn(sc)
 	var sb strings.Builder
 	for _, t := range ts {
 		t := b.snap(t)
@@ -431,7 +457,8 @@ func esc(s string) string {
 
 type ikey struct {
 	Text string `json:"text"`
-	Data string `json:"callback_data"`
+	Data string `json:"callback_data,omitempty"`
+	URL  string `json:"url,omitempty"` // a link button instead of a callback
 }
 
 func (b *Bot) keyboard(rows [][]ikey) string {
@@ -461,10 +488,13 @@ func shortMethod(id string) string {
 		"bp_reverse": "BackPack", "bp_l3": "BackPack L3", "direct6": "ip6gre", "ipsec6": "IPsec", "gre": "GRE", "spoof": "Spoof"}[id]
 }
 
-func (b *Bot) tunnelList() string {
+func (b *Bot) tunnelList(sc string) string {
 	var rows [][]ikey
 	b.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
+			if !tunnelInScope(sc, t) {
+				continue
+			}
 			label := b.tunnelIcon(t) + " " + t.Name
 			if t.Active != "" {
 				label += " · " + shortMethod(t.Active) + " " + t.Family
@@ -475,16 +505,35 @@ func (b *Bot) tunnelList() string {
 	if len(rows) == 0 {
 		rows = [][]ikey{{{Text: "no tunnels yet — create one in the panel", Data: "noop"}}}
 	}
-	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "🖥 Servers", Data: "home:res"}, {Text: "📉 Outages", Data: "home:out"}})
-	rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "💾 Backup", Data: "home:bk"}, {Text: "🛠 Repair", Data: "home:rp"}, {Text: "🔄", Data: "home"}})
+	rows = append(rows, []ikey{{Text: "📋 Status", Data: "home:st"}, {Text: "🖥 Servers", Data: "home:sv"}, {Text: "📉 Outages", Data: "home:out"}})
+	if b.owner == "" { // backup and repair cover the whole panel: the admin's bot only
+		rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "💾 Backup", Data: "home:bk"}, {Text: "🛠 Repair", Data: "home:rp"}, {Text: "🔄", Data: "home"}})
+	} else {
+		rows = append(rows, []ikey{{Text: "📊 Bench history", Data: "home:bh"}, {Text: "🔄", Data: "home"}})
+	}
+	last := []ikey{{Text: "☀️ Report", Data: "home:rep"}}
+	if b.owner == "" {
+		label := "👤 Accounts"
+		if sc != "" {
+			label = "👤 " + sc + " ▾"
+		}
+		last = append(last, ikey{Text: label, Data: "acc"})
+	}
+	if u := panelURL(); u != "" {
+		last = append(last, ikey{Text: "🌐 Open panel", URL: u})
+	}
+	rows = append(rows, last)
 	return b.keyboard(rows)
 }
 
 // dashboard is the header shown above the tunnel list.
-func (b *Bot) dashboard() string {
+func (b *Bot) dashboard(sc string) string {
 	var run, down, fo, all int
 	b.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
+			if !tunnelInScope(sc, t) {
+				continue
+			}
 			all++
 			if t.Active == "" {
 				continue
@@ -499,6 +548,9 @@ func (b *Bot) dashboard() string {
 		}
 	})
 	s := fmt.Sprintf("<b>🛰 Tunnels</b>  ▶ %d/%d running", run, all)
+	if sc != "" && b.owner == "" {
+		s = "👤 <b>" + esc(sc) + "</b> — this account's services, as the user sees them\n" + s
+	}
 	if down > 0 {
 		s += fmt.Sprintf("  ·  🔴 %d down", down)
 	}
@@ -508,9 +560,15 @@ func (b *Bot) dashboard() string {
 	return s + "\n<i>tap a tunnel</i>"
 }
 
-func (b *Bot) outagesText() string {
+func (b *Bot) outagesText(sc string) string {
 	var os []Outage
-	b.app.store.View(func(st *State) { os = append(os, st.Outages...) })
+	b.app.store.View(func(st *State) {
+		for _, o := range st.Outages {
+			if outageInScope(st, sc, o) {
+				os = append(os, o)
+			}
+		}
+	})
 	if len(os) == 0 {
 		return "📉 No outage recorded yet ✅\n<i>servers are checked on their SSH port every 10 s</i>"
 	}
@@ -535,9 +593,15 @@ func (b *Bot) outagesText() string {
 	return sb.String()
 }
 
-func (b *Bot) benchHistoryText() string {
+func (b *Bot) benchHistoryText(sc string) string {
 	var hs []BenchRecord
-	b.app.store.View(func(st *State) { hs = append(hs, st.BenchHistory...) })
+	b.app.store.View(func(st *State) {
+		for _, h := range st.BenchHistory {
+			if pairVisibleLocked(st, sc, sc == "", h.IranID, h.ForeignID) {
+				hs = append(hs, h)
+			}
+		}
+	})
 	if len(hs) == 0 {
 		return "No benchmarks yet — run one in the panel (Benchmark page)."
 	}
@@ -652,7 +716,7 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 	} else {
 		rows = append(rows, []ikey{{Text: "⚡ Hot standby on", Data: "hh:" + t.ID + ":1"}})
 	}
-	rows = append(rows, []ikey{{Text: "📜 Last log", Data: "lg:" + t.ID}})
+	rows = append(rows, []ikey{{Text: "📜 Last log", Data: "lg:" + t.ID}, {Text: "📊 Benchmark route", Data: "bq:" + t.ID}})
 	rows = append(rows, []ikey{{Text: "« Tunnels", Data: "home"}})
 	return sb.String(), b.keyboard(rows)
 }
@@ -856,15 +920,23 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 	if !b.authed(chat) || data == "noop" {
 		return
 	}
+	sc := b.scope(chat)
+	if b.owner != "" && (data == "home:bk" || data == "home:rp" || data == "home:res" || strings.HasPrefix(data, "acc")) {
+		return // the whole panel's: not from a user's bot
+	}
 	switch data {
 	case "home":
-		b.edit(chat, msg, b.dashboard(), b.tunnelList())
+		b.edit(chat, msg, b.dashboard(sc), b.tunnelList(sc))
+		return
+	case "acc":
+		text, kb := b.accountPicker(chat)
+		b.edit(chat, msg, text, kb)
 		return
 	case "home:st":
-		b.slow(chat, "checking every tunnel…", func() (string, string) { return b.statusText(), "" })
+		b.slow(chat, "checking every tunnel…", func() (string, string) { return b.statusText(sc), "" })
 		return
 	case "home:bh":
-		b.sendMsg(chat, b.benchHistoryText(), "")
+		b.sendMsg(chat, b.benchHistoryText(sc), "")
 		return
 	case "home:bk":
 		if data, err := b.app.backupJSON(); err == nil {
@@ -874,7 +946,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		}
 		return
 	case "home:out":
-		b.sendMsg(chat, b.outagesText(), "")
+		b.sendMsg(chat, b.outagesText(sc), "")
 		return
 	case "home:rp":
 		j, err := b.app.Repair("from the bot")
@@ -887,17 +959,40 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		return
 	case "home:res":
 		b.slow(chat, "reading every server…", func() (string, string) {
-			return b.app.resourcesText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Tunnels", Data: "home"}}})
+			return b.app.resourcesText(), b.keyboard([][]ikey{{{Text: "🔄 Again", Data: "home:res"}, {Text: "« Servers", Data: "home:sv"}}})
 		})
+		return
+	case "home:sv":
+		text, kb := b.serverPicker(sc)
+		b.edit(chat, msg, text, kb)
+		return
+	case "home:rep":
+		b.sendMsg(chat, b.dailyReport(sc), "")
+		return
+	}
+	if name, ok := strings.CutPrefix(data, "acc:"); ok {
+		b.viewAs(chat, msg, name)
 		return
 	}
 	parts := strings.SplitN(data, ":", 4)
 	if len(parts) < 2 {
 		return
 	}
+	switch parts[0] {
+	case "sv", "svt", "svo", "svoa", "svp": // a server, not a tunnel
+		b.serverAction(chat, msg, parts[0], parts[1])
+		return
+	}
 	t := b.app.store.Tunnel(parts[1])
+	if t != nil && b.owner != "" {
+		var owner string
+		b.app.store.View(func(*State) { owner = t.Owner })
+		if owner != b.owner {
+			t = nil // another account's tunnel: as if it didn't exist
+		}
+	}
 	if t == nil {
-		b.edit(chat, msg, "That tunnel no longer exists.\n\n"+b.dashboard(), b.tunnelList())
+		b.edit(chat, msg, "That tunnel no longer exists.\n\n"+b.dashboard(sc), b.tunnelList(sc))
 		return
 	}
 	v := b.snap(t) // reads; actions take the live t
@@ -1054,6 +1149,11 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 			text += "\n<i>Press ↻ Re-apply to " + map[bool]string{true: "start every path", false: "go back to one path"}[on] + ".</i>"
 		}
 		b.edit(chat, msg, text, kb)
+	case "bq": // confirm before a route benchmark (a few minutes, some test traffic)
+		b.edit(chat, msg, fmt.Sprintf("📊 Measure every method between the servers of <b>%s</b> over %s?\nIt takes a few minutes and runs on a spare slot — the tunnel and its users are not touched.", esc(v.Name), famName(v.Family)),
+			b.keyboard([][]ikey{{{Text: "📊 Yes, benchmark", Data: "bqy:" + t.ID}, {Text: "Cancel", Data: "t:" + t.ID}}}))
+	case "bqy":
+		b.startRouteBench(chat, msg, t)
 	case "lg":
 		j := b.app.jobs.latestFor(t.ID)
 		if j == nil {

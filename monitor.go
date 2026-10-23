@@ -105,14 +105,14 @@ func (a *App) healthMonitor() {
 					cause := a.tunnelCause(t)
 					h.outageID = newID()
 					a.addOutage(Outage{ID: h.outageID, Kind: "tunnel", Target: t.ID, Name: t.Name, Start: h.downSince.Unix(), Reason: reason, Cause: cause})
-					a.push(fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)\nsince %s (Tehran)\n%s%s", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t), clock(h.downSince), cause, extra))
+					a.pushT(t, fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)\nsince %s (Tehran)\n%s%s", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t), clock(h.downSince), cause, extra))
 				case "up":
 					now := time.Now()
 					if h.outageID != "" {
 						a.endOutage(h.outageID, now)
 						h.outageID = ""
 					}
-					a.push(fmt.Sprintf("🟢 Tunnel back up: %s\ndown %s\n%s → %s (Tehran)", t.Name, shortDur(h.lastOutage), clock(now.Add(-h.lastOutage)), clock(now)))
+					a.pushT(t, fmt.Sprintf("🟢 Tunnel back up: %s\ndown %s\n%s → %s (Tehran)", t.Name, shortDur(h.lastOutage), clock(now.Add(-h.lastOutage)), clock(now)))
 				}
 				switch {
 				case t.HotStandby:
