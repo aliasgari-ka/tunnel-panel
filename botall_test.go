@@ -105,7 +105,11 @@ func TestBotEveryButton(t *testing.T) {
 				cbs = append(cbs, c+id)
 			}
 		}
-		cbs = append(cbs, "a:"+id+":gre:v4", "a:"+id+":golden:v6", "a:"+id+":nosuch:v4", "o:"+id+":bp_l3", "of:"+id+":bp_l3:carrier", "ov:"+id+":bp_l3:carrier:sni", "of:"+id+":bp_l3:mtu")
+		// option edits first: an edit swaps the tunnel's whole Options map (copy-on-write)
+		// while a running job reads it without the lock — fine in practice, but the race
+		// detector rightly reports the unsynchronised pointer swap
+		cbs = append([]string{"o:" + id + ":bp_l3", "of:" + id + ":bp_l3:carrier", "ov:" + id + ":bp_l3:carrier:sni", "of:" + id + ":bp_l3:mtu"}, cbs...)
+		cbs = append(cbs, "a:"+id+":gre:v4", "a:"+id+":golden:v6", "a:"+id+":nosuch:v4")
 	}
 	cbs = append(cbs, "t:zzzzzzzzzzzz", "x", "", "a:", "hp:cccccccccccc:-1", "hp:cccccccccccc:abc")
 	for _, c := range cbs {
