@@ -38,6 +38,9 @@ type BenchResult struct {
 	DownMbps    float64 `json:"downMbps"`  // foreign -> Iran (what users downloading feel)
 	Score       float64 `json:"score"`
 	Recommended bool    `json:"recommended"`
+	// Opts: the alternative options (carrier) it works with on this route, when the
+	// defaults passed no traffic; apply and hot standby use them (routeOpts)
+	Opts map[string]string `json:"opts,omitempty"`
 }
 
 // benchActive is the running benchmark, so the UI can re-attach after navigating away.
@@ -214,9 +217,42 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				out = append(out, r)
 				continue
 			}
-			if err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r); err != nil {
+			err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r)
+			if err != nil && m.Alts != nil && !strings.HasPrefix(err.Error(), "not tested") && ctx.Err() == nil {
+				// the default carrier passes nothing here: try the method's other carriers
+				first, tried := err, []string{}
+				for _, alt := range m.Alts(req.Family) {
+					if ctx.Err() != nil {
+						break
+					}
+					j.log("   %v", firstLine(first.Error()))
+					j.log("   → trying %s instead", altLabel(alt))
+					tctx, tcancel := context.WithTimeout(context.Background(), time.Minute)
+					_, _ = irHost.Run(tctx, teardownScript(bt), nil)
+					_, _ = khHost.Run(tctx, teardownScript(bt), nil)
+					tcancel()
+					bt.Options[m.ID] = alt
+					ar := BenchResult{Method: m.ID, Title: m.Title, Kind: r.Kind}
+					err = a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &ar)
+					tried = append(tried, altLabel(alt))
+					if err == nil {
+						ar.Opts, ar.Title = alt, m.Title+" · "+altLabel(alt)
+						r = ar
+						j.log("   ✓ works with %s — apply and hot standby will use it on this route", altLabel(alt))
+						break
+					}
+				}
+				delete(bt.Options, m.ID)
+				if err != nil {
+					err = fmt.Errorf("%v — also tried %s: no traffic either (this route likely filters these carriers)", firstLine(first.Error()), strings.Join(tried, " / "))
+				}
+			}
+			if err != nil {
 				r.Error = err.Error()
-				j.log("   FAILED: %v", err)
+				if m.ID == "ipsec" && strings.Contains(r.Error, "no traffic passes") {
+					r.Error += " — IPsec needs UDP 500/4500 (IKE) between the servers; if the UDP-based methods fail on this route too, the network drops UDP"
+				}
+				j.log("   FAILED: %v", r.Error)
 			} else {
 				j.log("   ok: ↓%.1f ↑%.1f Mbps, RTT %.1f ms, jitter %.1f ms", r.DownMbps, r.UpMbps, r.RTTms, r.Jitterms)
 			}
@@ -525,4 +561,35 @@ func contains(a []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// routeOpts is the alternative carrier the benchmark found working for method mid on the
+// tunnel's route (family fam), limited to the options the user left at their default —
+// a carrier picked on purpose is never overridden.
+func (a *App) routeOpts(t *Tunnel, mid, fam string) map[string]string {
+	m := methodByID[mid]
+	if m == nil {
+		return nil
+	}
+	for _, r := range a.benchResults(t.ServerID, t.ForeignID, fam) {
+		if r.Method != mid || !r.OK || len(r.Opts) == 0 {
+			continue
+		}
+		out := map[string]string{}
+		for k, v := range r.Opts {
+			cur := t.Options[mid][k]
+			if f := methodField(m, k); cur == "" || (f != nil && cur == f.Default) {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	return nil
 }

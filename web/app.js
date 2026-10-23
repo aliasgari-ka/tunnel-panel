@@ -347,7 +347,7 @@ async function viewRoutes(w) {
     const fams = ['v4', 'v6'].map(f => {
       const r = hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f);
       if (!r) return `<div class="rt-b"><div class="lbl">${famName(f)}</div><div class="faint" style="font-size:12.5px">not benchmarked yet</div></div>`;
-      const rows = r.results.filter(x => !x.skipped).map((x, i) => `<div class="${x.ok ? '' : 'bad'}">${x.ok ? (x.recommended ? '★' : (i + 1) + '.') : '✕'} ${esc(x.title)} ${x.ok ? `<span class="faint">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} Mbps · ${x.rttMs.toFixed(0)} ms</span>` : `<span class="faint">${esc((x.error || 'failed').slice(0, 70))}</span>`}</div>`).join('');
+      const rows = r.results.filter(x => !x.skipped).map((x, i) => `<div class="${x.ok ? '' : 'bad'}">${x.ok ? (x.recommended ? '★' : (i + 1) + '.') : '✕'} ${esc(x.title)} ${x.ok ? `<span class="faint">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} Mbps · ${x.rttMs.toFixed(0)} ms</span>` : errMore(x.error || 'failed', 90)}</div>`).join('');
       return `<div class="rt-b"><div class="lbl">${famName(f)} · benchmark ${ageTxt(r.at)}</div><div class="hsl">${rows}</div></div>`;
     }).join('');
     const card = h(`<div class="card" style="padding:14px 16px">
@@ -430,6 +430,11 @@ function renderRes(el, r) {
     + `<div class="faint rinfo">${extra.join(' · ')} <span class="rleg"><b class="pc">━</b> CPU <b class="pm">━</b> RAM · last 3 min</span></div>`
     + warn.map(w => `<div class="rwarn">⚠ ${esc(w)}</div>`).join('')
     + (procs.length ? `<details class="rprocs"><summary>Top programs</summary><table>${procs.map(x => `<tr><td class="mono">${esc(x.name)}${x.n > 1 ? ` <span class="faint">×${x.n}</span>` : ''}</td><td>${x.cpu.toFixed(1)}%</td><td class="faint">${x.rssMB.toFixed(0)} MB</td></tr>`).join('')}</table></details>` : '');
+}
+// a long error: the start, and the whole of it on click
+function errMore(e, n) {
+  if (e.length <= n) return `<span class="faint">${esc(e)}</span>`;
+  return `<details class="emore"><summary class="faint">${esc(e.slice(0, n))}… <u>more</u></summary><div class="faint">${esc(e)}</div></details>`;
 }
 function resLine(hist, k) {
   const pts = (hist || []).slice(-90), n = pts.length;

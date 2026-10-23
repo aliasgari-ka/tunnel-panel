@@ -342,6 +342,25 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 			_ = a.store.Update(func(*State) error { t.Paths = nil; return nil })
 		}
 
+		if ro := a.routeOpts(t, mid, t.Family); len(ro) > 0 {
+			j.log("using %s — the route benchmark found the default passes no traffic between these servers", altLabel(ro))
+			_ = a.store.Update(func(*State) error {
+				no := make(map[string]map[string]string, len(t.Options)+1)
+				for k, v := range t.Options {
+					no[k] = v
+				}
+				cp := map[string]string{}
+				for k, v := range t.Options[mid] {
+					cp[k] = v
+				}
+				for k, v := range ro {
+					cp[k] = v
+				}
+				no[mid] = cp
+				t.Options = no // copy-on-write: readers use Options without the lock
+				return nil
+			})
+		}
 		j.log("building %s config", m.Title)
 		irP, khP, err := a.build(m, t, srv)
 		if err != nil {

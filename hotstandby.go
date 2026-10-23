@@ -186,6 +186,28 @@ func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
 		t.Paths = keep
 		return nil
 	})
+	// the carrier the benchmark found working on this route, where the default passes nothing
+	// (outside the store lock: routeOpts reads the store); options already on a path stay
+	ro := make([]map[string]string, len(t.Paths))
+	for i, p := range t.Paths {
+		ro[i] = a.routeOpts(t, p.Method, p.Family)
+	}
+	_ = a.store.Update(func(*State) error {
+		for i := range t.Paths {
+			if i >= len(ro) || len(ro[i]) == 0 {
+				continue
+			}
+			opts := map[string]string{}
+			for k, v := range ro[i] {
+				opts[k] = v
+			}
+			for k, v := range t.Paths[i].Opts {
+				opts[k] = v
+			}
+			t.Paths[i].Opts = opts
+		}
+		return nil
+	})
 	return t.Paths
 }
 

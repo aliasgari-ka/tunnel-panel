@@ -72,6 +72,14 @@ var methodBackpackL3 = &Method{
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1400"},
 		{Key: "sni_domain", Label: "SNI domain (sni carrier)", Type: "text", Default: "mci.ir"},
 	},
+	// UDP is what Iran's IPv4 filtering drops first; sni (a fake TLS hello to an Iranian
+	// domain) and pck (TCP-looking segments) are made for that, xdi rides on ICMP echo
+	Alts: func(fam string) []map[string]string {
+		if fam == "v6" {
+			return []map[string]string{{"carrier": "quic"}}
+		}
+		return []map[string]string{{"carrier": "sni"}, {"carrier": "pck"}, {"carrier": "xdi"}, {"carrier": "quic"}}
+	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		carrier := c.Opt("carrier")

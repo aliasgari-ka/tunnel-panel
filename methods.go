@@ -120,6 +120,21 @@ type Method struct {
 	Fields   []Field                                        `json:"fields"`
 	Helper   string                                         `json:"helper,omitempty"` // embedded/uploaded binary "<helper>-<arch>" both hosts need
 	Build    func(c *buildCtx) (ir, kh SidePlan, err error) `json:"-"`
+	// Alts are other option sets (carriers) to try, in order, when the defaults pass no
+	// traffic on a route — Iran's IPv4 filtering often drops UDP or hand-made packets that a
+	// different carrier gets through. The benchmark finds the one that works; apply and hot
+	// standby then use it (see routeOpts).
+	Alts func(family string) []map[string]string `json:"-"`
+}
+
+// altLabel names an alternative option set for logs and titles ("carrier sni").
+func altLabel(alt map[string]string) string {
+	var parts []string
+	for k, v := range alt {
+		parts = append(parts, k+" "+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 // buildCtx carries derived values into a method's Build function.

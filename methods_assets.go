@@ -27,6 +27,10 @@ var methodGoldenGRE = &Method{
 		{Key: "encrypt", Label: "Encrypt payload", Type: "bool", Default: "true"},
 		{Key: "fec", Label: "FEC K:M (blank = off)", Type: "text", Default: ""},
 	},
+	// DNS on UDP 53 is intercepted on many Iranian networks
+	Alts: func(string) []map[string]string {
+		return []map[string]string{{"facade": "icmp"}, {"facade": "none"}}
+	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		facade, mtu, wirePort := c.Opt("facade"), c.Opt("mtu"), c.Opt("dnsport")
@@ -223,6 +227,11 @@ var methodPremium = &Method{
 		{Key: "algorithm", Label: "IPX cipher", Type: "select", Default: "aes-256-gcm", Options: []string{"aes-256-gcm", "chacha20-poly1305", "aes-128-gcm"}},
 		{Key: "mtu", Label: "TUN MTU (ipx)", Type: "number", Default: "1280",
 			Help: "lower it (1200, 1100) if download works but upload/handshakes stall — the Iran→foreign path drops big packets"},
+	},
+	// the default tcp profile is hand-made TCP segments without a handshake, which stateful
+	// filtering drops; gre passes wherever Plain GRE does
+	Alts: func(string) []map[string]string {
+		return []map[string]string{{"profile": "gre"}, {"profile": "icmp"}, {"profile": "ipip"}, {"profile": "bip"}, {"profile": "udp"}}
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
