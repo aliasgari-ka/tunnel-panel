@@ -228,6 +228,8 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .rt-bs{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 details.more{position:relative}
 .card.raised,.card:has(details.more[open]){position:relative;z-index:35}
+/* the page sections are layers of their own (their page-in animation): lift the one with the open menu over the next */
+.main>.raised,.main>*:has(details.more[open]){position:relative;z-index:36}
 details.more>summary{list-style:none}
 details.more .pop{position:absolute;inset-inline-end:0;top:calc(100% + 4px);z-index:30;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:5px;min-width:200px;display:flex;flex-direction:column}
 .mi{background:none;border:0;color:var(--fg);text-align:start;padding:8px 10px;border-radius:7px;font-size:13px;font-weight:550}
