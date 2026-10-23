@@ -319,8 +319,8 @@ function renderView() {
 // failover uses — the pair's latest benchmark ranking, per address family.
 const ageTxt = (u) => { const s = Math.floor(Date.now() / 1000) - u; return s < 3600 ? `${Math.max(1, Math.floor(s / 60))} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 async function viewRoutes(w) {
-  w.innerHTML = topbar('Routes', 'Each server pair: what is connected, and the order paths are used in. ⊘ leaves a method out on that route.');
-  const box = h('<div class="grid" style="gap:16px"><div class="muted">loading…</div></div>');
+  w.innerHTML = topbar('Routes', 'Each server pair: its tunnels, and how every method does between the two servers.');
+  const box = h('<div class="grid" style="gap:18px"><div class="muted">loading…</div></div>');
   w.appendChild(box);
   let hist = [], skip = {};
   try { [hist, skip] = await Promise.all([api('/bench/history'), api('/routes/skip')]); } catch (e) {}
@@ -331,47 +331,99 @@ async function viewRoutes(w) {
   box.innerHTML = '';
   if (!pairs.size) { box.appendChild(h('<div class="card empty"><div class="big">🔀</div>No tunnels or benchmarks yet.</div>')); return; }
   const srvLabel = (id, fb) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : fb; };
-  for (const p of pairs.values()) {
+  const hasFam = (id, f) => { const s = id ? serverById(id) : null; const st = STATE.settings; return f === 'v4' ? !!(s ? s.ipv4 : st.localIPv4 || true) : !!(s ? s.ipv6 : st.localIPv6); };
+  // one card per pair; a ⊘/↺ re-draws only that card, in place (the page keeps its scroll)
+  const buildCard = (p) => {
+    const fams = ['v4', 'v6'].filter(f => hasFam(p.iran, f) && hasFam(p.foreign, f));
+    const off = skip[key(p.iran, p.foreign)] || [];
+    const bench = {};
+    ['v4', 'v6'].forEach(f => { bench[f] = hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f); });
+
+    // 1. tunnels: one line each; a hot-standby tunnel folds its paths away
+    let up = 0, down = 0;
     const tunnels = p.tunnels.map(t => {
       let st, cls;
       if (!t.active) { st = 'stopped'; cls = 'off'; }
-      else if (t.health === null || t.health === undefined) { st = 'running · not checked yet'; cls = 'unk'; }
-      else if (t.health) { st = '✕ ' + t.health; cls = 'bad'; }
-      else { st = '✓ connected'; cls = 'ok'; }
-      const m = methodTitle(t.active || t.selected);
-      let paths = '';
+      else if (t.health === null || t.health === undefined) { st = 'not checked yet'; cls = 'unk'; }
+      else if (t.health) { st = t.health; cls = 'bad'; down++; }
+      else { st = 'connected'; cls = 'ok'; up++; }
+      let hs = '';
       if (t.hotStandby && t.hs && t.hs.paths) {
-        paths = `<div class="hsl" style="margin:6px 0 0 14px">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div>`;
+        const n = t.hs.ok.filter(Boolean).length;
+        hs = `<details class="rt-hs"><summary>⚡ users on <b>${esc(t.hs.paths[t.hs.active] || '—')}</b> · ${n}/${t.hs.paths.length} paths working${t.hsAuto ? ' · 🤖 auto' : ''} <span class="faint">▸ paths</span></summary><div class="hsl">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div></details>`;
       } else if (t.hotStandby) {
-        paths = '<div class="faint" style="font-size:12px;margin:4px 0 0 14px">⚡ hot standby on — its paths start on the next Start/Re-apply</div>';
+        hs = '<div class="faint rt-hs">⚡ hot standby: its paths start on the next Start/Re-apply</div>';
       }
-      return `<div class="rt-t ${cls}"><div><b>${esc(t.name)}</b> <span class="faint mono">:${esc(t.ports)}</span></div><div class="faint" style="font-size:12.5px">${esc(m || '—')} · ${famName(t.family)} — <span class="st">${esc(st)}</span></div>${paths}</div>`;
-    }).join('') || '<div class="faint">no tunnel on this pair</div>';
-    const fams = ['v4', 'v6'].map(f => {
-      const r = hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f);
-      const off = (skip[key(p.iran, p.foreign)] || []).filter(x => x.endsWith('|' + f)).map(x => x.split('|')[0]);
-      const offRow = off.length ? `<div class="rt-off"><span class="faint">Left out on this route:</span> ${off.map(mid => `<button type="button" class="chip" data-unskip="${esc(mid)}|${f}" title="put it back — benchmarked, used for hot standby and failover again">${esc(methodTitle(mid))} ↺</button>`).join(' ')}</div>` : '';
-      if (!r) return `<div class="rt-b"><div class="lbl">${famName(f)}</div><div class="faint" style="font-size:12.5px">not benchmarked yet</div>${offRow}</div>`;
-      const rows = r.results.filter(x => !x.skipped && !off.includes(x.method)).map((x, i) => `<div class="rt-m ${x.ok ? '' : 'bad'}"><span>${x.ok ? (x.recommended ? '★' : (i + 1) + '.') : '✕'} ${esc(x.title)} ${x.ok ? `<span class="faint">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} Mbps · ${x.rttMs.toFixed(0)} ms</span>` : errMore(x.error || 'failed', 90)}</span><button type="button" class="btn sm ghost" data-skip="${esc(x.method)}|${f}" title="leave this method out on this route: not benchmarked, not started as a hot-standby path, not used for failover">⊘</button></div>`).join('');
-      return `<div class="rt-b"><div class="lbl">${famName(f)} · benchmark ${ageTxt(r.at)}</div><div class="hsl">${rows}</div>${offRow}</div>`;
-    }).join('');
-    const card = h(`<div class="card" style="padding:14px 16px">
-      <div class="tc-h"><h3>${srvLabel(p.iran, 'Iran')} ⇄ ${srvLabel(p.foreign, '🖥 this panel host')}</h3><button class="btn sm" data-rb>📊 Benchmark now</button></div>
-      <div class="lbl" style="margin-top:8px">Tunnels &amp; paths</div><div class="rt-ts">${tunnels}</div>
-      <div class="lbl" style="margin-top:10px">Order a Re-apply / hot standby / failover uses (best first)</div><div class="rt-bs">${fams}</div></div>`);
+      return `<div class="rt-row ${cls}"><span class="sd ${cls === 'ok' ? 'ok' : cls === 'bad' ? 'bad' : ''}"></span>
+        <b class="rt-name">${esc(t.name)}</b><span class="faint mono">:${esc(t.ports)}</span>
+        <span class="rt-mth">${esc(methodTitle(t.active || t.selected) || '—')} · ${famName(t.family)}</span>
+        <span class="rt-st ${cls}">${esc(st)}</span>${hs}</div>`;
+    }).join('') || '<div class="faint" style="font-size:12.5px">no tunnel on this pair yet</div>';
+
+    // 2. methods: one row each, IPv4 and IPv6 side by side, best first
+    const rank = {}; // method -> {fam: {pos, r}}
+    fams.forEach(f => {
+      const r = bench[f]; if (!r) return;
+      let pos = 0;
+      r.results.forEach(x => { (rank[x.method] = rank[x.method] || {})[f] = { pos: x.ok ? ++pos : 0, r: x }; });
+    });
+    off.forEach(v => { const [mid, f] = v.split('|'); if (fams.includes(f)) (rank[mid] = rank[mid] || {})[f] = (rank[mid] || {})[f] || { pos: 0, r: null }; });
+    // a method's best position on either family (left out or failed: at the end)
+    const best = (mid) => Math.min(999, ...fams.filter(f => !off.includes(mid + '|' + f)).map(f => (rank[mid][f] && rank[mid][f].pos) || 999));
+    const mids = Object.keys(rank).sort((a, b) => best(a) - best(b) || methodTitle(a).localeCompare(methodTitle(b)));
+    const cell = (mid, f) => {
+      const m = STATE.methods.find(x => x.id === mid);
+      if (m && !m.families.includes(f)) return `<td class="rt-c na" data-f="${famName(f)}"><span class="faint">— ${famName(f)} not supported</span></td>`;
+      if (off.includes(mid + '|' + f)) return `<td class="rt-c left" data-f="${famName(f)}"><span class="faint">⊘</span> <span>left out</span><button type="button" class="btn sm ghost" data-unskip="${esc(mid)}|${f}" title="put it back on this route">↺</button></td>`;
+      const c = rank[mid][f];
+      if (!c || !c.r) return `<td class="rt-c" data-f="${famName(f)}"><span class="faint">not measured yet</span><button type="button" class="btn sm ghost" data-skip="${esc(mid)}|${f}" title="leave it out on this route">⊘</button></td>`;
+      const x = c.r;
+      if (x.skipped) return `<td class="rt-c na" data-f="${famName(f)}"><span class="faint">not measurable here</span></td>`;
+      const carrier = x.opts ? Object.entries(x.opts).map(([k, v]) => `${k} ${v}`).join(', ') : '';
+      const body = x.ok
+        ? `<span class="rt-rank${x.recommended ? ' top' : ''}">${x.recommended ? '★' : c.pos}</span><span class="rt-num">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} <small>Mbps</small> · ${x.rttMs.toFixed(0)} <small>ms</small></span>${carrier ? `<span class="chip rt-car" title="the default carrier passes nothing here; this one does">${esc(carrier)}</span>` : ''}`
+        : `<button type="button" class="rt-err" data-err="${esc(x.error || 'failed')}" title="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>`;
+      return `<td class="rt-c ${x.ok ? 'good' : 'bad'}" data-f="${famName(f)}">${body}<button type="button" class="btn sm ghost" data-skip="${esc(mid)}|${f}" title="leave it out on this route: not benchmarked, not a hot-standby path, not used for failover">⊘</button></td>`;
+    };
+    const methodsTbl = mids.length ? `<table class="rt-tbl"><thead><tr><th>Method</th>${fams.map(f => `<th>${famName(f)}${bench[f] ? ` <span class="faint">· ${ageTxt(bench[f].at)}</span>` : ' <span class="faint">· not benchmarked</span>'}</th>`).join('')}</tr></thead>
+      <tbody>${mids.map(mid => `<tr><td class="rt-mn">${esc(methodTitle(mid))}</td>${fams.map(f => cell(mid, f)).join('')}</tr>`).join('')}</tbody></table>
+      <div class="faint rt-leg">★ best · numbers = the order hot standby and failover use · ⊘ leave out on this route · ↺ put back · tap ✕ for the whole error</div>`
+      : '<div class="faint" style="font-size:12.5px">No benchmark yet — press 📊 to measure every method between these two servers.</div>';
+
+    const summary = [`${p.tunnels.length} tunnel${p.tunnels.length === 1 ? '' : 's'}`];
+    if (up) summary.push(`<span class="ok">● ${up} connected</span>`);
+    if (down) summary.push(`<span class="bad">● ${down} down</span>`);
+    const card = h(`<div class="card rt-card">
+      <div class="rt-head"><div><h3>${srvLabel(p.iran, 'Iran')} <span class="faint">→</span> ${srvLabel(p.foreign, '🖥 this panel host')}</h3><div class="rt-sum">${summary.join(' · ')}</div></div>
+        <div class="actions">${fams.map(f => `<button class="btn sm" data-rb="${f}" title="measure every method over ${famName(f)} between these two servers (a few minutes; live tunnels are not touched)">📊 ${famName(f)}</button>`).join('')}</div></div>
+      <div class="lbl">Tunnels</div><div class="rt-rows">${tunnels}</div>
+      <div class="lbl" style="margin-top:14px">Methods on this route</div>${methodsTbl}</div>`);
     const setSkip = async (v, on) => {
       const [method, family] = v.split('|');
-      try { await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on }); toast(on ? `${methodTitle(method)} left out on this route — hot standby drops it on the next Re-apply` : `${methodTitle(method)} is back on this route`); viewRoutes(w); }
-      catch (er) { alertModal('Routes', er.message); }
+      try {
+        skip = await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on });
+        card.replaceWith(buildCard(p));
+        toast(on ? `${methodTitle(method)} (${famName(family)}) left out on this route — hot standby drops it on the next Re-apply` : `${methodTitle(method)} (${famName(family)}) is back on this route`);
+      } catch (er) { alertModal('Routes', er.message); }
     };
     $$('[data-skip]', card).forEach(b => b.onclick = () => setSkip(b.dataset.skip, true));
     $$('[data-unskip]', card).forEach(b => b.onclick = () => setSkip(b.dataset.unskip, false));
-    $('[data-rb]', card).onclick = async (e) => {
-      const fam = (p.tunnels[0] && p.tunnels[0].family) || 'v4';
-      try { const r = await api('/bench/start', { iranId: p.iran, foreignId: p.foreign, family: fam, seconds: 3 }); toast('Benchmark started'); openLog({ id: 'bench', name: 'Benchmark' }, r.job); } catch (er) { alertModal('Benchmark', er.message); }
-    };
-    box.appendChild(card);
-  }
+    $$('[data-err]', card).forEach(b => b.onclick = () => alertModal('Why it failed', b.dataset.err));
+    $$('[data-rb]', card).forEach(b => b.onclick = async () => {
+      try { const r = await api('/bench/start', { iranId: p.iran, foreignId: p.foreign, family: b.dataset.rb, seconds: 3 }); toast('Benchmark started'); openLog({ id: 'bench', name: 'Benchmark · ' + famName(b.dataset.rb) }, r.job); } catch (er) { alertModal('Benchmark', er.message); }
+    });
+    return card;
+  };
+  for (const p of pairs.values()) box.appendChild(buildCard(p));
+}
+// the gist of a benchmark error, for a table cell
+function shortErr(e) {
+  e = e || 'failed';
+  if (/excluded on this route/.test(e)) return 'left out';
+  if (/no traffic passes/.test(e)) return /also tried/.test(e) ? 'no traffic (other carriers too)' : 'no traffic passes';
+  if (/not tested: tunnel/.test(e)) return 'busy: a live tunnel uses it';
+  if (/deploy/.test(e)) return 'could not start';
+  return e.length > 34 ? e.slice(0, 34) + '…' : e;
 }
 
 /* ---------------- live traffic ---------------- */
@@ -422,6 +474,15 @@ async function trafficTick() {
 // a server's live CPU / RAM / disk, load, sockets and busiest programs
 const kbTxt = (kb) => kb >= 2 ** 30 ? (kb / 2 ** 30).toFixed(1) + ' TB' : kb >= 2 ** 20 ? (kb / 2 ** 20).toFixed(1) + ' GB' : (kb / 1024).toFixed(0) + ' MB';
 const upTxt = (s) => s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor(s % 86400 / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
+// "Top programs" stays open across the 2-second refreshes (the box is redrawn each time)
+const procsOpen = new Set();
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (!d.matches || !d.matches('details.rprocs')) return;
+  const id = d.closest('[data-res]') && d.closest('[data-res]').dataset.res;
+  if (id === undefined || d.dataset.redraw) return;
+  d.open ? procsOpen.add(id) : procsOpen.delete(id);
+}, true);
 function renderRes(el, r) {
   if (!r) { el.innerHTML = ''; return; }
   if (r.error) { el.innerHTML = `<span class="faint" style="font-size:12px">resources: ${esc(r.error)}</span>`; return; }
@@ -441,7 +502,7 @@ function renderRes(el, r) {
     + `<svg class="rspark" viewBox="0 0 100 24" preserveAspectRatio="none"><path class="pc" d="${resLine(r.hist, 'cpu')}"/><path class="pm" d="${resLine(r.hist, 'mem')}"/></svg>`
     + `<div class="faint rinfo">${extra.join(' · ')} <span class="rleg"><b class="pc">━</b> CPU <b class="pm">━</b> RAM · last 3 min</span></div>`
     + warn.map(w => `<div class="rwarn">⚠ ${esc(w)}</div>`).join('')
-    + (procs.length ? `<details class="rprocs"><summary>Top programs</summary><table>${procs.map(x => `<tr><td class="mono">${esc(x.name)}${x.n > 1 ? ` <span class="faint">×${x.n}</span>` : ''}</td><td>${x.cpu.toFixed(1)}%</td><td class="faint">${x.rssMB.toFixed(0)} MB</td></tr>`).join('')}</table></details>` : '');
+    + (procs.length ? `<details class="rprocs"${procsOpen.has(el.dataset.res) ? ' open' : ''}><summary>Top programs</summary><table>${procs.map(x => `<tr><td class="mono">${esc(x.name)}${x.n > 1 ? ` <span class="faint">×${x.n}</span>` : ''}</td><td>${x.cpu.toFixed(1)}%</td><td class="faint">${x.rssMB.toFixed(0)} MB</td></tr>`).join('')}</table></details>` : '');
 }
 // a long error: the start, and the whole of it on click
 function errMore(e, n) {
