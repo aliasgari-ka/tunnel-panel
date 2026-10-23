@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -158,6 +159,9 @@ func healthReason(ir, kh, link string) string {
 // checkHealth runs one health check and stores the verdict for the cards and the bot.
 func (a *App) checkHealth(ctx context.Context, t *Tunnel) string {
 	reason := healthReason(a.Health(ctx, t))
+	if reason != "" {
+		reason += a.premiumLicenseNote(ctx, t, reason)
+	}
 	a.healthMu.Lock()
 	if a.healthCache == nil {
 		a.healthCache = map[string]string{}
@@ -188,4 +192,31 @@ func foreignName(a *App, t *Tunnel) string {
 		return "this panel host"
 	}
 	return serverName(a, t.ForeignID)
+}
+
+// premiumLicenseNote: a Backhaul Premium tunnel that is down says why when the core's own
+// license check is the reason (it stops on a bad verdict, and the card only showed "failed").
+func (a *App) premiumLicenseNote(ctx context.Context, t *Tunnel, reason string) string {
+	var active string
+	a.store.View(func(*State) { active = t.Active })
+	if active != "premium" && active != "premium1" {
+		return ""
+	}
+	var h Host
+	switch {
+	case strings.HasPrefix(reason, "Iran service"):
+		if srv := a.store.Server(t.ServerID); srv != nil {
+			h, _, _ = a.reach(ctx, srv, nil)
+		}
+	case strings.HasPrefix(reason, "foreign service"):
+		h, _, _ = a.foreignHost(ctx, t, nil)
+	}
+	if h == nil {
+		return ""
+	}
+	out, _ := h.Run(ctx, "journalctl -u "+unitName(t)+" -n 200 --no-pager -o cat 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' | grep -i -E 'licen[cs]e (ip|does not|has expired|is expired|is invalid|status unknown|issue)|invalid license' | tail -1 | sed 's/^.*\\] *//'", nil)
+	if l := strings.TrimSpace(lastLine(out)); l != "" {
+		return " — Backhaul Premium license: " + l
+	}
+	return ""
 }

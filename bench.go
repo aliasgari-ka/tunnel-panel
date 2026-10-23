@@ -225,7 +225,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			}
 			err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r)
 			// (only when it deployed but carried nothing: a config or start error would just repeat)
-			if err != nil && m.Alts != nil && strings.Contains(err.Error(), "no traffic passes") && ctx.Err() == nil {
+			if err != nil && m.Alts != nil && (strings.Contains(err.Error(), "no traffic passes") || strings.Contains(err.Error(), "can't run on this")) && ctx.Err() == nil {
 				// the default carrier passes nothing here: try the method's other carriers
 				first, tried := err, []string{}
 				for _, alt := range m.Alts(req.Family) {
@@ -239,7 +239,11 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 					_, _ = khHost.Run(tctx, teardownScript(bt), nil)
 					tcancel()
 					bt.Options[m.ID] = alt
-					ar := BenchResult{Method: m.ID, Title: m.Title, Kind: r.Kind}
+					kind := "forward" // an alternative may change the kind (Premium: ipx is L3, tcpmux forwards)
+					if benchIsL3(m, alt) {
+						kind = "l3"
+					}
+					ar := BenchResult{Method: m.ID, Title: m.Title, Kind: kind}
 					err = a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &ar)
 					tried = append(tried, altLabel(alt))
 					if err == nil {

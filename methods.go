@@ -31,6 +31,8 @@ type Unit struct {
 	// main ones), used for per-tunnel firewall openings that every method gets.
 	ExtraPre  []string
 	ExtraPost []string
+	// RestartSec: the wait before systemd restarts a crashed daemon (0 = 3 s)
+	RestartSec int
 }
 
 // SidePlan is everything to do on one host for a method.
@@ -39,6 +41,9 @@ type SidePlan struct {
 	Artifacts []Artifact // binaries fetched by the panel and uploaded to this host
 	Setup     string     // one-time preparation (packages, certs) run before the unit starts
 	Unit      Unit
+	// Check runs after the unit is up ($UNIT is its name); a non-zero exit fails the apply
+	// with what it printed (Premium: the core's license verdict)
+	Check string
 }
 
 func unitName(t *Tunnel) string { return "tp-" + t.ID + ".service" }
@@ -80,7 +85,11 @@ func renderUnit(u Unit) string {
 		b.WriteString("ExecStopPost=" + x + "\n")
 	}
 	if typ == "simple" {
-		b.WriteString("Restart=always\nRestartSec=3\n")
+		rs := u.RestartSec
+		if rs <= 0 {
+			rs = 3
+		}
+		fmt.Fprintf(&b, "Restart=always\nRestartSec=%d\n", rs)
 	}
 	b.WriteString("LimitNOFILE=1048576\n\n[Install]\nWantedBy=multi-user.target\n")
 	return b.String()

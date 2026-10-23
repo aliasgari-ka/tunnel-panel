@@ -43,7 +43,11 @@ var methodPremiumV1 = &Method{
 	Fields:   methodBackhaul.Fields,
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		art := Artifact{Name: "backhaul_premium_v1", Asset: "backhaul_premium_v1", Dest: "/opt/backhaul-premium-v1/backhaul_premium", Mode: 0o755}
-		return backhaulPlans(c, art.Dest, art, "Backhaul Premium v1", "/opt/backhaul-premium-v1")
+		ir, kh, err = backhaulPlans(c, art.Dest, art, "Backhaul Premium v1", "/opt/backhaul-premium-v1")
+		for _, p := range []*SidePlan{&ir, &kh} {
+			p.Check, p.Unit.RestartSec = premiumLicenseCheck, premiumRestartSec // the v1 core checks its license too
+		}
+		return ir, kh, err
 	},
 }
 

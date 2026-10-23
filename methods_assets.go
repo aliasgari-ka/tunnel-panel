@@ -212,6 +212,27 @@ func goldenConflict(st *State, t *Tunnel) string {
 
 // ---- Backhaul Premium (closed binary, uploaded & hash-pinned; new [listener]/[ipx] format) ----
 
+// The Premium core checks its license online (bound to the server's public IP) and stops on
+// a bad verdict. premiumLicenseCheck waits for the verdict after a start and fails the apply
+// with it, instead of a tunnel that just doesn't work; no verdict (no internet/DNS on the
+// server) is only noted. premiumRestartSec keeps a failing core from asking the vendor's
+// license servers every 3 seconds.
+const premiumRestartSec = 30
+
+const premiumLicenseCheck = `jl() { inv=$(systemctl show -p InvocationID --value $UNIT 2>/dev/null)
+  if [ -n "$inv" ]; then journalctl _SYSTEMD_INVOCATION_ID=$inv --no-pager -o cat 2>/dev/null; else journalctl -u $UNIT -n 80 --no-pager -o cat 2>/dev/null; fi; }
+for i in $(seq 1 15); do
+  l=$(jl | sed 's/\x1b\[[0-9;]*m//g' | grep -i -E 'licen[cs]e (is valid|ip|does not|has expired|is expired|is invalid|status unknown|issue)|invalid license|unknown license' | tail -1)
+  case "$l" in
+    *[Ii]s\ valid*) echo "Backhaul Premium license: valid"; exit 0 ;;
+    "") sleep 1 ;;
+    *) echo "Backhaul Premium license problem: $(echo "$l" | sed 's/^.*\] *//') — the license is bound to this server's public IP; check it with the vendor"; exit 1 ;;
+  esac
+done
+echo "note: no license verdict from the Premium core within 15 s (it validates online: is this server's internet / DNS working?)"
+exit 0
+`
+
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
@@ -230,8 +251,11 @@ var methodPremium = &Method{
 	},
 	// the default tcp profile is hand-made TCP segments without a handshake, which stateful
 	// filtering drops; gre passes wherever Plain GRE does
+	// last, the modes over real TCP: they pass where only TCP does, and they also run on an
+	// ARM server, where ipx can't (no ARM v2 core; the emulated one can't open ipx's socket)
 	Alts: func(string) []map[string]string {
-		return []map[string]string{{"profile": "gre"}, {"profile": "icmp"}, {"profile": "ipip"}, {"profile": "bip"}, {"profile": "udp"}}
+		return []map[string]string{{"profile": "gre"}, {"profile": "icmp"}, {"profile": "ipip"}, {"profile": "bip"}, {"profile": "udp"},
+			{"mode": "tcpmux"}, {"mode": "anytls"}}
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
@@ -364,7 +388,8 @@ sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
 				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode),
-				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg},
+				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg, RestartSec: premiumRestartSec},
+				Check:     premiumLicenseCheck,
 			}
 			if mode == "ipx" {
 				// The core DNATs the mapped ports into the TUN but neither accepts them in

@@ -79,6 +79,9 @@ func (sd *e2eSide) up(ctx context.Context, t *testing.T, j *Job, tn *Tunnel) err
 		return fmt.Errorf("artifacts: %w", err)
 	}
 	for path, f := range sd.plan.Files {
+		if os.Getenv("TP_E2E_DEBUG") != "" {
+			f.Content = []byte(strings.ReplaceAll(string(f.Content), `log_level = "info"`, `log_level = "debug"`))
+		}
 		if err := sd.h.WriteFile(remap(path, from, sd.dir), []byte(remap(string(f.Content), from, sd.dir)), f.Mode); err != nil {
 			return err
 		}
@@ -166,10 +169,31 @@ func TestE2EMethods(t *testing.T) {
 			tc{"FRP, target host 10.99.0.2", "frp", nil})
 	}
 	if os.Getenv("TP_E2E_PREMIUM") != "" && fam == "v4" {
-		cases = append(cases,
-			tc{"Backhaul Premium tcpmux", "premium", map[string]string{"mode": "tcpmux"}},
-			tc{"Backhaul Premium anytls", "premium", map[string]string{"mode": "anytls"}},
-			tc{"Backhaul Premium ipx (tun)", "premium", nil})
+		// the Premium core refuses to run without a public address: public-looking ones
+		sh(t, "ip -n tir addr add 198.51.100.1/24 dev vir; ip -n tkh addr add 198.51.100.2/24 dev vkh")
+		ir.IPv4, kh.IPv4 = "198.51.100.1", "198.51.100.2"
+		// these modes need the core's online license, which a VM without internet can't get
+		// (the tunnel comes up, users' connections are closed): only with TP_E2E_LICENSED
+		if os.Getenv("TP_E2E_LICENSED") != "" {
+			for _, mode := range []string{"tcp", "tcpmux", "wssmux", "anytls"} {
+				cases = append(cases, tc{"Backhaul Premium " + mode, "premium", map[string]string{"mode": mode}})
+			}
+		}
+		for _, prof := range []string{"tcp", "gre", "icmp", "ipip", "bip", "udp"} {
+			cases = append(cases, tc{"Backhaul Premium ipx/" + prof, "premium", map[string]string{"mode": "ipx", "profile": prof}})
+		}
+		for _, tr := range []string{"tcp", "tcpmux", "wssmux"} {
+			cases = append(cases, tc{"Backhaul Premium v1 " + tr, "premium1", map[string]string{"transport": tr}})
+		}
+	}
+	if one := os.Getenv("TP_E2E_CASE"); one != "" { // just this case (by its exact name)
+		var keep []tc
+		for _, c := range cases {
+			if c.name == one {
+				keep = append(keep, c)
+			}
+		}
+		cases = keep
 	}
 	if only := os.Getenv("TP_E2E_ONLY"); only != "" {
 		var keep []tc
@@ -247,6 +271,17 @@ func TestE2EMethods(t *testing.T) {
 			} else {
 				res = "✕ user traffic FAILS (" + got + ")"
 				res += " | IR: " + sh(t, "tail -2 "+si.dir+"/daemon.log 2>/dev/null") + " | KH: " + sh(t, "tail -2 "+sk.dir+"/daemon.log 2>/dev/null")
+				if os.Getenv("TP_E2E_DEBUG") != "" {
+					t.Logf("DEBUG %s:\n--- curl -v from the user\n%s\n--- Iran listeners\n%s\n--- Iran INPUT\n%s\n--- Iran conns\n%s\n--- foreign conns\n%s\n--- Iran log\n%s\n--- foreign log\n%s\n--- foreign: the service itself\n%s", c.name,
+						sh(t, "ip netns exec tus curl -sv -o /dev/null --max-time 6 http://10.98.0.1:28579/blob.bin 2>&1 | tail -8"),
+						sh(t, "ip netns exec tir ss -ltnp 2>/dev/null | grep -E '28579|400[0-9][0-9]'"),
+						sh(t, "ip netns exec tir iptables -w -S INPUT; ip netns exec tir iptables -w -nvL "+inboundChain(tn)+" 2>&1 | head -12"),
+						sh(t, "ip netns exec tir ss -tnp 2>/dev/null | head -20"),
+						sh(t, "ip netns exec tkh ss -tnp 2>/dev/null | head -20"),
+						sh(t, "grep -v -i 'tuning\\|sysctl\\|rmem\\|wmem\\|RLIMIT' "+si.dir+"/daemon.log 2>/dev/null | tail -25"),
+						sh(t, "grep -v -i 'tuning\\|sysctl\\|rmem\\|wmem\\|RLIMIT' "+sk.dir+"/daemon.log 2>/dev/null | tail -25"),
+						sh(t, "ip netns exec tkh curl -s -o /dev/null -w '%{http_code} %{size_download}' --max-time 5 http://127.0.0.1:28579/blob.bin; echo; ip netns exec tkh curl -s -o /dev/null -w '%{http_code}' --max-time 5 'http://[::1]:28579/blob.bin'"))
+				}
 			}
 			if benchIsL3(m, tn.Options[c.mid]) {
 				d := deriveFor(tn, ir, kh, set)

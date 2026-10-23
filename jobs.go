@@ -283,7 +283,14 @@ echo "unit %[1]s: $st"
 if [ "$st" != active ]; then jl; exit 1; fi
 `, u)
 	out, err := h.Run(ctx, script, logf)
-	return withTail(err, out)
+	if err != nil || p.Check == "" {
+		return withTail(err, out)
+	}
+	out, err = h.Run(ctx, "UNIT="+shq(u)+"\n"+p.Check, logf)
+	if err != nil {
+		return fmt.Errorf("%s", orStr(strings.TrimSpace(lastLine(out)), err.Error()))
+	}
+	return nil
 }
 
 // Apply starts or switches a tunnel to method mid.
