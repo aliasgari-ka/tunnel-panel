@@ -115,4 +115,59 @@ func TestCappedTests(t *testing.T) {
 	if err != nil || up.Bytes == 0 || up.Mbps <= 0 || up.Mbps > 20 {
 		t.Fatalf("capped upload through a slow forwarder: %+v %v", up, err)
 	}
+
+	// a forwarder that, like Backhaul, tears the whole connection down (reset) as soon as the
+	// far end half-closes: the report must arrive before any such close
+	rst, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rst.Close()
+	go func() {
+		for {
+			in, err := rst.Accept()
+			if err != nil {
+				return
+			}
+			out, err := net.Dial("tcp", addr)
+			if err != nil {
+				in.Close()
+				return
+			}
+			go func() {
+				// replies take 100 ms through the "tunnel"; a FIN from the far end resets the
+				// client at once and drops what is still on its way (as Backhaul did)
+				type chunk []byte
+				q := make(chan chunk, 64)
+				go func() {
+					for b := range q {
+						time.Sleep(100 * time.Millisecond)
+						if _, err := in.Write(b); err != nil {
+							return
+						}
+					}
+				}()
+				buf := make([]byte, 32<<10)
+				for {
+					n, err := out.Read(buf)
+					if n > 0 {
+						q <- append(chunk(nil), buf[:n]...)
+					}
+					if err != nil {
+						break
+					}
+				}
+				if tc, ok := in.(*net.TCPConn); ok {
+					_ = tc.SetLinger(0) // reset, not FIN
+				}
+				in.Close()
+				out.Close()
+			}()
+			go func() { _, _ = io.Copy(out, in); out.Close() }()
+		}
+	}()
+	up, err = bw(rst.Addr().String(), 1, 8<<20)
+	if err != nil || up.Bytes == 0 {
+		t.Fatalf("capped upload through a forwarder that resets on half-close: %+v %v", up, err)
+	}
 }
