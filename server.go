@@ -81,6 +81,7 @@ func (a *App) routes() http.Handler {
 	p("/api/tunnels/diagnose", s.tunnelDiagnose)
 	p("/api/tunnels/trace", s.tunnelTrace)
 	p("/api/tunnels/hsmode", s.tunnelHSMode)
+	p("/api/tunnels/hspin", s.tunnelHSPin)
 	p("/api/traffic", s.trafficGet)
 	p("/api/jobs", s.job)
 	p("/api/jobs/cancel", s.jobCancel)
@@ -877,6 +878,30 @@ func (s *Server2) tunnelHSMode(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
 	msg, err := s.app.setHSMode(ctx, t, in.Auto)
+	if err != nil {
+		httpErr(w, 502, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"ok": msg})
+}
+
+// tunnelHSPin moves a hot-standby tunnel's users to one of its running paths, live.
+func (s *Server2) tunnelHSPin(w http.ResponseWriter, r *http.Request) {
+	var in struct{ ID, Path string }
+	_ = readJSON(r, &in)
+	t := s.app.store.Tunnel(in.ID)
+	if t == nil {
+		httpErr(w, 404, "tunnel not found")
+		return
+	}
+	f := strings.SplitN(in.Path, "|", 2)
+	if len(f) != 2 || hsIndex(t, f[0], f[1]) < 0 {
+		httpErr(w, 400, "that path isn't running on this tunnel")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	defer cancel()
+	msg, err := s.app.hsPinTo(ctx, t, in.Path)
 	if err != nil {
 		httpErr(w, 502, err.Error())
 		return

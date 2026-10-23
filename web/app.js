@@ -903,9 +903,15 @@ function hsBox(t) {
     return out.length ? ` <span class="faint">${out.join(' · ')}</span>` : '';
   };
   return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; the users' path is checked every 2 s on the Iran server)</span></div>${seg}<div class="hsl">${v.paths.map((p, i) =>
-    `<div class="${v.ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}">${v.ok[i] ? '✓' : '✕'} ${esc(p)}${q(i)}${i === v.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div>`;
+    `<div class="${v.ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}">${v.ok[i] ? '✓' : '✕'} ${esc(p)}${q(i)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}${i === v.active ? ' <b>← users</b>' : (v.ok[i] && v.keys ? ` <button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}</div>`).join('')}</div>
+    <div class="faint" style="font-size:11.5px;margin-top:4px">Switching is seamless: new connections take the new path, open ones finish on the old one (it keeps running); only a path that died has its connections reset, so clients reconnect at once.</div>`;
 }
 function hsWire(t, m) {
+  $$('[data-hspin]', m).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { const r = await api('/tunnels/hspin', { ID: t.id, Path: b.dataset.hspin }); toast(r.ok); setTimeout(async () => { await loadAll(); renderView(); }, 4000); }
+    catch (e) { alertModal('Switch path', e.message); b.disabled = false; }
+  });
   $$('[data-hsmode] button', m).forEach(b => b.onclick = async () => {
     const auto = b.dataset.auto === '1';
     try { const r = await api('/tunnels/hsmode', { ID: t.id, Auto: auto }); t.hsAuto = auto; toast(r.ok || 'saved'); await loadAll(); renderView(); }

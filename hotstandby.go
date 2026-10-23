@@ -189,24 +189,108 @@ func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
 	return t.Paths
 }
 
-// hsSelectUp makes path p the one users' ports lead to (the selector chain names are the
-// same for every path, so hsSelectDown removes whichever is active).
+// hsSelectUp makes path p the one new users' connections go to: the selector chain
+// (TP_S<id> in nat PREROUTING) is replaced in one iptables-restore transaction, so there is
+// no moment without a rule, and only new connections are affected (NAT is decided once per
+// connection). Old iptables without restore fall back to flush + add.
 func hsSelectUp(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
+	rules := hsSelectRules(t, p, srv, fsrv, set)
+	nat := "TP_" + hsTag(t)
+	var fb strings.Builder
+	fmt.Fprintf(&fb, "  iptables -w -t nat -N %[1]s 2>/dev/null || iptables -w -t nat -F %[1]s\n", nat)
+	for _, r := range rules {
+		fmt.Fprintf(&fb, "  iptables -w -t nat %s\n", r)
+	}
+	return fmt.Sprintf(`printf '%%s\n' '*nat' ':%[1]s - [0:0]' %[2]s 'COMMIT' > /tmp/.tp-sel-%[3]s
+if ! iptables-restore -w -n /tmp/.tp-sel-%[3]s 2>/dev/null && ! iptables-restore -n /tmp/.tp-sel-%[3]s 2>/dev/null; then
+%[4]sfi
+rm -f /tmp/.tp-sel-%[3]s
+iptables -w -t nat -C PREROUTING -j %[1]s 2>/dev/null || iptables -w -t nat -I PREROUTING -j %[1]s
+`, nat, shqAll(rules), t.ID, fb.String())
+}
+
+func shqAll(rules []string) string {
+	var q []string
+	for _, r := range rules {
+		q = append(q, shq(r))
+	}
+	return strings.Join(q, " ")
+}
+
+// hsSelectRules are the selector chain's rules for path p (iptables-restore syntax).
+func hsSelectRules(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) []string {
+	nat := "TP_" + hsTag(t)
 	pt := pathTunnel(t, p)
 	m := methodByID[p.Method]
+	var out []string
 	if m != nil && benchIsL3(m, pt.Options[m.ID]) {
-		d := deriveFor(pt, srv, fsrv, set)
-		return portForwardV4(t.Ports, d.KHv4, l3Iface(m, pt), hsTag(t))
+		target := deriveFor(pt, srv, fsrv, set).KHv4
+		for _, spec := range splitPorts(t.Ports) {
+			dport := strings.ReplaceAll(spec.listen, "-", ":")
+			dst := target
+			if spec.dst != spec.listen {
+				dst = target + ":" + spec.dst
+			}
+			for _, proto := range []string{"tcp", "udp"} {
+				out = append(out, fmt.Sprintf("-A %s -m addrtype --dst-type LOCAL -p %s --dport %s -j DNAT --to-destination %s", nat, proto, dport, dst))
+			}
+		}
+		return out
 	}
-	nat := "TP_" + hsTag(t)
-	var b strings.Builder
-	fmt.Fprintf(&b, "iptables -t nat -N %[1]s 2>/dev/null || iptables -t nat -F %[1]s\n", nat)
-	for j, s := range splitPorts(t.Ports) {
+	for j, sp := range splitPorts(t.Ports) {
 		for _, proto := range []string{"tcp", "udp"} {
-			fmt.Fprintf(&b, "iptables -t nat -A %s -m addrtype --dst-type LOCAL -p %s --dport %s -j REDIRECT --to-ports %d\n", nat, proto, s.listen, hsInternal(p, j))
+			out = append(out, fmt.Sprintf("-A %s -m addrtype --dst-type LOCAL -p %s --dport %s -j REDIRECT --to-ports %d", nat, proto, sp.listen, hsInternal(p, j)))
 		}
 	}
-	fmt.Fprintf(&b, "iptables -t nat -C PREROUTING -j %[1]s 2>/dev/null || iptables -t nat -I PREROUTING -j %[1]s\n", nat)
+	return out
+}
+
+// hsBase is what every path needs whichever one is selected, kept for as long as the
+// switcher runs: forwarding, NAT on the way out and MSS clamping on each L3 path's
+// interface — so connections still on a path the users just left keep working.
+func hsBase(t *Tunnel, paths []HSPath) string {
+	tag := hsTag(t)
+	nat, post, fwd, mss := "TP_"+tag, "TP_"+tag+"_P", "TPF_"+tag, "TPM_"+tag
+	var b strings.Builder
+	fmt.Fprintf(&b, "iptables -w -t nat -N %[1]s 2>/dev/null\n", nat)
+	fmt.Fprintf(&b, "iptables -w -t nat -N %[1]s 2>/dev/null || iptables -w -t nat -F %[1]s\n", post)
+	fmt.Fprintf(&b, "iptables -w -N %[1]s 2>/dev/null || iptables -w -F %[1]s\n", fwd)
+	fmt.Fprintf(&b, "iptables -w -t mangle -N %[1]s 2>/dev/null || iptables -w -t mangle -F %[1]s\n", mss)
+	for _, p := range paths {
+		pt := pathTunnel(t, p)
+		m := methodByID[p.Method]
+		if m == nil {
+			continue
+		}
+		if ifc := l3Iface(m, pt); ifc != "" {
+			fmt.Fprintf(&b, "iptables -w -t nat -A %s -o %s -j MASQUERADE\n", post, ifc)
+			fmt.Fprintf(&b, "iptables -w -A %[1]s -o %[2]s -j ACCEPT\niptables -w -A %[1]s -i %[2]s -j ACCEPT\n", fwd, ifc)
+			fmt.Fprintf(&b, "iptables -w -t mangle -A %s -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu\n", mss, ifc)
+		}
+	}
+	fmt.Fprintf(&b, "iptables -w -t nat -C PREROUTING -j %[1]s 2>/dev/null || iptables -w -t nat -I PREROUTING -j %[1]s\n", nat)
+	fmt.Fprintf(&b, "iptables -w -t nat -C POSTROUTING -j %[1]s 2>/dev/null || iptables -w -t nat -A POSTROUTING -j %[1]s\n", post)
+	fmt.Fprintf(&b, "iptables -w -C FORWARD -j %[1]s 2>/dev/null || iptables -w -I FORWARD -j %[1]s\n", fwd)
+	fmt.Fprintf(&b, "iptables -w -t mangle -C FORWARD -j %[1]s 2>/dev/null || iptables -w -t mangle -A FORWARD -j %[1]s\n", mss)
+	return b.String()
+}
+
+// hsFlush clears the connections on path p (it died): for an L3 path the ones NATed to its
+// far tunnel address, for a forwarder the ones REDIRECTed to its internal ports.
+func hsFlush(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
+	var b strings.Builder
+	b.WriteString("command -v conntrack >/dev/null 2>&1 || exit 0\n")
+	pt := pathTunnel(t, p)
+	if m := methodByID[p.Method]; m != nil && benchIsL3(m, pt.Options[m.ID]) {
+		fmt.Fprintf(&b, "conntrack -D --reply-src %s >/dev/null 2>&1\n", deriveFor(pt, srv, fsrv, set).KHv4)
+	} else {
+		for j := range splitPorts(t.Ports) {
+			for _, proto := range []string{"tcp", "udp"} {
+				fmt.Fprintf(&b, "conntrack -D -p %s --reply-port-src %d >/dev/null 2>&1\n", proto, hsInternal(p, j))
+			}
+		}
+	}
+	b.WriteString("exit 0\n")
 	return b.String()
 }
 
@@ -265,11 +349,15 @@ tune() {
     fi
   fi
 }
-use() { # use <k> <reason>
-  bash down.sh >/dev/null 2>&1; bash up-$1.sh >/dev/null 2>&1
-  if command -v conntrack >/dev/null 2>&1; then for p in $PORTS; do conntrack -D -p tcp --orig-port-dst ${p%%:*} >/dev/null 2>&1; conntrack -D -p udp --orig-port-dst ${p%%:*} >/dev/null 2>&1; done; fi
+use() { # use <k> <reason>: make-before-break — one atomic swap of the selector; only new
+  # connections take the new path, the ones already open finish on the old one (it keeps
+  # running). A dead path's own connections are cleared (flush), so clients reconnect at once.
+  bash up-$1.sh >/dev/null 2>&1
+  local old=$active
   ev switch "$active" "$1" "$2"; active=$1; echo "$1 $(date +%s)" > active
+  [ "$old" -ge 0 ] && [ "${ok[$old]}" != 1 ] && flush $old
 }
+flush() { bash flush-$1.sh >/dev/null 2>&1; flushed[$1]=1; }
 cost() { echo $(( ${qr[$1]:-999} + ${ql[$1]:-0} * 5 / 2 )); } # ms, 1 % loss ≈ 25 ms
 mb() { printf '%d.%d' $(($1 / 1000)) $((($1 % 1000) / 100)); }
 pc() { printf '%d.%d' $((${1:-0} / 10)) $((${1:-0} % 10)); }
@@ -279,14 +367,16 @@ measure() { # measure <kind> <from> <why> <k...>: speed tests in the background
   echo "$kind $from $why" > cmp.run; rm -f cmp.done
   ( for k in "$@"; do s=$(timeout 20 $P probe speed -addr ${A[$k]} -max $SPMB -secs 10 2>/dev/null); echo "$k ${s:-0}"; done > cmp.tmp; mv cmp.tmp cmp.done ) &
 }
-declare -a ok since fails qr ql sp spb spat
+declare -a ok since fails qr ql sp spb spat flushed
 active=-1
 rm -f cmp.run cmp.done cmp.tmp
-if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash down.sh >/dev/null 2>&1; bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
+bash base.sh >/dev/null 2>&1
+if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
 [ $active -ge 0 ] || use 0 "start"
 tune; n=0; cmpat=0; backoff=600; hold=0; badsince=0; cmploss=0
 while true; do
   M=manual; [ -s mode ] && read -r M < mode
+  P0=0; [ -s pin ] && read -r P0 < pin; [ -n "$P0" ] && [ "$P0" -ge 0 ] 2>/dev/null && [ "$P0" -lt $N ] || P0=0
   all=0; [ "${fails[$active]:-0}" -gt 0 ] && all=1
   pids=()
   for ((k=0; k<N; k++)); do
@@ -304,18 +394,22 @@ while true; do
     if [ -f c$k ]; then
       read -r r rt jt ls < c$k
       if [ "$r" = ok ]; then
-        [ "${ok[$k]}" = 1 ] || since[$k]=$now; ok[$k]=1; fails[$k]=0
+        [ "${ok[$k]}" = 1 ] || since[$k]=$now; ok[$k]=1; fails[$k]=0; flushed[$k]=0
         if [ -z "${qr[$k]}" ]; then qr[$k]=$rt; else qr[$k]=$(( (3 * qr[$k] + rt) / 4 )); fi
         if [ "${ls:--1}" -ge 0 ]; then if [ -z "${ql[$k]}" ]; then ql[$k]=$((ls * 10)); else ql[$k]=$(( (ql[$k] + ls * 10) / 2 )); fi; fi
       else
         [ "${ok[$k]}" = 0 ] || since[$k]=$now; ok[$k]=0; fails[$k]=$(( ${fails[$k]:-0} + 1 ))
+        # connections still draining on a path that just died: clear them, so they reconnect
+        [ $k != $active ] && [ ${fails[$k]} -ge $FAILS ] && [ "${flushed[$k]}" != 1 ] && flush $k
       fi
     fi
     st=down; [ "${ok[$k]}" = 1 ] && st=ok
     echo "$k $st ${since[$k]:-$now} ${qr[$k]:--} ${ql[$k]:--} ${sp[$k]:--}" >> status.tmp
   done
   mv status.tmp status
-  if [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ]; then
+  if [ "$P0" != "${lastpin:-$P0}" ] && [ "$P0" != "$active" ] && [ "${ok[$P0]}" = 1 ]; then
+    use $P0 "chosen in the panel"
+  elif [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ]; then
     best=-1
     for ((k=0; k<N; k++)); do
       [ "${ok[$k]}" = 1 ] || continue
@@ -324,9 +418,13 @@ while true; do
     done
     [ $best -ge 0 ] && use $best "path $active failed $FAILS checks in a row"
   elif [ "${ok[$active]}" = 1 ] && [ "$M" != auto ]; then
-    for ((k=0; k<active; k++)); do
-      if stable $k; then use $k "path $k worked for ${BACK}s"; break; fi
-    done
+    # manual: back to the chosen path (the pinned one, else the first) once it is stable
+    if [ $active != $P0 ] && stable $P0; then use $P0 "path $P0 worked for ${BACK}s"
+    elif [ "${ok[$P0]}" != 1 ]; then
+      for ((k=0; k<active; k++)); do
+        [ $k != $P0 ] && stable $k && { use $k "path $k worked for ${BACK}s"; break; }
+      done
+    fi
   elif [ "${ok[$active]}" = 1 ] && [ -f cmp.done ]; then
     read -r kind from why < cmp.run; rm -f cmp.run
     while read -r k s; do
@@ -346,7 +444,7 @@ while true; do
         elif [ ${ql[$a]:-0} -ge $LOSSBAD ] && [ $(( ${ql[$c]:-0} * 2 )) -le ${ql[$a]:-0} ] && [ $((sc * 10)) -ge $((sa * 8)) ]; then win=1
         elif [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && [ ${ql[$c]:-0} -le 20 ] && [ $((sc * 10)) -ge $((sa * 3)) ]; then win=1 # heavy loss breaks uploads and handshakes even where the download test still looks fast
         elif [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 7 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
-        elif [ $c = 0 ] && [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 11 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
+        elif [ $c = $P0 ] && [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 11 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
         fi
         [ $win = 1 ] && [ $sc -gt $bs ] && { best=$c; bs=$sc; }
       done < cmp.done
@@ -369,7 +467,7 @@ while true; do
       [ $k != $a ] && stable $k || continue
       list="$list$(cost $k) $k"$'\n'
       [ $(( $(cost $k) * 10 )) -lt $(( $(cost $a) * 7 )) ] && better=1
-      [ $k = 0 ] && [ $(( $(cost $k) * 10 )) -le $(( $(cost $a) * 11 )) ] && better=1
+      [ $k = $P0 ] && [ $(( $(cost $k) * 10 )) -le $(( $(cost $a) * 11 )) ] && better=1
     done
     # degraded only counts once it has lasted 30 s (one bad reading is not a reason to measure)
     if [ -n "$why" ]; then [ $badsince -gt 0 ] || badsince=$now; else badsince=0; fi
@@ -382,7 +480,8 @@ while true; do
       measure speed $a "" $a
     fi
   fi
-  n=$((n + 1)); [ $((n % 20)) = 0 ] && tune
+  lastpin=$P0
+  n=$((n + 1)); [ $((n % 20)) = 0 ] && { tune; bash base.sh >/dev/null 2>&1; }
   sleep $EVERY
 done
 `
@@ -403,14 +502,34 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 		dir + "/mode":      {Content: []byte(hsModeName(t) + "\n"), Mode: 0o644},
 		dir + "/down.sh":   {Content: []byte("#!/bin/bash\n" + hsSelectDown(t)), Mode: 0o755},
 	}
+	files[dir+"/base.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + hsBase(t, paths) + "exit 0\n"), Mode: 0o755}
+	files[dir+"/pin"] = FileSpec{Content: []byte(hsPinIndex(t, paths) + "\n"), Mode: 0o644}
 	var targets []string
 	for k, p := range paths {
 		files[fmt.Sprintf("%s/up-%d.sh", dir, k)] = FileSpec{Content: []byte("#!/bin/bash\n" + hsSelectUp(t, p, srv, fsrv, set) + "exit 0\n"), Mode: 0o755}
+		files[fmt.Sprintf("%s/flush-%d.sh", dir, k)] = FileSpec{Content: []byte("#!/bin/bash\n" + hsFlush(t, p, srv, fsrv, set)), Mode: 0o755}
 		targets = append(targets, hsTarget(t, p, srv, fsrv, set)+" "+hsPingTarget(t, p, srv, fsrv, set))
 	}
 	files[dir+"/targets"] = FileSpec{Content: []byte(strings.Join(targets, "\n") + "\n"), Mode: 0o644}
-	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Unit: Unit{
+	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: hsConntrackSetup, Unit: Unit{
 		Desc: "Hot standby switcher " + t.Name, ExecStart: "/bin/bash " + dir + "/switch.sh", ExecStopPost: dir + "/down.sh"}}
+}
+
+// hsConntrackSetup installs the conntrack tool the switcher clears a dead path's
+// connections with (without it they wait for the client's own timeout).
+const hsConntrackSetup = `command -v conntrack >/dev/null 2>&1 || { (command -v apt-get >/dev/null 2>&1 && timeout 300 apt-get install -y -qq conntrack) || (command -v dnf >/dev/null 2>&1 && timeout 300 dnf install -y conntrack-tools) || true; } >/dev/null 2>&1
+command -v conntrack >/dev/null 2>&1 || echo "note: no conntrack tool — users of a failed path reconnect on their own timeout"
+true
+`
+
+// hsPinIndex is the switcher index of the path chosen in the panel ("" = the first).
+func hsPinIndex(t *Tunnel, paths []HSPath) string {
+	for k, p := range paths {
+		if t.HSPin != "" && p.Method+"|"+p.Family == t.HSPin {
+			return strconv.Itoa(k)
+		}
+	}
+	return ""
 }
 
 func hsModeName(t *Tunnel) string {
@@ -607,6 +726,8 @@ type hsView struct {
 	RTT    []int     `json:"rtt"`  // ms, smoothed (-1 = not measured yet)
 	Loss   []float64 `json:"loss"` // %, smoothed (-1 = unknown: ICMP filtered or manual mode)
 	Kbps   []int     `json:"kbps"` // last download measurement (-1 = none yet)
+	Keys   []string  `json:"keys"` // "method|family" of each path
+	Pin    int       `json:"pin"`  // the chosen path's index (-1 = the tunnel's own)
 }
 
 // hsRead reads the switcher's state and the events since `after` from the Iran server.
@@ -626,6 +747,13 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 		v.Paths = append(v.Paths, p.label())
 	}
 	v.OK = make([]bool, len(v.Paths))
+	v.Pin = -1
+	for k, p := range hsGood(t) {
+		v.Keys = append(v.Keys, p.Method+"|"+p.Family)
+		if t.HSPin == p.Method+"|"+p.Family {
+			v.Pin = k
+		}
+	}
 	v.RTT, v.Loss, v.Kbps = make([]int, len(v.Paths)), make([]float64, len(v.Paths)), make([]int, len(v.Paths))
 	for k := range v.Paths {
 		v.RTT[k], v.Loss[k], v.Kbps[k] = -1, -1, -1
@@ -771,4 +899,69 @@ func (a *App) hsViewOf(id string) *hsView {
 	a.healthMu.Lock()
 	defer a.healthMu.Unlock()
 	return a.hsViews[id]
+}
+
+// hsIndex is path (method, family)'s switcher index among the running paths, or -1.
+func hsIndex(t *Tunnel, mid, fam string) int {
+	for k, p := range hsGood(t) {
+		if p.Method == mid && p.Family == fam {
+			return k
+		}
+	}
+	return -1
+}
+
+// hsPinTo moves the users of a hot-standby tunnel to one of its running paths without a
+// re-apply: the switcher swaps the selector (new connections there, open ones finish where
+// they are), so nobody is cut. pin "" = back to the tunnel's own method.
+func (a *App) hsPinTo(ctx context.Context, t *Tunnel, pin string) (string, error) {
+	if pin == t.Active+"|"+t.Family {
+		pin = ""
+	}
+	_ = a.store.Update(func(*State) error { t.HSPin = pin; return nil })
+	idx := hsPinIndex(t, hsGood(t))
+	srv := a.store.Server(t.ServerID)
+	if srv == nil {
+		return "", fmt.Errorf("Iran server not found")
+	}
+	h, _, err := a.reach(ctx, srv, nil)
+	if err != nil {
+		return "", fmt.Errorf("the Iran server can't be reached now: %v", err)
+	}
+	out, _ := h.Run(ctx, fmt.Sprintf("cd %s 2>/dev/null || { echo NODIR; exit 0; }; echo %s > pin; grep -q 'chosen in the panel' switch.sh && echo OK || echo OLD", hsDir(t), shq(idx)), nil)
+	switch {
+	case strings.Contains(out, "OLD"):
+		return "", fmt.Errorf("this switcher is from an older panel version — press Re-apply once")
+	case !strings.Contains(out, "OK"):
+		return "", fmt.Errorf("hot standby isn't running on the Iran server — press Re-apply")
+	}
+	name := methodTitle(t.Active) + " (" + t.Family + ")"
+	if pin != "" {
+		f := strings.SplitN(pin, "|", 2)
+		name = methodTitle(f[0]) + " (" + f[1] + ")"
+	}
+	return "users move to " + name + " within a few seconds — open connections finish where they are, nobody is cut", nil
+}
+
+// hsSwitchJob is Apply for a path that already runs: a short job around hsPinTo.
+func (a *App) hsSwitchJob(t *Tunnel, mid, fam string) (*Job, error) {
+	j, err := a.jobs.start(t.ID, "switch")
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		defer a.jobs.done(j)
+		ctx, cancel := j.context(time.Minute)
+		defer cancel()
+		j.log("%s %s is already running as a hot-standby path — switching the users over, no restart", methodTitle(mid), fam)
+		msg, err := a.hsPinTo(ctx, t, mid+"|"+fam)
+		if err != nil {
+			j.log("ERROR: %v", err)
+			j.finish("error")
+			return
+		}
+		j.log("DONE — %s", msg)
+		j.finish("ok")
+	}()
+	return j, nil
 }

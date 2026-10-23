@@ -105,6 +105,46 @@ func TestHotStandbyNS(t *testing.T) {
 	step("GRE back → users returned after the stability wait", active() == "0" && time.Since(t1) >= hsFailback*time.Second)
 	step("users pass after failback", user())
 
+	// seamless: a download running during a planned switch (path chosen in the panel, and
+	// back) must finish intact; new connections take the new path
+	seamless := func(name string, do func()) {
+		sh(t, "rm -f /tmp/hs-dl.out; (ip netns exec tus curl -s -o /dev/null -w '%{http_code} %{size_download}' --limit-rate 150k --max-time 60 http://10.98.0.1:28579/blob.bin > /tmp/hs-dl.out 2>&1; echo \" exit=$?\" >> /tmp/hs-dl.out) >/dev/null 2>&1 &")
+		time.Sleep(3 * time.Second)
+		do()
+		for i := 0; i < 40 && !strings.Contains(sh(t, "cat /tmp/hs-dl.out 2>/dev/null"), "exit="); i++ {
+			time.Sleep(time.Second)
+		}
+		got := strings.TrimSpace(sh(t, "cat /tmp/hs-dl.out"))
+		t.Logf("   download across the switch: %s", got)
+		step(name+" — the open download finished intact ("+got+")", strings.HasPrefix(got, "200 2097152") && strings.HasSuffix(got, "exit=0"))
+	}
+	seamless("pin Golden-GRE from the panel", func() {
+		msg, err := a.hsPinTo(ctx, tn, "golden|v4")
+		t.Logf("   pin: %s %v", msg, err)
+		for i := 0; i < 15 && active() != "1"; i++ {
+			time.Sleep(time.Second)
+		}
+	})
+	step("users on the chosen path (1)", active() == "1")
+	step("new connections pass on it", user())
+	seamless("back to the tunnel's own method", func() {
+		_, _ = a.hsPinTo(ctx, tn, "")
+		for i := 0; i < 15 && active() != "0"; i++ {
+			time.Sleep(time.Second)
+		}
+	})
+	step("users back on GRE (0)", active() == "0")
+	j0, err := a.ApplyRoute(tn, "golden", "v4")
+	for err == nil && j0.snapshot().Status == "running" {
+		time.Sleep(time.Second)
+	}
+	time.Sleep(6 * time.Second)
+	step("picking a running method in Manage is an instant switch, not a rebuild", err == nil && j0.snapshot().Kind == "switch" && active() == "1")
+	_, _ = a.hsPinTo(ctx, tn, "")
+	for i := 0; i < 15 && active() != "0"; i++ {
+		time.Sleep(time.Second)
+	}
+
 	_, _, link := a.Health(ctx, tn)
 	step("panel health reads the switcher (link "+link+")", link == "up")
 	t.Log("   Telegram:\n      " + strings.ReplaceAll(allMsgs(), "\n", "\n      "))

@@ -285,6 +285,13 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 	if fam == "" {
 		fam = t.Family
 	}
+	// hot standby: another running path (or back to the tunnel's own from a chosen one) is
+	// a selector swap, not a rebuild — nobody is cut
+	if t.HotStandby && t.Active != "" && len(t.Paths) > 0 && hsIndex(t, mid, fam) >= 0 {
+		if (mid != t.Active || fam != t.Family) || t.HSPin != "" {
+			return a.hsSwitchJob(t, mid, fam)
+		}
+	}
 	old := t.Family
 	if err := a.switchFamily(t, m, fam); err != nil {
 		return nil, err

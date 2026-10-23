@@ -87,7 +87,10 @@ type Tunnel struct {
 	HotStandby bool `json:"hotStandby,omitempty"`
 	// HSAuto: the switcher also moves users to a clearly better path (speed, loss, latency),
 	// not only away from a failed one. Off = manual: the chosen path, unless it is down.
-	HSAuto bool     `json:"hsAuto,omitempty"`
+	HSAuto bool `json:"hsAuto,omitempty"`
+	// HSPin "method|family": the path chosen in the panel/bot (users moved there without a
+	// re-apply); "" = the tunnel's own method.
+	HSPin  string   `json:"hsPin,omitempty"`
 	Paths  []HSPath `json:"paths,omitempty"`
 	HSSeen int64    `json:"hsSeen,omitempty"` // newest switcher event already reported
 }

@@ -576,6 +576,24 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 		rows = append(rows, []ikey{{Text: "▶ Start " + methodTitle(t.Selected) + " · " + famName(t.Family), Data: "a:" + t.ID + ":" + t.Selected + ":" + t.Family}})
 	}
 	rows = append(rows, []ikey{{Text: "⇄ Method / IPv4·IPv6", Data: "m:" + t.ID}, {Text: "⚙ Settings", Data: "o:" + t.ID}})
+	if t.HotStandby && t.Active != "" {
+		if v := b.app.hsViewOf(t.ID); v != nil {
+			var row []ikey
+			for k, p := range v.Paths {
+				if k == v.Active || k >= len(v.OK) || !v.OK[k] || k >= len(v.Keys) {
+					continue
+				}
+				row = append(row, ikey{Text: "➡ " + p, Data: fmt.Sprintf("hp:%s:%d", t.ID, k)})
+				if len(row) == 2 {
+					rows = append(rows, row)
+					row = nil
+				}
+			}
+			if len(row) > 0 {
+				rows = append(rows, row)
+			}
+		}
+	}
 	if t.HotStandby {
 		if t.HSAuto {
 			rows = append(rows, []ikey{{Text: "🤖 Auto ✓ · switch to ✋ Manual", Data: "hm:" + t.ID + ":0"}, {Text: "⚡ Hot standby off", Data: "hh:" + t.ID + ":0"}})
@@ -949,6 +967,24 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		})
 		text, kb := b.tunnelPage(t)
 		b.edit(chat, msg, text, kb)
+	case "hp": // move the users to running path k, seamlessly
+		k := -1
+		if len(parts) > 2 {
+			k, _ = strconv.Atoi(parts[2])
+		}
+		good := hsGood(t)
+		if k < 0 || k >= len(good) {
+			return
+		}
+		b.slow(chat, "switching "+t.Name+"…", func() (string, string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+			defer cancel()
+			r, err := b.app.hsPinTo(ctx, t, good[k].Method+"|"+good[k].Family)
+			if err != nil {
+				return "⚠ " + esc(err.Error()), ""
+			}
+			return "✓ <b>" + esc(t.Name) + "</b>: " + esc(r), ""
+		})
 	case "hh": // hot standby itself (takes effect on the next apply)
 		on := len(parts) > 2 && parts[2] == "1"
 		_ = b.app.store.Update(func(*State) error { t.HotStandby = on; return nil })
