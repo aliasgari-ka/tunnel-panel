@@ -448,7 +448,7 @@ async function viewRoutes(w) {
       <div class="rt-head"><div><h3>${srvLabel(p.iran, 'Iran')} <span class="faint">→</span> ${srvLabel(p.foreign, '🖥 this panel host')}</h3><div class="rt-sum">${summary.join(' · ')}</div></div>
         <div class="actions">${fams.map(f => `<button class="btn sm" data-rb="${f}" title="measure every method over ${famName(f)} between these two servers (a few minutes; live tunnels are not touched)">📊 ${famName(f)}</button>`).join('')}</div></div>
       <div class="lbl">Tunnels</div><div class="rt-rows">${tunnels}</div>
-      <div class="lbl" style="margin-top:14px">Methods on this route</div>${methodsTbl}</div>`);
+      <details class="rt-more"${STATE.routeSel ? ' open' : ''}><summary><span class="lbl">Methods on this route</span> <span class="faint">(${mids.length}) — speeds, order, ⊘ / ↺</span></summary>${methodsTbl}</details></div>`);
     const setSkip = async (v, on) => {
       const [method, family] = v.split('|');
       try {
@@ -465,13 +465,38 @@ async function viewRoutes(w) {
     });
     return card;
   };
-  for (const p of pairs.values()) box.appendChild(buildCard(p));
+  // server picker: one tile per Iran server; picking one opens only its routes
+  const all = [...pairs.values()];
+  const byIran = {};
+  all.forEach(p => (byIran[p.iran] = byIran[p.iran] || []).push(p));
+  const ids = Object.keys(byIran).sort((a, b) => serverName(a).localeCompare(serverName(b)));
+  if (STATE.routeSel && !byIran[STATE.routeSel]) STATE.routeSel = '';
+  if (STATE.routeSel === undefined) { try { STATE.routeSel = localStorage.getItem('tp-routesel') || ''; } catch (e) { STATE.routeSel = ''; } if (!byIran[STATE.routeSel]) STATE.routeSel = ''; }
+  const tile = (id) => {
+    const ps = id ? byIran[id] : all, ts = ps.flatMap(p => p.tunnels);
+    const up = ts.filter(t => t.active && !t.health).length, bad = ts.filter(t => t.active && t.health).length;
+    const s = id ? serverById(id) : null;
+    return `<button type="button" class="rtile${STATE.routeSel === id ? ' on' : ''}" data-rsel="${id}">
+      <span class="rt-fl">${id ? (s && s.country ? flag(s.country) : '🇮🇷') : '🌐'}</span>
+      <span class="rt-tn"><b>${id ? esc(serverName(id)) : 'All servers'}</b><small>${ps.length} route${ps.length === 1 ? '' : 's'} · ${ts.length} tunnel${ts.length === 1 ? '' : 's'}</small></span>
+      <span class="rt-dots">${up ? `<i class="ok">${up}</i>` : ''}${bad ? `<i class="bad">${bad}</i>` : ''}</span></button>`;
+  };
+  const picker = h(`<div class="rpick">${tile('')}${ids.map(tile).join('')}</div>`);
+  box.before(picker);
+  const paint = () => {
+    $$('[data-rsel]', picker).forEach(b => b.classList.toggle('on', b.dataset.rsel === STATE.routeSel));
+    box.innerHTML = '';
+    (STATE.routeSel ? byIran[STATE.routeSel] : all).forEach(p => box.appendChild(buildCard(p)));
+  };
+  $$('[data-rsel]', picker).forEach(b => b.onclick = () => { STATE.routeSel = b.dataset.rsel; try { localStorage.setItem('tp-routesel', STATE.routeSel); } catch (e) {} paint(); });
+  paint();
 }
 // the gist of a benchmark error, for a table cell
 function shortErr(e) {
   e = e || 'failed';
   if (/excluded on this route/.test(e)) return 'left out';
   if (/no traffic passes/.test(e)) return /also tried/.test(e) ? 'no traffic (other carriers too)' : 'no traffic passes';
+  if (/no bulk data passes/.test(e)) return 'pings pass, data stalls (MTU?)';
   if (/not tested: tunnel/.test(e)) return 'busy: a live tunnel uses it';
   if (/deploy/.test(e)) return 'could not start';
   return e.length > 34 ? e.slice(0, 34) + '…' : e;

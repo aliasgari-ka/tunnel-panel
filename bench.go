@@ -440,15 +440,22 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 	} else {
 		j.log("   RTT %.1f ms, jitter %.1f ms — measuring throughput (%ds each way)", r.RTTms, r.Jitterms, secs)
 	}
-	if up, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -addr %s -secs %d%s", target, secs, limit), secs+30); err == nil {
+	up, upErr := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -addr %s -secs %d%s", target, secs, limit), secs+30)
+	if upErr == nil {
 		r.UpMbps = up.Mbps
 	} else {
-		j.log("   upload test failed: %v", err)
+		j.log("   upload test failed: %v", upErr)
 	}
-	if dn, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -down -addr %s -secs %d%s", target, secs, limit), secs+30); err == nil {
+	dn, dnErr := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -down -addr %s -secs %d%s", target, secs, limit), secs+30)
+	if dnErr == nil {
 		r.DownMbps = dn.Mbps
 	} else {
-		j.log("   download test failed: %v", err)
+		j.log("   download test failed: %v", dnErr)
+	}
+	// small echoes passed but no bulk data either way: users would get a path that answers
+	// pings and stalls on every real transfer, so it must not rank as working
+	if upErr != nil && dnErr != nil {
+		return fmt.Errorf("answers small packets (RTT %.0f ms) but no bulk data passes either way (%v) — typically an MTU problem on this route: try a lower MTU in the method's options", r.RTTms, dnErr)
 	}
 	r.Mbps = (r.UpMbps + r.DownMbps) / 2
 	r.OK = true
