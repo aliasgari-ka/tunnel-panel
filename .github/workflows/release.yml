@@ -39,3 +39,40 @@ jobs:
             dist/tunnel-panel-amd64
             dist/tunnel-panel-arm64
             dist/SHA256SUMS
+
+  # box64 runs the amd64-only Backhaul Premium v2 core on ARM servers (ipx needs it: qemu-user
+  # can't open ipx's packet socket). Ubuntu 22.04 has no box64 package, so it is built here
+  # from the pinned upstream source, natively on arm64 with 22.04's glibc, and published
+  # next to the panel; the panel installs it on an ARM server when Premium ipx needs it.
+  box64:
+    needs: build
+    runs-on: ubuntu-22.04-arm
+    env:
+      BOX64_VER: v0.4.4
+      BOX64_SRC_SHA256: 99c6de4f509e46ab1de15df740d0e0ea338a7790efa3f67510dfbb975cc24029
+    steps:
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: out
+          key: box64-${{ env.BOX64_VER }}-${{ env.BOX64_SRC_SHA256 }}-jammy-arm64
+      - name: Build box64 (pinned source)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          sudo apt-get update -qq && sudo apt-get install -y -qq cmake python3 build-essential
+          curl -fsSL -o box64.tgz "https://github.com/ptitSeb/box64/archive/refs/tags/${BOX64_VER}.tar.gz"
+          echo "${BOX64_SRC_SHA256}  box64.tgz" | sha256sum -c -
+          mkdir src && tar -xzf box64.tgz -C src --strip-components=1
+          cmake -S src -B build -DARM_DYNAREC=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build -j"$(nproc)"
+          mkdir -p out && cp build/box64 out/box64-arm64 && strip out/box64-arm64
+          out/box64-arm64 --version
+          (cd out && sha256sum box64-arm64 > box64-arm64.sha256 && cat box64-arm64.sha256)
+      - name: Publish box64 with the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+          files: |
+            out/box64-arm64
+            out/box64-arm64.sha256
