@@ -714,6 +714,7 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		j.log("  %d. %s", k+1, p.label())
 	}
 	j.log("stopping what ran before on both servers")
+	a.setApplying(t, m.ID)
 	_, _ = irHost.Run(ctx, hsTeardown(&old), func(l string) { j.log("[IR] %s", l) })
 	_, _ = khHost.Run(ctx, hsTeardown(&old), func(l string) { j.log("[KH] %s", l) })
 	a.setActive(t, "")

@@ -93,6 +93,10 @@ type Tunnel struct {
 	HSPin  string   `json:"hsPin,omitempty"`
 	Paths  []HSPath `json:"paths,omitempty"`
 	HSSeen int64    `json:"hsSeen,omitempty"` // newest switcher event already reported
+	// Applying is the method an apply is bringing up, from the moment it tears the old one
+	// down until it ends. Still set at start-up = the panel stopped in the middle (restart,
+	// update) and the tunnel was left down: resumeInterrupted brings it back.
+	Applying string `json:"applying,omitempty"`
 }
 
 // Shape is an optional per-tunnel traffic-shaping layer applied with tc + iptables on the
