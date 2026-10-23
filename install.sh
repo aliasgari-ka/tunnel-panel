@@ -26,6 +26,23 @@ while [ $# -gt 0 ]; do
 done
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
+# No address given: ask which domain(s) the panel should answer on over HTTPS (Let's
+# Encrypt, renewed automatically); an update keeps the current one when you press Enter.
+# Change it later with:  tunnel-panel set-domain panel.example.com   (or in Settings)
+if [ -z "$TLS" ] && [ "$IPSSL" = 0 ] && [ -r /dev/tty ] && [ -z "${TP_NONINTERACTIVE:-}" ]; then
+  CUR=$(sed -n 's/.*--tls "\([^"]*\)".*/\1/p' /etc/systemd/system/tunnel-panel.service 2>/dev/null | head -1)
+  echo
+  echo "Panel domain for HTTPS — comma-separate several (DNS A record pointing here; behind"
+  echo "Cloudflare use DNS-only/grey cloud). Enter = ${CUR:-this server IP via sslip.io}, '-' = plain HTTP."
+  printf "Domain: "
+  read -r ANS </dev/tty || ANS=""
+  case "$ANS" in
+    "") if [ -n "$CUR" ]; then TLS="$CUR"; else IPSSL=1; fi ;;
+    -) TLS="" ;;
+    *) TLS="$(echo "$ANS" | tr -d ' ' | tr 'A-Z' 'a-z')" ;;
+  esac
+fi
+
 # --ip-ssl: build a real Let's Encrypt cert for <ip-with-dashes>.sslip.io, which
 # resolves to this server's public IPv4. No domain needed, no browser warning.
 if [ "$IPSSL" = 1 ]; then
@@ -137,7 +154,7 @@ CODE=""; for i in 1 2 3; do CODE=$($DEST setup-code -data "$DATA" 2>/dev/null); 
 if [ -z "$CODE" ] && ! grep -q '"username"' "$DATA/state.json" 2>/dev/null; then CODE="(run: $DEST setup-code)"; fi
 SCHEME=http; OPENHOST="${IP}:${PORT}"
 if [ "$TLS" = "self" ]; then SCHEME=https; fi
-if [ -n "$TLS" ] && [ "$TLS" != "self" ]; then SCHEME=https; OPENHOST="$TLS"; fi
+if [ -n "$TLS" ] && [ "$TLS" != "self" ]; then SCHEME=https; OPENHOST="${TLS%%,*}"; fi
 cat <<EOF
 
 ==============================================================

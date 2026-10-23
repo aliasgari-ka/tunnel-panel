@@ -17,6 +17,7 @@ type Job struct {
 	Lines   []string `json:"lines"`
 	Started int64    `json:"started"`
 	Ended   int64    `json:"ended"`
+	Owner   string   `json:"-"` // account that started a job without a tunnel (benchmark)
 	mu      sync.Mutex
 	onLine  func(string)
 	cancel  context.CancelFunc

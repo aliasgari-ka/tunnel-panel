@@ -58,45 +58,51 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/login", s.json(s.login))
 	mux.HandleFunc("/api/logout", s.json(s.logout))
 
-	p := func(path string, h http.HandlerFunc) { mux.HandleFunc(path, s.auth(s.json(h))) }
-	p("/api/me", s.me)
-	p("/api/password", s.password)
-	p("/api/settings", s.settings)
-	p("/api/methods", s.listMethods)
-	p("/api/servers", s.servers)
-	p("/api/servers/test", s.serverTest)
-	p("/api/servers/delete", s.serverDelete)
-	p("/api/servers/agent", s.serverAgent)
-	p("/api/servers/resetkey", s.serverResetKey)
-	p("/api/servers/bridge", s.serverBridge)
-	p("/api/servers/optimize", s.serverOptimize)
-	p("/api/servers/prepare", s.serverPrepare)
-	p("/api/tunnels", s.tunnels)
-	p("/api/tunnels/save", s.tunnelSave)
-	p("/api/tunnels/delete", s.tunnelDelete)
-	p("/api/tunnels/apply", s.tunnelApply)
-	p("/api/tunnels/stop", s.tunnelStop)
-	p("/api/tunnels/status", s.tunnelStatus)
-	p("/api/tunnels/lastjob", s.tunnelLastJob)
-	p("/api/tunnels/speedtest", s.tunnelSpeedTest)
-	p("/api/tunnels/diagnose", s.tunnelDiagnose)
-	p("/api/tunnels/trace", s.tunnelTrace)
-	p("/api/tunnels/hsmode", s.tunnelHSMode)
-	p("/api/tunnels/hspin", s.tunnelHSPin)
-	p("/api/traffic", s.trafficGet)
-	p("/api/jobs", s.job)
-	p("/api/jobs/cancel", s.jobCancel)
-	p("/api/bench/start", s.benchStart)
-	p("/api/bench/results", s.benchResults)
-	p("/api/bench/active", s.benchActive)
-	p("/api/bench/history", s.benchHistory)
-	p("/api/routes/skip", s.routeSkip)
-	p("/api/repair", s.repair)
-	p("/api/outages", s.outages)
-	p("/api/backup", s.backup)
-	p("/api/helpers", s.helpers)
-	mux.HandleFunc("/api/helpers/upload", s.auth(s.helperUpload)) // multipart, not JSON
-	p("/api/helpers/fetch", s.helperFetch)
+	// g: signed in + JSON + the account may touch what the request names (see access.go)
+	g := func(path, kind string, h http.HandlerFunc) { mux.HandleFunc(path, s.auth(s.json(s.guard(kind, h)))) }
+	g("/api/me", "self", s.me)
+	g("/api/password", "self", s.password)
+	g("/api/settings", "self", s.settings) // GET: what a user needs; POST: admin (in the handler)
+	g("/api/methods", "self", s.listMethods)
+	g("/api/servers", "self", s.servers)
+	g("/api/servers/test", "server", s.serverTest)
+	g("/api/servers/delete", "server", s.serverDelete)
+	g("/api/servers/agent", "server", s.serverAgent)
+	g("/api/servers/resetkey", "server", s.serverResetKey)
+	g("/api/servers/bridge", "admin", s.serverBridge) // opens a port on the panel host
+	g("/api/servers/optimize", "server", s.serverOptimize)
+	g("/api/servers/prepare", "server", s.serverPrepare)
+	g("/api/tunnels", "self", s.tunnels)
+	g("/api/tunnels/save", "self", s.tunnelSave)
+	g("/api/tunnels/delete", "tunnel", s.tunnelDelete)
+	g("/api/tunnels/apply", "tunnel", s.tunnelApply)
+	g("/api/tunnels/stop", "tunnel", s.tunnelStop)
+	g("/api/tunnels/status", "tunnel", s.tunnelStatus)
+	g("/api/tunnels/lastjob", "tunnel", s.tunnelLastJob)
+	g("/api/tunnels/speedtest", "tunnel", s.tunnelSpeedTest)
+	g("/api/tunnels/diagnose", "tunnel", s.tunnelDiagnose)
+	g("/api/tunnels/trace", "tunnel", s.tunnelTrace)
+	g("/api/tunnels/hsmode", "tunnel", s.tunnelHSMode)
+	g("/api/tunnels/hspin", "tunnel", s.tunnelHSPin)
+	g("/api/traffic", "self", s.trafficGet)
+	g("/api/jobs", "job", s.job)
+	g("/api/jobs/cancel", "job", s.jobCancel)
+	g("/api/bench/start", "pair", s.benchStart)
+	g("/api/bench/results", "pair", s.benchResults)
+	g("/api/bench/active", "self", s.benchActive)
+	g("/api/bench/history", "self", s.benchHistory)
+	g("/api/routes/skip", "self", s.routeSkip)
+	g("/api/repair", "admin", s.repair)
+	g("/api/outages", "admin", s.outages)
+	g("/api/backup", "admin", s.backup)
+	g("/api/helpers", "self", s.helpers) // read-only list
+	// multipart, not JSON
+	mux.HandleFunc("/api/helpers/upload", s.auth(s.guard("admin", s.helperUpload)))
+	g("/api/helpers/fetch", "admin", s.helperFetch)
+	g("/api/users", "admin", s.users)
+	g("/api/users/delete", "admin", s.userDelete)
+	g("/api/owner", "admin", s.owner)
+	g("/api/domain", "admin", s.domain)
 	return securityHeaders(mux)
 }
 
@@ -360,7 +366,12 @@ func (s *Server2) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server2) me(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"user": s.currentUser(r), "version": version})
+	user, admin := s.who(r)
+	role := "admin"
+	if !admin {
+		role = roleUser
+	}
+	writeJSON(w, map[string]string{"user": user, "role": role, "version": version})
 }
 
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,32}$`)
@@ -423,6 +434,15 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 // ---- settings ----
 
 func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
+	if _, admin := s.who(r); !admin {
+		if r.Method != http.MethodGet {
+			httpErr(w, 403, "only the panel admin can change the settings")
+			return
+		}
+		// a user sees the panel's name and nothing of the admin's setup
+		writeJSON(w, map[string]any{"settings": map[string]string{"panelName": s.app.settings().PanelName}, "hostArch": runtime.GOARCH})
+		return
+	}
 	if r.Method == http.MethodGet {
 		set := s.app.settings()
 		set.TelegramTok = maskStr(set.TelegramTok)
@@ -487,8 +507,12 @@ type serverView struct {
 func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		out := []serverView{}
+		user, admin := s.who(r)
 		s.app.store.View(func(st *State) {
 			for _, x := range st.Servers {
+				if !visible(user, admin, x.Owner) {
+					continue
+				}
 				cp := *x
 				cp.Password, cp.PrivateKey = maskStr(cp.Password), maskStr(cp.PrivateKey)
 				cp.AgentToken = ""
@@ -523,7 +547,21 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "IPv6: "+err.Error())
 		return
 	}
+	user, admin := s.who(r)
 	err = s.app.store.Update(func(st *State) error {
+		// a jump host must be a server of the same account (a user never goes through
+		// someone else's servers)
+		if in.Via != "" {
+			via := s.app.store.serverLocked(st, in.Via)
+			if via == nil || !visible(user, admin, via.Owner) {
+				return fmt.Errorf("jump server not found")
+			}
+		}
+		if !admin {
+			in.Owner = user
+		} else if in.Owner != "" && !accountExists(st, in.Owner) {
+			return fmt.Errorf("no account %q", in.Owner)
+		}
 		if in.ID == "" {
 			in.ID = newID()
 			in.CreatedAt = time.Now().Unix()
@@ -532,9 +570,10 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		x := s.app.store.serverLocked(st, in.ID)
-		if x == nil {
+		if x == nil || !visible(user, admin, x.Owner) {
 			return fmt.Errorf("server not found")
 		}
+
 		x.Name, x.IPv4, x.IPv6, x.SSHHost, x.SSHPort, x.SSHUser = in.Name, in.IPv4, in.IPv6, in.SSHHost, in.SSHPort, in.SSHUser
 		x.Role, x.Proxy, x.Via = in.Role, in.Proxy, in.Via
 		if in.Country != "" {
@@ -717,8 +756,12 @@ func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 		Health   *string  `json:"health"`          // monitor's last verdict: "" ok, a reason, null = not checked yet
 	}
 	out := []tv{}
+	user, admin := s.who(r)
 	s.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
+			if !visible(user, admin, t.Owner) {
+				continue
+			}
 			cp := t.clone()  // deep copy: encoded after the lock is released
 			cp.Secrets = nil // never send tokens/PSKs to the browser
 			clash := ""
@@ -802,9 +845,15 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
+	user, admin := s.who(r)
 	srv := s.app.store.Server(in.ServerID)
-	if srv == nil {
+	if srv == nil || !s.serverVisible(user, admin, in.ServerID) {
 		httpErr(w, 400, "Pick an Iran server.")
+		return
+	}
+	// a user's tunnel ends on one of their foreign servers, never on the panel host
+	if !admin && (in.ForeignID == "" || !s.serverVisible(user, admin, in.ForeignID)) {
+		httpErr(w, 400, "Pick one of your foreign servers.")
 		return
 	}
 	sshPort := srv.SSHPort
@@ -823,6 +872,13 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			}
 			in.Updated = time.Now().Unix()
 			in.Active, in.Secrets, in.Failover = "", nil, nil
+			// the panel's own bookkeeping never comes from the request
+			in.Paths, in.Applying, in.HSPin, in.HSSeen = nil, "", "", 0
+			if !admin {
+				in.Owner = user
+			} else if in.Owner != "" && !accountExists(st, in.Owner) {
+				return fmt.Errorf("no account %q", in.Owner)
+			}
 			in.Shape = normalizeShape(in.Shape)
 			if in.Options == nil {
 				in.Options = map[string]map[string]string{}
@@ -834,7 +890,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		t := s.app.store.tunnelLocked(st, in.ID)
-		if t == nil {
+		if t == nil || !visible(user, admin, t.Owner) {
 			return fmt.Errorf("tunnel not found")
 		}
 		if t.Active != "" && (t.ServerID != in.ServerID || t.ForeignID != in.ForeignID || t.Family != in.Family) {
@@ -1046,6 +1102,29 @@ func (s *Server2) trafficGet(w http.ResponseWriter, r *http.Request) {
 		speed[k] = v
 	}
 	s.app.speedMu.Unlock()
+	if user, admin := s.who(r); !admin {
+		// a user sees the counters of their own tunnels and servers only
+		for id := range snap.Tunnels {
+			if !s.tunnelVisible(user, admin, id) {
+				delete(snap.Tunnels, id)
+			}
+		}
+		for id := range speed {
+			if !s.tunnelVisible(user, admin, id) {
+				delete(speed, id)
+			}
+		}
+		for id := range snap.Servers {
+			if !s.serverVisible(user, admin, id) {
+				delete(snap.Servers, id)
+			}
+		}
+		for id := range snap.Res {
+			if !s.serverVisible(user, admin, id) {
+				delete(snap.Res, id)
+			}
+		}
+	}
 	writeJSON(w, map[string]any{"tunnels": snap.Tunnels, "servers": snap.Servers, "res": snap.Res, "speed": speed})
 }
 
@@ -1148,6 +1227,11 @@ func (s *Server2) benchStart(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
+	if user, admin := s.who(r); !admin {
+		j.mu.Lock()
+		j.Owner = user // lets this user follow the job
+		j.mu.Unlock()
+	}
 	writeJSON(w, map[string]string{"job": j.ID})
 }
 
@@ -1180,6 +1264,11 @@ func (s *Server2) outages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
+	user, admin := s.who(r)
+	if r.Method == http.MethodPost && !admin {
+		httpErr(w, 403, "only the panel admin can clear the history")
+		return
+	}
 	if r.Method == http.MethodPost {
 		var in struct{ Clear bool }
 		_ = readJSON(r, &in)
@@ -1190,7 +1279,10 @@ func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
 	out := []BenchRecord{}
 	s.app.store.View(func(st *State) {
 		for i := len(st.BenchHistory) - 1; i >= 0; i-- {
-			out = append(out, st.BenchHistory[i])
+			b := st.BenchHistory[i]
+			if admin || (visible(user, admin, ownerOfLocked(st, b.IranID)) && visible(user, admin, ownerOfLocked(st, b.ForeignID))) {
+				out = append(out, b)
+			}
 		}
 	})
 	writeJSON(w, out)
@@ -1199,8 +1291,10 @@ func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
 // benchActive returns the running or last benchmark ({} when none), so the page can re-attach.
 func (s *Server2) benchActive(w http.ResponseWriter, r *http.Request) {
 	if b := s.app.activeBench(); b != nil {
-		writeJSON(w, b)
-		return
+		if user, admin := s.who(r); admin || s.pairVisible(user, admin, b.Req.IranID, b.Req.ForeignID) {
+			writeJSON(w, b)
+			return
+		}
 	}
 	writeJSON(w, map[string]string{})
 }
@@ -1220,6 +1314,11 @@ func (s *Server2) serverPrepare(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpErr(w, 409, err.Error())
 		return
+	}
+	if user, admin := s.who(r); !admin {
+		j.mu.Lock()
+		j.Owner = user
+		j.mu.Unlock()
 	}
 	writeJSON(w, map[string]string{"job": j.ID})
 }

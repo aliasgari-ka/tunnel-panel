@@ -25,7 +25,9 @@ import (
 //
 //	tlsMode == ""      → plain HTTP on addr
 //	tlsMode == "self"  → self-signed HTTPS on addr (browser warning, but encrypted)
-//	tlsMode == domain  → Let's Encrypt cert for that domain, HTTPS on :443 + :80 redirect
+//	tlsMode == domains → Let's Encrypt certs for those domains (comma-separated, e.g. the
+//	                     panel's own domain plus its <ip>.sslip.io), HTTPS on :443 + :80
+//	                     redirect; autocert renews each cert well before it expires
 func serve(addr, tlsMode, dir string, handler http.Handler) error {
 	switch tlsMode {
 	case "":
@@ -40,17 +42,20 @@ func serve(addr, tlsMode, dir string, handler http.Handler) error {
 		srv := &http.Server{Addr: addr, Handler: handler, ErrorLog: quietTLSLog, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
 		return srv.ListenAndServeTLS("", "")
 	default:
+		domains := splitDomains(tlsMode)
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(tlsMode),
+			HostPolicy: autocert.HostWhitelist(domains...),
 			Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
 		}
 		// :80 serves the ACME http-01 challenge and redirects everything else to https.
 		go func() {
 			log.Printf("ACME/redirect listener on :80: %v",
-				http.ListenAndServe(":80", m.HTTPHandler(redirectHTTPS(tlsMode))))
+				http.ListenAndServe(":80", m.HTTPHandler(redirectHTTPS(domains))))
 		}()
-		fmt.Printf("Panel: https://%s/  (Let's Encrypt; needs ports 80 and 443 open and DNS pointing here)\n", tlsMode)
+		for _, d := range domains {
+			fmt.Printf("Panel: https://%s/  (Let's Encrypt; needs ports 80 and 443 open and DNS pointing here)\n", d)
+		}
 		srv := &http.Server{Addr: ":443", Handler: handler, ErrorLog: quietTLSLog, TLSConfig: m.TLSConfig()}
 		return srv.ListenAndServeTLS("", "")
 	}
@@ -69,10 +74,33 @@ func (quietTLSWriter) Write(p []byte) (int, error) {
 	return os.Stderr.Write(p)
 }
 
-func redirectHTTPS(host string) http.Handler {
+// redirectHTTPS sends plain HTTP to the same panel domain over HTTPS (the first one for a
+// request that names none of them).
+func redirectHTTPS(domains []string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := domains[0]
+		h := strings.ToLower(r.Host)
+		if i := strings.LastIndex(h, ":"); i >= 0 && !strings.Contains(h[i:], "]") {
+			h = h[:i]
+		}
+		for _, d := range domains {
+			if d == h {
+				host = d
+			}
+		}
 		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusMovedPermanently)
 	})
+}
+
+// splitDomains turns "a.example.com, b.sslip.io" into its domains.
+func splitDomains(v string) []string {
+	var out []string
+	for _, d := range strings.Split(v, ",") {
+		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // selfSignedServerCert loads or creates a self-signed serverAuth cert valid for any host/IP.
