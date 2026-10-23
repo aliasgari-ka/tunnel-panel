@@ -152,13 +152,10 @@ func handle(c net.Conn) {
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		fmt.Fprintf(c, "%d %.4f\n", total, el)
-		// end gracefully: closing with unread data in the socket sends a reset, which can
-		// overtake the report on its way through a forwarder
-		if tc, ok := c.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		}
-		// (the client closes once it has the report; on a slow path the forwarder may still
-		// be delivering buffered data, so give it time)
+		// let the client close: closing here with unread data sends a reset, and even a
+		// half-close (FIN) makes forwarders like Backhaul drop the whole connection — both
+		// can overtake the report on its way back. Keep reading until the client, which has
+		// stopped sending, has the report and hangs up.
 		_ = c.SetReadDeadline(time.Now().Add(15 * time.Second))
 		_, _ = io.Copy(io.Discard, c)
 	case 'D', 'L':
