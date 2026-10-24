@@ -132,6 +132,8 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 			files := map[string]FileSpec{
 				dir + "/up.sh":   {Content: []byte("#!/bin/bash\n" + up), Mode: 0o755},
 				dir + "/down.sh": {Content: []byte("#!/bin/bash\n" + down), Mode: 0o755},
+				// which relay source this binary was built from (see golden_src.go)
+				relayBin + ".src": {Content: []byte(goldenRelaySrc + "\n"), Mode: 0o644},
 			}
 			if useKey {
 				// the relay wants exactly 32 raw bytes; derive them from the stored secret

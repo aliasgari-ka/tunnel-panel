@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -233,14 +231,14 @@ func (a *App) relayOutdated(ctx context.Context, h Host) bool {
 	if err != nil {
 		return false
 	}
-	want, err := helperBytes("golden-gre-relay", arch)
-	if err != nil || len(want) == 0 {
-		return false
+	if want, err := helperBytes("golden-gre-relay", arch); err != nil || len(want) == 0 {
+		return false // nothing to renew it with
 	}
-	sum := sha256.Sum256(want)
-	out, _ := h.Run(ctx, "sha256sum /usr/local/sbin/golden-gre-relay 2>/dev/null | cut -c1-64", nil)
+	// the relay's source, not its bytes (golden_src.go). A relay installed before the
+	// source was recorded counts as current: the source hasn't changed since then.
+	out, _ := h.Run(ctx, "test -x /usr/local/sbin/golden-gre-relay && cat /usr/local/sbin/golden-gre-relay.src 2>/dev/null", nil)
 	got := strings.TrimSpace(lastLine(out))
-	return got != "" && got != hex.EncodeToString(sum[:])
+	return got != "" && got != goldenRelaySrc
 }
 
 // resumeInterrupted brings back tunnels an apply had taken down when the panel stopped in
