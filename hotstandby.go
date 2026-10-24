@@ -23,10 +23,11 @@ const (
 	hsFails    = 3  // failed checks in a row before the active path is abandoned (one lost check is no outage)
 	hsFailback = 60 // seconds a better path must work before the users move back
 	// hsGrace: seconds the users' path must stay down before they are moved. Short blips (the
-	// Iran side's IPv4 drops for ~20 s at a time, several servers at once, seen live) used to
-	// move everyone twice — away within 2 s, back a minute later. Meanwhile every path is
-	// checked each round with pings, so the move goes to the steadiest, least lossy one.
-	hsGrace = 15
+	// Iran side's IPv4 drops for 20-22 s at a time, several servers at once, seen live all
+	// night) used to move everyone twice — away, then back a minute later; 15 s still moved
+	// them during every blip ("down for 18s"). Meanwhile every path is checked each round
+	// with pings, so the move goes to the steadiest, least lossy one.
+	hsGrace = 30
 	// hsSteady: seconds a path must have worked without a break to count as steady
 	hsSteady = 30
 )
@@ -377,7 +378,7 @@ const (
 	hsStandby  = 5     // standby paths are checked every this many checks (active: every check)
 	hsSpeedMB  = 2     // one speed measurement (download, foreign → Iran)
 	hsSpeedSec = 21600 // the active path's speed is measured this often (auto mode; 6 h — each test is traffic on the servers)
-	hsHold     = 600   // seconds after an automatic move before the next one
+	hsHold     = 1800  // seconds after an automatic move before the next one (two paths of similar worth otherwise swap every 10-15 min, seen live)
 	hsPlanMax  = 3     // planned moves (back to the chosen path, auto improvements) per hour
 	hsLossBad  = 50    // ‰: active path loss that counts as degraded (5 %)
 	hsSpeedMin = 1000  // kbit/s: active path speed that counts as degraded
@@ -385,7 +386,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 7
+# tp-switcher 8
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
