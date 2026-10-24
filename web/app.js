@@ -338,7 +338,7 @@ function renderShell() {
   const shell = h(`<div class="shell">
     <aside class="side" id="side">
       <div class="brand"><div class="dot"></div><div><b>${esc(STATE.settings.panelName || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
-      <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span class="ni">${n[2]}</span><span class="nl">${n[1]}</span>${n[0] === 'tunnels' && STATE.tunnels.length ? `<em class="nb" title="running / all">${STATE.tunnels.filter(t => t.active).length}/${STATE.tunnels.length}</em>` : ''}</button>`).join('')}</nav>
+      <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span class="ni">${n[2]}</span><span class="nl">${n[1]}</span>${n[0] === 'tunnels' && STATE.tunnels.length ? `<em class="nb" title="running / all">${STATE.tunnels.filter(t => t.active && shownOwner(t.owner)).length}/${STATE.tunnels.filter(t => shownOwner(t.owner)).length}</em>` : ''}</button>`).join('')}</nav>
       <div class="foot">
         <div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div>
         ${isAdmin() && (STATE.users || []).length > 1 ? `<label class="f vf" title="show the servers and tunnels of one account">👁 View<select id="ownerSel"><option value="">All accounts</option><option value="-">My own</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join('')}</select></label>` : ''}
@@ -354,7 +354,7 @@ function renderShell() {
   $('#logout').onclick = async () => { await api('/logout', {}); location.reload(); };
   $('#themeBtn').onclick = toggleTheme;
   const os = $('#ownerSel', shell);
-  if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { setOwnerFilter(os.value); renderView(); }; }
+  if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { setOwnerFilter(os.value); renderShell(); }; } // the sidebar's counts follow it too
   $$('[data-acc]', shell).forEach(b => b.onclick = () => setAccent(b.dataset.acc));
   paintAccent();
   $('#bgBtn').onclick = () => quantumBg.toggle();
@@ -595,7 +595,9 @@ async function trafficTick() {
   let d; try { d = await api('/traffic'); } catch (e) { return; }
   const tun = d.tunnels || {}, srv = d.servers || {}, speed = d.speed || {};
   $$('[data-res]').forEach(el => renderRes(el, (d.res || {})[el.dataset.res]));
-  const sum = Object.values(tun).reduce((a, x) => (x.error ? a : [a[0] + x.down, a[1] + x.up]), [0, 0]);
+  // the totals follow the View selector, like the cards
+  const shownIds = new Set(STATE.tunnels.filter(t => shownOwner(t.owner)).map(t => t.id));
+  const sum = Object.entries(tun).reduce((a, [id, x]) => (x.error || !shownIds.has(id) ? a : [a[0] + x.down, a[1] + x.up]), [0, 0]);
   const sd = $('[data-sum-dn]'), su = $('[data-sum-up]');
   if (sd) sd.textContent = fmtRate(sum[0]);
   if (su) su.textContent = fmtRate(sum[1]);
@@ -1068,7 +1070,7 @@ function serverCard(s) {
     <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${esc(s.name || '(unnamed)')} ${ownerChip(s.owner)}</h3><small>${esc(sub || (isIran ? 'Iran · entry' : 'foreign · exit'))}</small></div></div>${status}</div>
     <dl class="kv">
       <dt>IPv4</dt><dd class="mono">${esc(s.ipv4 || '—')}</dd>
-      <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'read on test'))}</dd>
+      <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</dd>
       <dt>SSH</dt><dd class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</dd>
       ${s.lastPath ? `<dt>Reached via</dt><dd>${esc(s.lastPath)}</dd>` : ''}
       ${s.proxy ? `<dt>Proxy</dt><dd class="mono">${esc(s.proxy)}</dd>` : ''}
@@ -1141,8 +1143,8 @@ function serverModal(s) {
         <label class="f">Role<select name="role"><option value="iran"${s.role === 'foreign' ? '' : ' selected'}>🇮🇷 Iran (entry)</option><option value="foreign"${s.role === 'foreign' ? ' selected' : ''}>🌍 Foreign (exit)</option></select></label>
       </div>
       <div class="two">
-        <label class="f">Public IPv4<input name="ipv4" class="mono" value="${esc(s.ipv4 || '')}"></label>
-        <label class="f">Public IPv6<input name="ipv6" class="mono" placeholder="blank = read from the server on Test" value="${esc(s.ipv6 || '')}"></label>
+        <label class="f">Public IPv4<input name="ipv4" class="mono" placeholder="blank = read from the server over SSH" value="${esc(s.ipv4 || '')}"></label>
+        <label class="f">Public IPv6<input name="ipv6" class="mono" placeholder="blank = read from the server over SSH, automatically" value="${esc(s.ipv6 || '')}"></label>
       </div>
       <div class="two">
         <label class="f">SSH host <span class="faint">(blank=IPv4)</span><input name="sshHost" class="mono" value="${esc(s.sshHost || '')}"></label>
@@ -1174,27 +1176,31 @@ function serverModal(s) {
 function viewTunnels(w) {
   w.innerHTML = topbar('Tunnels', 'Each tunnel links one Iran server to one foreign server. Pick a connection method and switch any time.',
     `${isAdmin() ? '' : '<!--'}<button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button>${isAdmin() ? '' : '-->'}<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
-  const run = STATE.tunnels.filter(t => t.active).length;
+  // everything on this page follows the View selector (an admin looking at one account sees
+  // that account's numbers and chips, not the whole panel's)
+  const mine = STATE.tunnels.filter(t => shownOwner(t.owner));
+  const run = mine.filter(t => t.active).length;
+  const hostShown = isAdmin() && (!STATE.ownerFilter || STATE.ownerFilter === '-'); // the panel host is the admin's
   w.appendChild(h(`<div class="summary">
-    <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="cu" data-cu="${run}">0</span><span> / ${STATE.tunnels.length}</span> <span class="downtxt" data-sum-down></span></b></div>
+    <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="cu" data-cu="${run}">0</span><span> / ${mine.length}</span> <span class="downtxt" data-sum-down></span></b></div>
     <div class="stat"><i class="si">⬇</i><small>Live download</small><b class="dn" data-sum-dn>—</b></div>
     <div class="stat"><i class="si">⬆</i><small>Live upload</small><b class="up" data-sum-up>—</b></div>
-    <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().length}<span> Iran · </span>${foreignServers().length + (isAdmin() ? 1 : 0)}<span> foreign</span></b></div>
+    <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().filter(s => shownOwner(s.owner)).length}<span> Iran · </span>${foreignServers().filter(s => shownOwner(s.owner)).length + (hostShown ? 1 : 0)}<span> foreign</span></b></div>
   </div>`));
   countUp(w);
-  if (!STATE.tunnels.length) {
+  if (!mine.length) {
     w.appendChild(h(`<div class="card empty"><div class="big">🛰</div>${iranServers().length ? 'No tunnels yet — press <b>+ New tunnel</b>.' : 'Start on the <b>Servers</b> page: add an Iran server, then create a tunnel here.'}</div>`));
   }
   // one dense grid; filter chips per Iran server instead of separate sections
-  if (STATE.tunnels.length) {
+  if (mine.length) {
     const counts = {};
-    STATE.tunnels.forEach(t => counts[t.serverId] = (counts[t.serverId] || 0) + 1);
+    mine.forEach(t => counts[t.serverId] = (counts[t.serverId] || 0) + 1);
     const ids = Object.keys(counts).sort((x, y) => serverName(x).localeCompare(serverName(y)));
     if (STATE.tunFilter && !counts[STATE.tunFilter]) STATE.tunFilter = '';
     const bar = h(`<div class="filters">
       <input class="inp search" type="search" data-q placeholder="🔍 Search name, server, port, method…" value="${esc(STATE.tunSearch || '')}">
       <button class="fchip${STATE.tunRunning ? ' on' : ''}" data-run title="show only running tunnels">● Running <b>${run}</b></button>
-      ${ids.length > 1 ? `<button class="fchip${!STATE.tunFilter ? ' on' : ''}" data-f="">All <b>${STATE.tunnels.length}</b></button>${ids.map(id => {
+      ${ids.length > 1 ? `<button class="fchip${!STATE.tunFilter ? ' on' : ''}" data-f="">All <b>${mine.length}</b></button>${ids.map(id => {
         const sv = serverById(id);
         return `<button class="fchip${STATE.tunFilter === id ? ' on' : ''}" data-f="${id}">${sv && sv.country ? flag(sv.country) : '🇮🇷'} ${esc(serverName(id))} <b>${counts[id]}</b></button>`;
       }).join('')}` : ''}</div>`);
@@ -1423,7 +1429,7 @@ async function refreshStatus(t, card) {
     if (bar) { if (why) bar.innerHTML = `⚠ ${esc(why)} <a href="#" data-dg>Diagnose</a>`; else bar.remove(); }
     const dg = $('[data-dg]', card); if (dg) dg.onclick = (e) => { e.preventDefault(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); };
     t._down = !!why;
-    const n = STATE.tunnels.filter(x => x._down).length, el = $('[data-sum-down]');
+    const n = STATE.tunnels.filter(x => x._down && shownOwner(x.owner)).length, el = $('[data-sum-down]');
     if (el) { el.textContent = n ? `· ${n} down` : ''; }
   } catch (e) {} finally { card._busy = false; }
 }

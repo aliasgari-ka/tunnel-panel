@@ -616,6 +616,17 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 	dropHost(in.ID)
 	if srv := s.app.store.Server(in.ID); srv != nil {
 		go s.app.annotateGeo(srv)
+		// a blank address (IPv6 above all) is read from the server itself as soon as SSH
+		// works — the same as pressing Test connection, without having to
+		var v4, v6 string
+		s.app.store.View(func(*State) { v4, v6 = srv.IPv4, srv.IPv6 })
+		if v4 == "" || v6 == "" {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+				defer cancel()
+				s.app.TestServer(ctx, srv)
+			}()
+		}
 	}
 	writeJSON(w, map[string]string{"ok": "1", "id": in.ID})
 }
