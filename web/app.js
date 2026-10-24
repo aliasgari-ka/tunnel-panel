@@ -4,6 +4,11 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STATE = { user: null, methods: [], servers: [], tunnels: [], settings: {}, agentPin: '', view: 'tunnels' };
+// the page and (admin) the account being viewed survive a refresh: kept in this browser only
+const remember = (k, v) => { try { localStorage.setItem(k, v || ''); } catch (e) {} };
+const recall = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+const setOwnerFilter = (v) => { STATE.ownerFilter = v || ''; remember('tp-viewas', STATE.ownerFilter); };
+const setView = (v) => { STATE.view = v; remember('tp-page', v); };
 
 async function api(path, body, method) {
   const opt = { method: method || (body ? 'POST' : 'GET'), headers: {} };
@@ -45,6 +50,13 @@ async function loadAll() {
   STATE.servers = (servers || []).filter(s => !s.shared); STATE.shared = (servers || []).filter(s => s.shared);
   STATE.settings = (settings && settings.settings) || {}; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
   STATE.users = isAdmin() ? await api('/users').catch(() => []) : [];
+  if (STATE.restored === undefined) { // once per page load: back to the page and account viewed before the refresh
+    STATE.restored = true;
+    const pg = recall('tp-page');
+    if (['tunnels', 'servers', 'routes', 'bench', 'settings'].includes(pg) || (pg === 'users' && isAdmin())) STATE.view = pg;
+    const va = recall('tp-viewas');
+    if (isAdmin() && va && (va === '-' || STATE.users.some(u => u.username === va))) STATE.ownerFilter = va;
+  }
 }
 const iranServers = () => STATE.servers.filter(s => (s.role || 'iran') === 'iran');
 const foreignServers = () => STATE.servers.filter(s => s.role === 'foreign');
@@ -338,11 +350,11 @@ function renderShell() {
       </div></aside>
     <main class="main" id="work"></main></div>`);
   document.body.appendChild(shell);
-  $$('.nav button', shell).forEach(b => b.onclick = () => { STATE.view = b.dataset.v; paintNav(); renderView(); $('#side').classList.remove('open'); });
+  $$('.nav button', shell).forEach(b => b.onclick = () => { setView(b.dataset.v); paintNav(); renderView(); $('#side').classList.remove('open'); });
   $('#logout').onclick = async () => { await api('/logout', {}); location.reload(); };
   $('#themeBtn').onclick = toggleTheme;
   const os = $('#ownerSel', shell);
-  if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { STATE.ownerFilter = os.value; renderView(); }; }
+  if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { setOwnerFilter(os.value); renderView(); }; }
   $$('[data-acc]', shell).forEach(b => b.onclick = () => setAccent(b.dataset.acc));
   paintAccent();
   $('#bgBtn').onclick = () => quantumBg.toggle();
@@ -426,6 +438,7 @@ async function viewRoutes(w) {
       else { st = 'connected'; cls = 'ok'; up++; }
       let hs = '';
       if (t.hotStandby && t.hs && t.hs.paths) {
+        t.hs.ok = t.hs.ok || []; // a switcher state read only in part has no ok list
         const n = t.hs.ok.filter(Boolean).length;
         hs = `<details class="rt-hs"><summary>⚡ users on <b>${esc(t.hs.paths[t.hs.active] || '—')}</b> · ${n}/${t.hs.paths.length} paths working${t.hsAuto ? ' · 🤖 auto' : ''} <span class="faint">▸ paths</span></summary><div class="hsl">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div></details>`;
       } else if (t.hotStandby) {
@@ -523,7 +536,11 @@ async function viewRoutes(w) {
   const paint = () => {
     $$('[data-rsel]', picker).forEach(b => b.classList.toggle('on', b.dataset.rsel === STATE.routeSel));
     box.innerHTML = '';
-    (STATE.routeSel ? byIran[STATE.routeSel] : all).forEach(p => box.appendChild(buildCard(p)));
+    (STATE.routeSel ? byIran[STATE.routeSel] : all).forEach(p => {
+      // one route that can't be drawn must not hide the ones after it
+      try { box.appendChild(buildCard(p)); }
+      catch (e) { box.appendChild(h(`<div class="card rt-card"><h3>${esc(serverName(p.iran))} → ${esc(p.foreign ? serverName(p.foreign) : 'this panel host')}</h3><div class="faint">${p.tunnels.map(t => esc(t.name)).join(' · ')} — this route couldn't be drawn (${esc(e.message)})</div></div>`)); console.error(e); }
+    });
   };
   $$('[data-rsel]', picker).forEach(b => b.onclick = () => { STATE.routeSel = b.dataset.rsel; try { localStorage.setItem('tp-routesel', STATE.routeSel); } catch (e) {} paint(); });
   paint();
@@ -857,7 +874,7 @@ function viewUsers(w) {
         <div class="faint" style="font-size:12.5px">${u.servers} server${u.servers === 1 ? '' : 's'} · ${u.tunnels} tunnel${u.tunnels === 1 ? '' : 's'}</div></div>
       <div class="uact">${u.username === STATE.user ? '' : `<button class="btn sm" data-view="${esc(u.username)}" title="show only this account's servers and tunnels">👁 View</button>
         <button class="btn sm" data-edit="${esc(u.username)}">✎ Edit</button><button class="btn sm ghost danger" data-del="${esc(u.username)}">🗑</button>`}</div></div>`)));
-    $$('[data-view]', list).forEach(b => b.onclick = () => { STATE.ownerFilter = b.dataset.view; STATE.view = 'tunnels'; renderShell(); });
+    $$('[data-view]', list).forEach(b => b.onclick = () => { setOwnerFilter(b.dataset.view); setView('tunnels'); renderShell(); });
     $$('[data-edit]', list).forEach(b => b.onclick = () => userModal(STATE.users.find(u => u.username === b.dataset.edit)));
     $$('[data-del]', list).forEach(b => b.onclick = async () => {
       if (!confirmInline(b, 'Delete?')) return;
