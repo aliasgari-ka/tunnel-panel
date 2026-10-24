@@ -129,9 +129,10 @@ func buildSysctl(r OptimizeResult) (string, []string) {
 		backlog, somax = 2500, 16384
 	}
 	wmemHi := maxBuf
-	// ip_local_reserved_ports keeps the panel's own ports (40000 + index*4 …, the bench and
-	// probe slots up to 41023) out of the ephemeral range: an outgoing connection that got
-	// one of them made the tunnel or probe there fail with "address already in use" (seen live)
+	// ip_local_reserved_ports keeps the panel's own ports (panelPorts: 40000 + index*4 … and the
+	// bench slot, the hot-standby probes 49000+, the forwarder paths 50000+) out of the
+	// ephemeral range: an outgoing connection that got one of them made the tunnel or probe
+	// there fail with "address already in use" (seen live)
 	conf := fmt.Sprintf(`# Tunnel Panel — kernel tuning for a tunnel relay (%s, %d MB RAM, %d CPU, %s)
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=%s
@@ -151,7 +152,7 @@ net.ipv4.tcp_fin_timeout=15
 net.ipv4.tcp_tw_reuse=1
 net.ipv4.tcp_keepalive_time=120
 net.ipv4.ip_local_port_range=10000 65535
-net.ipv4.ip_local_reserved_ports=40000-41023
+net.ipv4.ip_local_reserved_ports=40000-41023,49000-49255,50000-55000
 net.ipv4.udp_rmem_min=16384
 net.ipv4.udp_wmem_min=16384
 net.ipv4.ip_forward=1

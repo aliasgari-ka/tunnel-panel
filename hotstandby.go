@@ -624,7 +624,7 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 	}
 	files[dir+"/targets"] = FileSpec{Content: []byte(strings.Join(targets, "\n") + "\n"), Mode: 0o644}
 	keepPin := fmt.Sprintf("cd %s && { [ -s pin ] && [ \"$(cut -d' ' -f1 pin)\" = \"$(cat pin.new)\" ] || cp pin.new pin; } && rm -f pin.new\n", shq(dir))
-	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: keepPin + hsConntrackSetup, Unit: Unit{
+	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: keepPin + panelPortsSetup + hsConntrackSetup, Unit: Unit{
 		Desc: "Hot standby switcher " + t.Name, ExecStart: "/bin/bash " + dir + "/switch.sh", ExecStopPost: dir + "/down.sh"}}
 }
 
@@ -723,7 +723,7 @@ exit 0
 	return SidePlan{Files: map[string]FileSpec{
 		dir + "/fw-up.sh":   {Content: []byte("#!/bin/bash\n" + up), Mode: 0o755},
 		dir + "/fw-down.sh": {Content: []byte("#!/bin/bash\n" + down), Mode: 0o755},
-	}, Artifacts: []Artifact{probeArt}, Unit: Unit{Desc: "Hot standby probe " + t.Name,
+	}, Artifacts: []Artifact{probeArt}, Setup: panelPortsSetup + freePort(hp), Unit: Unit{Desc: "Hot standby probe " + t.Name,
 		ExecStartPre: dir + "/fw-up.sh", ExecStart: fmt.Sprintf("%s probe serve -listen :%d -life 315360000", probeBin, hp), ExecStopPost: dir + "/fw-down.sh"}}
 }
 
@@ -1100,4 +1100,28 @@ func (a *App) hsSwitchJob(t *Tunnel, mid, fam string) (*Job, error) {
 		j.finish("ok")
 	}()
 	return j, nil
+}
+
+// panelPorts are the ports the panel's tunnels listen on: 40000+index*4… (methods, the bench
+// slot), 49000+index (hot-standby probe servers) and 50000+index*20+j (forwarder paths).
+const panelPorts = "40000-41023,49000-49255,50000-55000"
+
+// panelPortsSetup keeps panelPorts out of the ephemeral range (added to what is reserved
+// already, and kept across reboots): on a default server outgoing connections take local
+// ports 32768-60999, and one that got a probe port blocked the probe server (seen live: usa,
+// "listen tcp :49056: bind: address already in use", the tunnel left down by a repair).
+var panelPortsSetup = fmt.Sprintf(`cur=$(sysctl -n net.ipv4.ip_local_reserved_ports 2>/dev/null)
+case ",$cur," in *",49000-49255,"*) ;; *) sysctl -qw net.ipv4.ip_local_reserved_ports="${cur:+$cur,}%[1]s" 2>/dev/null || true ;; esac
+[ -f /etc/sysctl.d/98-tunnel-panel-ports.conf ] || echo "net.ipv4.ip_local_reserved_ports=%[1]s" > /etc/sysctl.d/98-tunnel-panel-ports.conf 2>/dev/null || true
+`, panelPorts)
+
+// freePort closes connections that use port p as their local port while nothing listens on
+// it (an outgoing connection that got it before the port was reserved): they reconnect, and
+// the service that needs p can start.
+func freePort(p int) string {
+	return fmt.Sprintf(`if ! ss -Hltn "( sport = :%[1]d )" 2>/dev/null | grep -q . && ss -Htn "( sport = :%[1]d )" 2>/dev/null | grep -q .; then
+  echo "port %[1]d is the local port of an outgoing connection — closing it so the probe server can listen"
+  ss -K "( sport = :%[1]d )" >/dev/null 2>&1 || true; sleep 1
+fi
+`, p)
 }
