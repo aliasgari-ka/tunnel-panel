@@ -19,7 +19,7 @@ import (
 const repairJobKey = "repair"
 
 // hsSwitcherVersion marks the switcher script; an older one on a server is replaced.
-const hsSwitcherVersion = "tp-switcher 5"
+const hsSwitcherVersion = "tp-switcher 6"
 
 // Repair starts the repair job.
 func (a *App) Repair(why string) (*Job, error) {
