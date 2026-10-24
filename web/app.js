@@ -444,7 +444,10 @@ async function viewRoutes(w) {
         const n = t.hs.ok.filter(Boolean).length;
         hs = `<details class="rt-hs"${p.tunnel ? ' open' : ''}><summary>⚡ users on <b>${esc(t.hs.paths[t.hs.active] || '—')}</b> · ${n}/${t.hs.paths.length} paths working${t.hsAuto ? ' · 🤖 auto' : ''} <span class="faint">▸ paths</span></summary><div class="hsl">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div></details>`;
       } else if (t.hotStandby) {
-        hs = '<div class="faint rt-hs">⚡ hot standby: its paths start on the next Start/Re-apply</div>';
+        // running with paths but no switcher state read yet (just after a panel restart): say so
+        hs = t.active && (t.paths || []).length
+          ? `<div class="faint rt-hs">⚡ hot standby: ${t.paths.length} paths — reading which one the users are on…</div>`
+          : '<div class="faint rt-hs">⚡ hot standby: its paths start on the next Start/Re-apply</div>';
       }
       return `<div class="rt-row ${cls}"><span class="sd ${cls === 'ok' ? 'ok' : cls === 'bad' ? 'bad' : ''}"></span>
         ${p.tunnel ? '<span class="faint">now</span>' : `<b class="rt-name">${esc(t.name)}</b><span class="faint mono">:${esc(t.ports)}</span>`}

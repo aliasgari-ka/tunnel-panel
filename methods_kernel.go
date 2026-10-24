@@ -111,6 +111,11 @@ var methodGRE = &Method{
 	Fields: []Field{
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1436"},
 	},
+	// pings pass but bulk data stalls on some routes (a smaller MTU somewhere on the way that
+	// drops instead of fragmenting, seen live on netherlands-iran): a lower MTU gets through
+	Alts: func(string) []map[string]string {
+		return []map[string]string{{"mtu": "1400"}, {"mtu": "1280"}}
+	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		typ, extra := "gre", ""
