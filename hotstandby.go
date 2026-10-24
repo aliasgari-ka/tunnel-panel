@@ -612,7 +612,10 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 		dir + "/down.sh":   {Content: []byte("#!/bin/bash\n" + hsSelectDown(t)), Mode: 0o755},
 	}
 	files[dir+"/base.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + hsBase(t, paths) + "exit 0\n"), Mode: 0o755}
-	files[dir+"/pin"] = FileSpec{Content: []byte(hsPinIndex(t, paths) + "\n"), Mode: 0o644}
+	// the chosen path goes to pin.new; the setup keeps the pin already there when it names the
+	// same path, so a reinstall (Repair renewing the switcher) never wipes a choice made in
+	// the panel moments before — with its press stamp — that the old switcher hadn't acted on
+	files[dir+"/pin.new"] = FileSpec{Content: []byte(hsPinIndex(t, paths) + "\n"), Mode: 0o644}
 	var targets []string
 	for k, p := range paths {
 		files[fmt.Sprintf("%s/up-%d.sh", dir, k)] = FileSpec{Content: []byte("#!/bin/bash\n" + hsSelectUp(t, p, srv, fsrv, set) + "exit 0\n"), Mode: 0o755}
@@ -620,7 +623,8 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 		targets = append(targets, hsTarget(t, p, srv, fsrv, set)+" "+hsPingTarget(t, p, srv, fsrv, set))
 	}
 	files[dir+"/targets"] = FileSpec{Content: []byte(strings.Join(targets, "\n") + "\n"), Mode: 0o644}
-	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: hsConntrackSetup, Unit: Unit{
+	keepPin := fmt.Sprintf("cd %s && { [ -s pin ] && [ \"$(cut -d' ' -f1 pin)\" = \"$(cat pin.new)\" ] || cp pin.new pin; } && rm -f pin.new\n", shq(dir))
+	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: keepPin + hsConntrackSetup, Unit: Unit{
 		Desc: "Hot standby switcher " + t.Name, ExecStart: "/bin/bash " + dir + "/switch.sh", ExecStopPost: dir + "/down.sh"}}
 }
 
@@ -629,7 +633,9 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 // It installs in the background, so a slow mirror never holds up the apply.
 const hsConntrackSetup = `if ! command -v conntrack >/dev/null 2>&1; then
   echo "note: installing the conntrack tool in the background (until then users of a failed path reconnect on their own timeout)"
-  nohup sh -c '(command -v apt-get >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq conntrack) || (command -v dnf >/dev/null 2>&1 && timeout 300 dnf install -y conntrack-tools)' >/dev/null 2>&1 &
+  # (a stale or empty package list made the install fail for good — seen live on
+  # netherlands-iran: the switcher warned after every restart): refresh it once and retry
+  nohup sh -c '(command -v apt-get >/dev/null 2>&1 && { DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq conntrack || { timeout 300 apt-get update -qq && DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq conntrack; }; }) || (command -v dnf >/dev/null 2>&1 && timeout 300 dnf install -y conntrack-tools)' >/dev/null 2>&1 &
 fi
 true
 `
