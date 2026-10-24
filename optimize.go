@@ -129,6 +129,19 @@ func buildSysctl(r OptimizeResult) (string, []string) {
 		backlog, somax = 2500, 16384
 	}
 	wmemHi := maxBuf
+	// connection tracking: an exit server carrying many users filled the default 65536-entry
+	// table (seen live on the USA exit: 100 % for five minutes — new connections dropped).
+	// Size it by RAM (an entry is ~320 bytes: ~5 % of RAM at most), and forget idle
+	// established connections after 6 h instead of 5 days so dead ones don't fill it.
+	ctMax := 131072
+	switch {
+	case r.RAMMB >= 8192:
+		ctMax = 1048576
+	case r.RAMMB >= 4096:
+		ctMax = 524288
+	case r.RAMMB >= 2048:
+		ctMax = 262144
+	}
 	// ip_local_reserved_ports keeps the panel's own ports (panelPorts: 40000 + index*4 … and the
 	// bench slot, the hot-standby probes 49000+, the forwarder paths 50000+) out of the
 	// ephemeral range: an outgoing connection that got one of them made the tunnel or probe
@@ -157,7 +170,10 @@ net.ipv4.udp_rmem_min=16384
 net.ipv4.udp_wmem_min=16384
 net.ipv4.ip_forward=1
 fs.file-max=1048576
-`, r.Virt, r.RAMMB, r.CPUs, cc, cc, maxBuf, maxBuf, maxBuf/4, maxBuf/4, maxBuf, wmemHi, backlog, somax, backlog)
+-net.netfilter.nf_conntrack_max=%d
+-net.netfilter.nf_conntrack_tcp_timeout_established=21600
+-net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
+`, r.Virt, r.RAMMB, r.CPUs, cc, cc, maxBuf, maxBuf, maxBuf/4, maxBuf/4, maxBuf, wmemHi, backlog, somax, backlog, ctMax)
 	return strings.TrimRight(conf, "\n"), notes
 }
 

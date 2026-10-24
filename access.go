@@ -245,13 +245,15 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			if !isAdminRole(u.Role) {
 				v.Role = roleUser
 			}
+			// what has no account is the admins' (shared by every admin account)
+			mine := func(owner string) bool { return owner == u.Username || (owner == "" && v.Role == "admin") }
 			for _, x := range st.Servers {
-				if x.Owner == u.Username {
+				if mine(x.Owner) {
 					v.Servers++
 				}
 			}
 			for _, t := range st.Tunnels {
-				if t.Owner == u.Username {
+				if mine(t.Owner) {
 					v.Tunnels++
 				}
 			}
