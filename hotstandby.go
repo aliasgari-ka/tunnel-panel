@@ -385,7 +385,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 5
+# tp-switcher 6
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -460,9 +460,10 @@ bash base.sh >/dev/null 2>&1
 if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
 [ $active -ge 0 ] || use 0 "start"
 tune; n=0; cmpat=0; backoff=600; hold=0; badsince=0; cmploss=0
+pindone=""; [ -s pin.done ] && read -r pindone < pin.done
 while true; do
   M=manual; [ -s mode ] && read -r M < mode
-  P0=0; [ -s pin ] && read -r P0 < pin; [ -n "$P0" ] && [ "$P0" -ge 0 ] 2>/dev/null && [ "$P0" -lt $N ] || P0=0
+  P0=0; PN=""; [ -s pin ] && read -r P0 PN < pin; [ -n "$P0" ] && [ "$P0" -ge 0 ] 2>/dev/null && [ "$P0" -lt $N ] || P0=0
   all=0; [ "${fails[$active]:-0}" -gt 0 ] && all=1
   pids=()
   for ((k=0; k<N; k++)); do
@@ -499,7 +500,19 @@ while true; do
     echo "$k $st ${since[$k]:-$now} ${qr[$k]:--} ${ql[$k]:--} ${sp[$k]:--}" >> status.tmp
   done
   mv status.tmp status
-  if [ "$P0" != "${lastpin:-$P0}" ] && [ "$P0" != "$active" ] && [ "${ok[$P0]}" = 1 ]; then
+  # a path chosen in the panel or the bot: each press carries its own stamp (pin = "<path>
+  # <stamp>"), done once carried out (pin.done) — so pressing the same path again counts, and
+  # so does a press the switcher restarted before acting on. It waits up to a minute for the
+  # path to answer; failures are handled meanwhile as usual. (A pin with no stamp: the old way.)
+  pinmove=0
+  if [ -n "$PN" ] && [ "$PN" != "$pindone" ]; then
+    if [ "$P0" = "$active" ]; then pindone=$PN; echo "$PN" > pin.done
+    elif [ "${ok[$P0]}" = 1 ]; then pindone=$PN; echo "$PN" > pin.done; pinmove=1
+    elif [ $((now - PN)) -gt 60 ]; then pindone=$PN; echo "$PN" > pin.done; ev keep "$active" "$active" "path $P0 chosen in the panel doesn't answer — staying"
+    fi
+  elif [ -z "$PN" ] && [ "$P0" != "${lastpin:-$P0}" ] && [ "$P0" != "$active" ] && [ "${ok[$P0]}" = 1 ]; then pinmove=1
+  fi
+  if [ $pinmove = 1 ]; then
     use $P0 "chosen in the panel"
   elif [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ] && [ $((now - ${since[$active]:-$now})) -ge ${GRACE:-0} ]; then
     # down for GRACE s (a blip shorter than that moves nobody): to the steadiest, cleanest path
@@ -1042,7 +1055,9 @@ func (a *App) hsPinTo(ctx context.Context, t *Tunnel, pin string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("the Iran server can't be reached now: %v", err)
 	}
-	out, _ := h.Run(ctx, fmt.Sprintf("cd %s 2>/dev/null || { echo NODIR; exit 0; }; echo %s > pin; grep -q 'chosen in the panel' switch.sh && echo OK || echo OLD", hsDir(t), shq(idx)), nil)
+	// a switcher that knows press stamps (pin.done) gets "<path> <stamp>", so pressing the same
+	// path again, or a restart before it acted, still moves the users; older ones the bare index
+	out, _ := h.Run(ctx, fmt.Sprintf("cd %s 2>/dev/null || { echo NODIR; exit 0; }; if grep -q pin.done switch.sh; then echo %s $(date +%%s) > pin; else echo %s > pin; fi; grep -q 'chosen in the panel' switch.sh && echo OK || echo OLD", hsDir(t), shq(idx), shq(idx)), nil)
 	switch {
 	case strings.Contains(out, "OLD"):
 		return "", fmt.Errorf("this switcher is from an older panel version — press Re-apply once")
