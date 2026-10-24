@@ -366,26 +366,26 @@ func hsTarget(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
 
 // Auto mode (Tunnel.HSAuto, the "mode" file on the Iran server, so it can be switched
 // without a re-apply): besides failing over, the switcher keeps each path's latency and
-// packet loss (a few pings per check), measures the active path's download speed every two
+// packet loss (a few pings per check), measures the active path's download speed every six
 // hours (hsSpeedMB, capped), and when the active path degrades — loss ≥ 5 %, speed down to
 // half of its recent best or under 1 Mbit/s — or another path is clearly cheaper, it measures
 // the active path and up to three stable candidates the same way and moves the users to a
 // clearly better one (heavy loss ≥ 15 % loses to a clean path of at least 30 % of its speed or 20 Mbit/s, even if it measures faster). After a move it holds for hsHold; a comparison that changed nothing
-// backs off (10 min, doubling to 2 h), so a bad hour costs little traffic. Standby paths
+// backs off (30 min, doubling to 2 h), so a bad hour costs little traffic. Standby paths
 // are checked every hsStandby checks (the active one every check), for the same reason.
 const (
-	hsStandby  = 5    // standby paths are checked every this many checks (active: every check)
-	hsSpeedMB  = 2    // one speed measurement (download, foreign → Iran)
-	hsSpeedSec = 7200 // the active path's speed is measured this often (auto mode)
-	hsHold     = 600  // seconds after an automatic move before the next one
-	hsPlanMax  = 3    // planned moves (back to the chosen path, auto improvements) per hour
-	hsLossBad  = 50   // ‰: active path loss that counts as degraded (5 %)
-	hsSpeedMin = 1000 // kbit/s: active path speed that counts as degraded
+	hsStandby  = 5     // standby paths are checked every this many checks (active: every check)
+	hsSpeedMB  = 2     // one speed measurement (download, foreign → Iran)
+	hsSpeedSec = 21600 // the active path's speed is measured this often (auto mode; 6 h — each test is traffic on the servers)
+	hsHold     = 600   // seconds after an automatic move before the next one
+	hsPlanMax  = 3     // planned moves (back to the chosen path, auto improvements) per hour
+	hsLossBad  = 50    // ‰: active path loss that counts as degraded (5 %)
+	hsSpeedMin = 1000  // kbit/s: active path speed that counts as degraded
 )
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 6
+# tp-switcher 7
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -459,7 +459,8 @@ rm -f cmp.run cmp.done cmp.tmp
 bash base.sh >/dev/null 2>&1
 if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
 [ $active -ge 0 ] || use 0 "start"
-tune; n=0; cmpat=0; backoff=600; hold=0; badsince=0; cmploss=0
+# backoff: after a comparison that changed nothing, the next waits 30 min, doubling to 2 h
+tune; n=0; cmpat=0; backoff=1800; hold=0; badsince=0; cmploss=0
 pindone=""; [ -s pin.done ] && read -r pindone < pin.done
 while true; do
   M=manual; [ -s mode ] && read -r M < mode
@@ -551,7 +552,7 @@ while true; do
       done < cmp.done
       if [ $best -ge 0 ] && budget; then
         planned $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
-        hold=$((now + HOLD)); backoff=600
+        hold=$((now + HOLD)); backoff=1800
         # off a heavily lossy path, the connections already open move too (after a moment for
         # what is in flight): they would go on lagging there
         [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && ( sleep 15; bash flush-$a.sh ) >/dev/null 2>&1 &
@@ -580,7 +581,7 @@ while true; do
     # much worse loss than at the last "none better": compare again without waiting
     worse=0; [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && [ ${ql[$a]:-0} -ge $((cmploss * 2)) ] && worse=1
     if [ -n "$list" ] && { [ -n "$why" ] || [ $better = 1 ]; } && { [ $now -ge $cmpat ] || [ $worse = 1 ]; } && [ $now -ge $hold ]; then
-      measure cmp $a "$why" $a $(printf '%s' "$list" | sort -n | head -3 | cut -d' ' -f2)
+      measure cmp $a "$why" $a $(printf '%s' "$list" | sort -n | head -2 | cut -d' ' -f2) # the 2 likeliest: each one measured is traffic
     elif [ $((now - ${spat[$a]:-0})) -ge $SPEVERY ]; then
       measure speed $a "" $a
     fi

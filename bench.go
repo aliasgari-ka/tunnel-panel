@@ -135,6 +135,9 @@ func benchIsL3(m *Method, opts map[string]string) bool {
 
 // Bench runs a disposable tunnel for each candidate method, measures it, then tears it down.
 // It runs entirely on the server: leaving the page (or closing the browser) doesn't stop it.
+// benchMaxMB caps a throughput test per method and direction.
+const benchMaxMB = 6
+
 func (a *App) Bench(req BenchRequest) (*Job, error) {
 	srv := a.store.Server(req.IranID)
 	if srv == nil {
@@ -145,6 +148,11 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	}
 	if req.Seconds <= 0 || req.Seconds > 20 {
 		req.Seconds = 5
+	}
+	// every benchmark is capped (the page's Measure buttons asked for none: a few seconds
+	// on a fast path moved 20-30 MB each way per method, on traffic someone pays for)
+	if req.MaxMB <= 0 || req.MaxMB > benchMaxMB {
+		req.MaxMB = benchMaxMB
 	}
 	var cands []*Method
 	for _, m := range methods {

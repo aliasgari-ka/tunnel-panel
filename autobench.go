@@ -21,12 +21,12 @@ func (a *App) autoBench() {
 
 // autoBenchMB caps each automatic throughput test (per method, per direction), so the
 // periodic benchmark costs the Iran server little traffic: about 2×autoBenchMB per method.
-const autoBenchMB = 4
+const autoBenchMB = 3
 
 func autoBenchEvery(set Settings) time.Duration {
 	v := strings.TrimSpace(set.AutoBench)
 	if v == "" {
-		return 12 * time.Hour
+		return 24 * time.Hour // once a day: hot standby keeps watching the paths in between
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n <= 0 {
