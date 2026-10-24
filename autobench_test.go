@@ -6,7 +6,7 @@ import (
 )
 
 func TestAutoBenchDue(t *testing.T) {
-	if autoBenchEvery(Settings{}) != 12*time.Hour || autoBenchEvery(Settings{AutoBench: "0"}) != 0 || autoBenchEvery(Settings{AutoBench: "6"}) != 6*time.Hour {
+	if autoBenchEvery(Settings{}) != 24*time.Hour || autoBenchEvery(Settings{AutoBench: "0"}) != 0 || autoBenchEvery(Settings{AutoBench: "6"}) != 6*time.Hour {
 		t.Fatal("interval parsing")
 	}
 	dataDir = t.TempDir()

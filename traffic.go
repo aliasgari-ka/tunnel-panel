@@ -434,6 +434,9 @@ func withProbePort(m *Method, t *Tunnel) string {
 }
 
 // SpeedTest measures the running tunnel end to end with the probe (RTT, download, upload).
+// speedTestMB caps a tunnel speed test per direction (5 s on a fast path moved 30+ MB each way).
+const speedTestMB = 10
+
 func (a *App) SpeedTest(t *Tunnel, secs int) (*Job, error) {
 	if t.Active == "" {
 		return nil, fmt.Errorf("start the tunnel first")
@@ -511,13 +514,13 @@ func (a *App) SpeedTest(t *Tunnel, secs int) (*Job, error) {
 		}
 		res.RTTms, res.Jitterms = rt.RTTms, rt.Jitterms
 		j.log("RTT %.1f ms, jitter %.1f ms", rt.RTTms, rt.Jitterms)
-		if dn, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -down -addr %s -secs %d", target, secs), secs+30); err == nil {
+		if dn, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -down -addr %s -secs %d -max %d", target, secs, speedTestMB), secs+30); err == nil {
 			res.DownMbps = dn.Mbps
 			j.log("download (foreign → Iran): %.1f Mbps", dn.Mbps)
 		} else {
 			j.log("download test failed: %v", err)
 		}
-		if up, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -addr %s -secs %d", target, secs), secs+30); err == nil {
+		if up, err := runProbe[probeBW](ctx, irHost, fmt.Sprintf("probe bw -addr %s -secs %d -max %d", target, secs, speedTestMB), secs+30); err == nil {
 			res.UpMbps = up.Mbps
 			j.log("upload (Iran → foreign): %.1f Mbps", up.Mbps)
 		} else {
