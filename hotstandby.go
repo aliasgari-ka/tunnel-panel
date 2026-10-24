@@ -22,6 +22,13 @@ const (
 	hsEvery    = 2  // seconds between checks on the Iran server
 	hsFails    = 3  // failed checks in a row before the active path is abandoned (one lost check is no outage)
 	hsFailback = 60 // seconds a better path must work before the users move back
+	// hsGrace: seconds the users' path must stay down before they are moved. Short blips (the
+	// Iran side's IPv4 drops for ~20 s at a time, several servers at once, seen live) used to
+	// move everyone twice — away within 2 s, back a minute later. Meanwhile every path is
+	// checked each round with pings, so the move goes to the steadiest, least lossy one.
+	hsGrace = 15
+	// hsSteady: seconds a path must have worked without a break to count as steady
+	hsSteady = 30
 )
 
 // hsOnly limits the methods hot standby uses (tests).
@@ -378,7 +385,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 4
+# tp-switcher 5
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -423,6 +430,19 @@ pc() { printf '%d.%d' $((${1:-0} / 10)) $((${1:-0} % 10)); }
 drops() { local t c=0 keep=""; for t in ${dropat[$1]}; do [ $((now - t)) -lt 1800 ] && { keep="$keep $t"; c=$((c + 1)); }; done; dropat[$1]=$keep; echo $c; }
 need() { local c=$(drops $1) w=$BACK; while [ $c -gt 1 ] && [ $w -lt 1800 ]; do w=$((w * 2)); c=$((c - 1)); done; [ $w -gt 1800 ] && w=1800; echo $w; }
 stable() { [ "${ok[$1]}" = 1 ] && [ $((now - ${since[$1]:-$now})) -ge $(need $1) ]; }
+# clean: no measured loss above LOSSBAD (a path never pinged counts as clean)
+clean() { [ ${ql[$1]:-0} -lt ${LOSSBAD:-50} ]; }
+# pick: where users go when theirs is down — a steady path (up for STEADY s without a break)
+# before one that just came up, then the least lossy and fastest (cost)
+pick() {
+  local k s b=-1 bs=0
+  for ((k=0; k<N; k++)); do
+    [ "${ok[$k]}" = 1 ] || continue
+    s=0; [ $((now - ${since[$k]:-$now})) -ge ${STEADY:-30} ] && s=1
+    if [ $b -lt 0 ] || [ $s -gt $bs ] || { [ $s = $bs ] && [ $(cost $k) -lt $(cost $b) ]; }; then b=$k; bs=$s; fi
+  done
+  echo $b
+}
 # planned moves (back to the chosen path, auto improvements) at most PLANMAX an hour; a
 # failure is always handled
 budget() { local t c=0 keep=""; for t in $planat; do [ $((now - t)) -lt 3600 ] && { keep="$keep $t"; c=$((c + 1)); }; done; planat=$keep; [ $c -lt $PLANMAX ]; }
@@ -450,6 +470,9 @@ while true; do
     if [ $k = $active ] || [ $all = 1 ] || [ $((n % SBY)) = 0 ]; then
       pa=""
       if [ "$M" = auto ] && [ -n "${H[$k]}" ] && { { [ $k = $active ] && [ $((n % 5)) = 0 ]; } || [ $((n % (SBY * 3))) = 0 ]; }; then pa="-ping ${H[$k]} -pn 6"; fi
+      # the users' path is failing: every path's loss, to pick where they go; off the chosen
+      # path: its loss now and then, so they go back only once it is clean again
+      if [ -z "$pa" ] && [ -n "${H[$k]}" ] && { { [ $all = 1 ] && [ $k != $active ]; } || { [ $k = $P0 ] && [ $active != $P0 ] && [ $((n % 5)) = 0 ]; }; }; then pa="-ping ${H[$k]} -pn 4"; fi
       # 3 s per check (5 with pings): a dead path must not hold the whole round up
       to=3; [ -n "$pa" ] && to=5
       ( r=$(timeout $to $P probe check -addr ${A[$k]} -n 2 $pa 2>/dev/null); echo "${r:-down}" > c$k ) &
@@ -478,20 +501,16 @@ while true; do
   mv status.tmp status
   if [ "$P0" != "${lastpin:-$P0}" ] && [ "$P0" != "$active" ] && [ "${ok[$P0]}" = 1 ]; then
     use $P0 "chosen in the panel"
-  elif [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ]; then
-    best=-1
-    for ((k=0; k<N; k++)); do
-      [ "${ok[$k]}" = 1 ] || continue
-      if [ $best -lt 0 ]; then best=$k; [ "$M" = auto ] || break
-      elif [ $(cost $k) -lt $(cost $best) ]; then best=$k; fi
-    done
-    [ $best -ge 0 ] && use $best "path $active failed $FAILS checks in a row"
+  elif [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ] && [ $((now - ${since[$active]:-$now})) -ge ${GRACE:-0} ]; then
+    # down for GRACE s (a blip shorter than that moves nobody): to the steadiest, cleanest path
+    best=$(pick)
+    [ $best -ge 0 ] && use $best "path $active down for $((now - ${since[$active]:-$now}))s — took path $best: loss $(pc ${ql[$best]})%, rtt ${qr[$best]:-?} ms, up $((now - ${since[$best]:-$now}))s"
   elif [ "${ok[$active]}" = 1 ] && [ "$M" != auto ]; then
-    # manual: back to the chosen path (the pinned one, else the first) once it is stable
-    if [ $active != $P0 ] && stable $P0 && budget; then planned $P0 "$(backmsg $P0)"
+    # manual: back to the chosen path (the pinned one, else the first) once it is stable and clean
+    if [ $active != $P0 ] && stable $P0 && clean $P0 && budget; then planned $P0 "$(backmsg $P0)"
     elif [ "${ok[$P0]}" != 1 ]; then
       for ((k=0; k<active; k++)); do
-        [ $k != $P0 ] && stable $k && budget && { planned $k "$(backmsg $k)"; break; }
+        [ $k != $P0 ] && stable $k && clean $k && budget && { planned $k "$(backmsg $k)"; break; }
       done
     fi
   elif [ "${ok[$active]}" = 1 ] && [ -f cmp.done ]; then
@@ -557,7 +576,8 @@ while true; do
   n=$((n + 1)); [ $((n % 20)) = 0 ] && { tune; bash base.sh >/dev/null 2>&1; for ((k=0; k<N; k++)); do drops $k >/dev/null; done; }
   # the users' path just missed a check: look again at once instead of after EVERY, so a dead
   # path is left within seconds (still FAILS misses in a row, so a single lost check isn't one)
-  if [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -gt 0 ]; then sleep 0.3; else sleep $EVERY; fi
+  # (then every EVERY s through the grace: each round pings every path, which takes a while)
+  if [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -gt 0 ] && [ "${fails[$active]}" -lt $FAILS ]; then sleep 0.3; else sleep $EVERY; fi
 done
 `
 
@@ -569,8 +589,8 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 	for _, s := range splitPorts(t.Ports) {
 		ports = append(ports, strings.ReplaceAll(s.listen, "-", ":"))
 	}
-	conf := fmt.Sprintf("# tunnel %q\nP=%s\nN=%d\nEVERY=%d\nFAILS=%d\nBACK=%d\nPORTS=%q\nSBY=%d\nSPMB=%d\nSPEVERY=%d\nHOLD=%d\nLOSSBAD=%d\nSPMIN=%d\nPLANMAX=%d\n",
-		t.Name, probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "), hsStandby, hsSpeedMB, hsSpeedSec, hsHold, hsLossBad, hsSpeedMin, hsPlanMax)
+	conf := fmt.Sprintf("# tunnel %q\nP=%s\nN=%d\nEVERY=%d\nFAILS=%d\nBACK=%d\nPORTS=%q\nSBY=%d\nSPMB=%d\nSPEVERY=%d\nHOLD=%d\nLOSSBAD=%d\nSPMIN=%d\nPLANMAX=%d\nGRACE=%d\nSTEADY=%d\n",
+		t.Name, probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "), hsStandby, hsSpeedMB, hsSpeedSec, hsHold, hsLossBad, hsSpeedMin, hsPlanMax, hsGrace, hsSteady)
 	files := map[string]FileSpec{
 		dir + "/switch.sh": {Content: []byte(hsSwitcher), Mode: 0o755},
 		dir + "/conf":      {Content: []byte(conf), Mode: 0o644},
@@ -771,7 +791,7 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		fail("no path could be deployed")
 		return false
 	}
-	j.log("== switcher on the Iran server (checks every %ds, switches after %d failed checks, back after %ds stable) ==", hsEvery, hsFails, hsFailback)
+	j.log("== switcher on the Iran server (checks every %ds; switches after %ds down, to the steadiest path with the least loss; back after %ds stable and clean) ==", hsEvery, hsGrace, hsFailback)
 	if err := a.deploy(ctx, j, "IR", irHost, hsUnitTunnel(t), a.hsSwitcherPlan(t, good)); err != nil {
 		fail("switcher: %v", err)
 		return false
