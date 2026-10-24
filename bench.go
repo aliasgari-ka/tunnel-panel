@@ -233,7 +233,9 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				err = fmt.Errorf("%v (%s)", err, probeWhy)
 			}
 			// (only when it deployed but carried nothing: a config or start error would just repeat)
-			if err != nil && m.Alts != nil && (strings.Contains(err.Error(), "no traffic passes") || strings.Contains(err.Error(), "can't run on this")) && ctx.Err() == nil {
+			// (pings passing while bulk data stalls is an MTU problem: GRE's alternatives are
+			// lower MTUs)
+			if err != nil && m.Alts != nil && (strings.Contains(err.Error(), "no traffic passes") || strings.Contains(err.Error(), "no bulk data passes") || strings.Contains(err.Error(), "can't run on this")) && ctx.Err() == nil {
 				// the default carrier passes nothing here: try the method's other carriers
 				first, tried := err, []string{}
 				for _, alt := range m.Alts(req.Family) {
