@@ -158,9 +158,15 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 		case bad > 0 && bad < len(v.OK) && v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active]:
 			// users are on a working path and the switcher moves them if it dies: rebuilding
 			// the whole tunnel for a dead standby path would cut them for nothing (seen live:
-			// xe108 rebuilt after every update because one path never passes data there)
-			j.log("· %s: %d of %d standby paths down — users are on a working one; left alone", name, bad, len(v.OK))
-			return "", ""
+			// xe108 rebuilt after every update because one path never passes data there).
+			// An older switcher is still renewed — in place, nobody is cut (these tunnels kept
+			// the old one through every update, seen live: America, xe108)
+			if !strings.Contains(out, "OLD") {
+				j.log("· %s: %d of %d standby paths down — users are on a working one; left alone", name, bad, len(v.OK))
+				return "", ""
+			}
+			j.log("· %s: %d of %d standby paths down — users are on a working one; no rebuild", name, bad, len(v.OK))
+			why, switcherOnly = "older switcher", true
 		case bad > 0:
 			why = fmt.Sprintf("%d of %d paths down", bad, len(v.OK)+failedPaths)
 		case strings.Contains(out, "OLD"):
