@@ -408,7 +408,7 @@ function renderView() {
 // failover uses — the pair's latest benchmark ranking, per address family.
 const ageTxt = (u) => { const s = Math.floor(Date.now() / 1000) - u; return s < 3600 ? `${Math.max(1, Math.floor(s / 60))} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 async function viewRoutes(w) {
-  w.innerHTML = topbar('Routes', 'Each server pair: its tunnels, and how every method does between the two servers.');
+  w.innerHTML = topbar('Routes', 'Each tunnel: the paths its users are on, and which methods it may use — switch them on or off, and measure them.');
   const box = h('<div class="grid" style="gap:18px"><div class="skel" style="height:120px"></div><div class="skel" style="height:220px"></div></div>');
   w.appendChild(box);
   let hist = [], skip = {};
@@ -421,7 +421,9 @@ async function viewRoutes(w) {
   if (!pairs.size) { box.appendChild(h('<div class="card empty"><div class="big">🔀</div>No tunnels or benchmarks yet.</div>')); return; }
   const srvLabel = (id, fb) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : fb; };
   const hasFam = (id, f) => { const s = id ? serverById(id) : null; const st = STATE.settings; return f === 'v4' ? !!(s ? s.ipv4 : st.localIPv4 || true) : !!(s ? s.ipv6 : st.localIPv6); };
-  // one card per pair; a ⊘/↺ re-draws only that card, in place (the page keeps its scroll)
+  // one card per tunnel (a measured pair with no tunnel gets one too); a switch re-draws the
+  // cards in place (the page keeps its scroll)
+  let repaint = () => {};
   const buildCard = (p) => {
     const fams = ['v4', 'v6'].filter(f => hasFam(p.iran, f) && hasFam(p.foreign, f));
     const off = skip[key(p.iran, p.foreign)] || [];
@@ -440,12 +442,12 @@ async function viewRoutes(w) {
       if (t.hotStandby && t.hs && t.hs.paths) {
         t.hs.ok = t.hs.ok || []; // a switcher state read only in part has no ok list
         const n = t.hs.ok.filter(Boolean).length;
-        hs = `<details class="rt-hs"><summary>⚡ users on <b>${esc(t.hs.paths[t.hs.active] || '—')}</b> · ${n}/${t.hs.paths.length} paths working${t.hsAuto ? ' · 🤖 auto' : ''} <span class="faint">▸ paths</span></summary><div class="hsl">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div></details>`;
+        hs = `<details class="rt-hs"${p.tunnel ? ' open' : ''}><summary>⚡ users on <b>${esc(t.hs.paths[t.hs.active] || '—')}</b> · ${n}/${t.hs.paths.length} paths working${t.hsAuto ? ' · 🤖 auto' : ''} <span class="faint">▸ paths</span></summary><div class="hsl">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div></details>`;
       } else if (t.hotStandby) {
         hs = '<div class="faint rt-hs">⚡ hot standby: its paths start on the next Start/Re-apply</div>';
       }
       return `<div class="rt-row ${cls}"><span class="sd ${cls === 'ok' ? 'ok' : cls === 'bad' ? 'bad' : ''}"></span>
-        <b class="rt-name">${esc(t.name)}</b><span class="faint mono">:${esc(t.ports)}</span>
+        ${p.tunnel ? '<span class="faint">now</span>' : `<b class="rt-name">${esc(t.name)}</b><span class="faint mono">:${esc(t.ports)}</span>`}
         <span class="rt-mth">${esc(methodTitle(t.active || t.selected) || '—')} · ${famName(t.family)}</span>
         <span class="rt-st ${cls}">${esc(st)}</span>${hs}</div>`;
     }).join('') || '<div class="faint" style="font-size:12.5px">no tunnel on this pair yet</div>';
@@ -495,16 +497,22 @@ async function viewRoutes(w) {
     const summary = [`${p.tunnels.length} tunnel${p.tunnels.length === 1 ? '' : 's'}`];
     if (up) summary.push(`<span class="ok">● ${up} connected</span>`);
     if (down) summary.push(`<span class="bad">● ${down} down</span>`);
+    // a tunnel's card is titled with the tunnel (what people look for); a measured pair with no
+    // tunnel keeps the servers as its title
+    const route = `${srvLabel(p.iran, 'Iran')} <span class="faint">→</span> ${srvLabel(p.foreign, '🖥 this panel host')}`;
+    const title = p.tunnel ? `<h3>${esc(p.tunnel.name)}</h3><div class="rt-sum">${route} · <span class="mono">:${esc(p.tunnel.ports)}</span></div>`
+      : `<h3>${route}</h3><div class="rt-sum">${summary.join(' · ')} · measured, no tunnel yet</div>`;
+    const sharedNote = p.shared && p.shared.length ? `<div class="faint rt-leg" style="margin:0 0 6px">These switches belong to the server pair, so they also apply to ${p.shared.map(esc).join(', ')}.</div>` : '';
     const card = h(`<div class="card rt-card">
-      <div class="rt-head"><div><h3>${srvLabel(p.iran, 'Iran')} <span class="faint">→</span> ${srvLabel(p.foreign, '🖥 this panel host')}</h3><div class="rt-sum">${summary.join(' · ')}</div></div>
+      <div class="rt-head"><div>${title}</div>
         <div class="actions">${fams.map(f => `<button class="btn sm" data-rb="${f}" title="measure every method over ${famName(f)} between these two servers (a few minutes; live tunnels are not touched)">📊 Measure ${famName(f)}</button>`).join('')}</div></div>
-      <div class="lbl">Tunnels</div><div class="rt-rows">${tunnels}</div>
-      <details class="rt-more"${STATE.routeSel || pairs.size <= 3 ? ' open' : ''}><summary><span class="lbl">Methods this route uses</span> <span class="faint">${onCount} of ${cellCount} on — speeds and order</span></summary>${methodsTbl}</details></div>`);
+      ${p.tunnel ? '' : '<div class="lbl">Tunnels</div>'}<div class="rt-rows">${tunnels}</div>
+      <details class="rt-more"${p.tunnel || STATE.routeSel ? ' open' : ''}><summary><span class="lbl">Methods this tunnel may use</span> <span class="faint">${onCount} of ${cellCount} on — speeds and order</span></summary>${sharedNote}${methodsTbl}</details></div>`);
     const setSkip = async (v, on) => {
       const [method, family] = v.split('|');
       try {
         skip = await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on });
-        card.replaceWith(buildCard(p));
+        repaint(); // the other tunnels on this pair show the same switches
         toast(on ? `${methodTitle(method)} (${famName(family)}) left out on this route — running hot-standby tunnels drop it in about 20 s` : `${methodTitle(method)} (${famName(family)}) is back on this route — running hot-standby tunnels add it in about 20 s`);
       } catch (er) { alertModal('Routes', er.message); }
     };
@@ -515,34 +523,43 @@ async function viewRoutes(w) {
     });
     return card;
   };
-  // server picker: one tile per Iran server; picking one opens only its routes
-  const all = [...pairs.values()];
-  const byIran = {};
-  all.forEach(p => (byIran[p.iran] = byIran[p.iran] || []).push(p));
-  const ids = Object.keys(byIran).sort((a, b) => serverName(a).localeCompare(serverName(b)));
-  if (STATE.routeSel && !byIran[STATE.routeSel]) STATE.routeSel = '';
-  if (STATE.routeSel === undefined) { try { STATE.routeSel = localStorage.getItem('tp-routesel') || ''; } catch (e) { STATE.routeSel = ''; } if (!byIran[STATE.routeSel]) STATE.routeSel = ''; }
-  const tile = (id) => {
-    const ps = id ? byIran[id] : all, ts = ps.flatMap(p => p.tunnels);
-    const up = ts.filter(t => t.active && !t.health).length, bad = ts.filter(t => t.active && t.health).length;
-    const s = id ? serverById(id) : null;
-    return `<button type="button" class="rtile${STATE.routeSel === id ? ' on' : ''}" data-rsel="${id}">
-      <span class="rt-fl">${id ? (s && s.country ? flag(s.country) : '🇮🇷') : '🌐'}</span>
-      <span class="rt-tn"><b>${id ? esc(serverName(id)) : 'All servers'}</b><small>${ps.length} route${ps.length === 1 ? '' : 's'} · ${ts.length} tunnel${ts.length === 1 ? '' : 's'}</small></span>
-      <span class="rt-dots">${up ? `<i class="ok">${up}</i>` : ''}${bad ? `<i class="bad">${bad}</i>` : ''}</span></button>`;
+  // one item per tunnel, in the Tunnels page's order (tunnels on the same pair share its
+  // switches); measured pairs with no tunnel come last, under "Other routes"
+  const items = [], others = [];
+  [...pairs.values()].forEach(p => {
+    if (!p.tunnels.length) { others.push({ ...p, id: 'p:' + key(p.iran, p.foreign) }); return; }
+    p.tunnels.forEach(t => items.push({ ...p, tunnels: [t], tunnel: t, id: t.id, shared: p.tunnels.filter(x => x !== t).map(x => x.name) }));
+  });
+  const order = new Map(STATE.tunnels.map((t, i) => [t.id, i]));
+  items.sort((a, b) => order.get(a.id) - order.get(b.id));
+  const valid = (id) => id === '' || id === 'other' || items.some(x => x.id === id);
+  if (STATE.routeSel === undefined) { try { STATE.routeSel = localStorage.getItem('tp-routesel') || ''; } catch (e) { STATE.routeSel = ''; } }
+  if (!valid(STATE.routeSel)) STATE.routeSel = '';
+  const dot = (t) => !t.active ? '' : t.health ? '<i class="bad">●</i>' : t.health === '' ? '<i class="ok">●</i>' : '';
+  const tile = (it) => {
+    const t = it.tunnel, s = serverById(it.foreign);
+    return `<button type="button" class="rtile${STATE.routeSel === it.id ? ' on' : ''}" data-rsel="${it.id}" title="${esc(serverName(it.iran))} → ${esc(it.foreign ? serverName(it.foreign) : 'this panel host')}">
+      <span class="rt-fl">${s && s.country ? flag(s.country) : '🛰'}</span>
+      <span class="rt-tn"><b>${esc(t.name)}</b><small>${t.active ? esc(methodTitle(t.active)) : 'stopped'}</small></span>
+      <span class="rt-dots">${dot(t)}</span></button>`;
   };
-  const picker = h(`<div class="rpick">${tile('')}${ids.map(tile).join('')}</div>`);
+  const picker = h(`<div class="rpick"><button type="button" class="rtile${STATE.routeSel === '' ? ' on' : ''}" data-rsel=""><span class="rt-fl">🌐</span><span class="rt-tn"><b>All tunnels</b><small>${items.length} tunnel${items.length === 1 ? '' : 's'}</small></span></button>
+    ${items.map(tile).join('')}${others.length ? `<button type="button" class="rtile${STATE.routeSel === 'other' ? ' on' : ''}" data-rsel="other"><span class="rt-fl">📊</span><span class="rt-tn"><b>Other routes</b><small>measured, no tunnel</small></span></button>` : ''}</div>`);
   box.before(picker);
   const paint = () => {
     $$('[data-rsel]', picker).forEach(b => b.classList.toggle('on', b.dataset.rsel === STATE.routeSel));
+    // on a phone the tiles are one row: keep the chosen one in sight
+    const on = $('.rtile.on', picker); if (on && picker.scrollWidth > picker.clientWidth) picker.scrollLeft = on.offsetLeft - picker.offsetLeft - 8;
     box.innerHTML = '';
-    (STATE.routeSel ? byIran[STATE.routeSel] : all).forEach(p => {
+    const shown = STATE.routeSel === '' ? items : STATE.routeSel === 'other' ? others : items.filter(x => x.id === STATE.routeSel);
+    shown.forEach(p => {
       // one route that can't be drawn must not hide the ones after it
       try { box.appendChild(buildCard(p)); }
       catch (e) { box.appendChild(h(`<div class="card rt-card"><h3>${esc(serverName(p.iran))} → ${esc(p.foreign ? serverName(p.foreign) : 'this panel host')}</h3><div class="faint">${p.tunnels.map(t => esc(t.name)).join(' · ')} — this route couldn't be drawn (${esc(e.message)})</div></div>`)); console.error(e); }
     });
   };
   $$('[data-rsel]', picker).forEach(b => b.onclick = () => { STATE.routeSel = b.dataset.rsel; try { localStorage.setItem('tp-routesel', STATE.routeSel); } catch (e) {} paint(); });
+  repaint = paint;
   paint();
 }
 // the gist of a benchmark error, for a table cell

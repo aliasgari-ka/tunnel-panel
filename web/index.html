@@ -356,6 +356,8 @@ details.advopts{border-top:1px dashed var(--line);padding-top:8px}
 details.advopts summary{cursor:pointer;font-size:12.5px;font-weight:650;color:var(--muted);list-style:none}
 details.advopts .opts.inner{margin-top:10px;background:var(--panel);border:1px solid var(--line)}
 .rpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin-bottom:18px}
+/* phones: the tunnel tiles are one row you swipe, not a column to scroll past */
+@media (max-width:700px){.rpick{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:6px;margin-inline:-4px;padding-inline:4px}.rpick .rtile{flex:0 0 auto;min-width:170px;max-width:220px;scroll-snap-align:start}.rpick .rtile:hover{transform:none}}
 .rtile{display:flex;align-items:center;gap:10px;text-align:start;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;color:var(--fg);cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s;box-shadow:var(--shadow)}
 .rtile:hover{transform:translateY(-2px);box-shadow:var(--shadow-up)}
 .rtile.on{border-color:var(--accent);background:linear-gradient(135deg,var(--accent-soft),var(--panel));box-shadow:0 0 0 1px var(--accent),0 8px 22px var(--glow)}
