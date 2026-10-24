@@ -1240,11 +1240,12 @@ function tunnelCard(t) {
   const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
   const fl = (s, d) => s && s.country ? flag(s.country) : d;
   const miss = methodMissing(active || selM, t);
-  // a hot-standby tunnel whose own method never came up on this route (its path failed) runs
-  // on the others: the chip shows what the users are on, and says why the main one didn't start
+  // a hot-standby tunnel's users may be on another of its paths than the tunnel's own method
+  // (it failed on this route, or the switcher moved them): the method chip shows what the users
+  // are on — the same path the ⚡ chip names — and a failed own method says why it didn't start
   const mainFail = t.hotStandby && t.active ? (t.paths || []).find(p => p.method === t.active && p.family === t.family && p.failed) : null;
-  const onKey = mainFail && t.hs && t.hs.keys ? (t.hs.keys[t.hs.active] || '') : '';
-  const onM = onKey ? STATE.methods.find(m => m.id === onKey.split('|')[0]) : null;
+  const onKey = t.hotStandby && t.active && t.hs && t.hs.keys ? (t.hs.keys[t.hs.active] || '') : '';
+  const onM = onKey && onKey !== t.active + '|' + t.family ? STATE.methods.find(m => m.id === onKey.split('|')[0]) : null;
   const shownM = onM || active || selM, shownFam = onM ? onKey.split('|')[1] : t.family;
   const card = h(`<div class="card tc${t.active ? ' live' : ''}" data-id="${t.id}">
     <div class="tc-h"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${ownerChip(t.owner)}${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
