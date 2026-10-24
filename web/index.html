@@ -203,6 +203,14 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .rt-tbl td:first-child{border-radius:9px 0 0 9px}.rt-tbl td:last-child{border-radius:0 9px 9px 0}
 .rt-mn{font-weight:600;white-space:nowrap}
 .rt-c{white-space:nowrap}.rt-c>*{vertical-align:middle}
+/* the route's on/off switch per method and family */
+.rt-sw{position:relative;display:inline-block;width:30px;height:17px;margin-inline-end:9px;cursor:pointer;flex:none}
+.rt-sw input{position:absolute;opacity:0;width:0;height:0}
+.rt-sw i{position:absolute;inset:0;border-radius:99px;background:color-mix(in srgb,var(--faint) 45%,transparent);transition:background .15s}
+.rt-sw i::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.rt-sw input:checked+i{background:var(--good)}
+.rt-sw input:checked+i::after{transform:translateX(13px)}
+.rt-sw input:focus-visible+i{outline:2px solid var(--accent);outline-offset:2px}
 .rt-c .btn{float:inline-end;padding:1px 7px;opacity:.45;margin-inline-start:6px}.rt-c:hover .btn{opacity:1}
 .rt-rank{display:inline-grid;place-items:center;min-width:22px;height:20px;border-radius:6px;background:var(--panel);font-size:11.5px;font-weight:700;margin-inline-end:6px}
 .rt-rank.top{background:var(--good-soft);color:var(--good)}
