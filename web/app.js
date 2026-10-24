@@ -1240,6 +1240,12 @@ function tunnelCard(t) {
   const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
   const fl = (s, d) => s && s.country ? flag(s.country) : d;
   const miss = methodMissing(active || selM, t);
+  // a hot-standby tunnel whose own method never came up on this route (its path failed) runs
+  // on the others: the chip shows what the users are on, and says why the main one didn't start
+  const mainFail = t.hotStandby && t.active ? (t.paths || []).find(p => p.method === t.active && p.family === t.family && p.failed) : null;
+  const onKey = mainFail && t.hs && t.hs.keys ? (t.hs.keys[t.hs.active] || '') : '';
+  const onM = onKey ? STATE.methods.find(m => m.id === onKey.split('|')[0]) : null;
+  const shownM = onM || active || selM, shownFam = onM ? onKey.split('|')[1] : t.family;
   const card = h(`<div class="card tc${t.active ? ' live' : ''}" data-id="${t.id}">
     <div class="tc-h"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${ownerChip(t.owner)}${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     <div class="tc-r" title="${esc(serverName(t.serverId))} → ${esc(fg ? fg.name : 'this panel host')}">
@@ -1247,7 +1253,7 @@ function tunnelCard(t) {
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
-    <div class="tc-m"><span class="chip mth" title="${esc(groupOf(active || selM) + ' · ' + ((active || selM)?.title || ''))}">${(active || selM) ? groupIcon(active || selM) + ' ' : ''}${esc((active || selM)?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(t.family)}</span>${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : (t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>')}</div>
+    <div class="tc-m"><span class="chip mth" title="${esc(groupOf(shownM) + ' · ' + (shownM?.title || ''))}">${shownM ? groupIcon(shownM) + ' ' : ''}${esc(shownM?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(shownFam)}</span>${mainFail ? `<span class="chip warn" title="${esc(mainFail.failed)}">⚠ ${esc(methodTitle(t.active))} didn't start here</span>` : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : (t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>')}</div>
     ${t.active ? `<div class="traf mini" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
