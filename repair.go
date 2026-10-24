@@ -176,8 +176,15 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 		}
 	}
 	if why == "" && active == "golden" {
-		if old := a.relayOutdated(cctx, ir) || a.relayOutdated(cctx, kh); old {
-			why = "older Golden-GRE relay"
+		for _, side := range []struct {
+			label string
+			h     Host
+		}{{"Iran", ir}, {"foreign", kh}} {
+			if got := a.relaySrcOutdated(cctx, side.h); got != "" {
+				j.log("· %s: the Golden-GRE relay on the %s server is from source %s, this panel's is %s", name, side.label, got, goldenRelaySrc)
+				why = "older Golden-GRE relay"
+				break
+			}
 		}
 	}
 	if why == "" {
@@ -225,20 +232,28 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 	return "fixed", why
 }
 
-// relayOutdated: the Golden-GRE relay on h is not the panel's current build.
-func (a *App) relayOutdated(ctx context.Context, h Host) bool {
+// relaySrcOutdated returns the source hash of the relay installed on h when it differs from
+// this panel's ("" = current, not installed, or unknown).
+func (a *App) relaySrcOutdated(ctx context.Context, h Host) string {
 	arch, err := hostArch(ctx, h)
 	if err != nil {
-		return false
+		return ""
 	}
 	if want, err := helperBytes("golden-gre-relay", arch); err != nil || len(want) == 0 {
-		return false // nothing to renew it with
+		return "" // nothing to renew it with
 	}
 	// the relay's source, not its bytes (golden_src.go). A relay installed before the
-	// source was recorded counts as current: the source hasn't changed since then.
-	out, _ := h.Run(ctx, "test -x /usr/local/sbin/golden-gre-relay && cat /usr/local/sbin/golden-gre-relay.src 2>/dev/null", nil)
-	got := strings.TrimSpace(lastLine(out))
-	return got != "" && got != goldenRelaySrc
+	// source was recorded counts as current: the source hasn't changed since then. Only an
+	// explicit "SRC <hash>" line counts, so nothing else the shell prints can trip it.
+	out, _ := h.Run(ctx, "if [ -x /usr/local/sbin/golden-gre-relay ] && [ -s /usr/local/sbin/golden-gre-relay.src ]; then echo \"SRC $(head -c 64 /usr/local/sbin/golden-gre-relay.src)\"; fi; true", nil)
+	for _, l := range strings.Split(out, "\n") {
+		if got, ok := strings.CutPrefix(strings.TrimSpace(l), "SRC "); ok {
+			if got = strings.TrimSpace(got); got != "" && got != goldenRelaySrc {
+				return got
+			}
+		}
+	}
+	return ""
 }
 
 // resumeInterrupted brings back tunnels an apply had taken down when the panel stopped in
