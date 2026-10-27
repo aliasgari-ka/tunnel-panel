@@ -1120,8 +1120,10 @@ case ",$cur," in *",49000-49255,"*) ;; *) sysctl -qw net.ipv4.ip_local_reserved_
 // it (an outgoing connection that got it before the port was reserved): they reconnect, and
 // the service that needs p can start.
 func freePort(p int) string {
-	return fmt.Sprintf(`if ! ss -Hltn "( sport = :%[1]d )" 2>/dev/null | grep -q . && ss -Htn "( sport = :%[1]d )" 2>/dev/null | grep -q .; then
-  echo "port %[1]d is the local port of an outgoing connection — closing it so the probe server can listen"
+	// (every state, not only established: a socket half-closed or still connecting holds the
+	// port too, and the default view of ss doesn't list it — seen live: 41002 on nl)
+	return fmt.Sprintf(`if ! ss -Hltn "( sport = :%[1]d )" 2>/dev/null | grep -q . && ss -Htan "( sport = :%[1]d )" 2>/dev/null | grep -v LISTEN | grep -q .; then
+  echo "port %[1]d is the local port of a connection — closing it so the probe server can listen"
   ss -K "( sport = :%[1]d )" >/dev/null 2>&1 || true; sleep 1
 fi
 `, p)

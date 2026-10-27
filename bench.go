@@ -348,7 +348,7 @@ func probeServerUpLife(port, life int) string {
 # with "address already in use" (seen live), so wait until it is gone (force after 3 s)
 for i in $(seq 1 15); do pgrep -f -- '-listen :%[1]d -life' >/dev/null 2>&1 || break; sleep 0.2; done
 pkill -9 -f -- '-listen :%[1]d -life' 2>/dev/null || true
-iptables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
+%[4]s%[5]siptables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 ip6tables -C INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport %[1]d -j ACCEPT 2>/dev/null || true
 setsid nohup %[2]s probe serve -listen :%[1]d -life %[3]d >/tmp/tp-probe-%[1]d.log 2>&1 </dev/null &
 # report whether it really listens: a probe that can't start (wrong binary, port taken)
@@ -357,8 +357,8 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   if timeout 1 bash -c '</dev/tcp/127.0.0.1/%[1]d' 2>/dev/null; then echo probe-up; exit 0; fi
   sleep 0.3
 done
-echo "probe-failed: the probe server does not listen on port %[1]d: $(tail -c 300 /tmp/tp-probe-%[1]d.log 2>/dev/null | tr '\n' ' ')$(h=$(ss -Hltnp "( sport = :%[1]d )" 2>/dev/null | grep -o 'users:.*' | head -1); [ -n "$h" ] && echo " — the port is held by $h")$(c=$(ss -Htnp state established "( sport = :%[1]d )" 2>/dev/null | head -1 | awk '{print $4" → "$5" "$6}'); [ -n "$c" ] && echo " — an outgoing connection uses it as its local port ($c): re-apply Kernel tuning on this server to keep the panel's ports out of the ephemeral range")"
-`, port, probeBin, life)
+echo "probe-failed: the probe server does not listen on port %[1]d: $(tail -c 300 /tmp/tp-probe-%[1]d.log 2>/dev/null | tr '\n' ' ')$(h=$(ss -Hltnp "( sport = :%[1]d )" 2>/dev/null | grep -o 'users:.*' | head -1); [ -n "$h" ] && echo " — the port is held by $h")$(c=$(ss -Htanp "( sport = :%[1]d )" 2>/dev/null | grep -v LISTEN | head -1 | awk '{print $1" "$4" → "$5" "$6}'); [ -n "$c" ] && echo " — a connection still uses it as its local port ($c)")"
+`, port, probeBin, life, panelPortsSetup, freePort(port))
 }
 
 // probeStarted runs probeServerUp(Life) and turns a probe that doesn't listen into an error.
