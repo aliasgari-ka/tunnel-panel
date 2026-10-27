@@ -90,10 +90,20 @@ func renderUnit(u Unit) string {
 			rs = 3
 		}
 		fmt.Fprintf(&b, "Restart=always\nRestartSec=%d\n", rs)
+		b.WriteString(goMemEnv)
 	}
 	b.WriteString("LimitNOFILE=1048576\n\n[Install]\nWantedBy=multi-user.target\n")
 	return b.String()
 }
+
+// goMemEnv makes the Go tunnel cores (BackPack, FRP, the probe…) give memory back: a BackPack
+// path held ~140 MB with no users on it (seen live), memory Go keeps after use. GOGC=50
+// collects sooner and GOMEMLIMIT is a soft ceiling (the collector works harder near it,
+// nothing is killed). Programs that aren't Go ignore both.
+const goMemEnv = "Environment=GOGC=50\nEnvironment=GOMEMLIMIT=128MiB\n"
+
+// goMemDropIn is the same for a unit written before goMemEnv existed (Repair adds it).
+const goMemDropIn = "[Service]\n" + goMemEnv
 
 // scriptPair returns up/down shell scripts as files plus a oneshot unit running them.
 func scriptPair(t *Tunnel, desc, up, down string) (map[string]FileSpec, Unit) {
