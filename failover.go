@@ -296,8 +296,17 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 		running = hot && prev != "" && len(t.Paths) > 0 && hsIndex(t, mid, fam) >= 0
 	})
 	// hot standby: another running path (or back to the tunnel's own from a chosen one) is
-	// a selector swap, not a rebuild — nobody is cut
-	if running && (mid != prev || fam != old || pin != "") {
+	// a selector swap, not a rebuild — nobody is cut. So is the tunnel's own method while
+	// the switcher has the users on another path (auto mode or a failover moved them, no
+	// pin): that read as "re-apply" and rebuilt the tunnel, cutting everyone (seen live on
+	// تانل فنلاند, ~75 s). Only when the users already are on it does it mean a re-apply.
+	elsewhere := false
+	if running && mid == prev && fam == old && pin == "" {
+		if v := a.hsViewOf(t.ID); v != nil && v.Active >= 0 && v.Active < len(v.Keys) {
+			elsewhere = v.Keys[v.Active] != mid+"|"+fam
+		}
+	}
+	if running && (mid != prev || fam != old || pin != "" || elsewhere) {
 		return a.hsSwitchJob(t, mid, fam)
 	}
 	if err := a.switchFamily(t, m, fam); err != nil {
