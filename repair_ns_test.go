@@ -65,7 +65,7 @@ func TestRepairNS(t *testing.T) {
 	step("all three work after apply", health("okok") == "" && health("brkn") == "" && health("hots") == "")
 	// break one (its unit dies on Iran), and make the hot-standby switcher an older one
 	_, _ = nsSD{"tir", fake}.Run(ctx, "systemctl stop tp-brkn.service; ip link del tp41 2>/dev/null; true", nil)
-	sh(t, "sed -i '/tp-switcher 9/d' /etc/netns/tir/tunnel-panel/t/hotshs/switch.sh")
+	sh(t, "sed -i '/tp-switcher 10/d' /etc/netns/tir/tunnel-panel/t/hotshs/switch.sh")
 	time.Sleep(3 * time.Second)
 	t.Logf("   before repair: okok=%q brkn=%q", health("okok"), health("brkn"))
 	step("the broken tunnel is seen as broken", health("brkn") != "")
@@ -82,7 +82,7 @@ func TestRepairNS(t *testing.T) {
 	time.Sleep(8 * time.Second)
 	step("the broken tunnel works again", health("brkn") == "")
 	step("the healthy one still works", health("okok") == "")
-	step("hot standby has the new switcher", strings.Contains(sh(t, "cat /etc/netns/tir/tunnel-panel/t/hotshs/switch.sh"), "tp-switcher 9"))
+	step("hot standby has the new switcher", strings.Contains(sh(t, "cat /etc/netns/tir/tunnel-panel/t/hotshs/switch.sh"), "tp-switcher 10"))
 	step("hot standby still passes", health("hots") == "")
 	lines := strings.Join(j.snapshot().Lines, "\n")
 	step("healthy one left alone", strings.Contains(lines, "okok: fine"))

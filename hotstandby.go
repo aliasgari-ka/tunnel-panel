@@ -390,7 +390,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 9
+# tp-switcher 10
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -525,6 +525,9 @@ while true; do
   fi
   if [ $pinmove = 1 ]; then
     use $P0 "chosen in the panel"
+    # a choice made by hand holds for HOLD against auto mode's comparisons (it moved the users
+    # straight back off a lossy path someone picked on purpose); a path that dies is still left
+    hold=$((now + HOLD)); rm -f cmp.run cmp.done
   elif [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ] && [ $((now - ${since[$active]:-$now})) -ge ${GRACE:-0} ]; then
     # down for GRACE s (a blip shorter than that moves nobody): to the steadiest, cleanest path
     best=$(pick)
@@ -653,14 +656,23 @@ fi
 true
 `
 
-// hsPinIndex is the switcher index of the path chosen in the panel ("" = the first).
+// hsPinIndex is the switcher index of the path chosen in the panel.
+//
+// No pin means the tunnel's own method: its index among the running paths (not "", which
+// with the press stamp made the pin file read " <stamp>" — the switcher took the stamp for
+// the path, found it out of range and never moved the users back to the tunnel's own
+// method; seen live on تانل فنلاند).
 func hsPinIndex(t *Tunnel, paths []HSPath) string {
+	want := t.HSPin
+	if want == "" {
+		want = t.Active + "|" + t.Family
+	}
 	for k, p := range paths {
-		if t.HSPin != "" && p.Method+"|"+p.Family == t.HSPin {
+		if p.Method+"|"+p.Family == want {
 			return strconv.Itoa(k)
 		}
 	}
-	return ""
+	return "0"
 }
 
 func hsModeName(t *Tunnel) string {
