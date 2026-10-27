@@ -124,7 +124,7 @@ func (a *App) activeBench() *benchActive {
 // IP); the others are port forwarders and are measured through a forwarded port.
 func benchIsL3(m *Method, opts map[string]string) bool {
 	switch m.ID {
-	case "golden", "bp_l3", "direct6", "ipsec6", "gre":
+	case "golden", "icmp", "bp_l3", "direct6", "ipsec6", "gre":
 		return true
 	case "premium":
 		get, _ := resolveOptions(m, opts)

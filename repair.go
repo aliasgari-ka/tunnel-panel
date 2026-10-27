@@ -175,7 +175,7 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 			why = r
 		}
 	}
-	if why == "" && active == "golden" {
+	if why == "" && (active == "golden" || active == "icmp") {
 		for _, side := range []struct {
 			label string
 			h     Host
