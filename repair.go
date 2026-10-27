@@ -161,6 +161,11 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 			// the old one through every update, seen live: America, xe108)
 			if !strings.Contains(out, "OLD") {
 				j.log("· %s: %d of %d standby paths down — users are on a working one; left alone", name, bad, len(v.OK))
+				// still a working tunnel: it gets the Go memory settings too (most tunnels have
+				// some dead standby path, so returning first skipped them all — seen live)
+				if n := a.memTune(cctx, j, t, ir, kh); n > 0 {
+					return "fixed", fmt.Sprintf("memory settings on %d unit(s)", n)
+				}
 				return "", ""
 			}
 			j.log("· %s: %d of %d standby paths down — users are on a working one; no rebuild", name, bad, len(v.OK))
@@ -209,6 +214,9 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 			return "failed", "switcher update: " + err.Error()
 		}
 		j.log("  ✓ switcher updated")
+		if n := a.memTune(cctx, j, t, ir, kh); n > 0 {
+			return "fixed", fmt.Sprintf("switcher updated, memory settings on %d unit(s)", n)
+		}
 		return "fixed", "switcher updated"
 	}
 
