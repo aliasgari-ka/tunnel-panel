@@ -72,7 +72,7 @@ func (a *App) failoverCandidates(t *Tunnel) []pathChoice {
 		fams = []string{"v6", "v4"}
 	}
 	for _, fam := range fams {
-		for _, mid := range []string{"bp_l3", "gre", "direct6", "golden", "icmp", "backhaul", "bp_reverse", "frp", "ipsec6"} {
+		for _, mid := range []string{"bp_l3", "gre", "direct6", "golden", "icmp", "backhaul", "bp_reverse", "frp", "paqet", "ipsec6"} {
 			add(mid, fam)
 		}
 	}
