@@ -188,6 +188,10 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 		}
 	}
 	if why == "" {
+		// a working tunnel whose units predate the Go memory settings gets them (memtune.go)
+		if n := a.memTune(cctx, j, t, ir, kh); n > 0 {
+			return "fixed", fmt.Sprintf("memory settings on %d unit(s)", n)
+		}
 		j.log("· %s: fine", name)
 		return "", ""
 	}
