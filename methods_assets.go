@@ -8,6 +8,7 @@ import (
 
 func init() {
 	register(methodGoldenGRE)
+	register(methodICMP)
 	register(methodPremium)
 }
 
@@ -32,41 +33,72 @@ var methodGoldenGRE = &Method{
 		return []map[string]string{{"facade": "icmp"}, {"facade": "none"}}
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
-		d := c.D
-		facade, mtu, wirePort := c.Opt("facade"), c.Opt("mtu"), c.Opt("dnsport")
+		return buildGolden(c, c.Opt("facade"))
+	},
+}
+
+// ---- ICMP tunnel: the Golden relay locked to the ICMP-echo disguise (IPv4 only) ----
+
+// methodICMP tunnels through ICMP echo (ping) using the same userspace relay as Golden-GRE,
+// for networks that let ping through but block most else. It is Golden-GRE with the facade
+// fixed to icmp, so it has no DNS-port field.
+var methodICMP = &Method{
+	ID:       "icmp",
+	Title:    "ICMP tunnel (ping)",
+	Desc:     "GRE-in-FOU disguised as ICMP echo (ping) by a userspace relay, so it passes where only ping gets through. IPv4 only. Optional XChaCha20 encryption.",
+	Families: []string{"v4"},
+	Encrypt:  "optional XChaCha20",
+	Helper:   "golden-gre-relay",
+	Fields: []Field{
+		{Key: "mtu", Label: "MTU", Type: "number", Default: "1380"},
+		{Key: "encrypt", Label: "Encrypt payload", Type: "bool", Default: "true"},
+		{Key: "fec", Label: "FEC K:M (blank = off)", Type: "text", Default: "", Advanced: true},
+	},
+	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
+		return buildGolden(c, "icmp")
+	},
+}
+
+// buildGolden builds the relay plan for a Golden-GRE-family method with the given facade
+// (dns | icmp | none). methodGoldenGRE passes the chosen facade; methodICMP fixes it to icmp.
+func buildGolden(c *buildCtx, facade string) (ir, kh SidePlan, err error) {
+	d := c.D
+	mtu, wirePort := c.Opt("mtu"), c.Opt("dnsport")
+	if facade == "dns" {
 		if p, err := strconv.Atoi(wirePort); err != nil || p < 1 || p > 65535 {
 			return ir, kh, fmt.Errorf("Golden-GRE: DNS port must be 1..65535")
 		}
-		// the relay receives on its own port; a TPROXY rule per peer hands it that peer's port-53
-		// packets, so several Golden tunnels (to different peers) share one server's public port 53
-		fouPort, relayPort, rxPort := d.BasePort, d.BasePort+1, d.BasePort+3
-		tag := "tpg-" + c.T.ID
-		dir := tunnelDir(c.T)
-		keyPath := dir + "/golden.key"
-		relayBin := "/usr/local/sbin/golden-gre-relay"
-		useKey := c.OptB("encrypt") && facade != "none"
-		relay := Artifact{Name: "golden-gre-relay", Asset: "golden-gre-relay", Dest: relayBin, Mode: 0o755}
+	}
+	// the relay receives on its own port; a TPROXY rule per peer hands it that peer's port-53
+	// packets, so several Golden tunnels (to different peers) share one server's public port 53
+	fouPort, relayPort, rxPort := d.BasePort, d.BasePort+1, d.BasePort+3
+	tag := "tpg-" + c.T.ID
+	dir := tunnelDir(c.T)
+	keyPath := dir + "/golden.key"
+	relayBin := "/usr/local/sbin/golden-gre-relay"
+	useKey := c.OptB("encrypt") && facade != "none"
+	relay := Artifact{Name: "golden-gre-relay", Asset: "golden-gre-relay", Dest: relayBin, Mode: 0o755}
 
-		// link setup / teardown (ExecStartPre / ExecStopPost around the relay service)
-		linkUp := func(selfPub, peerPub, tunAddr string) string {
-			s := sysctlBBR
-			if facade == "none" {
-				s += fmt.Sprintf(`ip link del %[1]s 2>/dev/null || true
+	// link setup / teardown (ExecStartPre / ExecStopPost around the relay service)
+	linkUp := func(selfPub, peerPub, tunAddr string) string {
+		s := sysctlBBR
+		if facade == "none" {
+			s += fmt.Sprintf(`ip link del %[1]s 2>/dev/null || true
 ip link add %[1]s type gre local %[2]s remote %[3]s ttl 255 key %[4]d
 ip addr add %[5]s/30 dev %[1]s
 ip link set %[1]s mtu %[6]s up
 iptables -C INPUT -p gre -s %[3]s -j ACCEPT 2>/dev/null || iptables -I INPUT -p gre -s %[3]s -j ACCEPT
 `, d.Iface, selfPub, peerPub, d.GREKey, tunAddr, mtu)
-				return s
-			}
-			inRule := "-p udp --dport " + wirePort
-			if facade == "icmp" {
-				inRule = "-p icmp"
-			}
-			if facade == "dns" {
-				s += goldenSteer(true, peerPub, wirePort, selfPub, rxPort, tag)
-			}
-			s += fmt.Sprintf(`modprobe fou 2>/dev/null || true
+			return s
+		}
+		inRule := "-p udp --dport " + wirePort
+		if facade == "icmp" {
+			inRule = "-p icmp"
+		}
+		if facade == "dns" {
+			s += goldenSteer(true, peerPub, wirePort, selfPub, rxPort, tag)
+		}
+		s += fmt.Sprintf(`modprobe fou 2>/dev/null || true
 ip link del %[1]s 2>/dev/null || true
 ip fou del port %[2]d local 127.0.0.1 2>/dev/null || true
 ip fou add port %[2]d ipproto 47 local 127.0.0.1
@@ -76,81 +108,80 @@ ip link set %[1]s mtu %[6]s up
 ethtool -K %[1]s tso off gso off gro off 2>/dev/null || true
 iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]s -s %[8]s -j ACCEPT
 `, d.Iface, fouPort, d.GREKey, relayPort, tunAddr, mtu, inRule, peerPub)
+		if facade == "icmp" {
+			// stop the kernel answering the relay's echo requests to the peer
+			s += fmt.Sprintf("iptables -C OUTPUT -d %[1]s -p icmp --icmp-type 0 -j DROP 2>/dev/null || iptables -I OUTPUT -d %[1]s -p icmp --icmp-type 0 -j DROP\n", peerPub)
+		}
+		return s
+	}
+	linkDown := func(selfPub, peerPub string) string {
+		s := fmt.Sprintf("ip link del %s 2>/dev/null || true\nip fou del port %d local 127.0.0.1 2>/dev/null || true\n", d.Iface, fouPort)
+		inRule := "-p udp --dport " + wirePort
+		if facade == "icmp" {
+			inRule = "-p icmp"
+		}
+		if facade == "dns" {
+			s += goldenSteer(false, peerPub, wirePort, selfPub, rxPort, tag)
+		}
+		if facade != "none" {
+			s += fmt.Sprintf("iptables -D INPUT %s -s %s -j ACCEPT 2>/dev/null || true\n", inRule, peerPub)
 			if facade == "icmp" {
-				// stop the kernel answering the relay's echo requests to the peer
-				s += fmt.Sprintf("iptables -C OUTPUT -d %[1]s -p icmp --icmp-type 0 -j DROP 2>/dev/null || iptables -I OUTPUT -d %[1]s -p icmp --icmp-type 0 -j DROP\n", peerPub)
+				s += fmt.Sprintf("iptables -D OUTPUT -d %s -p icmp --icmp-type 0 -j DROP 2>/dev/null || true\n", peerPub)
 			}
-			return s
+		} else {
+			s += fmt.Sprintf("iptables -D INPUT -p gre -s %s -j ACCEPT 2>/dev/null || true\n", peerPub)
 		}
-		linkDown := func(selfPub, peerPub string) string {
-			s := fmt.Sprintf("ip link del %s 2>/dev/null || true\nip fou del port %d local 127.0.0.1 2>/dev/null || true\n", d.Iface, fouPort)
-			inRule := "-p udp --dport " + wirePort
-			if facade == "icmp" {
-				inRule = "-p icmp"
-			}
-			if facade == "dns" {
-				s += goldenSteer(false, peerPub, wirePort, selfPub, rxPort, tag)
-			}
-			if facade != "none" {
-				s += fmt.Sprintf("iptables -D INPUT %s -s %s -j ACCEPT 2>/dev/null || true\n", inRule, peerPub)
-				if facade == "icmp" {
-					s += fmt.Sprintf("iptables -D OUTPUT -d %s -p icmp --icmp-type 0 -j DROP 2>/dev/null || true\n", peerPub)
-				}
-			} else {
-				s += fmt.Sprintf("iptables -D INPUT -p gre -s %s -j ACCEPT 2>/dev/null || true\n", peerPub)
-			}
-			return s
+		return s
+	}
+	relayCmd := func(selfPub, peerPub string) string {
+		if facade == "none" {
+			return "/bin/sleep infinity" // GRE needs no relay; keep the unit alive
 		}
-		relayCmd := func(selfPub, peerPub string) string {
-			if facade == "none" {
-				return "/bin/sleep infinity" // GRE needs no relay; keep the unit alive
-			}
-			args := fmt.Sprintf("%s --facade %s --bind %s --peer %s --local 127.0.0.1:%d --reply 127.0.0.1:%d",
-				relayBin, facade, selfPub, peerPub, relayPort, fouPort)
-			if facade == "dns" {
-				args += fmt.Sprintf(" --port %s --listen %d", wirePort, rxPort)
-			} else {
-				args += " --itype 8"
-			}
-			if useKey {
-				args += " --keyfile " + keyPath
-			}
-			if f := c.Opt("fec"); f != "" {
-				args += " --fec " + f
-			}
-			return args
+		args := fmt.Sprintf("%s --facade %s --bind %s --peer %s --local 127.0.0.1:%d --reply 127.0.0.1:%d",
+			relayBin, facade, selfPub, peerPub, relayPort, fouPort)
+		if facade == "dns" {
+			args += fmt.Sprintf(" --port %s --listen %d", wirePort, rxPort)
+		} else {
+			args += " --itype 8"
 		}
+		if useKey {
+			args += " --keyfile " + keyPath
+		}
+		if f := c.Opt("fec"); f != "" {
+			args += " --fec " + f
+		}
+		return args
+	}
 
-		mk := func(selfPub, peerPub, tunAddr string, entry bool) SidePlan {
-			up := linkUp(selfPub, peerPub, tunAddr) +
-				fmt.Sprintf("ip link show %[1]s >/dev/null 2>&1 || { echo \"could not create interface %[1]s (gre/fou kernel modules?)\"; exit 1; }\n", d.Iface)
-			down := linkDown(selfPub, peerPub)
-			if entry {
-				up += portForwardV4(c.T.Ports, d.KHv4, d.Iface, fwdTag(d))
-				down = portForwardDownV4(fwdTag(d)) + down
-			}
-			files := map[string]FileSpec{
-				dir + "/up.sh":   {Content: []byte("#!/bin/bash\n" + up), Mode: 0o755},
-				dir + "/down.sh": {Content: []byte("#!/bin/bash\n" + down), Mode: 0o755},
-				// which relay source this binary was built from (see golden_src.go)
-				relayBin + ".src": {Content: []byte(goldenRelaySrc + "\n"), Mode: 0o644},
-			}
-			if useKey {
-				// the relay wants exactly 32 raw bytes; derive them from the stored secret
-				k := sha256.Sum256([]byte(c.T.secret("golden-key")))
-				files[keyPath] = FileSpec{Content: k[:], Mode: 0o600}
-			}
-			sp := SidePlan{Files: files, Artifacts: []Artifact{relay}, Unit: Unit{
-				Desc:         "Golden-GRE " + c.T.Name,
-				Type:         "simple",
-				ExecStartPre: dir + "/up.sh",
-				ExecStart:    relayCmd(selfPub, peerPub),
-				ExecStopPost: dir + "/down.sh",
-			}}
-			return sp
+	mk := func(selfPub, peerPub, tunAddr string, entry bool) SidePlan {
+		up := linkUp(selfPub, peerPub, tunAddr) +
+			fmt.Sprintf("ip link show %[1]s >/dev/null 2>&1 || { echo \"could not create interface %[1]s (gre/fou kernel modules?)\"; exit 1; }\n", d.Iface)
+		down := linkDown(selfPub, peerPub)
+		if entry {
+			up += portForwardV4(c.T.Ports, d.KHv4, d.Iface, fwdTag(d))
+			down = portForwardDownV4(fwdTag(d)) + down
 		}
-		return mk(d.IRPub, d.KHPub, d.IRv4, true), mk(d.KHPub, d.IRPub, d.KHv4, false), nil
-	},
+		files := map[string]FileSpec{
+			dir + "/up.sh":   {Content: []byte("#!/bin/bash\n" + up), Mode: 0o755},
+			dir + "/down.sh": {Content: []byte("#!/bin/bash\n" + down), Mode: 0o755},
+			// which relay source this binary was built from (see golden_src.go)
+			relayBin + ".src": {Content: []byte(goldenRelaySrc + "\n"), Mode: 0o644},
+		}
+		if useKey {
+			// the relay wants exactly 32 raw bytes; derive them from the stored secret
+			k := sha256.Sum256([]byte(c.T.secret("golden-key")))
+			files[keyPath] = FileSpec{Content: k[:], Mode: 0o600}
+		}
+		sp := SidePlan{Files: files, Artifacts: []Artifact{relay}, Unit: Unit{
+			Desc:         "Golden-GRE " + c.T.Name,
+			Type:         "simple",
+			ExecStartPre: dir + "/up.sh",
+			ExecStart:    relayCmd(selfPub, peerPub),
+			ExecStopPost: dir + "/down.sh",
+		}}
+		return sp
+	}
+	return mk(d.IRPub, d.KHPub, d.IRv4, true), mk(d.KHPub, d.IRPub, d.KHv4, false), nil
 }
 
 // ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and only box64
