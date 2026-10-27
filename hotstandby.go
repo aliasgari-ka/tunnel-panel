@@ -30,6 +30,10 @@ const (
 	hsGrace = 30
 	// hsSteady: seconds a path must have worked without a break to count as steady
 	hsSteady = 30
+	// hsNoBack: seconds auto mode won't take the users back to a path it moved them off,
+	// unless their current path degrades (the users' path is measured loaded, the others idle,
+	// so the one just left always looks better: paths swapped every 30-60 min, seen live)
+	hsNoBack = 21600
 )
 
 // hsOnly limits the methods hot standby uses (tests).
@@ -386,7 +390,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 8
+# tp-switcher 9
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -433,6 +437,11 @@ need() { local c=$(drops $1) w=$BACK; while [ $c -gt 1 ] && [ $w -lt 1800 ]; do 
 stable() { [ "${ok[$1]}" = 1 ] && [ $((now - ${since[$1]:-$now})) -ge $(need $1) ]; }
 # clean: no measured loss above LOSSBAD (a path never pinged counts as clean)
 clean() { [ ${ql[$1]:-0} -lt ${LOSSBAD:-50} ]; }
+# recentleft: auto mode moved the users off this path less than NOBACK s ago. The users' path
+# is measured under their traffic and the others idle, so the path just left looks better
+# again at once: without this, two paths of similar worth swapped every 30-60 min all night
+# (seen live: xe108 BackPack v4 <-> Direct v6). It is skipped unless the current path degrades.
+recentleft() { [ -n "${leftat[$1]}" ] && [ $((now - ${leftat[$1]})) -lt ${NOBACK:-21600} ]; }
 # pick: where users go when theirs is down — a steady path (up for STEADY s without a break)
 # before one that just came up, then the least lossy and fastest (cost)
 pick() {
@@ -454,7 +463,7 @@ measure() { # measure <kind> <from> <why> <k...>: speed tests in the background
   echo "$kind $from $why" > cmp.run; rm -f cmp.done
   ( for k in "$@"; do s=$(timeout 20 $P probe speed -addr ${A[$k]} -max $SPMB -secs 10 2>/dev/null); echo "$k ${s:-0}"; done > cmp.tmp; mv cmp.tmp cmp.done ) &
 }
-declare -a ok since fails qr ql sp spb spat flushed dropat
+declare -a ok since fails qr ql sp spb spat flushed dropat leftat
 active=-1
 rm -f cmp.run cmp.done cmp.tmp
 bash base.sh >/dev/null 2>&1
@@ -541,6 +550,7 @@ while true; do
       while read -r c _; do
         [ "$c" != "$a" ] && [ "${ok[$c]}" = 1 ] || continue
         sc=${sp[$c]:-0}; [ $sc -gt 0 ] || continue
+        [ -z "$why" ] && recentleft $c && continue # just left it, and nothing is wrong here
         win=0
         if [ $sa = 0 ]; then win=1
         elif [ $((sc * 10)) -ge $((sa * 15)) ] && [ ${ql[$c]:-0} -le $(( ${ql[$a]:-0} + 20 )) ]; then win=1
@@ -553,6 +563,7 @@ while true; do
       done < cmp.done
       if [ $best -ge 0 ] && budget; then
         planned $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
+        leftat[$a]=$now
         hold=$((now + HOLD)); backoff=1800
         # off a heavily lossy path, the connections already open move too (after a moment for
         # what is in flight): they would go on lagging there
@@ -573,6 +584,7 @@ while true; do
     for ((k=0; k<N; k++)); do
       [ $k != $a ] && stable $k || continue
       list="$list$(cost $k) $k"$'\n'
+      recentleft $k && continue # a path just left doesn't start a comparison by looking cheaper
       [ $(( $(cost $k) * 10 )) -lt $(( $(cost $a) * 7 )) ] && better=1
       [ $k = $P0 ] && [ $(( $(cost $k) * 10 )) -le $(( $(cost $a) * 11 )) ] && better=1
     done
@@ -604,8 +616,8 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 	for _, s := range splitPorts(t.Ports) {
 		ports = append(ports, strings.ReplaceAll(s.listen, "-", ":"))
 	}
-	conf := fmt.Sprintf("# tunnel %q\nP=%s\nN=%d\nEVERY=%d\nFAILS=%d\nBACK=%d\nPORTS=%q\nSBY=%d\nSPMB=%d\nSPEVERY=%d\nHOLD=%d\nLOSSBAD=%d\nSPMIN=%d\nPLANMAX=%d\nGRACE=%d\nSTEADY=%d\n",
-		t.Name, probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "), hsStandby, hsSpeedMB, hsSpeedSec, hsHold, hsLossBad, hsSpeedMin, hsPlanMax, hsGrace, hsSteady)
+	conf := fmt.Sprintf("# tunnel %q\nP=%s\nN=%d\nEVERY=%d\nFAILS=%d\nBACK=%d\nPORTS=%q\nSBY=%d\nSPMB=%d\nSPEVERY=%d\nHOLD=%d\nLOSSBAD=%d\nSPMIN=%d\nPLANMAX=%d\nGRACE=%d\nSTEADY=%d\nNOBACK=%d\n",
+		t.Name, probeBin, len(paths), hsEvery, hsFails, hsFailback, strings.Join(ports, " "), hsStandby, hsSpeedMB, hsSpeedSec, hsHold, hsLossBad, hsSpeedMin, hsPlanMax, hsGrace, hsSteady, hsNoBack)
 	files := map[string]FileSpec{
 		dir + "/switch.sh": {Content: []byte(hsSwitcher), Mode: 0o755},
 		dir + "/conf":      {Content: []byte(conf), Mode: 0o644},
