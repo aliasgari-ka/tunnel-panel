@@ -271,7 +271,10 @@ func (a *App) deploy(ctx context.Context, j *Job, label string, h Host, t *Tunne
 	if err := h.WriteFile("/etc/systemd/system/"+u, []byte(renderUnit(p.Unit)), 0o644); err != nil {
 		return err
 	}
-	script := fmt.Sprintf(`systemctl daemon-reload
+	// the fresh unit carries the current memory settings; a drop-in Repair once added to an
+	// older one would override them with its old values
+	script := fmt.Sprintf(`rm -f /etc/systemd/system/%[1]s.d/90-tunnel-panel-memory.conf
+systemctl daemon-reload
 systemctl enable %[1]s >/dev/null 2>&1
 jl() { inv=$(systemctl show -p InvocationID --value %[1]s 2>/dev/null)
   if [ -n "$inv" ]; then journalctl _SYSTEMD_INVOCATION_ID=$inv -n 25 --no-pager -o cat; else journalctl -u %[1]s -n 25 --no-pager -o cat; fi; }
