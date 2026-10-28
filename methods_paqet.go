@@ -46,7 +46,9 @@ var methodPaqet = &Method{
 		{Key: "block", Label: "Cipher", Type: "select", Default: "aes-128-gcm", Options: []string{"aes-128-gcm", "aes", "salsa20", "none"},
 			Help: "aes-128-gcm is the only one that also detects tampering", Advanced: true},
 		{Key: "fec", Label: "FEC (Reed-Solomon 10+1)", Type: "bool", Default: "false", Help: "for lossy links, at about 10 % more traffic", Advanced: true},
-		{Key: "log_level", Label: "Log level", Type: "select", Default: "info", Options: []string{"debug", "info", "warn", "error"}, Advanced: true},
+		// warn: at info the core writes a stats line every few seconds on both servers (700 journal
+		// lines an hour per path, seen live) — a path problem still shows as warn/error
+		{Key: "log_level", Label: "Log level", Type: "select", Default: "warn", Options: []string{"debug", "info", "warn", "error"}, Advanced: true},
 	},
 	Build: buildPaqet,
 }
