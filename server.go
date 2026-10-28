@@ -58,8 +58,22 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/login", s.json(s.login))
 	mux.HandleFunc("/api/logout", s.json(s.logout))
 
-	// g: signed in + JSON + the account may touch what the request names (see access.go)
-	g := func(path, kind string, h http.HandlerFunc) { mux.HandleFunc(path, s.auth(s.json(s.guard(kind, h)))) }
+	// g: signed in + JSON + the account may touch what the request names (see access.go).
+	// Only these answer a GET (they only read, or read on GET and change on POST); the rest
+	// act, so they take POST alone: the session cookie is SameSite=Lax and rides along on a
+	// link someone else made, so a GET that acts was one click from running for them (a link
+	// to /api/repair started a repair).
+	reads := map[string]bool{"/api/me": true, "/api/mybot": true, "/api/settings": true, "/api/methods": true,
+		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
+		"/api/traffic": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
+		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
+		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true}
+	g := func(path, kind string, h http.HandlerFunc) {
+		if !reads[path] {
+			h = postOnly(h)
+		}
+		mux.HandleFunc(path, s.auth(s.json(s.guard(kind, h))))
+	}
 	g("/api/me", "self", s.me)
 	g("/api/password", "self", s.password)
 	g("/api/mybot", "self", s.myBot)
@@ -105,6 +119,18 @@ func (a *App) routes() http.Handler {
 	g("/api/owner", "admin", s.owner)
 	g("/api/domain", "admin", s.domain)
 	return securityHeaders(mux)
+}
+
+// postOnly refuses anything but POST (see the reads list above).
+func postOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			httpErr(w, 405, "this action takes POST")
+			return
+		}
+		h(w, r)
+	}
 }
 
 func securityHeaders(h http.Handler) http.Handler {
