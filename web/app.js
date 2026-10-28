@@ -1094,14 +1094,20 @@ function serverCard(s) {
     </div><div data-paths="${s.id}"></div></div>`);
 }
 async function testServer(id, btn) {
-  btn.disabled = true; const o = btn.textContent; btn.textContent = 'Testing…';
-  const box = $(`[data-paths="${id}"]`);
+  btn.disabled = true; const o = btn.textContent; btn.textContent = 'Testing… (up to ~30 s)';
   try {
     const r = await api('/servers/test', { ID: id });
-    box.innerHTML = `<div class="paths">${r.paths.map(p => `<div class="path ${p.ok ? 'ok' : 'bad'}"><span>${p.ok ? '✓' : '✕'} ${esc(p.path)}</span><span class="faint">${esc(p.info)}</span></div>`).join('')}</div>`;
-    if (r.ok) { toast('Best path: ' + r.best); await loadAll(); }
+    const html = `<div class="paths">${r.paths.map(p => `<div class="path ${p.ok ? 'ok' : 'bad'}"><span>${p.ok ? '✓' : '✕'} ${esc(p.path)}</span><span class="faint">${esc(p.info)}</span></div>`).join('')}</div>`;
+    if (r.ok) {
+      toast('Best path: ' + r.best);
+      // the test may have read the server's addresses: redraw so the card shows them, then
+      // put the path list back under the redrawn card
+      await loadAll(); renderView();
+    }
+    const box = $(`[data-paths="${id}"]`);
+    if (box) box.innerHTML = html;
   } catch (e) { alertModal('Test failed', e.message); }
-  btn.disabled = false; btn.textContent = o;
+  const b = $(`[data-test="${id}"]`) || btn; b.disabled = false; b.textContent = o;
 }
 function agentModal(id) {
   const m = modal(`<h2>Agent install (Iran)</h2>
