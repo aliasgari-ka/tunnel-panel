@@ -133,6 +133,7 @@ func main() {
 	go app.resWatch()
 	go app.resumeInterrupted()
 	go app.repairAfterUpdate()
+	go app.memNightly()
 
 	fmt.Printf("Tunnel Panel %s (agent %s, data %s, %d methods)\n", version, *agentAddr, *dir, len(methods))
 	store.View(func(st *State) {

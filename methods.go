@@ -103,7 +103,10 @@ func renderUnit(u Unit) string {
 // its CPU collecting (seen live: BackPack 65-88 % on xe108, IRAN-USA and france, servers at
 // 90-100 %). 768 MiB is far above a busy path's working set and still stops a runaway;
 // GOGC=100 is Go's default pace. Programs that aren't Go ignore both.
-const goMemEnv = "Environment=GOGC=100\nEnvironment=GOMEMLIMIT=768MiB\n"
+const goMemEnv = "Environment=GOGC=100\nEnvironment=GOMEMLIMIT=" + goMemLimit + "\n"
+
+// goMemLimit is the ceiling itself; memTune compares a running core's environment with it.
+const goMemLimit = "768MiB"
 
 // goMemDropIn is the same for a unit written before goMemEnv existed (Repair adds it).
 const goMemDropIn = "[Service]\n" + goMemEnv
