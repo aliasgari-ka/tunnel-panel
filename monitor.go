@@ -15,7 +15,45 @@ import (
 const (
 	monitorEvery = time.Minute
 	monitorFails = 2
+	// a hot-standby tunnel whose users' path stays dead this long with both servers
+	// answering is applied again (at most once per hsRebuildEvery): the switcher can't help
+	// when every path is gone (seen live: netherlands-iran rebooted and its paths never
+	// came back — down 20 min until applied by hand)
+	hsRebuildAfter = 5 * time.Minute
+	hsRebuildEvery = 30 * time.Minute
 )
+
+var (
+	hsRebuildMu   sync.Mutex
+	hsRebuildLast = map[string]time.Time{} // tunnel id -> last automatic re-apply
+)
+
+// hsRebuildable: the check failed in a way a re-apply fixes — the switcher answered and the
+// users' path is dead, or the switcher's files are gone — not just the panel failing to
+// reach the switcher (a flaky SSH must never get a working tunnel rebuilt).
+func hsRebuildable(reason string) bool {
+	return strings.HasPrefix(reason, "tunnel link down") || strings.Contains(reason, "exited with status 3")
+}
+
+// hsRebuild applies a dead hot-standby tunnel again (its own method and family).
+func (a *App) hsRebuild(t *Tunnel, reason string, down time.Duration) {
+	hsRebuildMu.Lock()
+	if time.Since(hsRebuildLast[t.ID]) < hsRebuildEvery {
+		hsRebuildMu.Unlock()
+		return
+	}
+	hsRebuildLast[t.ID] = time.Now()
+	hsRebuildMu.Unlock()
+	var name, mid, fam string
+	a.store.View(func(*State) { name, mid, fam = t.Name, t.Active, t.Family })
+	if mid == "" {
+		return // stopped meanwhile
+	}
+	a.pushT(t, fmt.Sprintf("🔄 %s: down for %s with both servers answering (%s) — applying it again", name, shortDur(down), reason))
+	if _, err := a.ApplyRoute(t, mid, fam); err != nil {
+		a.pushT(t, fmt.Sprintf("❌ %s: could not apply it again — %v", name, err))
+	}
+}
 
 type tunnelHealth struct {
 	outageID        string
@@ -115,6 +153,11 @@ func (a *App) healthMonitor() {
 					a.pushT(t, fmt.Sprintf("🟢 Tunnel back up: %s\ndown %s\n%s → %s (Tehran)", t.Name, shortDur(h.lastOutage), clock(now.Add(-h.lastOutage)), clock(now)))
 				}
 				switch {
+				case t.HotStandby && reason != "" && hsRebuildable(reason) && !h.failoverStarted && time.Since(h.downSince) >= hsRebuildAfter &&
+					a.serverReachable(t.ServerID) && (t.ForeignID == "" || a.serverReachable(t.ForeignID)):
+					// every path dead and the switcher can't help: build it again
+					h.failoverStarted = true
+					go a.hsRebuild(t, reason, time.Since(h.downSince))
 				case t.HotStandby:
 					// the switcher on the Iran server moves the users itself
 				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter && time.Now().After(a.failoverNotBefore(t.ID)):

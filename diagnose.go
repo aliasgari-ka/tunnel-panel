@@ -55,6 +55,15 @@ func (a *App) Diagnose(t *Tunnel) (*Job, error) {
 		unit := unitName(t)
 		run := func(h Host, sh string) string { out, _ := h.Run(ctx, sh, nil); return strings.TrimSpace(out) }
 
+		// a hot-standby tunnel runs its paths, a switcher and a probe server instead of the
+		// tunnel's own unit, and users reach it through the switcher's NAT: its own checks
+		var hot bool
+		a.store.View(func(*State) { hot = t.HotStandby && len(t.Paths) > 0 })
+		if hot {
+			a.diagnoseHot(ctx, j, t, ir, kh)
+			return
+		}
+
 		j.log("Diagnosing %s — %s (%s)", t.Name, m.Title, map[bool]string{true: "L3 tunnel", false: "port forwarder"}[l3])
 
 		// 1. units
