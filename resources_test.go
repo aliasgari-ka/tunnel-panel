@@ -65,6 +65,7 @@ P 10 %d 1000 paqet-plus tp-aaax1.service
 P 11 %d 1000 paqet-plus tp-aaax2.service
 P 12 %d 500 xray -
 P 13 %d 500 xray -
+PE list
 `, ticks[0], ticks[1], ticks[2], ticks[3])
 	}
 	r.apply(parseRes(read("C 100 0 50 800 0 10 40 0 4", [4]int{0, 0, 0, 0})), time.Unix(0, 0))
@@ -92,11 +93,33 @@ func TestResPathNameKept(t *testing.T) {
 		return nil
 	})
 	a := &App{store: st, traffic: newTrafficMon()}
-	a.resParse("s", "C 100 0 50 800 0 10 40 0 4\nP 10 0 1000 paqet-plus tp-aaax1.service\n")
-	a.resParse("s", "C 200 0 100 1600 0 20 80 0 4\nP 10 400 1000 paqet-plus tp-aaax1.service\n")
+	a.resParse("s", "C 100 0 50 800 0 10 40 0 4\nP 10 0 1000 paqet-plus tp-aaax1.service\nPE list\n")
+	a.resParse("s", "C 200 0 100 1600 0 20 80 0 4\nP 10 400 1000 paqet-plus tp-aaax1.service\nPE list\n")
 	a.resParse("s", "C 300 0 150 2400 0 30 120 0 4\n")
 	p := a.traffic.res["s"].Procs
 	if len(p) != 1 || !strings.HasPrefix(p[0].Path, "nl · ") {
 		t.Fatalf("procs: %+v", p)
+	}
+}
+
+// A list cut off part way (the read timed out) is left out: the processes missing from it
+// would otherwise look idle on the next sample.
+func TestResProcListCut(t *testing.T) {
+	r := &ServerRes{}
+	r.apply(parseRes(`C 100 0 50 800 0 10 40 0 4
+P 10 0 1000 paqet-plus tp-aaax1.service
+P 11 0 1000 backpack tp-aaax2.service
+PE list
+`), time.Unix(0, 0))
+	r.apply(parseRes(`C 200 0 100 1600 0 20 80 0 4
+P 10 100 1000 paqet-plus tp-aaax1.service
+`), time.Unix(5, 0))
+	r.apply(parseRes(`C 300 0 150 2400 0 30 120 0 4
+P 10 400 1000 paqet-plus tp-aaax1.service
+P 11 400 1000 backpack tp-aaax2.service
+PE list
+`), time.Unix(10, 0))
+	if len(r.Procs) != 2 || r.Procs[0].CPU < 9.9 || r.Procs[1].CPU < 9.9 {
+		t.Fatalf("procs: %+v", r.Procs)
 	}
 }
