@@ -61,7 +61,8 @@ func (a *App) memTune(ctx context.Context, j *Job, t *Tunnel, ir, kh Host) int {
 	return n
 }
 
-// memTuneScript writes the drop-in where a unit lacks the settings, restarts the ones that may
+// memTuneScript writes the drop-in where a unit lacks the current settings (none yet, or older
+// values: the drop-in overrides what the unit file itself says), restarts the ones that may
 // restart, and prints "MEMTUNED <units it changed>".
 func memTuneScript(us []memUnit) string {
 	var all, again []string
@@ -78,8 +79,7 @@ func memTuneScript(us []memUnit) string {
 for u in %[1]s; do
   f=/etc/systemd/system/$u
   [ -f "$f" ] || continue
-  grep -q GOMEMLIMIT "$f" && continue
-  [ -f "$f.d/90-tunnel-panel-memory.conf" ] && continue
+  printf '%%s' %[3]s | cmp -s - "$f.d/90-tunnel-panel-memory.conf" && continue
   mkdir -p "$f.d" && printf '%%s' %[3]s > "$f.d/90-tunnel-panel-memory.conf" && done="$done $u"
 done
 if [ -n "$done" ]; then

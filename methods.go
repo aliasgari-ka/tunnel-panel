@@ -96,11 +96,14 @@ func renderUnit(u Unit) string {
 	return b.String()
 }
 
-// goMemEnv makes the Go tunnel cores (BackPack, FRP, the probe…) give memory back: a BackPack
-// path held ~140 MB with no users on it (seen live), memory Go keeps after use. GOGC=50
-// collects sooner and GOMEMLIMIT is a soft ceiling (the collector works harder near it,
-// nothing is killed). Programs that aren't Go ignore both.
-const goMemEnv = "Environment=GOGC=50\nEnvironment=GOMEMLIMIT=128MiB\n"
+// goMemEnv bounds the memory of the Go tunnel cores (BackPack, FRP, the probe…) without
+// costing CPU. GOMEMLIMIT is a soft ceiling: nothing is killed, but above it the collector
+// runs almost without pause (up to about half the program's CPU). 128 MiB with GOGC=50 kept an
+// idle path small, but a busy BackPack lives at 110-190 MB — above that ceiling — and spent
+// its CPU collecting (seen live: BackPack 65-88 % on xe108, IRAN-USA and france, servers at
+// 90-100 %). 768 MiB is far above a busy path's working set and still stops a runaway;
+// GOGC=100 is Go's default pace. Programs that aren't Go ignore both.
+const goMemEnv = "Environment=GOGC=100\nEnvironment=GOMEMLIMIT=768MiB\n"
 
 // goMemDropIn is the same for a unit written before goMemEnv existed (Repair adds it).
 const goMemDropIn = "[Service]\n" + goMemEnv
