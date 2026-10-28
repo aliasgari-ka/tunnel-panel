@@ -154,8 +154,10 @@ func (a *App) healthMonitor() {
 				}
 				switch {
 				case t.HotStandby && reason != "" && hsRebuildable(reason) && !h.failoverStarted && time.Since(h.downSince) >= hsRebuildAfter &&
-					a.serverReachable(t.ServerID) && (t.ForeignID == "" || a.serverReachable(t.ForeignID)):
-					// every path dead and the switcher can't help: build it again
+					a.serverReachable(t.ServerID) && (t.ForeignID == "" || a.serverReachable(t.ForeignID)) && !a.trafficFlowing(t.ID):
+					// every path dead and the switcher can't help: build it again — unless users'
+					// traffic is flowing both ways, which proves the switcher's checks wrong and a
+					// re-apply would only cut them
 					h.failoverStarted = true
 					go a.hsRebuild(t, reason, time.Since(h.downSince))
 				case t.HotStandby:

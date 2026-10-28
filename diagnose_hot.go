@@ -119,6 +119,12 @@ func (a *App) diagnoseHot(ctx context.Context, j *Job, t *Tunnel, ir, kh Host) {
 		default:
 			ok("users are on a working path (%d of %d pass)", up, len(v.Paths))
 		}
+		// a standby path that fails leaves the users fewer places to go when theirs dies: not
+		// a problem today (Repair leaves it alone so as not to cut them), but worth a warning
+		if down := len(v.Paths) - up; up > 0 && down > 0 {
+			j.log("  ! %d standby path(s) fail the switcher's check — users have fewer paths to fall back on", down)
+			hint("applying the tunnel again rebuilds them (users are cut briefly); a method that never passes on this route can be left out of the route's methods")
+		}
 	}
 
 	// 6. what the counters say right now
