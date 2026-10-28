@@ -313,3 +313,41 @@ func TestUserTunnelOnAdminServers(t *testing.T) {
 		}
 	})
 }
+
+// An action never runs on a GET: the session cookie rides along on someone else's link.
+func TestActionsTakePOST(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	h, _ := bcrypt.GenerateFromPassword([]byte("password1"), bcrypt.MinCost)
+	_ = st.Update(func(s *State) error { s.Users = []User{{Username: "boss", Hash: string(h)}}; return nil })
+	app := &App{store: st, jobs: newJobs(), agents: newAgentHub(), traffic: newTrafficMon()}
+	s := &Server2{app: app, failures: map[string][]time.Time{}}
+	w := httptest.NewRecorder()
+	s.login(w, httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"boss","password":"password1"}`)))
+	var c *http.Cookie
+	for _, k := range w.Result().Cookies() {
+		if k.Name == "tp_session" {
+			c = k
+		}
+	}
+	mux := app.routes()
+	code := func(method, path string) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(method, path, strings.NewReader("{}"))
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(c)
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	for _, p := range []string{"/api/repair", "/api/servers/delete?id=x", "/api/tunnels/apply?id=x", "/api/tunnels/hspin", "/api/jobs/cancel"} {
+		if got := code("GET", p); got != 405 {
+			t.Errorf("GET %s: %d, want 405", p, got)
+		}
+	}
+	if got := code("GET", "/api/tunnels"); got != 200 {
+		t.Errorf("GET /api/tunnels: %d", got)
+	}
+	if got := code("POST", "/api/tunnels/hspin"); got == 405 {
+		t.Errorf("POST /api/tunnels/hspin refused")
+	}
+}

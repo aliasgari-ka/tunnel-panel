@@ -24,13 +24,15 @@ df -Pk / 2>/dev/null | awk 'NR==2{print "D", $2, $3}'
 echo "K $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo -) $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo -) $(cat /proc/net/sockstat /proc/net/sockstat6 2>/dev/null | awk '/^TCP6?:/{s+=$3}END{print s+0}')"
 `
 
-// resProcs lists every process's CPU ticks and RSS (the comm may hold spaces and parens).
-const resProcs = `awk '{s=$0; o=index(s,"("); i=o; while ((j=index(substr(s,i+1),") "))>0) i+=j; c=substr(s,o+1,i-o-1); gsub(/ /,"_",c); split(substr(s,i+2),f," "); if (f[22]>0) print "P", $1, f[12]+f[13], f[22], c}' /proc/[0-9]*/stat 2>/dev/null
+// resProcs lists every process's CPU ticks and RSS (the comm may hold spaces and parens), and
+// the tunnel unit it runs in ("-" for any other), so each path of a tunnel counts on its own.
+const resProcs = `awk '{s=$0; o=index(s,"("); i=o; while ((j=index(substr(s,i+1),") "))>0) i+=j; c=substr(s,o+1,i-o-1); gsub(/ /,"_",c); split(substr(s,i+2),f," "); if (f[22]>0) { u="-"; cg="/proc/"$1"/cgroup"; while ((getline l < cg) > 0) if (match(l, /\/tp-[^\/]*\.service/)) u=substr(l, RSTART+1, RLENGTH-1); close(cg); print "P", $1, f[12]+f[13], f[22], c, u } }' /proc/[0-9]*/stat 2>/dev/null
 `
 
 const (
 	resProcEvery = 5   // live reads between process samples (10 s)
 	resHist      = 90  // CPU/RAM points kept (3 min at 2 s)
+	resProcTop   = 12  // busiest programs kept (a tunnel path is a row of its own)
 	clkTck       = 100 // USER_HZ on Linux
 	pageKB       = 4
 )
@@ -42,12 +44,14 @@ type ResPoint struct {
 	Mem float64 `json:"mem"`
 }
 
-// ProcUse is one program's share (all its processes together).
+// ProcUse is one program's share (all its processes together; in a tunnel's unit, that unit's).
 type ProcUse struct {
 	Name  string  `json:"name"`
 	CPU   float64 `json:"cpu"` // % of the whole machine
 	RSSMB float64 `json:"rssMB"`
 	N     int     `json:"n"`
+	Unit  string  `json:"unit,omitempty"` // the tunnel unit ("" = not a tunnel's)
+	Path  string  `json:"path,omitempty"` // which tunnel and path that unit is
 }
 
 // ServerRes is a server's live resource picture.
@@ -58,6 +62,8 @@ type ServerRes struct {
 	CPU       float64    `json:"cpu"` // % busy (all cores)
 	IOWait    float64    `json:"iowait"`
 	Steal     float64    `json:"steal"`
+	Sys       float64    `json:"sys"`     // kernel on behalf of programs
+	SoftIRQ   float64    `json:"softirq"` // kernel moving packets (irq + softirq): no program shows it
 	Load      [3]float64 `json:"load"`
 	MemTotal  uint64     `json:"memTotal"` // KB
 	MemUsed   uint64     `json:"memUsed"`
@@ -90,11 +96,12 @@ type resSample struct {
 	ct, ctMax, tcp     int64
 	procs              map[string]uint64 // pid → ticks
 	procRSS, procName  map[string]string
+	procUnit           map[string]string // pid → tunnel unit, when it runs in one
 	hasCPU, hasMem, ok bool
 }
 
 func parseRes(out string) resSample {
-	s := resSample{ct: -1, ctMax: -1, procs: map[string]uint64{}, procRSS: map[string]string{}, procName: map[string]string{}}
+	s := resSample{ct: -1, ctMax: -1, procs: map[string]uint64{}, procRSS: map[string]string{}, procName: map[string]string{}, procUnit: map[string]string{}}
 	u := func(x string) uint64 { n, _ := strconv.ParseUint(x, 10, 64); return n }
 	for _, l := range strings.Split(out, "\n") {
 		f := strings.Fields(l)
@@ -140,6 +147,9 @@ func parseRes(out string) resSample {
 			if len(f) >= 5 {
 				s.procs[f[1]] = u(f[2])
 				s.procRSS[f[1]], s.procName[f[1]] = f[3], f[4]
+				if len(f) >= 6 && f[5] != "-" {
+					s.procUnit[f[1]] = f[5]
+				}
 			}
 		}
 	}
@@ -170,6 +180,7 @@ func (r *ServerRes) apply(s resSample, now time.Time) {
 		if ok && tot > 0 {
 			r.CPU = 100 * (tot - d[3] - d[4]) / tot
 			r.IOWait, r.Steal = 100*d[4]/tot, 100*d[7]/tot
+			r.Sys, r.SoftIRQ = 100*d[2]/tot, 100*(d[5]+d[6])/tot
 		}
 	}
 	r.cpuPrev = s.cpu
@@ -185,10 +196,12 @@ func (r *ServerRes) apply(s resSample, now time.Time) {
 			dt := now.Sub(r.procT).Seconds()
 			by := map[string]*ProcUse{}
 			for pid, ticks := range s.procs {
-				p := by[s.procName[pid]]
+				// a program in a tunnel's unit counts per unit: 12 Paqet paths are 12 rows
+				key := s.procName[pid] + "|" + s.procUnit[pid]
+				p := by[key]
 				if p == nil {
-					p = &ProcUse{Name: s.procName[pid]}
-					by[p.Name] = p
+					p = &ProcUse{Name: s.procName[pid], Unit: s.procUnit[pid]}
+					by[key] = p
 				}
 				p.N++
 				rss, _ := strconv.ParseFloat(s.procRSS[pid], 64)
@@ -207,8 +220,8 @@ func (r *ServerRes) apply(s resSample, now time.Time) {
 				}
 				return list[i].RSSMB > list[j].RSSMB
 			})
-			if len(list) > 6 {
-				list = list[:6]
+			if len(list) > resProcTop {
+				list = list[:resProcTop]
 			}
 			r.Procs = list
 		}
@@ -255,10 +268,39 @@ func (tm *trafficMon) resOf(id string) *ServerRes {
 
 func (a *App) resParse(id, out string) {
 	s := parseRes(out)
+	var paths map[string]string
+	if len(s.procUnit) > 0 {
+		paths = a.unitPaths()
+	}
 	tm := a.traffic
 	tm.mu.Lock()
-	tm.resOf(id).apply(s, time.Now())
+	r := tm.resOf(id)
+	r.apply(s, time.Now())
+	for i := range r.Procs {
+		if u := r.Procs[i].Unit; u != "" {
+			r.Procs[i].Path = paths[u]
+		}
+	}
 	tm.mu.Unlock()
+}
+
+// unitPaths names every tunnel unit: "<tunnel> · <method> <family>" for a path, the switcher
+// (Iran) or probe server (foreign) of a hot-standby tunnel, or the tunnel itself.
+func (a *App) unitPaths() map[string]string {
+	m := map[string]string{}
+	a.store.View(func(st *State) {
+		for _, t := range st.Tunnels {
+			m[unitName(t)] = t.Name + " · " + methodTitle(t.Active)
+			if !t.HotStandby {
+				continue
+			}
+			m[unitName(hsUnitTunnel(t))] = t.Name + " · hot-standby switcher / probe"
+			for _, p := range t.Paths {
+				m[unitName(pathTunnel(t, p))] = t.Name + " · " + methodTitle(p.Method) + " " + famName(p.Family)
+			}
+		}
+	})
+	return m
 }
 
 // resSnapshot copies the live resources (for the API and the bot).
@@ -442,6 +484,9 @@ func resText(name string, r *ServerRes) string {
 	if r.IOWait >= 10 {
 		fmt.Fprintf(&b, " · iowait %.0f%%", r.IOWait)
 	}
+	if r.SoftIRQ >= 15 {
+		fmt.Fprintf(&b, " · packets in the kernel %.0f%%", r.SoftIRQ)
+	}
 	fmt.Fprintf(&b, "\n   RAM %s %.0f%% (%s / %s)", resBar(pct(r.MemUsed, r.MemTotal)), pct(r.MemUsed, r.MemTotal), kbText(r.MemUsed), kbText(r.MemTotal))
 	if r.SwapUsed > 0 {
 		fmt.Fprintf(&b, " · swap %s", kbText(r.SwapUsed))
@@ -455,7 +500,11 @@ func resText(name string, r *ServerRes) string {
 	if len(r.Procs) > 0 {
 		var ps []string
 		for _, p := range r.Procs[:min(4, len(r.Procs))] {
-			ps = append(ps, fmt.Sprintf("%s %.0f%% %.0fMB", p.Name, p.CPU, p.RSSMB))
+			n := p.Name
+			if p.Path != "" {
+				n += " (" + p.Path + ")"
+			}
+			ps = append(ps, fmt.Sprintf("%s %.0f%% %.0fMB", n, p.CPU, p.RSSMB))
 		}
 		b.WriteString("   top: <code>" + esc(strings.Join(ps, " · ")) + "</code>\n")
 	}

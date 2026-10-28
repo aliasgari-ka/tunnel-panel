@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -51,5 +52,33 @@ func TestResAlert(t *testing.T) {
 	}
 	if len(msgs) != 2 || !strings.Contains(msgs[0], "🔥 iran-1: CPU 97%") || !strings.Contains(msgs[1], "back to normal") {
 		t.Fatalf("alerts: %q", msgs)
+	}
+}
+
+// Processes in a tunnel's unit count per unit (each path its own row); others by name, and
+// irq + softirq show up as the kernel's packet work.
+func TestResPerUnit(t *testing.T) {
+	r := &ServerRes{}
+	read := func(c string, ticks [4]int) string {
+		return c + fmt.Sprintf(`
+P 10 %d 1000 paqet-plus tp-aaax1.service
+P 11 %d 1000 paqet-plus tp-aaax2.service
+P 12 %d 500 xray -
+P 13 %d 500 xray -
+`, ticks[0], ticks[1], ticks[2], ticks[3])
+	}
+	r.apply(parseRes(read("C 100 0 50 800 0 10 40 0 4", [4]int{0, 0, 0, 0})), time.Unix(0, 0))
+	r.apply(parseRes(read("C 200 0 100 1600 0 20 80 0 4", [4]int{400, 40, 100, 100})), time.Unix(10, 0))
+	if len(r.Procs) != 3 {
+		t.Fatalf("rows: %+v", r.Procs)
+	}
+	if p := r.Procs[0]; p.Unit != "tp-aaax1.service" || p.N != 1 || p.CPU < 9.9 || p.CPU > 10.1 {
+		t.Errorf("busiest row: %+v", p)
+	}
+	if p := r.Procs[1]; p.Name != "xray" || p.N != 2 || p.Unit != "" {
+		t.Errorf("by name: %+v", p)
+	}
+	if r.SoftIRQ < 4.9 || r.SoftIRQ > 5.1 || r.Sys < 4.9 || r.Sys > 5.1 {
+		t.Errorf("softirq %.1f sys %.1f", r.SoftIRQ, r.Sys)
 	}
 }
