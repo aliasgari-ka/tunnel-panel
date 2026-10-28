@@ -276,8 +276,9 @@ func (a *App) resParse(id, out string) {
 	tm.mu.Lock()
 	r := tm.resOf(id)
 	r.apply(s, time.Now())
+	// only a read that sampled the processes names them; the reads between keep their names
 	for i := range r.Procs {
-		if u := r.Procs[i].Unit; u != "" {
+		if u := r.Procs[i].Unit; u != "" && paths != nil {
 			r.Procs[i].Path = paths[u]
 		}
 	}

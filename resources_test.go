@@ -82,3 +82,21 @@ P 13 %d 500 xray -
 		t.Errorf("softirq %.1f sys %.1f", r.SoftIRQ, r.Sys)
 	}
 }
+
+// The reads between process samples keep each path's name.
+func TestResPathNameKept(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Tunnels = []*Tunnel{{ID: "aaa", Name: "nl", HotStandby: true, Paths: []HSPath{{Method: "paqet_plus", Family: "v6", Index: 1}}}}
+		return nil
+	})
+	a := &App{store: st, traffic: newTrafficMon()}
+	a.resParse("s", "C 100 0 50 800 0 10 40 0 4\nP 10 0 1000 paqet-plus tp-aaax1.service\n")
+	a.resParse("s", "C 200 0 100 1600 0 20 80 0 4\nP 10 400 1000 paqet-plus tp-aaax1.service\n")
+	a.resParse("s", "C 300 0 150 2400 0 30 120 0 4\n")
+	p := a.traffic.res["s"].Procs
+	if len(p) != 1 || !strings.HasPrefix(p[0].Path, "nl · ") {
+		t.Fatalf("procs: %+v", p)
+	}
+}
