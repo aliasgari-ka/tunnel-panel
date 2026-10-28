@@ -49,9 +49,10 @@ type TestResult struct {
 	Paths []PathResult `json:"paths"`
 }
 
-// TestServer probes agent + SSH paths and records which works, fastest first. The paths
-// are probed at once and a path still pending when ctx ends counts as timed out: an SSH
-// dial through a jump host doesn't follow ctx and can hang for minutes on a blocked route.
+// TestServer probes agent + SSH paths (IPv4 and IPv6) and records which works, the first in
+// order first. The paths are probed at once and one still pending after testWait counts as
+// not answering: an SSH dial through a jump host doesn't follow ctx and can hang for
+// minutes on a blocked route.
 func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
 	type cand struct {
 		name string
@@ -66,6 +67,12 @@ func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
 		cands = append(cands, cand{"SSH via proxy", newSSHHost(a.store, srv, proxyDial(srv.Proxy))})
 	}
 	cands = append(cands, cand{"direct SSH", newSSHHost(a.store, srv, directDial)})
+	// the panel falls back to SSH over IPv6 when IPv4 is down (reach); the test checks it too
+	if srv.sshAddr6() != "" && srv.sshAddr6() != srv.sshAddr() {
+		h6 := newSSHHost(a.store, srv, directDial)
+		h6.v6 = true
+		cands = append(cands, cand{"direct SSH (IPv6)", h6})
+	}
 	for _, via := range a.otherServers(srv.ID) {
 		cands = append(cands, cand{"jump via " + via.Name, newSSHHost(a.store, srv, a.jumpDial(ctx, via))})
 	}
@@ -100,12 +107,19 @@ func (a *App) TestServer(ctx context.Context, srv *Server) TestResult {
 			ch <- r
 		}(i, c)
 	}
+	// a path that hasn't answered within testWait is reported as such: the result never waits
+	// for the slowest jump host (one that never answered held every test a full minute — seen
+	// live on xe108 iran: direct SSH in 1.2 s, the answer after 61 s)
 	got := make([]*probed, len(cands))
+	budget := time.NewTimer(testWait)
+	defer budget.Stop()
 wait:
 	for n := 0; n < len(cands); n++ {
 		select {
 		case r := <-ch:
 			got[r.i] = &r
+		case <-budget.C:
+			break wait
 		case <-ctx.Done():
 			break wait
 		}
@@ -116,7 +130,7 @@ wait:
 	for i, c := range cands {
 		r := got[i]
 		if r == nil {
-			res.Paths = append(res.Paths, PathResult{Path: c.name, Info: "timed out"})
+			res.Paths = append(res.Paths, PathResult{Path: c.name, Info: fmt.Sprintf("no answer within %d s", int(testWait/time.Second))})
 			continue
 		}
 		if r.pr.OK && okHost == nil {
@@ -140,13 +154,28 @@ wait:
 			}
 			return nil
 		})
-		// missing IPs are read from the server itself; first contact also pre-installs binaries
-		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
-		defer cancel()
-		a.autoSetup(sctx, srv, okHost)
+		// missing IPs are read from the server itself; first contact also pre-installs binaries.
+		// It runs on its own: the answer waits for it at most testSetupWait (it used to add up
+		// to a minute, and behind Cloudflare a test over 100 s came back as "Test failed")
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+			defer cancel()
+			a.autoSetup(sctx, srv, okHost)
+		}()
+		select {
+		case <-done:
+		case <-time.After(testSetupWait):
+		}
 	}
 	return res
 }
+
+const (
+	testWait      = 25 * time.Second // how long a connection test waits for its paths
+	testSetupWait = 10 * time.Second // and for the first-contact setup after it
+)
 
 // restartBot (re)starts the Telegram bot to match current settings.
 func (a *App) restartBot() {

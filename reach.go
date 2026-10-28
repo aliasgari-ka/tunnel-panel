@@ -185,6 +185,15 @@ func (a *App) jumpDial(ctx context.Context, via *Server) dialFunc {
 		}
 		sh := newSSHHost(a.store, via, dial)
 		if _, err := sh.client(); err != nil {
+			// IPv4 to the jump host is down: over its IPv6, as reach does for a server
+			// itself (seen live: "jump via IRAN-USA … 81.12.32.18:2005: i/o timeout")
+			if via.Proxy == "" && via.sshAddr6() != "" && via.sshAddr6() != via.sshAddr() {
+				sh6 := newSSHHost(a.store, via, directDial)
+				sh6.v6 = true
+				if _, err6 := sh6.client(); err6 == nil {
+					return sh6.Dial(addr)
+				}
+			}
 			return nil, fmt.Errorf("jump host %s unreachable: %w", via.Name, err)
 		}
 		return sh.Dial(addr)
