@@ -1329,7 +1329,7 @@ function hsBox(t) {
 function hsWire(t, m) {
   $$('[data-hspin]', m).forEach(b => b.onclick = async () => {
     b.disabled = true;
-    try { const r = await api('/tunnels/hspin', { ID: t.id, Path: b.dataset.hspin }); toast(r.ok); setTimeout(async () => { await loadAll(); renderView(); }, 4000); }
+    try { const r = await api('/tunnels/hspin', { ID: t.id, Path: b.dataset.hspin }); toast(r.ok); await loadAll(); renderView(); }
     catch (e) { alertModal('Switch path', e.message); b.disabled = false; }
   });
   $$('[data-hsmode] button', m).forEach(b => b.onclick = async () => {

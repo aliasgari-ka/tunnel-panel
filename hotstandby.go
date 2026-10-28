@@ -1123,8 +1123,28 @@ func (a *App) hsPinTo(ctx context.Context, t *Tunnel, pin string) (string, error
 		f := strings.SplitN(pin, "|", 2)
 		name = methodTitle(f[0]) + " (" + f[1] + ")"
 	}
-	return "users move to " + name + " within a few seconds — open connections finish where they are, nobody is cut", nil
+	// wait for the switcher to act (it reads the pin every round): the panel's view of the
+	// users' path is otherwise up to a minute old, and the page reloaded right after the press
+	// still showed the users on the old path — it looked as if "use" did nothing
+	want, _ := strconv.Atoi(idx)
+	for end := time.Now().Add(hsPinWait); time.Now().Before(end) && ctx.Err() == nil; {
+		time.Sleep(time.Second)
+		var seen int64
+		a.store.View(func(*State) { seen = t.HSSeen })
+		v, events, err := a.hsRead(ctx, h, t, seen)
+		if err != nil {
+			break
+		}
+		a.hsReport(t, v, events)
+		if v.Active == want {
+			return "users are on " + name + " now — open connections finish where they were, nobody is cut", nil
+		}
+	}
+	return "the switcher hasn't moved the users to " + name + " yet — it waits up to a minute for that path to answer its checks", nil
 }
+
+// hsPinWait is how long a press waits to see the switcher move the users.
+var hsPinWait = 10 * time.Second
 
 // hsSwitchJob is Apply for a path that already runs: a short job around hsPinTo.
 func (a *App) hsSwitchJob(t *Tunnel, mid, fam string) (*Job, error) {
