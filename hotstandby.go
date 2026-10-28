@@ -190,12 +190,7 @@ func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
 			if out[i].Index != 0 {
 				continue
 			}
-			for n := 1; n < 250; n++ {
-				if !used[n] {
-					out[i].Index, used[n] = n, true
-					break
-				}
-			}
+			out[i].Index = hsFreeIndex(used)
 		}
 		var keep []HSPath
 		for _, p := range out {
