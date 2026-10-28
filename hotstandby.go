@@ -639,9 +639,31 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 		targets = append(targets, hsTarget(t, p, srv, fsrv, set)+" "+hsPingTarget(t, p, srv, fsrv, set))
 	}
 	files[dir+"/targets"] = FileSpec{Content: []byte(strings.Join(targets, "\n") + "\n"), Mode: 0o644}
+	// the switcher comes back on the path in "active", by its index: a list with a path added
+	// or removed before it would put the users on another path, so the index follows its path
+	// (keys: "method|family" per index; gone = it starts without one, as on a fresh deploy)
+	var keys []string
+	for _, p := range paths {
+		keys = append(keys, p.Method+"|"+p.Family)
+	}
+	files[dir+"/keys.new"] = FileSpec{Content: []byte(strings.Join(keys, "\n") + "\n"), Mode: 0o644}
+	keepActive := hsKeepActive(dir)
 	keepPin := fmt.Sprintf("cd %s && { [ -s pin ] && [ \"$(cut -d' ' -f1 pin)\" = \"$(cat pin.new)\" ] || cp pin.new pin; } && rm -f pin.new\n", shq(dir))
-	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: keepPin + panelPortsSetup + hsConntrackSetup, Unit: Unit{
+	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: keepActive + keepPin + panelPortsSetup + hsConntrackSetup, Unit: Unit{
 		Desc: "Hot standby switcher " + t.Name, ExecStart: "/bin/bash " + dir + "/switch.sh", ExecStopPost: dir + "/down.sh"}}
+}
+
+// hsKeepActive moves the switcher's "active" index to where its path is in keys.new.
+func hsKeepActive(dir string) string {
+	return fmt.Sprintf(`( cd %s || exit 0
+if [ -s keys ] && [ -s active ]; then
+  read -r a s < active; k=""; n=""
+  [ "$a" -ge 0 ] 2>/dev/null && k=$(sed -n "$((a + 1))p" keys)
+  [ -n "$k" ] && n=$(grep -nxF -- "$k" keys.new | head -1 | cut -d: -f1)
+  if [ -n "$n" ]; then echo "$((n - 1)) $s" > active; else rm -f active; fi
+fi
+mv -f keys.new keys ) || true
+`, shq(dir))
 }
 
 // hsConntrackSetup installs the conntrack tool the switcher clears a dead path's
@@ -1115,6 +1137,51 @@ func (a *App) hsSwitchJob(t *Tunnel, mid, fam string) (*Job, error) {
 		ctx, cancel := j.context(time.Minute)
 		defer cancel()
 		j.log("%s %s is already running as a hot-standby path — switching the users over, no restart", methodTitle(mid), fam)
+		msg, err := a.hsPinTo(ctx, t, mid+"|"+fam)
+		if err != nil {
+			j.log("ERROR: %v", err)
+			j.finish("error")
+			return
+		}
+		j.log("DONE — %s", msg)
+		j.finish("ok")
+	}()
+	return j, nil
+}
+
+// hsAddJob is Apply for a path the route allows but that doesn't run: only that path is
+// (re)deployed, then the users move to it like hsSwitchJob — the other paths keep running.
+func (a *App) hsAddJob(t *Tunnel, mid, fam string) (*Job, error) {
+	j, err := a.jobs.start(t.ID, "switch")
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		defer a.jobs.done(j)
+		ctx, cancel := j.context(20 * time.Minute)
+		defer cancel()
+		p := HSPath{Method: mid, Family: fam}
+		var drop []HSPath
+		a.store.View(func(*State) {
+			for _, o := range t.Paths {
+				if o.Method == mid && o.Family == fam {
+					drop = append(drop, o) // it failed on the last apply: replaced by a fresh one
+				}
+			}
+		})
+		j.log("%s isn't running as a hot-standby path — starting only it; the other paths and their users are left alone", p.label())
+		if err := a.hsUpdatePathsRun(ctx, j, t, drop, []HSPath{p}); err != nil {
+			j.log("ERROR: %v", err)
+			j.finish("error")
+			return
+		}
+		up := false
+		a.store.View(func(*State) { up = hsIndex(t, mid, fam) >= 0 })
+		if !up {
+			j.log("ERROR: %s could not start (see above) — the users stay where they are", p.label())
+			j.finish("error")
+			return
+		}
 		msg, err := a.hsPinTo(ctx, t, mid+"|"+fam)
 		if err != nil {
 			j.log("ERROR: %v", err)
