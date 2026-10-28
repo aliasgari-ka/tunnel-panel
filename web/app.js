@@ -648,8 +648,11 @@ function renderRes(el, r) {
   if (r.iowait >= 10) warn.push(`iowait ${r.iowait.toFixed(0)}% — waiting on the disk`);
   if (r.swapUsed > 0 && mem > 80) warn.push(`swap in use: ${kbTxt(r.swapUsed)}`);
   if ((r.softirq || 0) >= 15) warn.push(`${r.softirq.toFixed(0)}% of the CPU is the kernel moving packets — no program shows it`);
+  if (r.irqHint) warn.push(r.irqHint);
+  const perCore = (r.coreIrq || []).map((v, i) => `core ${i}: ${v.toFixed(0)}%`).join(' · ');
+  if ((r.softirq || 0) >= 15 && r.coreIrq && r.coreIrq.length > 1) extra.push(`packets per core ${r.coreIrq.map(v => v.toFixed(0) + '%').join(' ')}`);
   const procs = (r.procs || []).filter(x => x.cpu >= 0.1 || x.rssMB >= 20).slice(0, 12);
-  el.innerHTML = bar('CPU', r.cpu, `iowait ${r.iowait.toFixed(0)}% · steal ${r.steal.toFixed(0)}% · kernel ${(r.sys || 0).toFixed(0)}% · packets ${(r.softirq || 0).toFixed(0)}%`, 'all cores together; "packets" is the kernel moving network traffic (irq + softirq)')
+  el.innerHTML = bar('CPU', r.cpu, `iowait ${r.iowait.toFixed(0)}% · steal ${r.steal.toFixed(0)}% · kernel ${(r.sys || 0).toFixed(0)}% · packets ${(r.softirq || 0).toFixed(0)}%`, 'all cores together; "packets" is the kernel moving network traffic (irq + softirq)' + (perCore ? '\npackets per core — ' + perCore : '') + (r.nic ? `\n${r.nic}: ${r.rxQueues} receive queue${r.rxQueues === 1 ? '' : 's'}, RPS ${(r.rps || '').replace(/0/g, '') ? r.rps : 'off'}` : ''))
     + bar('RAM', mem, `${kbTxt(r.memUsed)} / ${kbTxt(r.memTotal)}${r.swapTotal ? ` · swap ${kbTxt(r.swapUsed)}` : ''}`)
     + bar('Disk', disk, `${kbTxt(r.diskUsed)} / ${kbTxt(r.diskTotal)}`, 'the root filesystem')
     + `<svg class="rspark" viewBox="0 0 100 24" preserveAspectRatio="none"><path class="pc" d="${resLine(r.hist, 'cpu')}"/><path class="pm" d="${resLine(r.hist, 'mem')}"/></svg>`
