@@ -46,6 +46,9 @@ type HSPath struct {
 	Index  int               `json:"index"`
 	Opts   map[string]string `json:"opts,omitempty"`   // its own options (a tunnel port the preflight moved…)
 	Failed string            `json:"failed,omitempty"` // why it couldn't be deployed on the last apply
+	// when it failed: the monitor tries it again every hsRetryEvery (a reverse method
+	// refused by a passing filter stayed "failed" for good — seen live: England, outbound)
+	FailedAt int64 `json:"failedAt,omitempty"`
 }
 
 func (p HSPath) label() string { return methodTitle(p.Method) + " (" + p.Family + ")" }
@@ -843,7 +846,7 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		}()
 		if err != nil {
 			j.log("  ✕ left out: %v", err)
-			p.Failed = err.Error()
+			p.Failed, p.FailedAt = err.Error(), time.Now().Unix()
 			_, _ = irHost.Run(ctx, teardownScript(pt), nil)
 			_, _ = khHost.Run(ctx, teardownScript(pt), nil)
 		} else {
@@ -1190,7 +1193,7 @@ func (a *App) hsAddJob(t *Tunnel, mid, fam string) (*Job, error) {
 			}
 		})
 		j.log("%s isn't running as a hot-standby path — starting only it; the other paths and their users are left alone", p.label())
-		if err := a.hsUpdatePathsRun(ctx, j, t, drop, []HSPath{p}); err != nil {
+		if err := a.hsUpdatePathsRun(ctx, j, t, drop, []HSPath{p}, false); err != nil {
 			j.log("ERROR: %v", err)
 			j.finish("error")
 			return

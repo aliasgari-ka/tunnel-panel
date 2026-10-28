@@ -160,6 +160,10 @@ func (a *App) healthMonitor() {
 					// re-apply would only cut them
 					h.failoverStarted = true
 					go a.hsRebuild(t, reason, time.Since(h.downSince))
+				case t.HotStandby && reason == "" && len(a.hsRetryDue(t, time.Now())) > 0:
+					// a healthy tunnel with a path that could not start: that one path is
+					// tried again (hsretry.go) — the users stay where they are
+					go a.hsRetryFailed(t)
 				case t.HotStandby:
 					// the switcher on the Iran server moves the users itself
 				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter && time.Now().After(a.failoverNotBefore(t.ID)):

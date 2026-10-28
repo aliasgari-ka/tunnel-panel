@@ -185,7 +185,7 @@ func (a *App) hsUpdatePaths(t *Tunnel) (*Job, error) {
 		defer a.jobs.done(j)
 		ctx, cancel := j.context(20 * time.Minute)
 		defer cancel()
-		if err := a.hsUpdatePathsRun(ctx, j, t, drop, add); err != nil {
+		if err := a.hsUpdatePathsRun(ctx, j, t, drop, add, false); err != nil {
 			j.log("ERROR: %v", err)
 			j.finish("failed")
 			a.pushT(t, fmt.Sprintf("⚠ %s: updating its paths to the route's choices failed: %v", t.Name, err))
@@ -196,7 +196,9 @@ func (a *App) hsUpdatePaths(t *Tunnel) (*Job, error) {
 	return j, nil
 }
 
-func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add []HSPath) error {
+// retry: add is a failed path tried again (drop holds its old entry) — when it fails again
+// nothing changed, so the switcher is left alone and nobody is told.
+func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add []HSPath, retry bool) error {
 	srv := a.store.Server(t.ServerID)
 	if srv == nil {
 		return fmt.Errorf("Iran server not found")
@@ -274,7 +276,7 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		}()
 		if err != nil {
 			j.log("  ✕ left out: %v", err)
-			p.Failed = err.Error()
+			p.Failed, p.FailedAt = err.Error(), time.Now().Unix()
 			_, _ = ir.Run(ctx, teardownScript(pt), nil)
 			_, _ = kh.Run(ctx, teardownScript(pt), nil)
 		} else {
@@ -283,13 +285,25 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		added = append(added, p)
 	}
 	var good []HSPath
+	up := 0
 	for _, p := range append(append([]HSPath(nil), left...), added...) {
 		if p.Failed == "" {
 			good = append(good, p)
 		}
 	}
+	for _, p := range added {
+		if p.Failed == "" {
+			up++
+		}
+	}
 	if len(good) == 0 {
 		return fmt.Errorf("no path would be left — put a method back on the route first")
+	}
+	if retry && up == 0 {
+		// still refused: the running paths and their switcher stay as they are
+		_ = a.store.Update(func(*State) error { t.Paths = append(left, added...); return nil })
+		j.log("DONE — still not possible on this route; tried again in %s", hsRetryEvery)
+		return nil
 	}
 	// the switcher moves to the new list first, then the left-out paths stop: users on one
 	// of them go over to the first path the moment the switcher restarts
@@ -307,7 +321,9 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 			if d.Method == t.Active && d.Family == t.Family {
 				t.Active, t.Family = good[0].Method, good[0].Family
 			}
-			names = append(names, d.label())
+			if d.Failed == "" { // a path that never ran isn't "removed"
+				names = append(names, d.label())
+			}
 		}
 		return nil
 	})
@@ -318,6 +334,9 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		return fmt.Errorf("switcher: %w", err)
 	}
 	for _, d := range drop {
+		if d.Failed != "" {
+			continue // was never up: nothing to stop
+		}
 		pt := pathTunnel(t, d)
 		j.log("stopping %s (left out on this route)", d.label())
 		_, _ = ir.Run(ctx, teardownScript(pt), nil)
@@ -327,14 +346,20 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 	if len(names) > 0 {
 		msg = append(msg, "removed "+strings.Join(names, ", "))
 	}
-	if len(added) > 0 {
-		var an []string
-		for _, p := range added {
+	var an []string
+	for _, p := range added {
+		if p.Failed == "" {
 			an = append(an, p.label())
 		}
+	}
+	if len(an) > 0 {
 		msg = append(msg, "added "+strings.Join(an, ", "))
 	}
 	j.log("DONE — %s; %d paths running", strings.Join(msg, "; "), len(good))
+	if retry {
+		a.pushT(t, fmt.Sprintf("✅ %s: %s runs again as a hot-standby path (%d running) — it had been refused on this route and was tried again", t.Name, strings.Join(an, ", "), len(good)))
+		return nil
+	}
 	a.pushT(t, fmt.Sprintf("🔀 %s: paths updated to this route's choices — %s (%d running)", t.Name, strings.Join(msg, "; "), len(good)))
 	return nil
 }
