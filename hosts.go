@@ -87,17 +87,36 @@ func (LocalHost) WriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tp-tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tp-tmp.*") // its own name, as over SSH
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		return err
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	return os.Rename(tmp, path)
+	if err == nil {
+		err = os.Chmod(tmp, mode)
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // ---------------- ssh ----------------
+
+// uploadCmd stores stdin at path. The temporary file has a name of its own ($$): jobs
+// running side by side on one server upload the same helper (tp-probe) at once, and with a
+// shared name one's mv took the other's file from under its chmod.
+func uploadCmd(path string, mode os.FileMode) string {
+	return fmt.Sprintf(`mkdir -p %s && t=%s.$$ && { cat > "$t" && chmod %o "$t" && mv -f "$t" %s || { rm -f "$t"; exit 1; }; }`,
+		shq(filepath.Dir(path)), shq(path+".tp-tmp"), mode, shq(path))
+}
 
 // dialFunc opens the TCP path to a server's sshd: direct, via proxy, via a jump host or via an agent.
 type dialFunc func(addr string) (net.Conn, error)
@@ -289,9 +308,7 @@ func (h *SSHHost) WriteFile(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	defer sess.Close()
-	tmp := path + ".tp-tmp"
-	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod %o %s && mv -f %s %s",
-		shq(filepath.Dir(path)), shq(tmp), mode, shq(tmp), shq(tmp), shq(path))
+	cmd := uploadCmd(path, mode)
 	if h.srv.SSHUser != "" && h.srv.SSHUser != "root" {
 		cmd = "sudo -n sh -c " + shq(cmd)
 	}

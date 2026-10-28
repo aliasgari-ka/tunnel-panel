@@ -154,16 +154,20 @@ func agentWrite(req agentproto.Request, br *bufio.Reader) error {
 	if req.Path == "" {
 		return fmt.Errorf("no path")
 	}
-	tmp := req.Path + ".tp-tmp"
+	dir := "."
 	if i := strings.LastIndex(req.Path, "/"); i > 0 {
-		_ = os.MkdirAll(req.Path[:i], 0o755)
+		dir = req.Path[:i]
+		_ = os.MkdirAll(dir, 0o755)
 	}
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(req.Mode))
+	// a name of its own: two jobs may upload the same file at once
+	f, err := os.CreateTemp(dir, req.Path[strings.LastIndex(req.Path, "/")+1:]+".tp-tmp.*")
 	if err != nil {
 		return err
 	}
+	tmp := f.Name()
 	if _, err := io.CopyN(f, br, req.Size); err != nil {
 		f.Close()
+		os.Remove(tmp)
 		return err
 	}
 	f.Close()

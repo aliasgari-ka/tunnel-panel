@@ -123,6 +123,29 @@ func (a *App) routeSkipChanged(iran, foreign string) {
 	})
 }
 
+// hsActiveRemap: the switcher keeps the users' path as its place in the list (the active
+// file) and the restarted switcher starts there. Taking a path out moves the ones after it
+// up, so users on Paqet v6 behind a dropped Paqet v4 would land on the next path, or on the
+// first one past the end. This rewrites the place for the new list before the restart; when
+// the users' own path is the one dropped, the switcher starts on the first path, as before.
+func hsActiveRemap(dir string, before, after []HSPath) string {
+	at := map[string]int{}
+	for k, p := range after {
+		at[p.Method+"|"+p.Family] = k
+	}
+	var cases strings.Builder
+	for k, p := range before {
+		if n, ok := at[p.Method+"|"+p.Family]; ok {
+			fmt.Fprintf(&cases, " %d) n=%d ;;", k, n)
+		}
+	}
+	return fmt.Sprintf(`( cd %s && if [ -s active ] && read -r a rest < active; then
+  n=""; case "$a" in%s esac
+  if [ -n "$n" ]; then echo "$n $rest" > active.new && mv active.new active; else rm -f active; fi
+fi )
+`, shq(dir), cases.String())
+}
+
 // hsPathDiff: the running paths now left out on the route, and the methods put back that
 // aren't running.
 func (a *App) hsPathDiff(t *Tunnel) (drop, add []HSPath) {
@@ -184,8 +207,9 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 	if err != nil {
 		return fmt.Errorf("foreign server: %w", err)
 	}
-	var left []HSPath
+	var left, before []HSPath
 	a.store.View(func(*State) {
+		before = hsGood(t) // the running switcher's order
 		for _, p := range t.Paths {
 			gone := false
 			for _, d := range drop {
@@ -286,7 +310,9 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		return nil
 	})
 	j.log("== switcher: %d paths ==", len(good))
-	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), a.hsSwitcherPlan(t, good)); err != nil {
+	sw := a.hsSwitcherPlan(t, good)
+	sw.Setup = hsActiveRemap(hsDir(t), before, good) + sw.Setup
+	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), sw); err != nil {
 		return fmt.Errorf("switcher: %w", err)
 	}
 	for _, d := range drop {
