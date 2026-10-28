@@ -101,12 +101,14 @@ func renderUnit(u Unit) string {
 // runs almost without pause (up to about half the program's CPU). 128 MiB with GOGC=50 kept an
 // idle path small, but a busy BackPack lives at 110-190 MB — above that ceiling — and spent
 // its CPU collecting (seen live: BackPack 65-88 % on xe108, IRAN-USA and france, servers at
-// 90-100 %). 768 MiB is far above a busy path's working set and still stops a runaway;
-// GOGC=100 is Go's default pace. Programs that aren't Go ignore both.
+// 90-100 %). Freed of it, a busy BackPack grows further with its traffic: 590 MB at 49 Mbit/s
+// on iran-107, about 780 MB at 102 Mbit/s on xe108-kharej — right at a 768 MiB ceiling, where
+// the collector starts again. 1536 MiB leaves room for twice that on servers of 4-8 GB and
+// still stops a runaway; GOGC=100 is Go's default pace. Programs that aren't Go ignore both.
 const goMemEnv = "Environment=GOGC=100\nEnvironment=GOMEMLIMIT=" + goMemLimit + "\n"
 
 // goMemLimit is the ceiling itself; memTune compares a running core's environment with it.
-const goMemLimit = "768MiB"
+const goMemLimit = "1536MiB"
 
 // goMemDropIn is the same for a unit written before goMemEnv existed (Repair adds it).
 const goMemDropIn = "[Service]\n" + goMemEnv
