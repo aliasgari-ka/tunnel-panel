@@ -570,7 +570,7 @@ func (b *Bot) outagesText(sc string) string {
 		}
 	})
 	if len(os) == 0 {
-		return "📉 No outage recorded yet ✅\n<i>servers are checked on their SSH port every 10 s</i>"
+		return "📉 No outage recorded yet ✅\n<i>servers are checked every 10 s</i>"
 	}
 	var sb strings.Builder
 	sb.WriteString("<b>📉 Outages</b> (Tehran time, newest first)\n")

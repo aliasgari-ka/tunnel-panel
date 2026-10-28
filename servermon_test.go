@@ -59,3 +59,23 @@ func TestServerMonitor(t *testing.T) {
 	}
 	t.Log("\n" + all)
 }
+
+func TestProbePlan(t *testing.T) {
+	cases := []struct {
+		pool4, pool6, alive, full bool
+		want4, want6              bool
+	}{
+		{false, false, false, false, true, true},  // nothing known: connect to both ports, as before
+		{true, false, true, false, false, false},  // direct IPv4 open: nothing to connect to...
+		{true, false, true, true, false, true},    // ...except IPv6 on a full round
+		{false, false, true, false, false, false}, // alive over a jump host or the agent: full rounds only
+		{false, false, true, true, true, true},
+		{true, true, true, true, false, false}, // both families open: never
+	}
+	for _, c := range cases {
+		p4, p6 := probePlan(c.pool4, c.pool6, c.alive, c.full)
+		if p4 != c.want4 || p6 != c.want6 {
+			t.Errorf("probePlan(%v %v %v %v) = %v %v, want %v %v", c.pool4, c.pool6, c.alive, c.full, p4, p6, c.want4, c.want6)
+		}
+	}
+}

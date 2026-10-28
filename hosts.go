@@ -251,6 +251,29 @@ func (h *SSHHost) client() (*ssh.Client, error) {
 	return h.cli, nil
 }
 
+// alive reports whether the connection already open to the server answers a keepalive
+// within a few seconds. It never connects: a closed or unanswering one is simply "no"
+// (client() reconnects on the next use).
+func (h *SSHHost) alive() bool {
+	h.mu.Lock()
+	cli := h.cli
+	h.mu.Unlock()
+	if cli == nil {
+		return false
+	}
+	done := make(chan bool, 1)
+	go func() {
+		_, _, err := cli.SendRequest("keepalive@tunnel-panel", true, nil)
+		done <- err == nil
+	}()
+	select {
+	case ok := <-done:
+		return ok
+	case <-time.After(sshTimeout):
+		return false
+	}
+}
+
 // Dial opens a TCP connection from this server's vantage point (for jump-host use).
 func (h *SSHHost) Dial(addr string) (net.Conn, error) {
 	cli, err := h.client()

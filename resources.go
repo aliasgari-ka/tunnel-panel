@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -384,6 +385,7 @@ func (a *App) resWatch() {
 				if !smp.ok {
 					return
 				}
+				go a.housekeep(h, s)
 				mu.Lock()
 				r := prev[s.ID]
 				if r == nil {
@@ -416,6 +418,62 @@ func (a *App) resWatch() {
 		}
 		wg.Wait()
 		time.Sleep(resWatchEvery)
+	}
+}
+
+// ---- housekeeping ----
+
+// journalCap bounds the systemd journal on a server to 200 MB on disk. journald keeps every
+// journal file mapped, so unbounded logs were 100-370 MB of RAM on the servers (and 4 GB of
+// disk on the panel host). Idempotent: the drop-in is written once, the excess vacuumed, and
+// journald restarted — it keeps the services' output streams (the fd store, systemd ≥ 246); an
+// older systemd takes the cap at its next boot.
+const journalCap = `f=/etc/systemd/journald.conf.d/90-tunnel-panel.conf
+want='[Journal]
+SystemMaxUse=200M
+SystemMaxFileSize=32M
+RuntimeMaxUse=64M
+MaxRetentionSec=14day
+'
+if [ -d /run/systemd/system ] && ! printf '%s' "$want" | cmp -s - "$f" 2>/dev/null; then
+  before=$(du -sm /var/log/journal 2>/dev/null | cut -f1)
+  mkdir -p /etc/systemd/journald.conf.d && printf '%s' "$want" > "$f"
+  journalctl --rotate >/dev/null 2>&1; journalctl --vacuum-size=200M >/dev/null 2>&1
+  [ "$(systemctl show systemd-journald -p FileDescriptorStoreMax --value 2>/dev/null)" -gt 0 ] 2>/dev/null && systemctl restart systemd-journald
+  echo "JOURNALCAPPED ${before:-?} $(du -sm /var/log/journal 2>/dev/null | cut -f1)"
+fi
+true
+`
+
+var housekept = struct {
+	sync.Mutex
+	m map[string]time.Time // server id -> last run
+}{m: map[string]time.Time{}}
+
+// housekeep runs the once-a-day tidying on a server the resource watcher just read: the
+// journal cap. Each run is a test of a file; the work happens on the first run only.
+func (a *App) housekeep(h Host, s *Server) {
+	housekept.Lock()
+	last := housekept.m[s.ID]
+	if time.Since(last) < 24*time.Hour {
+		housekept.Unlock()
+		return
+	}
+	housekept.m[s.ID] = time.Now()
+	housekept.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, err := h.Run(ctx, journalCap, nil)
+	if err != nil {
+		housekept.Lock()
+		delete(housekept.m, s.ID) // again next time
+		housekept.Unlock()
+		return
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) == 3 && f[0] == "JOURNALCAPPED" {
+			log.Printf("%s: journal capped at 200 MB (%s MB → %s MB)", s.Name, f[1], f[2])
+		}
 	}
 }
 

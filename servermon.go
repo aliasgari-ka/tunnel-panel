@@ -10,17 +10,30 @@ import (
 	_ "time/tzdata" // Tehran time even on hosts without a zoneinfo database
 )
 
-// The server monitor connects to every server's SSH port every serverEvery. A failed
-// check is retried twice a couple of seconds apart, so one lost SYN isn't an outage, but
-// a short drop of 10 s still is. Each outage is kept with its exact start and end (also
-// tunnel outages, tagged with whether their servers answered at the time), and Telegram
-// hears about it when it starts and again when it is over. When the panel host itself
-// can't reach the internet, that is logged as the panel's outage, not the servers'.
+// The server monitor checks every server every serverEvery: the SSH connection the panel
+// already keeps open to it must answer a keepalive, or a live agent must be talking; only
+// without one does it connect to the SSH port (a new connection every 10 s made every
+// server's sshd fork a child and write two log lines, around the clock — 640 lines an hour
+// on the panel host alone, each read by fail2ban too). A family the open connection doesn't
+// cover (IPv6 beside a direct IPv4) is connected to once a minute instead. A failed check
+// is retried twice a couple of seconds apart, so one lost SYN isn't an outage, but a short
+// drop of 10 s still is. Each outage is kept with its exact start and end (also tunnel
+// outages, tagged with whether their servers answered at the time), and Telegram hears
+// about it when it starts and again when it is over. When the panel host itself can't
+// reach the internet, that is logged as the panel's outage, not the servers'.
 const (
 	serverEvery   = 10 * time.Second
+	serverFull    = 6 // rounds between connects to the SSH ports a live connection doesn't cover
 	sshTimeout    = 3 * time.Second
 	maxOutageLogs = 300
 )
+
+// probePlan says which SSH ports this round connects to: a family the panel's own open
+// connection already proves (pool4/pool6) never; when the server is known alive some other
+// way (another connection, an agent), the rest only on a full round.
+func probePlan(pool4, pool6, alive, full bool) (probe4, probe6 bool) {
+	return !pool4 && (!alive || full), !pool6 && (!alive || full)
+}
 
 // Outage is one stretch of a server or tunnel being unreachable / down.
 type Outage struct {
@@ -43,6 +56,7 @@ type srvState struct {
 type serverMon struct {
 	mu    sync.Mutex
 	state map[string]*srvState // server id ("panel" = the panel host's own internet)
+	round int                  // rounds so far; every serverFull-th connects to the ports too
 }
 
 // tehran is the time zone outages are reported in.
@@ -164,6 +178,9 @@ func (a *App) serverRound(m *serverMon) {
 			servers = append(servers, &cp)
 		}
 	})
+	m.mu.Lock()
+	m.round++
+	m.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, s := range servers {
 		addr := sshAddr(s)
@@ -179,27 +196,41 @@ func (a *App) serverRound(m *serverMon) {
 	wg.Wait()
 }
 
-// checkServer tries the SSH port over IPv4 and over IPv6 (when the server has both): the
-// server is down only when neither answers; one family down alone is logged as such.
+// checkServer checks a server over IPv4 and over IPv6 (when it has both) — the panel's open
+// connection answering, else a connect to the SSH port: the server is down only when neither
+// answers; one family down alone is logged as such.
 func (a *App) checkServer(m *serverMon, s *Server, addr string, pause time.Duration) {
-	up, first := tcpUp(addr, 3, pause)
-	reason := "SSH port " + addr + " doesn't answer"
+	m.mu.Lock()
+	full := m.round%serverFull == 0
+	m.mu.Unlock()
 	addr6 := s.sshAddr6()
 	if addr6 == addr {
 		addr6 = ""
 	}
-	up6 := false
-	if addr6 != "" {
+	up, up6, any := a.pooledSSH(s.ID)
+	agent := a.agents != nil && a.agents.online(s.ID) != nil
+	probe4, probe6 := probePlan(up, up6 || addr6 == "", any || agent, full)
+	var first time.Time
+	if probe4 {
+		up, first = tcpUp(addr, 3, pause)
+	}
+	if probe6 {
 		up6, _ = tcpUp(addr6, 3, pause)
+	}
+	reason := "SSH port " + addr + " doesn't answer"
+	if addr6 != "" {
 		if !up6 {
 			reason = "SSH doesn't answer on " + addr + " nor over IPv6 on " + addr6
 		}
-		// one family down while the other works: worth knowing (and logging) on its own
-		a.transition(m, s.ID+"/v4", "ssh-v4", s.Name+" (IPv4)", !up && up6, first, "SSH over IPv4 ("+addr+") doesn't answer — IPv6 ("+addr6+") works; the panel manages it over IPv6 meanwhile")
-		a.transition(m, s.ID+"/v6", "ssh-v6", s.Name+" (IPv6)", up && !up6, time.Now(), "SSH over IPv6 ("+addr6+") doesn't answer — IPv4 works")
+		// one family down while the other works: worth knowing (and logging) on its own —
+		// judged only once both were looked at this round
+		if (up || probe4) && (up6 || probe6) {
+			a.transition(m, s.ID+"/v4", "ssh-v4", s.Name+" (IPv4)", !up && up6, first, "SSH over IPv4 ("+addr+") doesn't answer — IPv6 ("+addr6+") works; the panel manages it over IPv6 meanwhile")
+			a.transition(m, s.ID+"/v6", "ssh-v6", s.Name+" (IPv6)", up && !up6, time.Now(), "SSH over IPv6 ("+addr6+") doesn't answer — IPv4 works")
+		}
 	}
-	alive := up || up6
-	if !alive && a.agents != nil && a.agents.online(s.ID) != nil {
+	alive := up || up6 || any
+	if !alive && agent {
 		alive = true // SSH is filtered, but the server is alive and talking to the panel
 	}
 	if alive {

@@ -33,6 +33,37 @@ func dropHost(serverID string) {
 	reachCache.Unlock()
 }
 
+// pooledSSH asks the SSH connections the panel keeps open to a server whether they still
+// answer: v4/v6 for a direct connection over that family, any for one over whatever path
+// (a proxy, a jump host). Nothing is connected: a server without one yields false, false, false.
+func (a *App) pooledSSH(serverID string) (v4, v6, any bool) {
+	type entry struct {
+		path string
+		sh   *SSHHost
+	}
+	var hs []entry
+	reachCache.Lock()
+	for k, h := range reachCache.m {
+		if sh, ok := h.(*SSHHost); ok && strings.HasPrefix(k, serverID+"|") {
+			hs = append(hs, entry{strings.TrimPrefix(k, serverID+"|"), sh})
+		}
+	}
+	reachCache.Unlock()
+	for _, e := range hs {
+		if !e.sh.alive() {
+			continue
+		}
+		any = true
+		switch e.path { // the paths sshReach caches under
+		case "direct SSH":
+			v4 = true
+		case "direct SSH over IPv6":
+			v6 = true
+		}
+	}
+	return v4, v6, any
+}
+
 // reach returns a working Host for a server plus a human description of the path used.
 // Order: live agent → direct SSH (optionally via proxy) → SSH through a jump server.
 // j may be nil (used by status probes); then it logs nothing.
