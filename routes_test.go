@@ -76,3 +76,30 @@ func TestUploadSideBySide(t *testing.T) {
 		t.Errorf("temporary files left: %v", left)
 	}
 }
+
+// A path update runs hsActiveRemap and then the switcher's own hsKeepActive: the place is
+// moved once, to the users' path in the new list (twice, the second read the new place by
+// the old list and put users on another path or none).
+func TestHSRemapOnce(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	dir := t.TempDir()
+	before := []HSPath{{Method: "gre", Family: "v4"}, {Method: "paqet", Family: "v4"}, {Method: "paqet", Family: "v6"}}
+	after := []HSPath{{Method: "gre", Family: "v4"}, {Method: "paqet", Family: "v6"}}
+	_ = os.WriteFile(filepath.Join(dir, "keys"), []byte("gre|v4\npaqet|v4\npaqet|v6\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "keys.new"), []byte("gre|v4\npaqet|v6\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "active"), []byte("2 1793215901\n"), 0o644)
+	d := filepath.ToSlash(dir)
+	if out, err := exec.Command(bash, "-c", "set -e\n"+hsActiveRemap(d, before, after)+hsKeepActive(d)).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "active"))
+	if got := strings.TrimSpace(string(b)); got != "1 1793215901" {
+		t.Errorf("users on Paqet v6 (2 of 3, then 1 of 2): active %q", got)
+	}
+	if k, _ := os.ReadFile(filepath.Join(dir, "keys")); string(k) != "gre|v4\npaqet|v6\n" {
+		t.Errorf("keys %q, want the new list", k)
+	}
+}

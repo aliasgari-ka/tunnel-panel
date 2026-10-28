@@ -128,6 +128,8 @@ func (a *App) routeSkipChanged(iran, foreign string) {
 // up, so users on Paqet v6 behind a dropped Paqet v4 would land on the next path, or on the
 // first one past the end. This rewrites the place for the new list before the restart; when
 // the users' own path is the one dropped, the switcher starts on the first path, as before.
+// The old list's keys go too: the place is already the new list's, and hsKeepActive (the
+// switcher's own setup, run next) must not move it a second time by the old list.
 func hsActiveRemap(dir string, before, after []HSPath) string {
 	at := map[string]int{}
 	for k, p := range after {
@@ -142,7 +144,7 @@ func hsActiveRemap(dir string, before, after []HSPath) string {
 	return fmt.Sprintf(`( cd %s && if [ -s active ] && read -r a rest < active; then
   n=""; case "$a" in%s esac
   if [ -n "$n" ]; then echo "$n $rest" > active.new && mv active.new active; else rm -f active; fi
-fi )
+fi; rm -f keys )
 `, shq(dir), cases.String())
 }
 
