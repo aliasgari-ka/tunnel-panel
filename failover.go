@@ -287,13 +287,14 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 	}
 	// one consistent read: a Stop or apply running now changes these under the lock
 	var old, prev, pin string
-	var hot, running bool
+	var hot, up, running bool
 	a.store.View(func(*State) {
 		old, prev, pin, hot = t.Family, t.Active, t.HSPin, t.HotStandby
 		if fam == "" {
 			fam = t.Family
 		}
-		running = hot && prev != "" && len(t.Paths) > 0 && hsIndex(t, mid, fam) >= 0
+		up = hot && prev != "" && len(t.Paths) > 0
+		running = up && hsIndex(t, mid, fam) >= 0
 	})
 	// hot standby: another running path (or back to the tunnel's own from a chosen one) is
 	// a selector swap, not a rebuild — nobody is cut. So is the tunnel's own method while
@@ -308,6 +309,12 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 	}
 	if running && (mid != prev || fam != old || pin != "" || elsewhere) {
 		return a.hsSwitchJob(t, mid, fam)
+	}
+	// another method the route allows that isn't running as a path (it failed, or was turned
+	// on for the route since): start that one path and move the users there. Rebuilding the
+	// tunnel for it restarted every path and cut all users.
+	if up && !running && (mid != prev || fam != old) && a.hsCandidate(t, m, fam) {
+		return a.hsAddJob(t, mid, fam)
 	}
 	if err := a.switchFamily(t, m, fam); err != nil {
 		return nil, err
