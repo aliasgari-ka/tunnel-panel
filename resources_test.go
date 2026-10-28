@@ -123,3 +123,41 @@ PE list
 		t.Fatalf("procs: %+v", r.Procs)
 	}
 }
+
+// Packet work piled on one core (one receive queue, RPS off) is named, with the fix; spread
+// over the cores it isn't.
+func TestResPerCoreIRQ(t *testing.T) {
+	read := func(c0, c1 int) string {
+		return fmt.Sprintf(`C 100 0 50 800 0 10 40 0 4
+c 0 1000 %d
+c 1 1000 %d
+c 2 1000 0
+c 3 1000 0
+Q eth0 1 0
+`, c0, c1)
+	}
+	r := &ServerRes{}
+	r.apply(parseRes(read(0, 0)), time.Unix(0, 0))
+	r.apply(parseRes(strings.ReplaceAll(read(600, 20), "c 0 1000", "c 0 2000")+"c 9 0 0\n"), time.Unix(10, 0))
+	if r.CoreIRQ != nil {
+		t.Fatalf("a core more than before: no per-core rates, got %v", r.CoreIRQ)
+	}
+	r = &ServerRes{}
+	r.apply(parseRes(read(0, 0)), time.Unix(0, 0))
+	next := strings.NewReplacer("c 0 1000", "c 0 2000", "c 1 1000", "c 1 2000", "c 2 1000", "c 2 2000", "c 3 1000", "c 3 2000").Replace(read(600, 20))
+	r.apply(parseRes(next), time.Unix(10, 0))
+	if len(r.CoreIRQ) != 4 || r.CoreIRQ[0] < 59.9 || r.CoreIRQ[0] > 60.1 || r.CoreIRQ[1] < 1.9 || r.CoreIRQ[1] > 2.1 {
+		t.Fatalf("per core: %v", r.CoreIRQ)
+	}
+	if !strings.Contains(r.IRQHint, "core 0 (60%") || !strings.Contains(r.IRQHint, "echo f > $f") {
+		t.Errorf("hint: %q", r.IRQHint)
+	}
+	r.CoreIRQ = []float64{30, 25, 28, 31}
+	if h := irqHint(r); h != "" {
+		t.Errorf("spread evenly, still a hint: %q", h)
+	}
+	r.CoreIRQ, r.RPS = []float64{70, 2, 2, 2}, "f"
+	if h := irqHint(r); !strings.Contains(h, "RPS mask f") {
+		t.Errorf("RPS on: %q", h)
+	}
+}

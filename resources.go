@@ -21,6 +21,7 @@ const resRead = `read -r _ u n s i w q sq st _ < /proc/stat; echo "C $u $n $s $i
 awk '{m[$1]=$2} END{a=m["MemAvailable:"]; if (a=="") a=m["MemFree:"]+m["Buffers:"]+m["Cached:"]; print "M", m["MemTotal:"]+0, a+0, m["SwapTotal:"]+0, m["SwapFree:"]+0}' /proc/meminfo
 echo "L $(cut -d' ' -f1-3 /proc/loadavg) $(cut -d' ' -f1 /proc/uptime)"
 df -Pk / 2>/dev/null | awk 'NR==2{print "D", $2, $3}'
+awk '/^cpu[0-9]/{print "c", substr($1,4), $2+$3+$4+$5+$6+$7+$8+$9, $7+$8}' /proc/stat
 echo "K $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo -) $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo -) $(cat /proc/net/sockstat /proc/net/sockstat6 2>/dev/null | awk '/^TCP6?:/{s+=$3}END{print s+0}')"
 `
 
@@ -29,8 +30,9 @@ echo "K $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo -) 
 // cat, not awk, opens the files: awk stops at the first one that can't be opened, and on a
 // busy server a process ends between the glob and the read all the time (iran 1's six
 // switchers start a few every second), so every process after it was left out of the list.
-// "PE" closes a whole list.
-const resProcs = `cat /proc/[0-9]*/stat 2>/dev/null | awk '{s=$0; o=index(s,"("); i=o; while ((j=index(substr(s,i+1),") "))>0) i+=j; c=substr(s,o+1,i-o-1); gsub(/ /,"_",c); split(substr(s,i+2),f," "); if (f[22]>0) { u="-"; cg="/proc/"$1"/cgroup"; while ((getline l < cg) > 0) if (match(l, /\/tp-[^\/]*\.service/)) u=substr(l, RSTART+1, RLENGTH-1); close(cg); print "P", $1, f[12]+f[13], f[22], c, u } } END { print "PE list" }'
+// "PE" closes a whole list. "Q": the default route's NIC, its receive queues and RPS mask.
+const resProcs = `d=$(awk '$2=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null); [ -n "$d" ] && echo "Q $d $(ls -d /sys/class/net/$d/queues/rx-* 2>/dev/null | wc -l) $(cat /sys/class/net/$d/queues/rx-0/rps_cpus 2>/dev/null | tr -d ',' || echo -)"
+cat /proc/[0-9]*/stat 2>/dev/null | awk '{s=$0; o=index(s,"("); i=o; while ((j=index(substr(s,i+1),") "))>0) i+=j; c=substr(s,o+1,i-o-1); gsub(/ /,"_",c); split(substr(s,i+2),f," "); if (f[22]>0) { u="-"; cg="/proc/"$1"/cgroup"; while ((getline l < cg) > 0) if (match(l, /\/tp-[^\/]*\.service/)) u=substr(l, RSTART+1, RLENGTH-1); close(cg); print "P", $1, f[12]+f[13], f[22], c, u } } END { print "PE list" }'
 `
 
 const (
@@ -66,8 +68,13 @@ type ServerRes struct {
 	CPU       float64    `json:"cpu"` // % busy (all cores)
 	IOWait    float64    `json:"iowait"`
 	Steal     float64    `json:"steal"`
-	Sys       float64    `json:"sys"`     // kernel on behalf of programs
-	SoftIRQ   float64    `json:"softirq"` // kernel moving packets (irq + softirq): no program shows it
+	Sys       float64    `json:"sys"`                // kernel on behalf of programs
+	SoftIRQ   float64    `json:"softirq"`            // kernel moving packets (irq + softirq): no program shows it
+	CoreIRQ   []float64  `json:"coreIrq,omitempty"`  // the same, per core, in % of that core
+	NIC       string     `json:"nic,omitempty"`      // the default route's interface
+	RXQueues  int        `json:"rxQueues,omitempty"` // its receive queues
+	RPS       string     `json:"rps,omitempty"`      // rx-0's RPS cpu mask (hex; 0 = off)
+	IRQHint   string     `json:"irqHint,omitempty"`  // one core does the packet work and caps the speed (irqHint)
 	Load      [3]float64 `json:"load"`
 	MemTotal  uint64     `json:"memTotal"` // KB
 	MemUsed   uint64     `json:"memUsed"`
@@ -83,6 +90,7 @@ type ServerRes struct {
 	Hist      []ResPoint `json:"hist"`
 
 	cpuPrev  []uint64
+	corePrev map[int][2]uint64 // core → total, irq+softirq ticks
 	procPrev map[string]uint64 // pid → ticks
 	procT    time.Time
 	reads    int
@@ -90,7 +98,10 @@ type ServerRes struct {
 
 // resSample is one parsed read.
 type resSample struct {
-	cpu                []uint64 // user nice system idle iowait irq softirq steal
+	cpu                []uint64          // user nice system idle iowait irq softirq steal
+	core               map[int][2]uint64 // core → total, irq+softirq ticks
+	nic, rps           string
+	rxq                int
 	cores              int
 	mem, avail         uint64
 	swap, swapFree     uint64
@@ -105,7 +116,7 @@ type resSample struct {
 }
 
 func parseRes(out string) resSample {
-	s := resSample{ct: -1, ctMax: -1, procs: map[string]uint64{}, procRSS: map[string]string{}, procName: map[string]string{}, procUnit: map[string]string{}}
+	s := resSample{ct: -1, ctMax: -1, core: map[int][2]uint64{}, procs: map[string]uint64{}, procRSS: map[string]string{}, procName: map[string]string{}, procUnit: map[string]string{}}
 	u := func(x string) uint64 { n, _ := strconv.ParseUint(x, 10, 64); return n }
 	procEnd := false
 	for _, l := range strings.Split(out, "\n") {
@@ -121,6 +132,17 @@ func parseRes(out string) resSample {
 				}
 				s.cores, _ = strconv.Atoi(f[9])
 				s.hasCPU, s.ok = true, true
+			}
+		case "c":
+			if len(f) >= 4 {
+				if n, err := strconv.Atoi(f[1]); err == nil {
+					s.core[n] = [2]uint64{u(f[2]), u(f[3])}
+				}
+			}
+		case "Q":
+			if len(f) >= 4 {
+				s.nic, s.rps = f[1], f[3]
+				s.rxq, _ = strconv.Atoi(f[2])
 			}
 		case "M":
 			if len(f) >= 5 {
@@ -194,6 +216,30 @@ func (r *ServerRes) apply(s resSample, now time.Time) {
 		}
 	}
 	r.cpuPrev = s.cpu
+	if len(s.core) > 0 {
+		if len(r.corePrev) == len(s.core) {
+			per := make([]float64, len(s.core))
+			ok := true
+			for n, c := range s.core {
+				p, had := r.corePrev[n]
+				if !had || n >= len(per) || c[0] < p[0] || c[1] < p[1] {
+					ok = false
+					break
+				}
+				if c[0] > p[0] {
+					per[n] = 100 * float64(c[1]-p[1]) / float64(c[0]-p[0])
+				}
+			}
+			if ok {
+				r.CoreIRQ = per
+			}
+		}
+		r.corePrev = s.core
+	}
+	if s.nic != "" {
+		r.NIC, r.RXQueues, r.RPS = s.nic, s.rxq, s.rps
+	}
+	r.IRQHint = irqHint(r)
 	if s.hasMem {
 		r.MemTotal, r.MemUsed = s.mem, s.mem-min(s.avail, s.mem)
 		r.SwapTotal, r.SwapUsed = s.swap, s.swap-min(s.swapFree, s.swap)
@@ -241,6 +287,41 @@ func (r *ServerRes) apply(s resSample, now time.Time) {
 	if len(r.Hist) > resHist {
 		r.Hist = r.Hist[len(r.Hist)-resHist:]
 	}
+}
+
+// irqHint: one core does most of the packet work — at least 40 % of it, three times the
+// others' average. With a single receive queue and RPS off the NIC hands every packet to
+// that core; RPS spreads the work over all of them.
+func irqHint(r *ServerRes) string {
+	if len(r.CoreIRQ) < 2 {
+		return ""
+	}
+	top, sum := 0, 0.0
+	for i, v := range r.CoreIRQ {
+		sum += v
+		if v > r.CoreIRQ[top] {
+			top = i
+		}
+	}
+	max := r.CoreIRQ[top]
+	rest := (sum - max) / float64(len(r.CoreIRQ)-1)
+	if max < 40 || max < 3*rest {
+		return ""
+	}
+	h := fmt.Sprintf("packets pile up on core %d (%.0f%% of it, the others %.0f%% on average): that core caps the speed", top, max, rest)
+	if r.NIC == "" {
+		return h
+	}
+	off := strings.Trim(r.RPS, "0") == ""
+	switch {
+	case r.RXQueues <= 1 && off && len(r.CoreIRQ) <= 32:
+		h += fmt.Sprintf(" — %s has one receive queue and RPS is off; spread it over every core: for f in /sys/class/net/%s/queues/rx-*/rps_cpus; do echo %x > $f; done", r.NIC, r.NIC, uint64(1)<<len(r.CoreIRQ)-1)
+	case off:
+		h += fmt.Sprintf(" — %s has %d receive queues, RPS is off", r.NIC, r.RXQueues)
+	default:
+		h += fmt.Sprintf(" — %s: %d receive queues, RPS mask %s", r.NIC, r.RXQueues, r.RPS)
+	}
+	return h
 }
 
 func pct(a, b uint64) float64 {
@@ -497,6 +578,9 @@ func resText(name string, r *ServerRes) string {
 	}
 	if r.SoftIRQ >= 15 {
 		fmt.Fprintf(&b, " · packets in the kernel %.0f%%", r.SoftIRQ)
+	}
+	if r.IRQHint != "" {
+		fmt.Fprintf(&b, "\n   ⚠ %s", esc(r.IRQHint))
 	}
 	fmt.Fprintf(&b, "\n   RAM %s %.0f%% (%s / %s)", resBar(pct(r.MemUsed, r.MemTotal)), pct(r.MemUsed, r.MemTotal), kbText(r.MemUsed), kbText(r.MemTotal))
 	if r.SwapUsed > 0 {
