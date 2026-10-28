@@ -26,7 +26,11 @@ echo "K $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo -) 
 
 // resProcs lists every process's CPU ticks and RSS (the comm may hold spaces and parens), and
 // the tunnel unit it runs in ("-" for any other), so each path of a tunnel counts on its own.
-const resProcs = `awk '{s=$0; o=index(s,"("); i=o; while ((j=index(substr(s,i+1),") "))>0) i+=j; c=substr(s,o+1,i-o-1); gsub(/ /,"_",c); split(substr(s,i+2),f," "); if (f[22]>0) { u="-"; cg="/proc/"$1"/cgroup"; while ((getline l < cg) > 0) if (match(l, /\/tp-[^\/]*\.service/)) u=substr(l, RSTART+1, RLENGTH-1); close(cg); print "P", $1, f[12]+f[13], f[22], c, u } }' /proc/[0-9]*/stat 2>/dev/null
+// cat, not awk, opens the files: awk stops at the first one that can't be opened, and on a
+// busy server a process ends between the glob and the read all the time (iran 1's six
+// switchers start a few every second), so every process after it was left out of the list.
+// "PE" closes a whole list.
+const resProcs = `cat /proc/[0-9]*/stat 2>/dev/null | awk '{s=$0; o=index(s,"("); i=o; while ((j=index(substr(s,i+1),") "))>0) i+=j; c=substr(s,o+1,i-o-1); gsub(/ /,"_",c); split(substr(s,i+2),f," "); if (f[22]>0) { u="-"; cg="/proc/"$1"/cgroup"; while ((getline l < cg) > 0) if (match(l, /\/tp-[^\/]*\.service/)) u=substr(l, RSTART+1, RLENGTH-1); close(cg); print "P", $1, f[12]+f[13], f[22], c, u } } END { print "PE list" }'
 `
 
 const (
@@ -103,6 +107,7 @@ type resSample struct {
 func parseRes(out string) resSample {
 	s := resSample{ct: -1, ctMax: -1, procs: map[string]uint64{}, procRSS: map[string]string{}, procName: map[string]string{}, procUnit: map[string]string{}}
 	u := func(x string) uint64 { n, _ := strconv.ParseUint(x, 10, 64); return n }
+	procEnd := false
 	for _, l := range strings.Split(out, "\n") {
 		f := strings.Fields(l)
 		if len(f) < 2 {
@@ -143,6 +148,8 @@ func parseRes(out string) resSample {
 				}
 				s.tcp, _ = strconv.ParseInt(f[3], 10, 64)
 			}
+		case "PE":
+			procEnd = true
 		case "P":
 			if len(f) >= 5 {
 				s.procs[f[1]] = u(f[2])
@@ -152,6 +159,9 @@ func parseRes(out string) resSample {
 				}
 			}
 		}
+	}
+	if !procEnd { // cut off (the read timed out): the processes left out would look idle next time
+		s.procs, s.procRSS, s.procName, s.procUnit = map[string]uint64{}, map[string]string{}, map[string]string{}, map[string]string{}
 	}
 	return s
 }
