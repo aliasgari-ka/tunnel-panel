@@ -236,12 +236,7 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 			}
 		}
 		for i := range add {
-			for n := 1; n < 250; n++ {
-				if !used[n] {
-					add[i].Index, used[n] = n, true
-					break
-				}
-			}
+			add[i].Index = hsFreeIndex(used)
 		}
 		return nil
 	})
