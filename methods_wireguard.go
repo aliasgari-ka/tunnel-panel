@@ -101,16 +101,22 @@ func wgKey(secret string) (priv, pub string) {
 	return base64.StdEncoding.EncodeToString(b[:]), base64.StdEncoding.EncodeToString(k.PublicKey().Bytes())
 }
 
-// wgSetup installs the wg tool when missing (the kernel module ships with the kernel).
+// wgSetup installs the wg tool when missing (the kernel module ships with the kernel). Setup
+// runs under set -e: every step that may fail ends in || true, so a failed apt-get update
+// (exit 100, seen live on netherlands-iran) reaches the check that says why.
 const wgSetup = `if ! command -v wg >/dev/null 2>&1; then
+  L=/tmp/tp-wg-install.log; : >$L
   if command -v apt-get >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq --no-install-recommends wireguard-tools >/dev/null 2>&1 \
-    || { timeout 300 apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive timeout 300 apt-get install -y -qq --no-install-recommends wireguard-tools >/dev/null 2>&1; }
+    export DEBIAN_FRONTEND=noninteractive
+    timeout 300 apt-get install -y -qq --no-install-recommends wireguard-tools >>$L 2>&1 || {
+      timeout 300 apt-get update -qq >>$L 2>&1 || true
+      timeout 300 apt-get install -y -qq --no-install-recommends wireguard-tools >>$L 2>&1 || true
+    }
   elif command -v dnf >/dev/null 2>&1; then
-    timeout 300 dnf install -y wireguard-tools >/dev/null 2>&1
+    timeout 300 dnf install -y wireguard-tools >>$L 2>&1 || true
   elif command -v yum >/dev/null 2>&1; then
-    timeout 300 yum install -y wireguard-tools >/dev/null 2>&1
+    timeout 300 yum install -y wireguard-tools >>$L 2>&1 || true
   fi
-  command -v wg >/dev/null 2>&1 || { echo "could not install wireguard-tools (the wg command)"; exit 1; }
+  command -v wg >/dev/null 2>&1 || { echo "could not install wireguard-tools (the wg command): $(grep -E '^(E|W|Err|Error)' $L | tail -3 | tr '\n' ' ')"; exit 1; }
 fi
 `

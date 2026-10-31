@@ -481,6 +481,13 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 	// small echoes passed but no bulk data either way: users would get a path that answers
 	// pings and stalls on every real transfer, so it must not rank as working
 	if upErr != nil && dnErr != nil {
+		// the RTT probe had just connected and echoed through the tunnel; when even a new
+		// connection (a small SYN) no longer gets through, the route cut the tunnel after it
+		// started — a filter that recognizes the protocol (seen live: WireGuard on every
+		// Iran route, 15 s after the handshake), not a packet size a lower MTU would fix
+		if strings.Contains(upErr.Error(), "dial tcp") && strings.Contains(dnErr.Error(), "dial tcp") {
+			return fmt.Errorf("passed traffic at first (RTT %.0f ms), then stopped passing even new connections (%v) — the route cut the tunnel off after it started: a filter that recognizes this protocol (DPI), not an MTU problem", r.RTTms, dnErr)
+		}
 		return fmt.Errorf("answers small packets (RTT %.0f ms) but no bulk data passes either way (%v) — typically an MTU problem on this route: try a lower MTU in the method's options", r.RTTms, dnErr)
 	}
 	r.Mbps = (r.UpMbps + r.DownMbps) / 2
