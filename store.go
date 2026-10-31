@@ -62,6 +62,8 @@ type Server struct {
 	LastPath string `json:"lastPath,omitempty"` // how the panel last reached it
 	Country  string `json:"country,omitempty"`  // ISO-3166 alpha-2, for the flag (auto or manual)
 	City     string `json:"city,omitempty"`
+	// Igproxy: the server is on the IG routing page (it runs, or is to run, the igproxy agent)
+	Igproxy bool `json:"igproxy,omitempty"`
 }
 
 // Tunnel links one Iran server with this (foreign) server.
@@ -213,6 +215,8 @@ type State struct {
 	// LastVersion is the panel version that ran last (a new one repairs tunnels once)
 	LastVersion string   `json:"lastVersion,omitempty"`
 	Outages     []Outage `json:"outages,omitempty"` // servers/tunnels down, newest last
+	// IgproxyImported: the server lists and backups of the old igpanel (port 2083) were read once
+	IgproxyImported bool `json:"igproxyImported,omitempty"`
 }
 
 // FailoverState is the original path of a tunnel that was moved to a backup.
