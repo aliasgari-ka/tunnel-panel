@@ -193,6 +193,7 @@ type App struct {
 	foNext      map[string]time.Time // tunnel id -> next automatic failover allowed
 
 	traffic  *trafficMon
+	usage    *usageLog // bytes per hour (usage.go)
 	speedMu  sync.Mutex
 	speedRes map[string]*SpeedResult // tunnel id -> last speed test
 

@@ -65,7 +65,7 @@ func (a *App) routes() http.Handler {
 	// to /api/repair started a repair).
 	reads := map[string]bool{"/api/me": true, "/api/mybot": true, "/api/settings": true, "/api/methods": true,
 		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
-		"/api/traffic": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
+		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
 		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true}
@@ -101,6 +101,7 @@ func (a *App) routes() http.Handler {
 	g("/api/tunnels/hsmode", "tunnel", s.tunnelHSMode)
 	g("/api/tunnels/hspin", "tunnel", s.tunnelHSPin)
 	g("/api/traffic", "self", s.trafficGet)
+	g("/api/usage", "self", s.usageGet)
 	g("/api/jobs", "job", s.job)
 	g("/api/jobs/cancel", "job", s.jobCancel)
 	g("/api/bench/start", "pair", s.benchStart)

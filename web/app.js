@@ -53,7 +53,7 @@ async function loadAll() {
   if (STATE.restored === undefined) { // once per page load: back to the page and account viewed before the refresh
     STATE.restored = true;
     const pg = recall('tp-page');
-    if (['tunnels', 'servers', 'routes', 'igproxy', 'bench', 'settings'].includes(pg) || (pg === 'users' && isAdmin())) STATE.view = pg;
+    if (['tunnels', 'servers', 'routes', 'usage', 'igproxy', 'bench', 'settings'].includes(pg) || (pg === 'users' && isAdmin())) STATE.view = pg;
     const va = recall('tp-viewas');
     if (isAdmin() && va && (va === '-' || STATE.users.some(u => u.username === va))) STATE.ownerFilter = va;
   }
@@ -333,7 +333,7 @@ const quantumBg = (() => {
 /* ---------------- shell ---------------- */
 function renderShell() {
   document.body.innerHTML = '';
-  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['routes', 'Routes', '🔀'], ['igproxy', 'IG Routing', '🌐'], ['bench', 'Benchmark', '📊'],
+  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['routes', 'Routes', '🔀'], ['usage', 'Usage', '📈'], ['igproxy', 'IG Routing', '🌐'], ['bench', 'Benchmark', '📊'],
     ...(isAdmin() ? [['users', 'Users', '👥'], ['settings', 'Settings', '⚙']] : [['settings', 'Account', '👤']])];
   const shell = h(`<div class="shell">
     <aside class="side" id="side">
@@ -398,9 +398,88 @@ function renderView() {
   const w = $('#work'); w.innerHTML = '';
   w.classList.remove('enter'); void w.offsetWidth; w.classList.add('enter'); // replay the page-in animation
   w.classList.remove('igp');
-  ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, igproxy: viewIg, bench: viewBench, settings: viewSettings, users: viewUsers }[STATE.view])(w);
+  ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, usage: viewUsage, igproxy: viewIg, bench: viewBench, settings: viewSettings, users: viewUsers }[STATE.view])(w);
   trafficWatch();
   healthWatch();
+}
+
+/* ---------------- usage ---------------- */
+// Bytes per tunnel and per server over the last 24 h / 3 / 7 days (usage.go reads the
+// counters every 5 min). Iran's upload is free, so what costs is what an Iran server receives.
+async function viewUsage(w) {
+  const hours = +(recall('tp-usage-h') || 24);
+  w.innerHTML = topbar('Usage', 'How much each tunnel and each server moved — and how that compares with what the users used.',
+    `<select id="uh" class="btn sm">${[[24, 'Last 24 hours'], [72, 'Last 3 days'], [168, 'Last 7 days']].map(x => `<option value="${x[0]}"${x[0] === hours ? ' selected' : ''}>${x[1]}</option>`).join('')}</select>`);
+  $('#uh', w).onchange = (e) => { remember('tp-usage-h', e.target.value); renderView(); };
+  const box = h('<div class="grid" style="gap:18px;grid-template-columns:minmax(0,1fr)"><div class="skel" style="height:160px"></div></div>');
+  w.appendChild(box);
+  let r;
+  try { r = await api('/usage?hours=' + hours); } catch (e) { box.innerHTML = `<div class="card pad errtxt">${esc(e.message)}</div>`; return; }
+  const T = Object.fromEntries((r.tunnels || []).map(x => [x.id, x]));
+  const S = Object.fromEntries((r.servers || []).map(x => [x.id, x]));
+  const z = { down: 0, up: 0, hours: [] };
+  const tot = (x) => x.down + x.up;
+  const tunnels = STATE.tunnels.filter(t => shownOwner(t.owner));
+  // one physical server may be in the list twice (two accounts added it): its card counts once
+  const all = STATE.servers.concat(STATE.shared || []);
+  const nicOf = (id) => {
+    const s = id ? serverById(id) : null;
+    const ip = s ? (s.ipv4 || s.ipv6 || id) : 'panel';
+    const u = S[id] || (s ? all.filter(o => (o.ipv4 || o.ipv6) === ip).map(o => S[o.id]).find(Boolean) : null) || z;
+    return { key: ip, u };
+  };
+  const nameOf = (id) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : '🏠 panel host'; };
+  const ratio = (a, b) => b > 1 << 20 ? (a / b).toFixed(2) + '×' : '—';
+  const spark = (hs) => { const m = Math.max(1, ...hs); return `<span class="uspark">${hs.map(v => `<i style="height:${Math.max(2, Math.round(v / m * 22))}px" title="${fmtBytes(v)}"></i>`).join('')}</span>`; };
+  const since = r.started ? Math.floor((Date.now() / 1000 - r.started) / 3600) : 0;
+
+  const iranIds = [...new Set(tunnels.map(t => t.serverId))];
+  const foreignIds = [...new Set(tunnels.map(t => t.foreignId || ''))];
+  let uAll = 0, uDown = 0, iranIn = 0, iranOut = 0, frIn = 0, frOut = 0;
+  tunnels.forEach(t => { const x = T[t.id] || z; uAll += tot(x); uDown += x.down; });
+  const seenI = new Set(), seenF = new Set();
+  iranIds.forEach(id => { const n = nicOf(id); if (seenI.has(n.key)) return; seenI.add(n.key); iranIn += n.u.down; iranOut += n.u.up; });
+  foreignIds.forEach(id => { const n = nicOf(id); if (seenF.has(n.key)) return; seenF.add(n.key); frIn += n.u.down; frOut += n.u.up; });
+
+  const legend = `<div class="card pad ulegend">
+    <b>How to read this</b>
+    <div><span class="chip">Users</span> what the tunnel's users downloaded ↓ and uploaded ↑, counted on the tunnel's ports on the Iran server — the real usage.</div>
+    <div><span class="chip">Iran in (paid)</span> everything the Iran server's network card <b>received</b>: from the users and from the foreign server. This is what Iran charges for.</div>
+    <div><span class="chip">Iran out (free)</span> everything it sent — free on Iran.</div>
+    <div><span class="chip">Foreign in / out</span> the foreign server's network card, both directions.</div>
+    <div><span class="chip">Cost ratio</span> Iran in ÷ users' total. 1.00× = you pay what the users use; 1.10× = 10 % on top (tunnel headers, tests, updates, other programs on the server).</div>
+    <div class="faint">Network-card numbers are the whole server: when one Iran server carries several tunnels they share them (see the servers below).${since < hours ? ` Counting started ${since < 1 ? 'less than an hour' : since + ' h'} ago, so this covers only that time.` : ''}</div></div>`;
+
+  const kpi = `<div class="ukpi">
+    <div class="card pad"><small>Users used</small><b>${fmtBytes(uAll)}</b><span class="faint">↓ ${fmtBytes(uDown)} · ↑ ${fmtBytes(uAll - uDown)}</span></div>
+    <div class="card pad"><small>Iran in (paid)</small><b>${fmtBytes(iranIn)}</b><span class="faint">cost ratio ${ratio(iranIn, uAll)}</span></div>
+    <div class="card pad"><small>Iran out (free)</small><b>${fmtBytes(iranOut)}</b><span class="faint">all Iran servers</span></div>
+    <div class="card pad"><small>Foreign in + out</small><b>${fmtBytes(frIn + frOut)}</b><span class="faint">↓ ${fmtBytes(frIn)} · ↑ ${fmtBytes(frOut)}</span></div></div>`;
+
+  const tRows = tunnels.slice().sort((a, b) => tot(T[b.id] || z) - tot(T[a.id] || z)).map(t => {
+    const x = T[t.id] || z, ir = nicOf(t.serverId), fr = nicOf(t.foreignId || '');
+    const shared = tunnels.filter(o => nicOf(o.serverId).key === ir.key).length;
+    return `<tr><td><b>${esc(t.name)}</b>${t.active ? '' : ' <span class="faint">(stopped)</span>'}<div class="faint" style="font-size:11.5px">${nameOf(t.serverId)} → ${nameOf(t.foreignId)}</div></td>
+      <td>${fmtBytes(x.down)}</td><td>${fmtBytes(x.up)}</td><td><b>${fmtBytes(tot(x))}</b></td><td>${spark(x.hours || [])}</td>
+      <td>${fmtBytes(ir.u.down)}${shared > 1 ? ` <span class="faint" title="this Iran server carries ${shared} tunnels; its card counts them all">· ${shared} tunnels</span>` : ''}</td>
+      <td>${shared > 1 ? '<span class="faint" title="the server carries several tunnels: see Iran servers below">see server</span>' : ratio(ir.u.down, tot(x))}</td>
+      <td>${fmtBytes(fr.u.down)} / ${fmtBytes(fr.u.up)}</td></tr>`;
+  }).join('');
+  const tTbl = `<div class="card pad"><h3 style="margin:0 0 6px">Per tunnel</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Tunnel</th><th>Users ↓</th><th>Users ↑</th><th>Users total</th><th>Per hour</th><th>Iran in (paid)</th><th>Cost ratio</th><th>Foreign in / out</th></tr></thead><tbody>${tRows || '<tr><td colspan="8" class="faint">no tunnels</td></tr>'}</tbody></table></div></div>`;
+
+  const sRows = (ids, iran) => {
+    const done = new Set();
+    return ids.map(id => {
+      const n = nicOf(id); if (done.has(n.key)) return ''; done.add(n.key);
+      const mine = tunnels.filter(t => nicOf(iran ? t.serverId : t.foreignId || '').key === n.key);
+      const users = mine.reduce((a, t) => a + tot(T[t.id] || z), 0);
+      return `<tr><td><b>${nameOf(id)}</b><div class="faint" style="font-size:11.5px">${mine.map(t => esc(t.name)).join(' · ')}</div></td>
+        <td>${fmtBytes(users)}</td><td>${fmtBytes(n.u.down)}</td><td>${fmtBytes(n.u.up)}</td><td>${spark(n.u.hours || [])}</td><td><b>${ratio(iran ? n.u.down : n.u.down + n.u.up, users)}</b></td></tr>`;
+    }).join('');
+  };
+  const sTbl = (title, ids, iran) => `<div class="card pad"><h3 style="margin:0 0 6px">${title}</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Server · its tunnels</th><th>Users total</th><th>In${iran ? ' (paid)' : ''}</th><th>Out${iran ? ' (free)' : ''}</th><th>Per hour</th><th>${iran ? 'In ÷ users' : '(In+out) ÷ users'}</th></tr></thead><tbody>${sRows(ids, iran)}</tbody></table></div></div>`;
+
+  box.innerHTML = kpi + legend + tTbl + sTbl('Iran servers — all routes', iranIds, true) + sTbl('Foreign servers', foreignIds, false);
 }
 
 /* ---------------- routes ---------------- */
