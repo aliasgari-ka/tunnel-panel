@@ -130,7 +130,8 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		}
 	}
 
-	var lastErr error
+	var lastErr, firstErr error
+	tried := 0
 	for _, c := range cands {
 		if err := ctx.Err(); err != nil { // the caller gave up (a status page, the bot): stop trying
 			if lastErr != nil {
@@ -153,6 +154,10 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		sh.v6 = c.v6
 		if err := clientCtx(ctx, sh); err != nil {
 			lastErr = fmt.Errorf("%s: %w", c.path, err)
+			if firstErr == nil {
+				firstErr = lastErr
+			}
+			tried++
 			logf("  %s failed: %v", c.path, err)
 			continue
 		}
@@ -163,6 +168,17 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no SSH path available")
+	}
+	// the first path (proxy / direct SSH) says most about why; the last alone (a jump host
+	// without a login) hid it
+	if tried > 1 {
+		mid := ""
+		if tried > 2 {
+			mid = fmt.Sprintf(" … %d more failed … ", tried-2)
+		} else {
+			mid = "; "
+		}
+		lastErr = fmt.Errorf("%v%s%w", firstErr, mid, lastErr)
 	}
 	return nil, "", lastErr
 }
