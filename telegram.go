@@ -485,7 +485,7 @@ func (b *Bot) tunnelIcon(t *Tunnel) string {
 
 func shortMethod(id string) string {
 	return map[string]string{"golden": "Golden", "icmp": "ICMP", "premium": "Premium", "premium1": "Premium v1", "backhaul": "Backhaul", "frp": "FRP", "paqet": "Paqet",
-		"bp_reverse": "BackPack", "bp_l3": "BackPack L3", "direct6": "ip6gre", "ipsec6": "IPsec", "gre": "GRE", "spoof": "Spoof"}[id]
+		"bp_reverse": "BackPack", "bp_l3": "BackPack L3", "direct6": "ip6gre", "ipsec6": "IPsec", "espsk": "IPsec-SK", "gre": "GRE", "spoof": "Spoof"}[id]
 }
 
 func (b *Bot) tunnelList(sc string) string {
