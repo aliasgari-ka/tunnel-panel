@@ -20,8 +20,8 @@ func TestWireGuardBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	irConf, khConf := wgConf(t, ir), wgConf(t, kh)
-	if irConf["ListenPort"] != "40010" || khConf["ListenPort"] != "40010" {
-		t.Errorf("per-tunnel port should be BasePort+2 = 40010, got %q / %q", irConf["ListenPort"], khConf["ListenPort"])
+	if irConf["ListenPort"] != "40009" || khConf["ListenPort"] != "40009" {
+		t.Errorf("per-tunnel port should be BasePort+1 = 40009, got %q / %q", irConf["ListenPort"], khConf["ListenPort"])
 	}
 	if irConf["PublicKey"] != pubOf(t, khConf["PrivateKey"]) || khConf["PublicKey"] != pubOf(t, irConf["PrivateKey"]) {
 		t.Error("each side must name the other's public key")
@@ -33,7 +33,7 @@ func TestWireGuardBuild(t *testing.T) {
 		t.Error("both sides need the same preshared key")
 	}
 	// Iran dials by default; the foreign side only listens
-	if irConf["Endpoint"] != "51.68.197.222:40010" || irConf["PersistentKeepalive"] != "25" {
+	if irConf["Endpoint"] != "51.68.197.222:40009" || irConf["PersistentKeepalive"] != "25" {
 		t.Errorf("Iran should dial the foreign server, got endpoint %q keepalive %q", irConf["Endpoint"], irConf["PersistentKeepalive"])
 	}
 	if khConf["Endpoint"] != "" {
@@ -57,7 +57,7 @@ func TestWireGuardBuild(t *testing.T) {
 		}
 	}
 	// the listening side opens its port to everyone (the dialer may come from another address)
-	if !strings.Contains(scriptBody(kh, "/fw-in-up.sh"), "-p udp --dport 40010 -j ACCEPT") {
+	if !strings.Contains(scriptBody(kh, "/fw-in-up.sh"), "-p udp --dport 40009 -j ACCEPT") {
 		t.Error("foreign firewall should open the WireGuard port")
 	}
 
@@ -120,4 +120,29 @@ func pubOf(t *testing.T, priv string) string {
 		t.Fatal(err)
 	}
 	return base64.StdEncoding.EncodeToString(k.PublicKey().Bytes())
+}
+
+// The default WireGuard port must not be the tunnel's speed-test port: the benchmark
+// tunnel forwards that one (Iran DNATs it, UDP too) and would swallow WireGuard's packets.
+func TestWireGuardPortNotProbePort(t *testing.T) {
+	srv := &Server{ID: "ir", IPv4: "81.12.35.113"}
+	fsrv := &Server{ID: "kh", IPv4: "51.68.197.222", Role: "foreign"}
+	bt := &Tunnel{ID: "bench", ServerID: "ir", ForeignID: "kh", Family: "v4", Index: 250,
+		Ports: "41002", Options: map[string]map[string]string{}, Secrets: map[string]string{}}
+	ir, _, err := buildPlans(methodWireGuard, bt, srv, fsrv, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := wgConf(t, ir)["ListenPort"]; p == "41002" || p == "" {
+		t.Errorf("WireGuard port %q collides with the speed-test port %d", p, probePortFor(bt))
+	}
+}
+
+// A benchmark of some methods keeps the route's earlier results for the others.
+func TestBenchWithEarlier(t *testing.T) {
+	earlier := []BenchResult{{Method: "gre", OK: true, Score: 80}, {Method: "wg", OK: false}}
+	out := withEarlier([]BenchResult{{Method: "wg", OK: true, Score: 90}}, earlier)
+	if len(out) != 2 || out[0].Method != "wg" || !out[0].OK || out[1].Method != "gre" {
+		t.Errorf("got %+v", out)
+	}
 }
