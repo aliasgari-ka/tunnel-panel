@@ -104,9 +104,10 @@ func wgKey(secret string) (priv, pub string) {
 // wgSetup installs the wg tool when missing (the kernel module ships with the kernel). Setup
 // runs under set -e: every step that may fail ends in || true, so a failed apt-get update
 // (exit 100, seen live on netherlands-iran) reaches the check that says why.
-const wgSetup = `if ! command -v wg >/dev/null 2>&1; then
+const wgSetup = aptFix + `if ! command -v wg >/dev/null 2>&1; then
   L=/tmp/tp-wg-install.log; : >$L
   if command -v apt-get >/dev/null 2>&1; then
+    tp_apt_fix || true
     export DEBIAN_FRONTEND=noninteractive
     timeout 300 apt-get install -y -qq --no-install-recommends wireguard-tools >>$L 2>&1 || {
       timeout 300 apt-get update -qq >>$L 2>&1 || true
