@@ -1865,9 +1865,12 @@ function igCard(s) {
   const n = igWarpNeed(i);
   return `<div class="card scard${igBad(i.state) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div>${igPill(i.state)}</div>
     ${i.ig ? `<div class="svcs">${svc('IG')}${svc('GOOGLE')}${svc('YTM')}</div>
-    <div class="sfoot"><span>🔗 <b>${+i.caught || 0}</b></span><span>proxies <b>${+i.proxies || 0}</b></span><span>WARP <b>${+i.warps || 0}</b>${n ? `<span class="faint" title="suggested for the 24 h peak"> / ${n.total}</span>` : ''}</span><span class="grow"></span><span>Gemini ${igChk(i.gem)}</span><span>IG ${igChk(i.igp)}</span></div>`
+    <div class="sfoot"><span>🔗 <b>${+i.caught || 0}</b></span><span>proxies <b>${+i.proxies || 0}</b></span><span>WARP <b>${+i.warps || 0}</b>${n ? `<span class="faint" title="suggested for the 24 h peak"> / ${n.total}</span>` : ''}</span><span class="grow"></span><span>Gemini ${igChk(i.gem)}</span><span>IG ${igChk(i.igp)}</span>${igAccBroken(i) ? '<span class="chip bad" title="Instagram logged the test account out: music is not checked on any exit IP">music check off</span>' : ''}</div>`
     : i.state === 'CHECKING' ? '<div class="skel" style="height:64px;margin-top:10px"></div>' : `<div class="mcrit" style="margin:10px 0 0">${esc(i.err || (IGST[i.state] || [])[0] || '')}</div>`}</div>`;
 }
+// the shared Instagram test account: igaccst = working | untested | broken:<why> (Instagram logged it out)
+const igAccBroken = (i) => /^broken/.test(i.igaccst || '');
+const igAccWhy = (i) => (i.igaccst || '').replace(/^broken:?/, '') || 'logged out';
 // WARPs needed for the 24 h peak: one WARP keeps its speed up to ~2500 connections / 5 min, +1 spare (3-10), + Google's own
 const igWarpNeed = (i) => { if (i.wpeak === undefined || i.wpeak === '-' || i.wpeak === '') return null; const p = +i.wpeak || 0, g = (i.gw || '').split(',').filter(Boolean).length;
   const ig = Math.min(10, Math.max(3, Math.ceil(p / 2500) + 1)); return { p, ig, g, total: ig + g, have: +i.warps || 0 }; };
@@ -1920,7 +1923,8 @@ function igDetail(w) {
     : `<span>${esc(i.err || '')}</span>`}</div>
     ${i.wide === 'ON' ? '<div class="mdesc">Wide catch is on: all web traffic of this server passes the igproxy router and is routed by domain.</div>' : ''}
     ${i.state === 'PANEL' ? '<div class="mcrit" style="margin:10px 0 0">The x-ui panel on this server blocks or diverts Google before igproxy sees it → Tests & diagnosis → Fix panel.</div>' : ''}
-    ${['UPDATE', 'NOAGENT'].includes(i.state) ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → Server → Install / update.</div>' : ''}</div>
+    ${['UPDATE', 'NOAGENT'].includes(i.state) ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → Server → Install / update.</div>' : ''}
+    ${igAccBroken(i) ? `<div class="mwarn" style="margin:10px 0 0">Instagram logged the test account out (${esc(igAccWhy(i))}): no WARP or proxy is checked for Instagram music until a new sessionid is saved → Test account tab.</div>` : ''}</div>
     <div class="seg igtabs">${IGTABS.map(([k, t]) => `<button data-t="${k}" class="${k === IG.tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igtab"></div>`);
   $$('.igtabs button', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.t; igRender(); });
   if (!i.ig && IG.tab !== 'tools' && IG.tab !== 'server') {
@@ -2008,6 +2012,7 @@ const IGTAB = {
       ${tog('gspread', 'Google on every WARP', i.gspread, 'many users → spread Gemini over every WARP IP')}
       ${tog('gall', 'All of Google on Google\'s WARP', i.gall, 'all google.com / gstatic / googleapis (YouTube video stays direct)')}
       ${tog('warpauto', 'WARP count follows the load', i.wauto, 'from the 24 h peak: one WARP per ~2500 connections in 5 min, plus a spare (3-10) and Google\'s WARPs')}
+      ${i.kwg !== undefined ? tog('kwg', 'Kernel WARP (all CPU cores)', i.kwg === 'OFF' ? 'OFF' : 'ON', 'the IPv4 WARPs run as kernel WireGuard interfaces instead of inside the router process: a busy server (thousands of Instagram connections on 1-2 cores) keeps its WARP speed; same accounts, same exit IPs' + (i.kwg !== 'OFF' ? ` — <b>${esc(i.kwg)}</b> interface(s) up` : '')) : ''}
       <div class="mdesc">These apply to this server only; for the others use Backup & copy → Copy settings.</div></div>`;
     $$('[data-tg]').forEach(c => c.onchange = () => igAct(igS({ action: 'set', key: c.dataset.tg, val: c.checked ? 'on' : 'off' })));
     $$('[data-ns]').forEach(b => b.onclick = () => igAct(igS({ action: 'set', key: b.dataset.ns, val: $(`[data-nv="${b.dataset.ns}"]`).value.trim() })));
@@ -2017,7 +2022,7 @@ const IGTAB = {
   },
   checks() {
     const i = IG.cur.info, st = (v) => `<span class="pill ${v === 'SET' || v === 'ON' ? 'on' : 'off'}"><span class="led"></span>${v === 'SET' || v === 'ON' ? 'set' : 'not set'}</span>`;
-    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Instagram test account (music) ${st(i.igacc)}</h3>
+    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Instagram test account (music) ${igAccBroken(i) ? `<span class="pill off"><span class="led"></span>logged out — ${esc(igAccWhy(i))}</span>` : st(i.igacc)}</h3>
       <p class="muted">With a spare account (not a real one) the server tests on every exit IP whether Instagram music plays.</p>
       <div class="ff"><label class="f">sessionid cookie<input id="igsid" ${igSecret}></label></div>
       <div class="actions" style="margin-top:10px"><button class="btn pri" id="igsidgo">Save & test</button><button class="btn" id="igmt">Music test</button><button class="btn danger" id="igsdel">Remove</button></div></div>
