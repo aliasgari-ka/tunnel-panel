@@ -180,7 +180,7 @@ func (a *App) sideArtifacts(iran bool) []Artifact {
 
 // prepScript installs the distro packages methods rely on, once, so a later method
 // switch never waits on apt.
-const prepScript = ipv6RAFix + `pk=""
+const prepScript = ipv6RAFix + aptFix + `pk=""
 command -v swanctl >/dev/null 2>&1 || pk="$pk strongswan-swanctl charon-systemd libcharon-extra-plugins"
 command -v swanctl >/dev/null 2>&1 && ! systemctl cat strongswan.service >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1 && pk="$pk charon-systemd"
 command -v ethtool >/dev/null 2>&1 || pk="$pk ethtool"
@@ -191,6 +191,7 @@ command -v conntrack >/dev/null 2>&1 || pk="$pk conntrack"
 if [ -z "$pk" ]; then echo "packages: all present"; exit 0; fi
 echo "installing:$pk"
 if command -v apt-get >/dev/null 2>&1; then
+  tp_apt_fix || true
   timeout 600 apt-get update -qq >/dev/null 2>&1 || true
   timeout 900 apt-get install -y -qq $pk >/dev/null 2>&1 || echo "WARNING: apt could not install some of:$pk"
 elif command -v dnf >/dev/null 2>&1; then

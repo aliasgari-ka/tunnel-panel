@@ -196,8 +196,9 @@ secrets {
 }
 `, conn, localPub, remotePub, d.IfID, localID, remoteID, start, psk, dpd, closeA))}
 		}
-		setup := `if ! command -v swanctl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && ! systemctl cat strongswan.service >/dev/null 2>&1; }; then
+		setup := aptFix + `if ! command -v swanctl >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && ! systemctl cat strongswan.service >/dev/null 2>&1; }; then
   # swanctl + charon-systemd (strongswan.service) is the vici-native daemon we drive
+  tp_apt_fix || true
   (apt-get update -qq && apt-get install -y -qq strongswan-swanctl charon-systemd libcharon-extra-plugins) \
   || dnf install -y strongswan || yum install -y strongswan || { echo "could not install strongSwan"; exit 1; }
 fi
