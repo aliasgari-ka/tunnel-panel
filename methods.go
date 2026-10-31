@@ -388,7 +388,7 @@ func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) 
 		}
 		return "", p
 	case "wg": // UDP; the side that doesn't dial only listens
-		p := portOr(get("port"), d.BasePort+2)
+		p := portOr(get("port"), d.BasePort+1)
 		if get("dialer") == "foreign" {
 			return p, ""
 		}

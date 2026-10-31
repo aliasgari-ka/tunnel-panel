@@ -27,11 +27,14 @@ func TestBenchAltNS(t *testing.T) {
 	// public-looking addresses (the Premium core refuses to run without a public IP)
 	sh(t, "ip -n tir addr add 198.51.100.1/24 dev vir; ip -n tkh addr add 198.51.100.2/24 dev vkh")
 	// the filter: on the wire (egress of both ends) UDP and TCP between the servers die
-	sh(t, `for x in "tir vir" "tkh vkh"; do set -- $x
+	// (TP_BENCHALT_OPEN=1 leaves the route open: a plain benchmark of the methods)
+	if os.Getenv("TP_BENCHALT_OPEN") == "" {
+		sh(t, `for x in "tir vir" "tkh vkh"; do set -- $x
 ip netns exec $1 tc qdisc add dev $2 root handle 1: prio
 ip netns exec $1 tc filter add dev $2 parent 1: protocol ip u32 match ip protocol 17 0xff action drop
 ip netns exec $1 tc filter add dev $2 parent 1: protocol ip u32 match ip protocol 6 0xff action drop
 done`)
+	}
 	dataDir = t.TempDir()
 	st, _ := LoadStore(dataDir)
 	_ = st.Update(func(s *State) error {

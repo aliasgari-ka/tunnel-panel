@@ -214,6 +214,12 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		defer func() { _, _ = khHost.Run(context.Background(), probeServerDown(probePort), nil) }()
 
 		var out []BenchResult
+		// a run of only some methods keeps the route's earlier results for the others: the
+		// Routes page, failover and hot standby read the latest run as the whole picture
+		var earlier []BenchResult
+		if len(req.Methods) > 0 {
+			earlier = a.benchResults(req.IranID, req.ForeignID, req.Family)
+		}
 		for i, m := range cands {
 			if ctx.Err() != nil {
 				break // cancelled
@@ -292,10 +298,11 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			tcancel()
 			out = append(out, r)
 			// publish partial results so the page shows progress even after a reload
-			partial := append([]BenchResult(nil), out...)
+			partial := withEarlier(append([]BenchResult(nil), out...), earlier)
 			rankBench(partial)
 			a.setBench(req.IranID, req.ForeignID, req.Family, partial)
 		}
+		out = withEarlier(out, earlier)
 		rankBench(out)
 		a.setBench(req.IranID, req.ForeignID, req.Family, out)
 		a.recordBench(req, out)
@@ -536,6 +543,20 @@ func runProbe[T any](ctx context.Context, h Host, args string, timeout int) (T, 
 // rankBench scores results and flags the best. Higher score = better.
 // Throughput dominates (log scale, so 400 vs 500 Mbps matters less than 5 vs 50);
 // latency, jitter and loss subtract. Without a throughput figure it ranks on latency.
+// withEarlier adds the earlier results of methods this run didn't measure.
+func withEarlier(out, earlier []BenchResult) []BenchResult {
+	have := map[string]bool{}
+	for _, r := range out {
+		have[r.Method] = true
+	}
+	for _, r := range earlier {
+		if !have[r.Method] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func rankBench(rs []BenchResult) {
 	for i := range rs {
 		r := &rs[i]

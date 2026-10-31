@@ -77,7 +77,7 @@ ip link set %[1]s mtu %[3]s up
 
 // wgPort is the UDP port both ends listen on.
 func wgPort(c *buildCtx) (int, error) {
-	p := c.D.BasePort + 2
+	p := c.D.BasePort + 1 // +2 is the tunnel's speed-test port (probePortFor)
 	if v := c.Opt("port"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 65535 {
