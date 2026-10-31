@@ -62,8 +62,8 @@ const iranServers = () => STATE.servers.filter(s => (s.role || 'iran') === 'iran
 const foreignServers = () => STATE.servers.filter(s => s.role === 'foreign');
 const methodsFor = (fam) => STATE.methods.filter(m => m.families.includes(fam));
 // method families, in the order the UI lists them (all Backhaul cores together)
-const GROUPS = ['Backhaul', 'BackPack', 'Kernel GRE / IPsec', 'Other'];
-const GROUP_ICON = { 'Backhaul': '🚀', 'BackPack': '🎒', 'Kernel GRE / IPsec': '🧩', 'Other': '🔧' };
+const GROUPS = ['Backhaul', 'BackPack', 'Kernel GRE / IPsec / WireGuard', 'Other'];
+const GROUP_ICON = { 'Backhaul': '🚀', 'BackPack': '🎒', 'Kernel GRE / IPsec / WireGuard': '🧩', 'Other': '🔧' };
 const groupOf = (m) => (m && m.group) || 'Other';
 const groupRank = (g) => { const i = GROUPS.indexOf(g); return i < 0 ? GROUPS.length : i; };
 const groupIcon = (m) => GROUP_ICON[groupOf(m)] || '🔧';

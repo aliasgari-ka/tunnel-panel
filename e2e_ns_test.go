@@ -161,6 +161,8 @@ func TestE2EMethods(t *testing.T) {
 		{"Backhaul (reverse)", "backhaul", nil},
 		{"FRP (reverse)", "frp", nil},
 		{"Paqet-plus (raw TCP)", "paqet", nil},
+		{"WireGuard (Iran dials)", "wg", nil},
+		{"WireGuard (foreign dials)", "wg", map[string]string{"dialer": "foreign"}},
 	}
 	if fam == "v6" {
 		cases = append(cases, tc{"Direct v6 (ip6gre)", "direct6", nil},

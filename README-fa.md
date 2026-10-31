@@ -79,6 +79,7 @@ systemd می‌سازد و آدرس پنل را چاپ می‌کند. اولین
 | **Direct v6 (ip6gre)** | v6 | ندارد | فقط کرنل، کمترین سربار؛ Carrier روی `udp` یعنی GRE داخل UDP برای مسیرهایی که پروتکل 47 را می‌بندند |
 | **Plain GRE** | v4/v6 | ندارد | GRE یا ip6gre کرنل |
 | **IPsec (strongSwan)** | v6/v4 | AES-GCM | IKEv2، رابط XFRM مسیری |
+| **WireGuard** | v4/v6 | ChaCha20-Poly1305 | WireGuard کرنل روی یک پورت UDP، کلیدها را پنل می‌سازد؛ با `dialer` مشخص می‌شود کدام طرف وصل شود |
 | **Spoof-Tunnel** | v4 | ندارد (جعل IP) | پایپ خام با جعل متقابل IP مبدأ؛ provider نباید egress filtering داشته باشد؛ داخلش یک پروتکل رمزدار بگذارید |
 
 ---
