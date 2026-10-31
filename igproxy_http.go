@@ -251,6 +251,7 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "this address is the panel server itself")
 		return
 	}
+	wasOn := x.Igproxy
 	_ = s.app.store.Update(func(st *State) error {
 		if y := s.app.store.serverLocked(st, in.ID); y != nil {
 			y.Igproxy = in.On
@@ -263,16 +264,33 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.app.igJob(user, "add server "+x.Name, 15*time.Minute, func(ctx context.Context, out func(string)) bool {
-		inf := s.app.igInfo(ctx, x)
-		out(fmt.Sprintf("%s added (state %s)", x.Name, inf["state"]))
-		if st := inf["state"]; st == "NOAGENT" || st == "UPDATE" || in.Deploy {
-			return s.app.igDeploy(ctx, x, out)
+		ok := func() bool {
+			inf := s.app.igInfo(ctx, x)
+			if inf["state"] == "OFFLINE" {
+				out("!! the panel can't reach it now: " + inf["err"])
+				return false
+			}
+			out(fmt.Sprintf("%s reached (state %s)", x.Name, inf["state"]))
+			if st := inf["state"]; st == "NOAGENT" || st == "UPDATE" || in.Deploy {
+				return s.app.igDeploy(ctx, x, out)
+			}
+			return true
+		}()
+		if !ok && !wasOn {
+			// a server that couldn't be set up goes back off the page: left there OFFLINE it
+			// also dropped out of the Add list, so it couldn't be tried again
+			_ = s.app.store.Update(func(st *State) error {
+				if y := s.app.store.serverLocked(st, in.ID); y != nil {
+					y.Igproxy = false
+				}
+				return nil
+			})
+			s.app.igForget(in.ID)
+			out("not added: fix the above and add it again")
+		} else if ok {
+			out(x.Name + " added")
 		}
-		if inf["state"] == "OFFLINE" {
-			out("!! the panel can't reach it now: " + inf["err"])
-			return false
-		}
-		return true
+		return ok
 	})
 	if err != nil {
 		httpErr(w, 400, err.Error())

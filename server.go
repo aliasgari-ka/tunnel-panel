@@ -624,6 +624,8 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 			in.ID = newID()
 			in.CreatedAt = time.Now().Unix()
 			in.HostKey, in.AgentToken, in.Prepared = "", "", false
+			// state only the panel sets: never taken from the form
+			in.Igproxy, in.Provisioned, in.Arch, in.OS, in.LastPath = false, 0, "", "", ""
 			st.Servers = append(st.Servers, &in)
 			return nil
 		}
