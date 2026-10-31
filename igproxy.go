@@ -446,7 +446,7 @@ func igBuild(a string, p map[string]any) (igCmd, error) {
 			rx = regexp.MustCompile(`^[0-9]$`)
 		case "minspeed", "minwarps", "grotate", "musiccheck":
 			rx = regexp.MustCompile(`^[0-9]{1,5}$`)
-		case "autokey", "geosite", "gspread", "warpauto", "gall", "guard":
+		case "autokey", "geosite", "gspread", "warpauto", "gall", "guard", "kwg":
 			rx = regexp.MustCompile(`^(on|off|toggle)$`)
 		case "mode":
 			rx = regexp.MustCompile(`^(balance|failover|toggle)$`)
