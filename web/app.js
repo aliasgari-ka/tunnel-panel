@@ -404,20 +404,21 @@ function renderView() {
 }
 
 /* ---------------- usage ---------------- */
-// Bytes per tunnel and per server over the last 24 h / 3 / 7 days (usage.go reads the
-// counters every 5 min). Iran's upload is free, so what costs is what an Iran server receives.
+// Bytes per tunnel and per server over the last 1 / 7 / 30 days (usage.go reads the
+// counters every 5 min, always). Iran's upload is free, so what costs is what an Iran server receives.
 async function viewUsage(w) {
-  const hours = +(recall('tp-usage-h') || 24);
+  const days = [1, 7, 30].includes(+recall('tp-usage-d')) ? +recall('tp-usage-d') : 1;
   w.innerHTML = topbar('Usage', 'How much each tunnel and each server moved — and how that compares with what the users used.',
-    `<select id="uh" class="btn sm">${[[24, 'Last 24 hours'], [72, 'Last 3 days'], [168, 'Last 7 days']].map(x => `<option value="${x[0]}"${x[0] === hours ? ' selected' : ''}>${x[1]}</option>`).join('')}</select>`);
-  $('#uh', w).onchange = (e) => { remember('tp-usage-h', e.target.value); renderView(); };
+    `<div class="seg">${[[1, '1 day'], [7, '7 days'], [30, '30 days']].map(x => `<button class="btn sm${x[0] === days ? '' : ' ghost'}" data-ud="${x[0]}">${x[1]}</button>`).join('')}</div>`);
+  $$('[data-ud]', w).forEach(b => b.onclick = () => { remember('tp-usage-d', b.dataset.ud); renderView(); });
+  const hours = days * 24;
   const box = h('<div class="grid" style="gap:18px;grid-template-columns:minmax(0,1fr)"><div class="skel" style="height:160px"></div></div>');
   w.appendChild(box);
   let r;
-  try { r = await api('/usage?hours=' + hours); } catch (e) { box.innerHTML = `<div class="card pad errtxt">${esc(e.message)}</div>`; return; }
+  try { r = await api('/usage?days=' + days); } catch (e) { box.innerHTML = `<div class="card pad errtxt">${esc(e.message)}</div>`; return; }
   const T = Object.fromEntries((r.tunnels || []).map(x => [x.id, x]));
   const S = Object.fromEntries((r.servers || []).map(x => [x.id, x]));
-  const z = { down: 0, up: 0, hours: [] };
+  const z = { down: 0, up: 0, series: [] };
   const tot = (x) => x.down + x.up;
   const tunnels = STATE.tunnels.filter(t => shownOwner(t.owner));
   // one physical server may be in the list twice (two accounts added it): its card counts once
@@ -430,7 +431,9 @@ async function viewUsage(w) {
   };
   const nameOf = (id) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : '🏠 panel host'; };
   const ratio = (a, b) => b > 1 << 20 ? (a / b).toFixed(2) + '×' : '—';
-  const spark = (hs) => { const m = Math.max(1, ...hs); return `<span class="uspark">${hs.map(v => `<i style="height:${Math.max(2, Math.round(v / m * 22))}px" title="${fmtBytes(v)}"></i>`).join('')}</span>`; };
+  // one bar per hour (1 day) or per day; the tooltip says which
+  const stepLbl = (i) => { const t = new Date((r.from + i * r.step) * 1000); return r.step === 3600 ? t.toLocaleTimeString('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }) : t.toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', day: '2-digit', month: 'short' }); };
+  const spark = (hs) => { const m = Math.max(1, ...hs); return `<span class="uspark${days === 30 ? ' w' : ''}">${hs.map((v, i) => `<i style="height:${Math.max(2, Math.round(v / m * 22))}px" title="${stepLbl(i)}: ${fmtBytes(v)}"></i>`).join('')}</span>`; };
   const since = r.started ? Math.floor((Date.now() / 1000 - r.started) / 3600) : 0;
 
   const iranIds = [...new Set(tunnels.map(t => t.serverId))];
@@ -448,7 +451,7 @@ async function viewUsage(w) {
     <div><span class="chip">Iran out (free)</span> everything it sent — free on Iran.</div>
     <div><span class="chip">Foreign in / out</span> the foreign server's network card, both directions.</div>
     <div><span class="chip">Cost ratio</span> Iran in ÷ users' total. 1.00× = you pay what the users use; 1.10× = 10 % on top (tunnel headers, tests, updates, other programs on the server).</div>
-    <div class="faint">Network-card numbers are the whole server: when one Iran server carries several tunnels they share them (see the servers below).${since < hours ? ` Counting started ${since < 1 ? 'less than an hour' : since + ' h'} ago, so this covers only that time.` : ''}</div></div>`;
+    <div class="faint">Network-card numbers are the whole server: when one Iran server carries several tunnels they share them (see the servers below).${since < hours ? ` Counting started ${since < 1 ? 'less than an hour' : since < 48 ? since + ' h' : Math.floor(since / 24) + ' days'} ago, so this covers only that time.` : ''}</div></div>`;
 
   const kpi = `<div class="ukpi">
     <div class="card pad"><small>Users used</small><b>${fmtBytes(uAll)}</b><span class="faint">↓ ${fmtBytes(uDown)} · ↑ ${fmtBytes(uAll - uDown)}</span></div>
@@ -460,12 +463,12 @@ async function viewUsage(w) {
     const x = T[t.id] || z, ir = nicOf(t.serverId), fr = nicOf(t.foreignId || '');
     const shared = tunnels.filter(o => nicOf(o.serverId).key === ir.key).length;
     return `<tr><td><b>${esc(t.name)}</b>${t.active ? '' : ' <span class="faint">(stopped)</span>'}<div class="faint" style="font-size:11.5px">${nameOf(t.serverId)} → ${nameOf(t.foreignId)}</div></td>
-      <td>${fmtBytes(x.down)}</td><td>${fmtBytes(x.up)}</td><td><b>${fmtBytes(tot(x))}</b></td><td>${spark(x.hours || [])}</td>
+      <td>${fmtBytes(x.down)}</td><td>${fmtBytes(x.up)}</td><td><b>${fmtBytes(tot(x))}</b></td><td>${spark(x.series || [])}</td>
       <td>${fmtBytes(ir.u.down)}${shared > 1 ? ` <span class="faint" title="this Iran server carries ${shared} tunnels; its card counts them all">· ${shared} tunnels</span>` : ''}</td>
       <td>${shared > 1 ? '<span class="faint" title="the server carries several tunnels: see Iran servers below">see server</span>' : ratio(ir.u.down, tot(x))}</td>
       <td>${fmtBytes(fr.u.down)} / ${fmtBytes(fr.u.up)}</td></tr>`;
   }).join('');
-  const tTbl = `<div class="card pad"><h3 style="margin:0 0 6px">Per tunnel</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Tunnel</th><th>Users ↓</th><th>Users ↑</th><th>Users total</th><th>Per hour</th><th>Iran in (paid)</th><th>Cost ratio</th><th>Foreign in / out</th></tr></thead><tbody>${tRows || '<tr><td colspan="8" class="faint">no tunnels</td></tr>'}</tbody></table></div></div>`;
+  const tTbl = `<div class="card pad"><h3 style="margin:0 0 6px">Per tunnel</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Tunnel</th><th>Users ↓</th><th>Users ↑</th><th>Users total</th><th>${days === 1 ? 'Per hour' : 'Per day'}</th><th>Iran in (paid)</th><th>Cost ratio</th><th>Foreign in / out</th></tr></thead><tbody>${tRows || '<tr><td colspan="8" class="faint">no tunnels</td></tr>'}</tbody></table></div></div>`;
 
   const sRows = (ids, iran) => {
     const done = new Set();
@@ -474,10 +477,10 @@ async function viewUsage(w) {
       const mine = tunnels.filter(t => nicOf(iran ? t.serverId : t.foreignId || '').key === n.key);
       const users = mine.reduce((a, t) => a + tot(T[t.id] || z), 0);
       return `<tr><td><b>${nameOf(id)}</b><div class="faint" style="font-size:11.5px">${mine.map(t => esc(t.name)).join(' · ')}</div></td>
-        <td>${fmtBytes(users)}</td><td>${fmtBytes(n.u.down)}</td><td>${fmtBytes(n.u.up)}</td><td>${spark(n.u.hours || [])}</td><td><b>${ratio(iran ? n.u.down : n.u.down + n.u.up, users)}</b></td></tr>`;
+        <td>${fmtBytes(users)}</td><td>${fmtBytes(n.u.down)}</td><td>${fmtBytes(n.u.up)}</td><td>${spark(n.u.series || [])}</td><td><b>${ratio(iran ? n.u.down : n.u.down + n.u.up, users)}</b></td></tr>`;
     }).join('');
   };
-  const sTbl = (title, ids, iran) => `<div class="card pad"><h3 style="margin:0 0 6px">${title}</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Server · its tunnels</th><th>Users total</th><th>In${iran ? ' (paid)' : ''}</th><th>Out${iran ? ' (free)' : ''}</th><th>Per hour</th><th>${iran ? 'In ÷ users' : '(In+out) ÷ users'}</th></tr></thead><tbody>${sRows(ids, iran)}</tbody></table></div></div>`;
+  const sTbl = (title, ids, iran) => `<div class="card pad"><h3 style="margin:0 0 6px">${title}</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Server · its tunnels</th><th>Users total</th><th>In${iran ? ' (paid)' : ''}</th><th>Out${iran ? ' (free)' : ''}</th><th>${days === 1 ? 'Per hour' : 'Per day'}</th><th>${iran ? 'In ÷ users' : '(In+out) ÷ users'}</th></tr></thead><tbody>${sRows(ids, iran)}</tbody></table></div></div>`;
 
   box.innerHTML = kpi + legend + tTbl + sTbl('Iran servers — all routes', iranIds, true) + sTbl('Foreign servers', foreignIds, false);
 }
