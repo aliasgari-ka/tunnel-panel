@@ -134,6 +134,7 @@ func main() {
 	go app.resumeInterrupted()
 	go app.repairAfterUpdate()
 	go app.memNightly()
+	go app.igImport()
 
 	fmt.Printf("Tunnel Panel %s (agent %s, data %s, %d methods)\n", version, *agentAddr, *dir, len(methods))
 	store.View(func(st *State) {

@@ -67,7 +67,8 @@ func (a *App) routes() http.Handler {
 		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
 		"/api/traffic": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
 		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
-		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true}
+		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true,
+		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true}
 	g := func(path, kind string, h http.HandlerFunc) {
 		if !reads[path] {
 			h = postOnly(h)
@@ -118,6 +119,15 @@ func (a *App) routes() http.Handler {
 	g("/api/users/delete", "admin", s.userDelete)
 	g("/api/owner", "admin", s.owner)
 	g("/api/domain", "admin", s.domain)
+	// IG routing (igproxy.go): each handler keeps an account to its own servers
+	g("/api/igproxy/servers", "self", s.igServers)
+	g("/api/igproxy/info", "self", s.igInfoGet)
+	g("/api/igproxy/action", "self", s.igAction)
+	g("/api/igproxy/enable", "self", s.igEnable)
+	g("/api/igproxy/copy", "self", s.igCopy)
+	g("/api/igproxy/backup", "self", s.igBackupRun)
+	g("/api/igproxy/backups", "self", s.igBackupList)
+	g("/api/igproxy/restore", "self", s.igRestore)
 	return securityHeaders(mux)
 }
 

@@ -195,6 +195,8 @@ type App struct {
 	traffic  *trafficMon
 	speedMu  sync.Mutex
 	speedRes map[string]*SpeedResult // tunnel id -> last speed test
+
+	ig igCache // IG routing: each server's last "igproxy info" (igproxy.go)
 }
 
 func (a *App) settings() Settings {

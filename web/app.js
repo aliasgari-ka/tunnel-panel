@@ -53,7 +53,7 @@ async function loadAll() {
   if (STATE.restored === undefined) { // once per page load: back to the page and account viewed before the refresh
     STATE.restored = true;
     const pg = recall('tp-page');
-    if (['tunnels', 'servers', 'routes', 'bench', 'settings'].includes(pg) || (pg === 'users' && isAdmin())) STATE.view = pg;
+    if (['tunnels', 'servers', 'routes', 'igproxy', 'bench', 'settings'].includes(pg) || (pg === 'users' && isAdmin())) STATE.view = pg;
     const va = recall('tp-viewas');
     if (isAdmin() && va && (va === '-' || STATE.users.some(u => u.username === va))) STATE.ownerFilter = va;
   }
@@ -333,7 +333,7 @@ const quantumBg = (() => {
 /* ---------------- shell ---------------- */
 function renderShell() {
   document.body.innerHTML = '';
-  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['routes', 'Routes', '🔀'], ['bench', 'Benchmark', '📊'],
+  const nav = [['servers', 'Servers', '🖥'], ['tunnels', 'Tunnels', '🛰'], ['routes', 'Routes', '🔀'], ['igproxy', 'IG Routing', '🌐'], ['bench', 'Benchmark', '📊'],
     ...(isAdmin() ? [['users', 'Users', '👥'], ['settings', 'Settings', '⚙']] : [['settings', 'Account', '👤']])];
   const shell = h(`<div class="shell">
     <aside class="side" id="side">
@@ -397,7 +397,8 @@ function countUp(root) {
 function renderView() {
   const w = $('#work'); w.innerHTML = '';
   w.classList.remove('enter'); void w.offsetWidth; w.classList.add('enter'); // replay the page-in animation
-  ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, bench: viewBench, settings: viewSettings, users: viewUsers }[STATE.view])(w);
+  w.classList.remove('igp');
+  ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, igproxy: viewIg, bench: viewBench, settings: viewSettings, users: viewUsers }[STATE.view])(w);
   trafficWatch();
   healthWatch();
 }
@@ -1710,5 +1711,470 @@ async function pollJob(jobId, tunnelId) {
   tick();
 }
 
+
+/* ---------------- IG routing ---------------- */
+// The igproxy agents on the foreign servers: which way Instagram, Google/Gemini, YouTube Music …
+// leave each server (a proxy, Cloudflare WARP, the server's IPv6 or direct). Every action runs
+// "igproxy <command>" on the server as one of the panel's jobs (output in a drawer).
+const IG = { data: null, cur: null, tab: 'routes', sub: recall('tp-igsub') || 'servers', filter: 'all', q: '' };
+const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', CUSTOM: 'My sites' };
+const IGWIDE = ['ADULT', 'SPOTIFY', 'SCLOUD', 'CUSTOM'];
+const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'],
+  CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
+const igBad = (s) => (IGST[s] || ['', 'bad'])[1] === 'bad';
+const igViaW = (v) => { v = v || ''; if (v === 'proxy') return 'Proxy'; if (/^proxy\d+$/.test(v)) return 'Proxy ' + v.slice(5); return { warp: 'WARP', warp6: 'WARP IPv6', ipv6: 'IPv6', direct: 'Direct' }[v] || v || '—'; };
+const igViaC = (v) => 'v-' + (String(v || '').replace(/\d+$/, '').replace('warp6', 'warp') || 'direct');
+const igPill = (st) => { const w = IGST[st] || [st, 'bad']; return `<span class="pill ${w[1]}"><span class="led"></span>${esc(w[0])}</span>`; };
+const igChk = (v) => v === 'OK' ? '<i class="igd ok"></i>OK' : v === 'FAIL' ? '<i class="igd bad"></i>fail' : '<i class="igd"></i>—';
+const igOwner = (s) => isAdmin() && s.owner ? `<span class="chip">👤 ${esc(s.owner)}</span>` : '';
+const igList = () => ((IG.data && IG.data.servers) || []).filter(s => shownOwner(s.owner));
+const igView = () => isAdmin() ? (STATE.ownerFilter || '') : '';
+const igS = (p) => Object.assign({ srv: IG.cur.id }, p);
+const igTitles = { route: 'Change route', proxy_add: 'Add proxy', custom_add: 'Add site', set: 'Setting', speedtest: 'Speed test', recent: 'Last 40 connections', watch: 'Live traffic',
+  logs: 'Logs', gemusers: 'Gemini users', google_use: 'Google on WARP', warp_del: 'Delete WARP', warp_use: 'Use WARP', warp_add: 'New WARP account', proxy_del: 'Delete proxy', custom_del: 'Delete site',
+  ig_session: 'Instagram test account', ig_test: 'Music test', ig_del: 'Remove test account', gemkey_set: 'Gemini key', gemkey_test: 'Gemini test', gemkey_del: 'Remove Gemini key',
+  tg_setup: 'Telegram setup — send /start to the bot now', tg_test: 'Telegram test message', tg_del: 'Remove Telegram bot', status: 'Full test', status_short: 'Short test', routes: 'Route details',
+  google_rotate: 'Fresh IP for Google', google_countries: 'Country per WARP', panel_check: 'Panel check', panel_fix: 'Fix panel', panel_undo: 'Undo panel fix', diag: 'Diagnose Gemini / Google',
+  apply: 'Re-apply', pause: 'Pause igproxy', uninstall: 'Uninstall igproxy', deploy: 'Install / update agent' };
+const igJobTitle = (p) => { const t = igTitles[p.action] || p.action || ''; const s = p.srv === 'all' ? 'all servers' : Array.isArray(p.srv) ? p.srv.length + ' servers' : ((IG.data?.servers || []).find(x => x.id === p.srv) || {}).name || ''; return s ? t + ' — ' + s : t; };
+
+async function igLoad(fresh) {
+  if (IG.loading) return IG.loading;
+  $$('[data-igref]').forEach(b => b.classList.add('busy'));
+  IG.loading = (async () => {
+    try {
+      IG.data = await api('/igproxy/servers' + (fresh ? '?fresh=1' : ''));
+      if (IG.cur) IG.cur = IG.data.servers.find(x => x.id === IG.cur.id) || null;
+      if (STATE.view === 'igproxy' && !$('.drawer,.modal') && !document.activeElement?.matches('input,select,textarea')) igRender();
+      // servers still being read come in a few seconds later
+      clearTimeout(IG.again); if (IG.data.pending) IG.again = setTimeout(() => { if (STATE.view === 'igproxy') igLoad(); }, 5000);
+    } catch (e) { toast(e.message); }
+    finally { IG.loading = null; $$('[data-igref]').forEach(b => b.classList.remove('busy')); }
+  })();
+  return IG.loading;
+}
+// a job's output: lines without the panel's time stamp
+const igLines = (j) => (j.lines || []).map(l => l.replace(/^\d\d:\d\d:\d\d /, ''));
+const igColor = (l) => /^\s*(!!|ERR|.*\b(FAIL|DOWN|failed|rejected|not )\b)/i.test(l) ? 'err' : /^\s*(==|->)/.test(l) ? 'ir' : /\b(OK|added|saved|applied|removed|updated|installed|fixed)\b/.test(l) ? 'ok' : '';
+function igRunJob(jobId, title, onDone) {
+  return new Promise(res => {
+    const d = h(`<div class="drawer"><div class="panel"><div class="dh"><div style="display:flex;gap:10px;align-items:center;min-width:0"><span class="pill acc" id="ijst"><span class="led"></span>running</span><b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</b></div>
+      <div class="actions"><button class="btn sm" id="ijcopy" title="Copy the output">⧉</button><button class="btn danger sm" id="ijstop">Stop</button><button class="btn sm" id="ijclose">Close ✕</button></div></div><div class="logbox" id="ijout">…</div></div></div>`);
+    document.body.appendChild(d);
+    let closed = false, done = false, txt = '';
+    const close = () => { if (closed) return; closed = true; d.remove(); document.removeEventListener('keydown', onKey); if (onDone) onDone(); res({ out: txt, done }); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    $('#ijclose', d).onclick = close; d.onclick = (e) => { if (e.target === d) close(); };
+    $('#ijcopy', d).onclick = (e) => copy(txt, e.target);
+    $('#ijstop', d).onclick = () => api('/jobs/cancel', { ID: jobId }).catch(e => toast(e.message));
+    const tick = async () => {
+      if (closed) return;
+      let j; try { j = await api('/jobs?id=' + jobId); } catch (e) { toast(e.message); return; }
+      if (closed) return;
+      const ls = igLines(j); txt = ls.join('\n');
+      const box = $('#ijout', d), stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+      box.innerHTML = ls.map(l => `<div class="ln ${igColor(l)}">${esc(l) || '&nbsp;'}</div>`).join('') || '…';
+      if (stick) box.scrollTop = box.scrollHeight;
+      if (j.status !== 'running') {
+        done = true; $('#ijstop', d)?.remove();
+        const ok = j.status === 'ok';
+        $('#ijst', d).className = 'pill ' + (ok ? 'on' : 'bad');
+        $('#ijst', d).innerHTML = '<span class="led"></span>' + (ok ? 'finished' : j.status === 'cancelled' ? 'stopped' : 'error');
+        return;
+      }
+      setTimeout(tick, 800);
+    };
+    tick();
+  });
+}
+async function igAct(p, confirmText, opt = {}) {
+  if (confirmText && !confirm(confirmText)) return;
+  if (p.srv === 'all' && p.view === undefined) p = Object.assign({ view: igView() }, p);
+  try {
+    const r = await api('/igproxy/action', p);
+    await igRunJob(r.job, opt.title || igJobTitle(p), () => { if (opt.refresh !== false) igRefreshAfter(p); });
+  } catch (e) { toast(e.message); }
+}
+// runs an action without the drawer and returns its output (lists: proxies, WARPs, sites)
+async function igQuiet(p) {
+  const r = await api('/igproxy/action', p);
+  for (;;) {
+    const j = await api('/jobs?id=' + r.job);
+    if (j.status !== 'running') return igLines(j).join('\n');
+    await new Promise(s => setTimeout(s, 600));
+  }
+}
+async function igRefreshAfter(p) {
+  if (IG.cur && p.srv === IG.cur.id) {
+    try { IG.cur.info = await api('/igproxy/info?id=' + encodeURIComponent(IG.cur.id)); if (STATE.view === 'igproxy') igRender(); } catch (e) { toast(e.message); }
+  } else igLoad(true);
+}
+
+function viewIg(w) {
+  if (!IG.data) igLoad();
+  igRender(w);
+}
+function igRender(w) {
+  w = w || $('#work'); if (!w || STATE.view !== 'igproxy') return;
+  w.innerHTML = '';
+  w.classList.add('igp');
+  if (IG.cur) return igDetail(w);
+  const subs = [['servers', 'Servers'], ['matrix', 'Route table'], ['bulk', 'All servers'], ['backup', 'Backup & copy']];
+  w.innerHTML = topbar('IG Routing', 'igproxy on the foreign servers: which way Instagram, Google / Gemini, YouTube Music and the rest leave each server.',
+    `<button class="btn" data-igref onclick="igLoad(true)">↻ Refresh</button><button class="btn pri" onclick="igAddServer()">+ Add server</button>`)
+    + `<div class="seg" id="igsub">${subs.map(([k, t]) => `<button data-s="${k}" class="${k === IG.sub ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igbody"></div>`;
+  $$('#igsub button', w).forEach(b => b.onclick = () => { IG.sub = b.dataset.s; remember('tp-igsub', IG.sub); igRender(); });
+  const body = $('#igbody', w);
+  ({ servers: igServers, matrix: igMatrix, bulk: igBulk, backup: igBackup }[IG.sub] || igServers)(body);
+}
+
+// ---- servers
+function igServers(box) {
+  const d = IG.data;
+  if (!d) { box.innerHTML = '<div class="grid cards">' + '<div class="skel" style="height:150px"></div>'.repeat(4) + '</div>'; return; }
+  const L = igList(), ok = L.filter(s => s.info.state === 'OK').length, conn = L.reduce((a, s) => a + (+s.info.caught || 0), 0);
+  const bad = L.filter(s => s.info.state !== 'OK' && s.info.state !== 'CHECKING').length, old = L.filter(s => ['UPDATE', 'NOAGENT'].includes(s.info.state)).length;
+  box.insertAdjacentHTML('beforeend', `<div class="summary">
+    <div class="stat"><small>Servers</small><b>${L.length}</b></div><div class="stat"><small>Healthy</small><b>${ok}</b></div>
+    <div class="stat"><small>Connections routed</small><b>${conn}</b></div><div class="stat"><small>Need attention</small><b>${bad}</b></div></div>`);
+  if (old && d.agent) box.insertAdjacentHTML('beforeend', `<div class="mwarn">${old} server(s) don't run the current agent (<span class="mono">${esc(d.agent)}</span>). <button class="btn sm" id="igupd">Update them</button></div>`);
+  if (!d.agent) box.insertAdjacentHTML('beforeend', `<div class="mwarn">The agent script isn't on the panel host (<span class="mono">/etc/igpm/igproxy.sh</span>), so install / update is unavailable. Everything else works.</div>`);
+  $('#igupd', box) && ($('#igupd', box).onclick = () => igAct({ srv: 'all', action: 'deploy', old: 1 }, 'Update the agent on the servers with an old one? Each server routes everything direct for a few seconds; settings and WARPs are kept.', { title: 'Update agents' }));
+  if (!L.length) {
+    box.insertAdjacentHTML('beforeend', `<div class="card empty"><div class="big">🌐</div><h3>No servers here yet</h3><p class="muted">Add one of your foreign servers: the igproxy agent is installed on it, then you choose here which way each service leaves.</p><button class="btn pri" onclick="igAddServer()">+ Add server</button></div>`);
+    return;
+  }
+  const nbad = L.filter(s => s.info.state !== 'OK').length;
+  box.insertAdjacentHTML('beforeend', `<div class="filters"><button class="fchip" data-f="all">All <b>${L.length}</b></button><button class="fchip" data-f="bad">Needs attention <b>${nbad}</b></button>
+    <input class="inp search" id="igq" placeholder="Search name or IP…" value="${esc(IG.q)}"><span class="faint" style="font-size:12px">updated ${new Date(d.t * 1000).toLocaleTimeString()}</span></div><div class="grid cards" id="igcards"></div>`);
+  $$('[data-f]', box).forEach(b => { b.classList.toggle('on', b.dataset.f === IG.filter); b.onclick = () => { IG.filter = b.dataset.f; igRender(); }; });
+  $('#igq', box).oninput = (e) => { IG.q = e.target.value; igCards(); };
+  igCards();
+}
+function igCards() {
+  const q = IG.q.trim().toLowerCase();
+  const L = igList().filter(s => (IG.filter !== 'bad' || s.info.state !== 'OK') && (!q || (s.name + ' ' + s.host).toLowerCase().includes(q)));
+  const box = $('#igcards'); if (!box) return;
+  box.innerHTML = L.length ? L.map(igCard).join('') : '<div class="empty card"><div class="big">🔍</div>No server matches</div>';
+  $$('.scard', box).forEach(c => c.onclick = () => { IG.cur = IG.data.servers.find(x => x.id === c.dataset.id); IG.tab = 'routes'; igRender(); scrollTo(0, 0); });
+}
+function igCard(s) {
+  const i = s.info;
+  const svc = (g) => `<div class="svc"><small>${IGSV[g]}</small><b class="${igViaC(i[g.toLowerCase()])}">${igViaW(i[g.toLowerCase()])}</b>${g === 'GOOGLE' && /^warp/.test(i.google || '') && i.gcc && i.gcc !== '-' ? `<span class="note mono" style="color:${i.gcc === 'PROXY' ? 'var(--crit)' : 'var(--faint)'}">${i.gcc === 'PROXY' ? 'on a proxy for now' : 'country ' + esc(i.gcc)}</span>` : ''}</div>`;
+  const n = igWarpNeed(i);
+  return `<div class="card scard${igBad(i.state) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div>${igPill(i.state)}</div>
+    ${i.ig ? `<div class="svcs">${svc('IG')}${svc('GOOGLE')}${svc('YTM')}</div>
+    <div class="sfoot"><span>🔗 <b>${+i.caught || 0}</b></span><span>proxies <b>${+i.proxies || 0}</b></span><span>WARP <b>${+i.warps || 0}</b>${n ? `<span class="faint" title="suggested for the 24 h peak"> / ${n.total}</span>` : ''}</span><span class="grow"></span><span>Gemini ${igChk(i.gem)}</span><span>IG ${igChk(i.igp)}</span></div>`
+    : i.state === 'CHECKING' ? '<div class="skel" style="height:64px;margin-top:10px"></div>' : `<div class="mcrit" style="margin:10px 0 0">${esc(i.err || (IGST[i.state] || [])[0] || '')}</div>`}</div>`;
+}
+// WARPs needed for the 24 h peak: one WARP keeps its speed up to ~2500 connections / 5 min, +1 spare (3-10), + Google's own
+const igWarpNeed = (i) => { if (i.wpeak === undefined || i.wpeak === '-' || i.wpeak === '') return null; const p = +i.wpeak || 0, g = (i.gw || '').split(',').filter(Boolean).length;
+  const ig = Math.min(10, Math.max(3, Math.ceil(p / 2500) + 1)); return { p, ig, g, total: ig + g, have: +i.warps || 0 }; };
+const igPeakChip = (i) => { const n = igWarpNeed(i); if (!n) return ''; return `<span class="chip ${n.have < n.total ? 'bad' : ''}" title="most user connections on Instagram's WARPs in 24 h (every 5 min); one WARP keeps its speed up to ~2500">peak ${n.p} → ${n.ig} WARP${n.g ? ' + ' + n.g + ' Google' : ''} suggested${i.wauto === 'ON' ? ' (auto)' : ''}</span>`; };
+const igGccChip = (i) => i.gcc === undefined || i.gcc === '-' || i.gcc === '' ? '' : i.gcc === 'PROXY' ? '<span class="chip bad" title="no allowed WARP for Google: Google goes through a proxy for now">no allowed WARP → proxy</span>' : `<span class="chip" title="the country Google sees for its current WARP">${esc(i.gcc)}</span>`;
+
+async function igAddServer() {
+  if (!IG.data) await igLoad();
+  const c = (IG.data?.candidates || []).filter(x => shownOwner(x.Owner));
+  const m = modal(`<h2>Add a server to IG routing</h2>
+    ${c.length ? `<div class="ff" style="grid-template-columns:1fr"><label class="f">Server<select id="igas">${c.map(x => `<option value="${esc(x.ID)}">${esc(x.Name)} — ${esc(x.Host)}${x.Owner ? ' (' + esc(x.Owner) + ')' : ''}</option>`).join('')}</select></label>
+    <label class="f row"><input type="checkbox" id="igad"> Reinstall the agent even if it's already there</label></div>
+    <p class="muted" style="font-size:13px">The panel reaches it the way it reaches it for tunnels (its saved SSH login or agent). If igproxy isn't on it yet, it's installed now.</p>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button class="btn pri" id="igago">Add</button></div>`
+    : `<p class="muted">Every foreign server is already here. Add a new machine under <b>Servers</b> first (role: foreign), then come back.</p>`}`);
+  const go = $('#igago', m);
+  if (go) go.onclick = async () => {
+    try { const r = await api('/igproxy/enable', { ID: $('#igas', m).value, On: true, Deploy: $('#igad', m).checked }); m.remove(); await igRunJob(r.job, 'Add server', () => igLoad(true)); }
+    catch (e) { toast(e.message); }
+  };
+}
+
+// ---- one server
+const IGTABS = [['routes', 'Routes'], ['proxies', 'Proxies'], ['warp', 'WARP'], ['sites', 'My sites'], ['settings', 'Settings'], ['checks', 'Test account · Gemini · Telegram'], ['tools', 'Tests & diagnosis'], ['server', 'Server']];
+function igDetail(w) {
+  const s = IG.cur, i = s.info || {};
+  w.innerHTML = topbar(s.name, s.host, `<button class="btn" id="igback">← All servers</button><button class="btn" id="igre">↻</button>`);
+  $('#igback', w).onclick = () => { IG.cur = null; igRender(); };
+  $('#igre', w).onclick = () => igRefreshAfter({ srv: s.id });
+  w.insertAdjacentHTML('beforeend', `<div class="card pad"><div class="statline">${igPill(i.state)} ${igOwner(s)}
+    ${i.ig ? `<span>router <b>${esc(i.router)}</b></span><span>redirect <b>${esc(i.redirect)}</b></span><span>🔗 connections <b>${+i.caught || 0}</b></span>
+    <span>active WARP <b class="mono">${esc(i.active)}</b></span><span>Google's WARP <b class="mono">${esc(i.gact)}</b></span>
+    <span>Gemini ${igChk(i.gem)}</span><span>Instagram ${igChk(i.igp)}</span><span>panel <b class="mono">${esc(i.panel || '-')}</b></span>
+    ${i.guard !== undefined ? `<span>WARP guard <b style="${i.guard === 'DOWN' ? 'color:var(--crit)' : ''}">${i.guard === 'ON' ? 'on' : i.guard === 'DOWN' ? 'not running' : 'off'}</b></span>` : ''}
+    <span>Gemini users (10 min) <b class="mono">${esc((i.gusers || '').replace(/,/g, ' ') || '—')}</b></span><span>agent <b class="mono">${esc(i.sum)}</b></span>`
+    : `<span>${esc(i.err || '')}</span>`}</div>
+    ${i.wide === 'ON' ? '<div class="mdesc">Wide catch is on: all web traffic of this server passes the igproxy router and is routed by domain.</div>' : ''}
+    ${i.state === 'PANEL' ? '<div class="mcrit" style="margin:10px 0 0">The x-ui panel on this server blocks or diverts Google before igproxy sees it → Tests & diagnosis → Fix panel.</div>' : ''}
+    ${['UPDATE', 'NOAGENT'].includes(i.state) ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → Server → Install / update.</div>' : ''}</div>
+    <div class="seg igtabs">${IGTABS.map(([k, t]) => `<button data-t="${k}" class="${k === IG.tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igtab"></div>`);
+  $$('.igtabs button', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.t; igRender(); });
+  if (!i.ig && IG.tab !== 'tools' && IG.tab !== 'server') {
+    $('#igtab').innerHTML = `<div class="card empty"><div class="big">${i.state === 'OFFLINE' ? '📡' : '📦'}</div><h3>${esc((IGST[i.state] || [i.state])[0])}</h3>
+      <p class="muted">${i.state === 'OFFLINE' ? 'The panel can\'t reach this server right now.' : 'This part works once the agent is installed.'}</p>${i.state === 'OFFLINE' ? '' : `<button class="btn pri" id="igdep">Install / update agent</button>`}</div>`;
+    $('#igdep') && ($('#igdep').onclick = () => igAct(igS({ action: 'deploy' })));
+    return;
+  }
+  (IGTAB[IG.tab] || IGTAB.routes)();
+}
+function igViaOpts(svc, cur, nprox) {
+  const o = ['proxy']; for (let k = 1; k <= nprox; k++) o.push('proxy' + k); o.push('warp'); if (!IGWIDE.includes(svc)) o.push('warp6', 'ipv6'); o.push('direct');
+  if (cur && !o.includes(cur)) o.push(cur);
+  return o.map(v => `<option value="${v}"${v === cur ? ' selected' : ''}>${igViaW(v)}</option>`).join('');
+}
+const igSecret = 'type="text" class="inp mono secret" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false"';
+const IGTAB = {
+  routes() {
+    const i = IG.cur.info;
+    $('#igtab').innerHTML = `<div class="card pad"><table class="tbl igt"><tr><th>Service</th><th>Goes out through</th><th></th></tr>
+      ${Object.keys(IGSV).map(g => `<tr><td><b>${IGSV[g]}</b>${g === 'CUSTOM' ? ` <span class="faint">(${+i.ncustom || 0} sites)</span>` : ''}${g === 'GOOGLE' && /^warp/.test(i.google || '') ? ' ' + igGccChip(i) : ''}</td>
+      <td><select data-g="${g}" data-cur="${esc(i[g.toLowerCase()])}">${igViaOpts(g, i[g.toLowerCase()], +i.proxies || 0)}</select></td>
+      <td style="text-align:end"><button class="btn sm pri" data-ap="${g}" hidden>Apply</button></td></tr>`).join('')}</table>
+      <div class="mdesc">Proxy = the fastest healthy proxy · "Proxy N" = only that one · WARP = Cloudflare WARP · IPv6 = the server's own IPv6 (Instagram, Google, YouTube Music only) · Direct = the server's own IP.
+      The router restarts (a few seconds) only when a setting really changes.</div>
+      <div class="actions" style="margin-top:12px"><button class="btn sm" id="igrd">Route details</button></div></div>`;
+    $$('#igtab select[data-g]').forEach(sel => sel.onchange = () => { const ch = sel.value !== sel.dataset.cur; sel.classList.toggle('chg', ch); $(`[data-ap="${sel.dataset.g}"]`).hidden = !ch; });
+    $$('[data-ap]').forEach(b => b.onclick = () => igAct(igS({ action: 'route', svc: b.dataset.ap, via: $(`select[data-g="${b.dataset.ap}"]`).value })));
+    $('#igrd').onclick = () => igAct(igS({ action: 'routes' }), null, { refresh: false });
+  },
+  proxies() {
+    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Proxies <span class="grow"></span><button class="btn sm" id="igpt">Test ping & location</button></h3><div id="igpl" class="lines"><div class="skel" style="height:80px"></div></div></div>
+     <div class="card pad sec"><h3>Add a proxy</h3><div class="ff">
+     <label class="f">Type<select id="igpty" class="inp"><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select></label>
+     <label class="f">Host<input id="igph" class="inp mono"></label><label class="f">Port<input id="igpp" class="inp mono" inputmode="numeric"></label>
+     <label class="f">User (optional)<input id="igpu" class="inp mono" autocomplete="off"></label><label class="f">Password<input id="igpw" ${igSecret}></label>
+     <label class="f row"><input type="checkbox" id="igpall"> On every server in view</label></div>
+     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igpadd">Add (tested first)</button></div></div>`;
+    $('#igpadd').onclick = () => igAct({ srv: $('#igpall').checked ? 'all' : IG.cur.id, action: 'proxy_add', type: $('#igpty').value, host: $('#igph').value.trim(), port: $('#igpp').value.trim(), user: $('#igpu').value.trim(), pass: $('#igpw').value });
+    $('#igpt').onclick = () => igListInto('#igpl', 'proxy_list', true, 'proxy_del');
+    igListInto('#igpl', 'proxy_list', false, 'proxy_del');
+  },
+  warp() {
+    const i = IG.cur.info, gA = i.gw !== undefined ? 'google_use' : null;
+    $('#igtab').innerHTML = `<div class="card pad sec"><h3>WARP accounts <span class="chip">active: <b class="mono">${esc(i.active)}</b></span><span class="chip">Google: <b class="mono">${esc(i.gact)}</b></span>${igPeakChip(i)}<span class="grow"></span><button class="btn sm" id="igwt">Test all (music & speed)</button></h3>
+     <div id="igwl" class="lines"><div class="skel" style="height:80px"></div></div>
+     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igwa">+ New WARP account</button><button class="btn" id="igwr">Google → fresh IP</button></div>
+     <div class="mdesc">Repairing a broken WARP, WARP+ keys and choosing the best WARP (music OK and fastest) are automatic. "Use" = this WARP serves Instagram and Google right now (live).</div></div>
+     ${gA ? `<div class="card pad sec"><h3>Google on WARP <span class="chip">Google's own WARPs: <b class="mono">${esc(i.gw || '—')}</b></span>${igGccChip(i)}<span class="grow"></span><button class="btn sm" id="igwc">Country per WARP</button></h3>
+      <div id="iggcl" class="lines"><div class="faint">"Country per WARP" shows which country Google sees for each WARP.</div></div>
+      <div class="mdesc">"Google" moves only Google to that WARP (Instagram stays) and refuses a WARP outside the group or the allowed countries — those are under Settings.</div></div>` : ''}`;
+    $('#igwa').onclick = () => igAct(igS({ action: 'warp_add' }));
+    $('#igwr').onclick = () => igAct(igS({ action: 'google_rotate' }));
+    $('#igwt').onclick = () => igListInto('#igwl', 'warp_list', true, 'warp_del', 'warp_use', gA);
+    if (gA) $('#igwc').onclick = () => igListInto('#iggcl', 'google_countries', true, null, null, gA);
+    igListInto('#igwl', 'warp_ls', false, 'warp_del', 'warp_use', gA);
+  },
+  sites() {
+    const i = IG.cur.info;
+    $('#igtab').innerHTML = `<div class="card pad sec"><h3>My sites <span class="faint" style="font-size:12px;font-weight:500">each with all its subdomains</span></h3><div id="igcl" class="lines"><div class="skel" style="height:60px"></div></div></div>
+     <div class="card pad sec"><h3>Add a site</h3><div class="ff"><label class="f">Site<input id="igcs" class="inp mono" placeholder="example.com"></label>
+     <label class="f">Route<select id="igcr" class="inp"><option value="">the "My sites" route (${igViaW(i.custom)})</option><option value="proxy">Proxy</option><option value="warp">WARP</option><option value="direct">Direct</option></select></label>
+     <label class="f row"><input type="checkbox" id="igcall"> On every server in view</label></div>
+     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igcadd">Add</button></div></div>`;
+    $('#igcadd').onclick = () => igAct({ srv: $('#igcall').checked ? 'all' : IG.cur.id, action: 'custom_add', site: $('#igcs').value.trim(), route: $('#igcr').value });
+    igListInto('#igcl', 'custom_list', false, 'custom_del');
+  },
+  settings() {
+    const i = IG.cur.info;
+    const tog = (k, label, v, help) => `<div class="set"><div class="d"><b>${label}</b><small>${help}</small></div><label class="sw2"><input type="checkbox" data-tg="${k}"${v === 'ON' ? ' checked' : ''}><i></i></label></div>`;
+    const num = (k, label, v, help, unit) => `<div class="set"><div class="d"><b>${label}</b><small>${help}</small></div><input class="inp mono" style="width:90px" data-nv="${k}" value="${esc(v)}"><span class="faint">${unit || ''}</span><button class="btn sm" data-ns="${k}">Save</button></div>`;
+    $('#igtab').innerHTML = `<div class="card pad">
+      ${num('minspeed', 'Minimum WARP speed', i.min, 'best WARP = music OK and at least this fast; the fastest wins', 'Mbps')}
+      ${num('minwarps', 'Minimum number of WARPs', i.minw, 'missing ones are made automatically (more users = more WARPs); 0 = off', '')}
+      ${num('grotate', 'Fresh IP for Google every', i.grot, '10 to 1440 (20 suggested); 0 = only when the IP breaks', 'min')}
+      ${i.guard !== undefined ? tog('guard', 'WARP guard (fast switch)', i.guard === 'OFF' ? 'OFF' : 'ON', 'the active WARP is checked every 5 s; down / no music / slow → live switch to the best other WARP' + (i.guard === 'DOWN' ? ' — <b style="color:var(--crit)">on, but its service isn\'t running</b>' : '')) : ''}
+      ${i.gw !== undefined ? num('gwarps', 'WARPs only for Google', i.gwarps ?? (i.gw ? i.gw.split(',').length : ''), 'the last N WARP accounts serve only Google (0-9, default 2); Instagram uses the rest', '') : ''}
+      ${i.gw !== undefined ? `<div class="set"><div class="d"><b>Allowed countries for Google</b><small>two-letter codes with spaces; a WARP that Google places in another country isn't used for Google. With none allowed, Google goes through a proxy for now.</small></div>
+        <input class="inp mono" style="width:260px" id="iggcs" placeholder="US GB DE FR NL FI SE CH AT BE IT ES PL CA JP SG AU" value="${esc(i.gcountries || '')}"><button class="btn sm" id="iggcsave">Save</button></div>` : ''}
+      ${i.mchk !== undefined ? num('musiccheck', 'Instagram music check every', i.mchk, '0 = off; only while Instagram is on WARP and a test account is set', 'min') : ''}
+      <div class="set"><div class="d"><b>WARP mode</b><small>FAILOVER = the best one active, the rest stand by · BALANCE = spread the load (may break Instagram music)</small></div>
+        <select class="inp" style="width:150px" id="igmode"><option value="failover"${i.mode !== 'BALANCE' ? ' selected' : ''}>FAILOVER</option><option value="balance"${i.mode === 'BALANCE' ? ' selected' : ''}>BALANCE</option></select></div>
+      ${tog('autokey', 'Automatic WARP+ key', i.autokey, 'finds WARP+ keys in a public channel and tries them')}
+      ${tog('geosite', 'geosite domain lists', i.geo, 'fuller domain lists (updated daily, loaded at night)')}
+      ${tog('gspread', 'Google on every WARP', i.gspread, 'many users → spread Gemini over every WARP IP')}
+      ${tog('gall', 'All of Google on Google\'s WARP', i.gall, 'all google.com / gstatic / googleapis (YouTube video stays direct)')}
+      ${tog('warpauto', 'WARP count follows the load', i.wauto, 'from the 24 h peak: one WARP per ~2500 connections in 5 min, plus a spare (3-10) and Google\'s WARPs')}
+      <div class="mdesc">These apply to this server only; for the others use Backup & copy → Copy settings.</div></div>`;
+    $$('[data-tg]').forEach(c => c.onchange = () => igAct(igS({ action: 'set', key: c.dataset.tg, val: c.checked ? 'on' : 'off' })));
+    $$('[data-ns]').forEach(b => b.onclick = () => igAct(igS({ action: 'set', key: b.dataset.ns, val: $(`[data-nv="${b.dataset.ns}"]`).value.trim() })));
+    $('#igmode').onchange = (e) => igAct(igS({ action: 'set', key: 'mode', val: e.target.value }));
+    $('#iggcsave') && ($('#iggcsave').onclick = () => { const v = $('#iggcs').value.trim().toUpperCase().replace(/[\s,]+/g, ' ');
+      if (!/^[A-Z]{2}( [A-Z]{2})*$/.test(v)) return toast('Two-letter codes with spaces, like US GB DE'); igAct(igS({ action: 'set', key: 'gcountries', val: v })); });
+  },
+  checks() {
+    const i = IG.cur.info, st = (v) => `<span class="pill ${v === 'SET' || v === 'ON' ? 'on' : 'off'}"><span class="led"></span>${v === 'SET' || v === 'ON' ? 'set' : 'not set'}</span>`;
+    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Instagram test account (music) ${st(i.igacc)}</h3>
+      <p class="muted">With a spare account (not a real one) the server tests on every exit IP whether Instagram music plays.</p>
+      <div class="ff"><label class="f">sessionid cookie<input id="igsid" ${igSecret}></label></div>
+      <div class="actions" style="margin-top:10px"><button class="btn pri" id="igsidgo">Save & test</button><button class="btn" id="igmt">Music test</button><button class="btn danger" id="igsdel">Remove</button></div></div>
+     <div class="card pad sec"><h3>Gemini API key ${st(i.gkey)}</h3>
+      <p class="muted">With a free aistudio.google.com key each server asks Gemini through its WARP IPs whether the region is blocked.</p>
+      <div class="ff"><label class="f">Key (AIza…)<input id="iggk" ${igSecret}></label><label class="f row"><input type="checkbox" id="iggkall"> On every server in view</label></div>
+      <div class="actions" style="margin-top:10px"><button class="btn pri" id="iggkgo">Save</button><button class="btn" id="iggkt">Test on every WARP</button><button class="btn danger" id="iggkdel">Remove</button></div></div>
+     <div class="card pad sec"><h3>Telegram bot ${st(i.tg)}</h3>
+      <p class="muted">Reports outages, repairs and proxy problems. Commands: /status /music /warp. After "Set up", send <b>/start</b> to the bot within 60 seconds.</p>
+      <div class="ff"><label class="f">Token (from BotFather)<input id="igtt" ${igSecret}></label></div>
+      <div class="actions" style="margin-top:10px"><button class="btn pri" id="igtgo">Set up</button><button class="btn" id="igtt2">Test message</button><button class="btn danger" id="igtdel">Remove</button></div></div>`;
+    $('#igsidgo').onclick = () => igAct(igS({ action: 'ig_session', sid: $('#igsid').value.trim() }));
+    $('#igmt').onclick = () => igAct(igS({ action: 'ig_test' }));
+    $('#igsdel').onclick = () => igAct(igS({ action: 'ig_del' }), 'Remove the test account?');
+    $('#iggkgo').onclick = () => igAct({ srv: $('#iggkall').checked ? 'all' : IG.cur.id, action: 'gemkey_set', key: $('#iggk').value.trim() });
+    $('#iggkt').onclick = () => igAct(igS({ action: 'gemkey_test' }));
+    $('#iggkdel').onclick = () => igAct(igS({ action: 'gemkey_del' }), 'Remove the key?');
+    $('#igtgo').onclick = () => igAct(igS({ action: 'tg_setup', token: $('#igtt').value.trim() }));
+    $('#igtt2').onclick = () => igAct(igS({ action: 'tg_test' }));
+    $('#igtdel').onclick = () => igAct(igS({ action: 'tg_del' }), 'Remove the bot?');
+  },
+  tools() {
+    const i = IG.cur.info, nr = { refresh: false };
+    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Tests</h3><div class="actions">
+      <button class="btn" data-a="status">Full test (every proxy and WARP)</button><button class="btn" data-a="speedtest">Speed test of every exit</button>
+      <button class="btn" data-a="diag">Diagnose Gemini / Google</button><button class="btn" data-a="gemusers">Gemini users</button><button class="btn" data-a="logs">Logs</button></div></div>
+     <div class="card pad sec"><h3>Traffic: domain → exit</h3><div class="ff"><label class="f">Only lines containing<input id="igtw" class="inp mono" placeholder="google, instagram …"></label></div>
+      <div class="actions" style="margin-top:10px"><button class="btn" id="igrec">Last 40 connections</button><button class="btn pri" id="igwatch">Live (60 s)</button></div></div>
+     <div class="card pad sec"><h3>The x-ui / xray panel on this server <span class="chip mono">${esc(i.panel || '-')}</span></h3>
+      <p class="muted">If the panel blocks Google or sends it to another exit, igproxy never sees it. "Fix" adds one rule at the top of the panel's routing (tested first, backed up, undone automatically if it fails).</p>
+      <div class="actions"><button class="btn" id="igpc">Check</button><button class="btn pri" id="igpf">Fix</button><button class="btn danger" id="igpu2">Undo</button></div></div>`;
+    const P = { status: { action: 'status' }, speedtest: { action: 'speedtest', target: 'all' }, diag: { action: 'diag' }, gemusers: { action: 'gemusers', n: 10 }, logs: { action: 'logs', n: 150 } };
+    $$('#igtab [data-a]').forEach(b => b.onclick = () => igAct(igS(P[b.dataset.a]), null, nr));
+    $('#igrec').onclick = () => igAct(igS({ action: 'recent', word: $('#igtw').value.trim() }), null, nr);
+    $('#igwatch').onclick = () => igAct(igS({ action: 'watch', word: $('#igtw').value.trim() }), null, { refresh: false, title: 'Live traffic (60 s) — open the app on a phone now' });
+    $('#igpc').onclick = () => igAct(igS({ action: 'panel_check' }), null, nr);
+    $('#igpf').onclick = () => igAct(igS({ action: 'panel_fix' }), 'Add one rule at the top of the panel\'s routing? Its Xray restarts for 2-3 seconds.');
+    $('#igpu2').onclick = () => igAct(igS({ action: 'panel_undo' }), 'Remove the igproxy rule from the panel?');
+  },
+  server() {
+    const s = IG.cur, i = s.info || {};
+    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Agent</h3><table class="tbl igt">
+      <tr><td>Server</td><td><b>${esc(s.name)}</b> <span class="mono faint">${esc(s.host)}</span></td></tr>
+      <tr><td>Agent on this server</td><td class="mono">${esc(i.sum || '—')}</td></tr><tr><td>Agent on the panel</td><td class="mono">${esc(IG.data?.agent || '—')}</td></tr></table>
+      <div class="actions" style="margin-top:12px"><button class="btn pri" id="igsd">Install / update agent</button>
+      <button class="btn" id="igsa">${i.paused === 'YES' ? 'Turn back on' : 'Re-apply / restart'}</button>
+      ${i.paused === 'YES' ? '' : '<button class="btn" id="igsp">Pause (everything direct)</button>'}</div>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Name, address and SSH login are the server's own, under <b>Servers</b>.</p></div>
+     <div class="card pad sec"><h3>Remove</h3><div class="actions"><button class="btn danger" id="igsr">Take off this page</button><button class="btn danger" id="igsu">Uninstall igproxy from the server</button></div>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Taking it off the page leaves igproxy running on the server.</p></div>`;
+    $('#igsd').onclick = () => igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`);
+    $('#igsa').onclick = () => igAct(igS({ action: 'apply' }));
+    $('#igsp') && ($('#igsp').onclick = () => igAct(igS({ action: 'pause' }), 'Pause igproxy? All traffic goes direct until you turn it back on.'));
+    $('#igsr').onclick = () => igRemove(false);
+    $('#igsu').onclick = () => igRemove(true);
+  }
+};
+async function igRemove(uninstall) {
+  const s = IG.cur;
+  if (uninstall) {
+    if (!confirm(`Remove igproxy from ${s.name} completely? Its settings and WARPs on that server are deleted.`)) return;
+    try { const r = await api('/igproxy/action', igS({ action: 'uninstall' })); const res = await igRunJob(r.job, 'Uninstall igproxy'); if (!res.done) return; } catch (e) { return toast(e.message); }
+  } else if (!confirm(`Take ${s.name} off the IG routing page? igproxy keeps running on it.`)) return;
+  try { await api('/igproxy/enable', { ID: s.id, On: false }); IG.cur = null; toast('Removed'); igLoad(true); } catch (e) { toast(e.message); }
+}
+async function igListInto(sel, action, slow, delA, useA, gA) {
+  const box = $(sel); if (!box) return;
+  if (slow) box.innerHTML = '<div class="mdesc" style="margin:0">Testing… (a few seconds)</div>';
+  try {
+    const out = await igQuiet(igS({ action }));
+    if (!$(sel)) return;
+    const ls = out.split('\n').filter(l => l.trim());
+    const gw = (IG.cur.info.gw || '').split(',');
+    box.innerHTML = ls.length ? ls.map(l => {
+      const m = l.match(/^\s*(\d+)\)/) || l.match(/^\s*WARP (\d+)\b/), hl = l.includes('ACTIVE') || l.includes('GOOGLE');
+      return `<div class="ln${hl ? ' hl' : ''}"><span class="t mono" title="${esc(l.trim())}">${esc(l.trim())}</span>${m && gA && gw.includes(m[1]) ? `<button class="btn sm" data-gu="${m[1]}" title="only Google moves to this WARP">Google</button>` : ''}${m && useA ? `<button class="btn sm" data-u="${m[1]}">Use</button>` : ''}${m && delA ? `<button class="btn sm danger" data-d="${m[1]}">Delete</button>` : ''}</div>`;
+    }).join('') : '<div class="faint">empty</div>';
+    $$('[data-d]', box).forEach(b => b.onclick = () => igAct(igS({ action: delA, n: b.dataset.d }), 'Delete number ' + b.dataset.d + '?'));
+    $$('[data-u]', box).forEach(b => b.onclick = () => igAct(igS({ action: useA, n: b.dataset.u })));
+    $$('[data-gu]', box).forEach(b => b.onclick = () => igAct(igS({ action: gA, n: b.dataset.gu })));
+  } catch (e) { toast(e.message); box.innerHTML = ''; }
+}
+
+// ---- route table: every server × service
+function igMatrix(box) {
+  if (!IG.data) { box.innerHTML = '<div class="skel" style="height:200px"></div>'; return; }
+  const L = igList().filter(s => s.info.ig), maxp = Math.max(0, ...L.map(s => +s.info.proxies || 0));
+  if (!L.length) { box.innerHTML = '<div class="card empty"><div class="big">🔀</div>No server with a running agent to route.</div>'; return; }
+  box.innerHTML = `<div class="card pad mat"><div class="actions" style="justify-content:flex-end;margin-bottom:6px"><button class="btn pri" id="igmApply" disabled>Apply changes</button></div>
+    <table class="tbl igt"><thead><tr><th>Server</th>${Object.keys(IGSV).map(g => `<th>${IGSV[g]}</th>`).join('')}</tr></thead><tbody>
+    <tr><td><b>All servers →</b></td>${Object.keys(IGSV).map(g => `<td data-l="${IGSV[g]}"><select data-all="${g}"><option value="">—</option>${igViaOpts(g, '', maxp)}</select></td>`).join('')}</tr>
+    ${L.map(s => `<tr><td><b>${esc(s.name)}</b> ${igOwner(s)} ${s.info.state === 'OK' ? '' : igPill(s.info.state)}</td>${Object.keys(IGSV).map(g => { const v = s.info[g.toLowerCase()]; return `<td data-l="${IGSV[g]}"><select data-s="${esc(s.id)}" data-g="${g}" data-cur="${esc(v)}">${igViaOpts(g, v, +s.info.proxies || 0)}</select></td>`; }).join('')}</tr>`).join('')}</tbody>
+    </table><div class="mdesc">The "All servers" row sets one service on every row (not applied yet). Servers that are offline or without the agent aren't in the table.</div></div>`;
+  const mark = () => { let n = 0; $$('select[data-s]', box).forEach(x => { const c = x.value !== x.dataset.cur; x.classList.toggle('chg', c); n += c; }); $('#igmApply').disabled = !n; $('#igmApply').textContent = n ? `Apply ${n} change${n > 1 ? 's' : ''}` : 'Apply changes'; };
+  $$('select[data-s]', box).forEach(x => x.onchange = mark);
+  // a choice a server doesn't have (Proxy 3 where it has two) leaves that row as it was
+  $$('select[data-all]', box).forEach(x => x.onchange = () => { if (!x.value) return; $$(`select[data-g="${x.dataset.all}"][data-s]`, box).forEach(y => { if ([...y.options].some(o => o.value === x.value)) y.value = x.value; }); mark(); });
+  $('#igmApply').onclick = async () => {
+    const ch = $$('select[data-s]', box).filter(x => x.value !== x.dataset.cur).map(x => ({ srv: x.dataset.s, svc: x.dataset.g, via: x.value }));
+    if (!ch.length || !confirm(`Apply ${ch.length} route change${ch.length > 1 ? 's' : ''}?`)) return;
+    // one after the other: two changes on one server at once would race
+    for (const c of ch) {
+      let r; try { r = await api('/igproxy/action', { srv: c.srv, action: 'route', svc: c.svc, via: c.via }); } catch (e) { toast(e.message); continue; }
+      const res = await igRunJob(r.job, 'Route — ' + ((IG.data.servers.find(s => s.id === c.srv) || {}).name || '') + ' · ' + IGSV[c.svc]);
+      if (!res.done) break;
+    }
+    igLoad(true);
+  };
+}
+
+// ---- every server at once
+function igBulk(box) {
+  const card = (i, t, d, id) => `<div class="card pad"><h3 style="margin:0 0 6px">${i} ${t}</h3><p class="muted" style="margin:0 0 12px;font-size:13px">${d}</p><button class="btn pri" data-b="${id}">Run</button></div>`;
+  box.innerHTML = `<p class="muted" style="margin-top:0">On every server in view, one after the other.</p><div class="grid cards">
+    ${card('🧪', 'Test all', 'Tests every proxy and WARP of every server.', 'test')}
+    ${card('🔄', 'Fresh Google IP everywhere', 'When users complain about Gemini: Google moves to a fresh WARP IP on each server now.', 'rotate')}
+    ${card('⬆️', 'Update old agents', 'Installs the current agent where an old one runs (a few seconds per server).', 'deploy')}
+    ${card('🛠', 'Fix panels', 'Where the x-ui panel diverts Google, adds one rule at the top of its routing.', 'fix')}
+    ${card('📜', 'Logs of all', 'The last 40 igproxy log lines of each server.', 'logs')}
+    ${card('👥', 'Gemini users', 'Gemini connections of the last 10 minutes, per exit.', 'gem')}</div>`;
+  const nr = { refresh: false };
+  const B = {
+    test: () => igAct({ srv: 'all', action: 'status_short' }, null, nr),
+    rotate: () => igAct({ srv: 'all', action: 'google_rotate' }),
+    deploy: () => igAct({ srv: 'all', action: 'deploy', old: 1 }, 'Update the agent on the servers with an old one?'),
+    fix: () => { const bad = igList().filter(s => s.info.state === 'PANEL'); if (!bad.length) return toast('Every panel lets Google reach igproxy — nothing to fix');
+      igAct({ srv: bad.map(s => s.id), action: 'panel_fix' }, bad.map(s => s.name).join(', ') + ' — fix the panel on these? Each panel\'s Xray restarts for 2-3 seconds.'); },
+    logs: () => igAct({ srv: 'all', action: 'logs', n: 40 }, null, nr),
+    gem: () => igAct({ srv: 'all', action: 'gemusers', n: 10 }, null, nr),
+  };
+  $$('[data-b]', box).forEach(b => b.onclick = B[b.dataset.b]);
+}
+
+// ---- backup / copy settings
+async function igBackup(box) {
+  const L = igList(), opts = L.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${s.owner ? ' (' + esc(s.owner) + ')' : ''}</option>`).join('');
+  box.innerHTML = `<p class="muted" style="margin-top:0">WARP accounts are never copied or backed up: each server keeps its own.</p>
+   <div class="card pad sec"><h3>Copy settings from one server to others</h3><div class="ff">
+    <label class="f">From<select id="igcf" class="inp">${opts}</select></label>
+    <label class="f" style="grid-column:span 2">What<select id="igcp" class="inp"><option value="routes proxies ig tg opts">Everything: routes, sites, proxies, test account + Gemini key, Telegram, settings</option><option value="routes">Routes + sites only</option><option value="proxies">Proxies only</option><option value="routes proxies">Routes + sites + proxies</option><option value="opts">WARP settings only</option></select></label></div>
+    <div style="margin:12px 0" id="igct">${L.map(s => `<label class="f row" style="display:inline-flex;margin-inline-end:14px"><input type="checkbox" value="${esc(s.id)}" checked> ${esc(s.name)}${s.owner ? ' (' + esc(s.owner) + ')' : ''}</label>`).join('')}</div>
+    <button class="btn pri" id="igcgo">Copy to the ticked servers</button></div>
+   <div class="card pad sec"><h3>Backup</h3><p class="muted">Routes, sites, proxies, test account, Telegram and settings of each server (the last 10 per server). Each account's backups are its own.</p>
+    <button class="btn pri" id="igbgo">Back up every server now</button>
+    <h3 style="margin-top:18px">Restore</h3><div id="igbl" class="faint">…</div></div>`;
+  $('#igcgo').onclick = async () => {
+    const from = $('#igcf').value, to = $$('#igct input:checked').map(x => x.value).filter(x => x !== from);
+    if (!to.length) return toast('No target server ticked');
+    if (!confirm(`Write the settings of ${$('#igcf').selectedOptions[0].text} to ${to.length} server(s)?`)) return;
+    try { const r = await api('/igproxy/copy', { from, parts: $('#igcp').value, to }); igRunJob(r.job, 'Copy settings', () => igLoad(true)); } catch (e) { toast(e.message); }
+  };
+  $('#igbgo').onclick = async () => { try { const r = await api('/igproxy/backup', { View: igView() }); await igRunJob(r.job, 'Backup', () => { if (IG.sub === 'backup' && $('#igbl')) igBackup(box); }); } catch (e) { toast(e.message); } };
+  try {
+    const f = ((await api('/igproxy/backups')).files || []).filter(x => shownOwner(x.owner));
+    if (!$('#igbl')) return;
+    const nameOf = (x) => { const s = (IG.data?.servers || []).find(y => y.id === x.server); return (s ? s.name : x.file) + ' · ' + new Date(x.t * 1000).toLocaleString() + (x.owner ? ' (' + x.owner + ')' : ''); };
+    $('#igbl').outerHTML = f.length ? `<div class="ff"><label class="f" style="grid-column:span 2">Backup<select id="igbf" class="inp">${f.map((x, k) => `<option value="${k}">${esc(nameOf(x))}</option>`).join('')}</select></label><label class="f">Onto<select id="igbs" class="inp">${opts}</select></label><button class="btn danger" id="igbgo2" style="align-self:end">Restore</button></div>` : '<div class="faint">No backup yet</div>';
+    if (!f.length) return;
+    const pre = () => { const b = f[+$('#igbf').value]; if (b && b.server && [...$('#igbs').options].some(o => o.value === b.server)) $('#igbs').value = b.server; };
+    $('#igbf').onchange = pre; pre();
+    $('#igbgo2').onclick = async () => {
+      const b = f[+$('#igbf').value];
+      if (!confirm(`Replace the settings of ${$('#igbs').selectedOptions[0].text} with this backup?`)) return;
+      try { const r = await api('/igproxy/restore', { File: b.file, Owner: b.owner, Srv: $('#igbs').value }); igRunJob(r.job, 'Restore', () => igLoad(true)); } catch (e) { toast(e.message); }
+    };
+  } catch (e) { toast(e.message); }
+}
+// the server list keeps itself current while it's on screen (not while a form or a log is open)
+setInterval(() => {
+  if (document.hidden || STATE.view !== 'igproxy' || IG.cur || IG.sub !== 'servers' || $('.drawer,.modal') || document.activeElement?.matches('input,select,textarea')) return;
+  igLoad();
+}, 60000);
 
 boot();
