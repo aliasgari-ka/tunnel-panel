@@ -1876,17 +1876,31 @@ const igGccChip = (i) => i.gcc === undefined || i.gcc === '-' || i.gcc === '' ? 
 
 async function igAddServer() {
   if (!IG.data) await igLoad();
-  const c = (IG.data?.candidates || []).filter(x => shownOwner(x.Owner));
+  // the admin can add any account's server, whatever the View shows (on "My own" the list used to
+  // be empty though other accounts had servers to add); the viewed account's come first
+  const all = IG.data?.candidates || [];
+  const c = all.filter(x => shownOwner(x.Owner)).concat(all.filter(x => !shownOwner(x.Owner)));
+  const groups = [];
+  c.forEach(x => { const g = groups.find(g => g.o === x.Owner); g ? g.l.push(x) : groups.push({ o: x.Owner, l: [x] }); });
+  const opt = (x) => `<option value="${esc(x.ID)}">${esc(x.Name)} — ${esc(x.Host)}</option>`;
+  const opts = isAdmin() ? groups.map(g => `<optgroup label="${g.o ? '👤 ' + esc(g.o) : 'admins'}">${g.l.map(opt).join('')}</optgroup>`).join('') : c.map(opt).join('');
   const m = modal(`<h2>Add a server to IG routing</h2>
-    ${c.length ? `<div class="ff" style="grid-template-columns:1fr"><label class="f">Server<select id="igas">${c.map(x => `<option value="${esc(x.ID)}">${esc(x.Name)} — ${esc(x.Host)}${x.Owner ? ' (' + esc(x.Owner) + ')' : ''}</option>`).join('')}</select></label>
+    ${c.length ? `<div class="ff" style="grid-template-columns:1fr"><label class="f">Server<select id="igas">${opts}</select></label>
     <label class="f row"><input type="checkbox" id="igad"> Reinstall the agent even if it's already there</label></div>
     <p class="muted" style="font-size:13px">The panel reaches it the way it reaches it for tunnels (its saved SSH login or agent). If igproxy isn't on it yet, it's installed now.</p>
     <div class="actions" style="justify-content:flex-end;margin-top:12px"><button class="btn pri" id="igago">Add</button></div>`
-    : `<p class="muted">Every foreign server is already here. Add a new machine under <b>Servers</b> first (role: foreign), then come back.</p>`}`);
+    : `<p class="muted">Every foreign server${isAdmin() ? ' of every account' : ''} is already here. A new machine is added as a foreign server first, then here.</p>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button class="btn pri" id="ignew">+ Add foreign server</button></div>`}`);
+  const nw = $('#ignew', m);
+  if (nw) nw.onclick = () => { m.remove(); serverModal({ role: 'foreign' }); };
   const go = $('#igago', m);
   if (go) go.onclick = async () => {
-    try { const r = await api('/igproxy/enable', { ID: $('#igas', m).value, On: true, Deploy: $('#igad', m).checked }); m.remove(); await igRunJob(r.job, 'Add server', () => igLoad(true)); }
-    catch (e) { toast(e.message); }
+    const x = c.find(x => x.ID === $('#igas', m).value);
+    try {
+      const r = await api('/igproxy/enable', { ID: x.ID, On: true, Deploy: $('#igad', m).checked }); m.remove();
+      await igRunJob(r.job, 'Add server — ' + x.Name, () => igLoad(true));
+      if (!shownOwner(x.Owner)) toast(`${x.Name} belongs to ${x.Owner || 'the admins'}: switch View to see it`);
+    } catch (e) { toast(e.message); }
   };
 }
 
