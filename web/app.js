@@ -1178,7 +1178,7 @@ function serverModal(s) {
     const fd = Object.fromEntries(new FormData(ev.target));
     fd.sshPort = parseInt(fd.sshPort || '22', 10);
     if (s.id) fd.ID = s.id;
-    try { await api('/servers', fd); m.remove(); await loadAll(); renderView(); toast('Server saved'); } catch (e) { alertModal('Error', e.message); }
+    try { const r = await api('/servers', fd); m.remove(); await loadAll(); renderView(); toast('Server saved'); if (s.onSaved) s.onSaved(r.id || s.id, fd.name); } catch (e) { alertModal('Error', e.message); }
   };
 }
 
@@ -1822,11 +1822,15 @@ function igRender(w) {
   if (IG.cur) return igDetail(w);
   const subs = [['servers', 'Servers'], ['matrix', 'Route table'], ['bulk', 'All servers'], ['backup', 'Backup & copy']];
   w.innerHTML = topbar('IG Routing', 'igproxy on the foreign servers: which way Instagram, Google / Gemini, YouTube Music and the rest leave each server.',
-    `<button class="btn" data-igref onclick="igLoad(true)">↻ Refresh</button><button class="btn pri" onclick="igAddServer()">+ Add server</button>`)
+    `<button class="btn" data-igref>↻ Refresh</button><button class="btn pri" data-igadd>+ Add server</button>`)
     + `<div class="seg" id="igsub">${subs.map(([k, t]) => `<button data-s="${k}" class="${k === IG.sub ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igbody"></div>`;
   $$('#igsub button', w).forEach(b => b.onclick = () => { IG.sub = b.dataset.s; remember('tp-igsub', IG.sub); igRender(); });
   const body = $('#igbody', w);
   ({ servers: igServers, matrix: igMatrix, bulk: igBulk, backup: igBackup }[IG.sub] || igServers)(body);
+  // wired here, not with onclick="…": the panel's CSP (script-src 'self') drops inline handlers, so
+  // these buttons did nothing
+  $$('[data-igref]', w).forEach(b => b.onclick = () => igLoad(true));
+  $$('[data-igadd]', w).forEach(b => b.onclick = () => igAddServer());
 }
 
 // ---- servers
@@ -1842,7 +1846,7 @@ function igServers(box) {
   if (!d.agent) box.insertAdjacentHTML('beforeend', `<div class="mwarn">The agent script isn't on the panel host (<span class="mono">/etc/igpm/igproxy.sh</span>), so install / update is unavailable. Everything else works.</div>`);
   $('#igupd', box) && ($('#igupd', box).onclick = () => igAct({ srv: 'all', action: 'deploy', old: 1 }, 'Update the agent on the servers with an old one? Each server routes everything direct for a few seconds; settings and WARPs are kept.', { title: 'Update agents' }));
   if (!L.length) {
-    box.insertAdjacentHTML('beforeend', `<div class="card empty"><div class="big">🌐</div><h3>No servers here yet</h3><p class="muted">Add one of your foreign servers: the igproxy agent is installed on it, then you choose here which way each service leaves.</p><button class="btn pri" onclick="igAddServer()">+ Add server</button></div>`);
+    box.insertAdjacentHTML('beforeend', `<div class="card empty"><div class="big">🌐</div><h3>No servers here yet</h3><p class="muted">Add one of your foreign servers: the igproxy agent is installed on it, then you choose here which way each service leaves.</p><button class="btn pri" data-igadd>+ Add server</button></div>`);
     return;
   }
   const nbad = L.filter(s => s.info.state !== 'OK').length;
@@ -1891,11 +1895,19 @@ async function igAddServer() {
     ${c.length ? `<div class="ff" style="grid-template-columns:1fr"><label class="f">Server<select id="igas">${opts}</select></label>
     <label class="f row"><input type="checkbox" id="igad"> Reinstall the agent even if it's already there</label></div>
     <p class="muted" style="font-size:13px">The panel reaches it the way it reaches it for tunnels (its saved SSH login or agent). If igproxy isn't on it yet, it's installed now.</p>
-    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button class="btn pri" id="igago">Add</button></div>`
+    <div class="actions" style="justify-content:space-between;margin-top:12px"><button class="btn" id="ignew">+ New foreign server</button><button class="btn pri" id="igago">Add</button></div>`
     : `<p class="muted">Every foreign server${isAdmin() ? ' of every account' : ''} is already here. A new machine is added as a foreign server first, then here.</p>
     <div class="actions" style="justify-content:flex-end;margin-top:12px"><button class="btn pri" id="ignew">+ Add foreign server</button></div>`}`);
   const nw = $('#ignew', m);
-  if (nw) nw.onclick = () => { m.remove(); serverModal({ role: 'foreign' }); };
+  // a machine that isn't a server of the panel yet: saved as a foreign server, then put on this page at once
+  // (the only way here used to be when every server was already on the page)
+  if (nw) nw.onclick = () => { m.remove(); serverModal({ role: 'foreign', onSaved: async (id, name) => {
+    if (!id) return;
+    try {
+      const r = await api('/igproxy/enable', { ID: id, On: true });
+      await igRunJob(r.job, 'Add server — ' + name, () => igLoad(true));
+    } catch (e) { toast(e.message); }
+  } }); };
   const go = $('#igago', m);
   if (go) go.onclick = async () => {
     const x = c.find(x => x.ID === $('#igas', m).value);
