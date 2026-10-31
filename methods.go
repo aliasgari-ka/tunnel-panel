@@ -237,7 +237,7 @@ var methodByID = map[string]*Method{}
 var methodGroups = map[string]string{
 	"backhaul": "Backhaul", "premium": "Backhaul", "premium1": "Backhaul",
 	"bp_reverse": "BackPack", "bp_l3": "BackPack",
-	"gre": "Kernel GRE / IPsec", "direct6": "Kernel GRE / IPsec", "ipsec6": "Kernel GRE / IPsec",
+	"gre": "Kernel GRE / IPsec", "direct6": "Kernel GRE / IPsec", "ipsec6": "Kernel GRE / IPsec", "espsk": "Kernel GRE / IPsec",
 	"frp": "Other", "golden": "Other", "icmp": "Other", "paqet": "Other", "spoof": "Other",
 }
 
