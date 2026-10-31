@@ -298,7 +298,7 @@ done`, nil)
 // tunnels DNAT them instead, so another listener there doesn't take their traffic).
 func userspaceIran(m *Method, t *Tunnel) bool {
 	switch m.ID {
-	case "gre", "direct6", "ipsec6", "espsk", "golden", "icmp", "spoof", "bp_l3":
+	case "gre", "direct6", "ipsec6", "espsk", "wg", "golden", "icmp", "spoof", "bp_l3":
 		return false
 	case "premium": // ipx forwards with its own iptables rules
 		get, _ := resolveOptions(m, t.Options[m.ID])

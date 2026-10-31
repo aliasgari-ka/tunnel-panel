@@ -75,6 +75,7 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 | **Direct v6 (ip6gre)** | v6 | none | kernel only, lowest overhead; Carrier `udp` = GRE inside UDP where protocol 47 is filtered |
 | **Plain GRE** | v4/v6 | none | kernel GRE / ip6gre |
 | **IPsec (strongSwan)** | v6/v4 | AES-GCM | IKEv2, route-based XFRM interface |
+| **WireGuard** | v4/v6 | ChaCha20-Poly1305 | kernel WireGuard over one UDP port, keys made by the panel; `dialer` picks which side connects |
 | **Spoof-Tunnel** | v4 | none (spoofed) | stateless raw pipe via mutual source-IP spoofing; needs non-BCP38 providers; put an encrypted protocol inside |
 
 ## Install (on the foreign server, as root)

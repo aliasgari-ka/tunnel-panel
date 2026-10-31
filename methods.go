@@ -237,9 +237,11 @@ var methodByID = map[string]*Method{}
 var methodGroups = map[string]string{
 	"backhaul": "Backhaul", "premium": "Backhaul", "premium1": "Backhaul",
 	"bp_reverse": "BackPack", "bp_l3": "BackPack",
-	"gre": "Kernel GRE / IPsec", "direct6": "Kernel GRE / IPsec", "ipsec6": "Kernel GRE / IPsec", "espsk": "Kernel GRE / IPsec",
+	"gre": groupKernel, "direct6": groupKernel, "ipsec6": groupKernel, "espsk": groupKernel, "wg": groupKernel,
 	"frp": "Other", "golden": "Other", "icmp": "Other", "paqet": "Other", "spoof": "Other",
 }
+
+const groupKernel = "Kernel GRE / IPsec / WireGuard"
 
 func register(m *Method) {
 	if m.Group == "" {
@@ -334,6 +336,9 @@ func buildPlansRedirect(m *Method, t *Tunnel, srv, fsrv *Server, set Settings, r
 	}
 	c := &buildCtx{T: &tc, Srv: srv, Set: set, Opt: get, OptB: getB, D: d}
 	ir, kh, err := m.Build(c)
+	// secret() replaces the copy's map (copy-on-write), so the keys it made are handed back
+	// to t here; without this none were ever saved and every apply made new ones
+	t.Secrets = tc.Secrets
 	if err != nil {
 		return ir, kh, err
 	}
@@ -378,6 +383,12 @@ func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) 
 		}
 	case "bp_l3":
 		p := portOr(get("port"), d.BasePort)
+		if get("dialer") == "foreign" {
+			return p, ""
+		}
+		return "", p
+	case "wg": // UDP; the side that doesn't dial only listens
+		p := portOr(get("port"), d.BasePort+2)
 		if get("dialer") == "foreign" {
 			return p, ""
 		}
