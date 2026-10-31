@@ -2158,12 +2158,12 @@ function igBulk(box) {
 
 // ---- backup / copy settings
 async function igBackup(box) {
-  const L = igList(), opts = L.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${s.owner ? ' (' + esc(s.owner) + ')' : ''}</option>`).join('');
+  const L = igList(), opts = L.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${isAdmin() && s.owner ? ' (' + esc(s.owner) + ')' : ''}</option>`).join('');
   box.innerHTML = `<p class="muted" style="margin-top:0">WARP accounts are never copied or backed up: each server keeps its own.</p>
    <div class="card pad sec"><h3>Copy settings from one server to others</h3><div class="ff">
     <label class="f">From<select id="igcf" class="inp">${opts}</select></label>
     <label class="f" style="grid-column:span 2">What<select id="igcp" class="inp"><option value="routes proxies ig tg opts">Everything: routes, sites, proxies, test account + Gemini key, Telegram, settings</option><option value="routes">Routes + sites only</option><option value="proxies">Proxies only</option><option value="routes proxies">Routes + sites + proxies</option><option value="opts">WARP settings only</option></select></label></div>
-    <div style="margin:12px 0" id="igct">${L.map(s => `<label class="f row" style="display:inline-flex;margin-inline-end:14px"><input type="checkbox" value="${esc(s.id)}" checked> ${esc(s.name)}${s.owner ? ' (' + esc(s.owner) + ')' : ''}</label>`).join('')}</div>
+    <div style="margin:12px 0" id="igct">${L.map(s => `<label class="f row" style="display:inline-flex;margin-inline-end:14px"><input type="checkbox" value="${esc(s.id)}" checked> ${esc(s.name)}${isAdmin() && s.owner ? ' (' + esc(s.owner) + ')' : ''}</label>`).join('')}</div>
     <button class="btn pri" id="igcgo">Copy to the ticked servers</button></div>
    <div class="card pad sec"><h3>Backup</h3><p class="muted">Routes, sites, proxies, test account, Telegram and settings of each server (the last 10 per server). Each account's backups are its own.</p>
     <button class="btn pri" id="igbgo">Back up every server now</button>
@@ -2178,7 +2178,7 @@ async function igBackup(box) {
   try {
     const f = ((await api('/igproxy/backups')).files || []).filter(x => shownOwner(x.owner));
     if (!$('#igbl')) return;
-    const nameOf = (x) => { const s = (IG.data?.servers || []).find(y => y.id === x.server); return (s ? s.name : x.file) + ' · ' + new Date(x.t * 1000).toLocaleString() + (x.owner ? ' (' + x.owner + ')' : ''); };
+    const nameOf = (x) => { const s = (IG.data?.servers || []).find(y => y.id === x.server); return (s ? s.name : x.file) + ' · ' + new Date(x.t * 1000).toLocaleString() + (isAdmin() && x.owner ? ' (' + x.owner + ')' : ''); };
     $('#igbl').outerHTML = f.length ? `<div class="ff"><label class="f" style="grid-column:span 2">Backup<select id="igbf" class="inp">${f.map((x, k) => `<option value="${k}">${esc(nameOf(x))}</option>`).join('')}</select></label><label class="f">Onto<select id="igbs" class="inp">${opts}</select></label><button class="btn danger" id="igbgo2" style="align-self:end">Restore</button></div>` : '<div class="faint">No backup yet</div>';
     if (!f.length) return;
     const pre = () => { const b = f[+$('#igbf').value]; if (b && b.server && [...$('#igbs').options].some(o => o.value === b.server)) $('#igbs').value = b.server; };
