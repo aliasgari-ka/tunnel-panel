@@ -388,7 +388,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 10
+# tp-switcher 11
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -440,13 +440,17 @@ clean() { [ ${ql[$1]:-0} -lt ${LOSSBAD:-50} ]; }
 # again at once: without this, two paths of similar worth swapped every 30-60 min all night
 # (seen live: xe108 BackPack v4 <-> Direct v6). It is skipped unless the current path degrades.
 recentleft() { [ -n "${leftat[$1]}" ] && [ $((now - ${leftat[$1]})) -lt ${NOBACK:-21600} ]; }
-# pick: where users go when theirs is down — a steady path (up for STEADY s without a break)
-# before one that just came up, then the least lossy and fastest (cost)
+# pick: where users go when theirs is down — a path that hasn't been dropping (stable: up as
+# long as its recent drops ask) before one merely up for STEADY s, before one that just came
+# up; then the least lossy and fastest (cost). Seen live on تانل ایران به هلند 1: BackPack
+# blipped, the users went to Paqet (lowest ping) which kept dropping on that route, and every
+# blip became a ~2 min outage while Direct v6 and GRE stayed up the whole time.
 pick() {
   local k s b=-1 bs=0
   for ((k=0; k<N; k++)); do
     [ "${ok[$k]}" = 1 ] || continue
     s=0; [ $((now - ${since[$k]:-$now})) -ge ${STEADY:-30} ] && s=1
+    stable $k && s=2
     if [ $b -lt 0 ] || [ $s -gt $bs ] || { [ $s = $bs ] && [ $(cost $k) -lt $(cost $b) ]; }; then b=$k; bs=$s; fi
   done
   echo $b
