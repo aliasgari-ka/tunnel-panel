@@ -599,7 +599,7 @@ async function viewRoutes(w) {
       try {
         skip = await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on });
         repaint(); // the other tunnels on this pair show the same switches
-        toast(on ? `${methodTitle(method)} (${famName(family)}) left out on this route — running hot-standby tunnels drop it in about 20 s` : `${methodTitle(method)} (${famName(family)}) is back on this route — running hot-standby tunnels add it in about 20 s`);
+        toast(on ? `${methodTitle(method)} (${famName(family)}) left out on this route — running hot-standby tunnels stop it within seconds` : `${methodTitle(method)} (${famName(family)}) is back on this route — running hot-standby tunnels start it within seconds`);
       } catch (er) { alertModal('Routes', er.message); }
     };
     $$('[data-use]', card).forEach(b => b.onchange = () => setSkip(b.dataset.use, !b.checked));
