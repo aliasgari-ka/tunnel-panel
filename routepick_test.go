@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // A tunnel whose route has only some methods switched on (the tunnel window's checklist)
 // plans hot-standby paths for those and its own method, nothing else.
@@ -38,5 +41,36 @@ func TestHSPlanOnlyChosen(t *testing.T) {
 	a.setRouteSkipAll("i", "k", nil)
 	if a.routeSkipped("i", "k", "frp", "v4") {
 		t.Fatal("an empty list must switch every method back on")
+	}
+}
+
+// A switch flipped while a job runs on the tunnel waits for that job instead of being
+// dropped until the next Repair pass.
+func TestHSSyncWaitsForJob(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Tunnels = []*Tunnel{{ID: "x", ServerID: "i", ForeignID: "k", Family: "v4", HotStandby: true}}
+		return nil
+	})
+	a := &App{store: st, jobs: newJobs()}
+	defer func(p time.Duration) { hsSyncPoll = p }(hsSyncPoll)
+	hsSyncPoll = 10 * time.Millisecond
+	j, err := a.jobs.start("x", "apply:gre")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { a.hsSyncPaths(st.Tunnel("x")); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("returned while the Start was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	a.jobs.done(j) // the Start ended without bringing the tunnel up: nothing left to do
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("still waiting after the job ended")
 	}
 }

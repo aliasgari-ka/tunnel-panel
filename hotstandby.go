@@ -813,11 +813,16 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		fail("foreign probe server: %v", err)
 		return false
 	}
-	var good []HSPath
+	var good, kept []HSPath
 	for k := range paths {
 		p := paths[k]
 		pt := pathTunnel(t, p)
 		pm := methodByID[p.Method]
+		if k > 0 && a.routeSkipped(t.ServerID, t.ForeignID, p.Method, p.Family) {
+			// switched off on the Routes page while this Start runs
+			j.log("== path %d: %s — switched off on this route, not started ==", k+1, p.label())
+			continue
+		}
 		j.log("== path %d: %s ==", k+1, p.label())
 		err := func() error {
 			if pm == nil {
@@ -853,8 +858,9 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 			p.Failed = ""
 			good = append(good, p)
 		}
-		paths[k] = p
+		kept = append(kept, p)
 	}
+	paths = kept
 	_ = a.store.Update(func(*State) error { t.Paths = paths; return nil })
 	if len(good) == 0 {
 		fail("no path could be deployed")

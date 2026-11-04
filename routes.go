@@ -129,7 +129,7 @@ func (s *Server2) routeSkip(w http.ResponseWriter, r *http.Request) {
 // a left-out path is stopped and taken out of the switcher, one put back is started and
 // added — without a rebuild, so users on the other paths aren't cut. It waits a little
 // (several ⊘ in a row become one update) and runs as a job on each tunnel.
-const routeSkipDelay = 20 * time.Second
+const routeSkipDelay = 3 * time.Second
 
 var routeSkipTimers = struct {
 	sync.Mutex
@@ -150,18 +150,44 @@ func (a *App) routeSkipChanged(iran, foreign string) {
 		var ts []*Tunnel
 		a.store.View(func(st *State) {
 			for _, t := range st.Tunnels {
-				if t.ServerID == iran && t.ForeignID == foreign && t.Active != "" && t.HotStandby && len(t.Paths) > 0 {
+				if t.ServerID == iran && t.ForeignID == foreign && t.HotStandby {
 					ts = append(ts, t)
 				}
 			}
 		})
 		for _, t := range ts {
-			if _, err := a.hsUpdatePaths(t); err != nil {
-				a.pushT(t, fmt.Sprintf("⚠ %s: the route's left-out methods are applied on its next Start/Re-apply (%v)", t.Name, err))
-			}
+			go a.hsSyncPaths(t)
 		}
 	})
 }
+
+// hsSyncPaths applies the route's switches to a hot-standby tunnel as soon as it can. A job
+// already on the tunnel (a Start still bringing its paths up, a retry) is waited for: the
+// change used to be dropped then and waited for the next Repair pass, many minutes later.
+func (a *App) hsSyncPaths(t *Tunnel) {
+	deadline := time.Now().Add(hsSyncWait)
+	for {
+		var up bool
+		a.store.View(func(*State) { up = t.Active != "" && t.HotStandby && len(t.Paths) > 0 })
+		if up {
+			if _, err := a.hsUpdatePaths(t); err == nil {
+				return
+			}
+		} else if a.jobs.running(t.ID) == "" {
+			return // stopped: its next Start plans the paths from the switches
+		}
+		if time.Now().After(deadline) {
+			a.pushT(t, fmt.Sprintf("⚠ %s: the route's switches are applied on its next Start/Re-apply (a job kept the tunnel busy)", t.Name))
+			return
+		}
+		time.Sleep(hsSyncPoll)
+	}
+}
+
+var (
+	hsSyncWait = 40 * time.Minute
+	hsSyncPoll = 5 * time.Second
+)
 
 // hsActiveRemap: the switcher keeps the users' path as its place in the list (the active
 // file) and the restarted switcher starts there. Taking a path out moves the ones after it
@@ -236,6 +262,48 @@ func (a *App) hsUpdatePaths(t *Tunnel) (*Job, error) {
 	return j, nil
 }
 
+// hsDropPaths takes the left-out paths drop out of a running hot-standby tunnel: the
+// switcher moves to stay (the running paths that remain; left is the new t.Paths), then
+// the dropped paths stop. Returns the names of the paths that were running.
+func (a *App) hsDropPaths(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, before, left, stay, drop []HSPath) ([]string, error) {
+	var names []string
+	_ = a.store.Update(func(*State) error {
+		t.Paths = append([]HSPath(nil), left...)
+		pinned := false
+		for _, p := range stay {
+			pinned = pinned || p.Method+"|"+p.Family == t.HSPin
+		}
+		if !pinned {
+			t.HSPin = ""
+		}
+		for _, d := range drop {
+			if d.Method == t.Active && d.Family == t.Family {
+				t.Active, t.Family = stay[0].Method, stay[0].Family
+			}
+			if d.Failed == "" {
+				names = append(names, d.label())
+			}
+		}
+		return nil
+	})
+	j.log("== switcher: %d paths (left-out ones removed first) ==", len(stay))
+	sw := a.hsSwitcherPlan(t, stay)
+	sw.Setup = hsActiveRemap(hsDir(t), before, stay) + sw.Setup
+	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), sw); err != nil {
+		return nil, fmt.Errorf("switcher: %w", err)
+	}
+	for _, d := range drop {
+		if d.Failed != "" {
+			continue
+		}
+		pt := pathTunnel(t, d)
+		j.log("stopping %s (left out on this route)", d.label())
+		_, _ = ir.Run(ctx, teardownScript(pt), nil)
+		_, _ = kh.Run(ctx, teardownScript(pt), nil)
+	}
+	return names, nil
+}
+
 // retry: add is a failed path tried again (drop holds its old entry) — when it fails again
 // nothing changed, so the switcher is left alone and nobody is told.
 func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add []HSPath, retry bool) error {
@@ -266,6 +334,25 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 			}
 		}
 	})
+	// left-out paths stop first, before anything new is installed (that can take minutes): the
+	// switcher moves to the paths that stay, then the dropped ones are torn down
+	var early []string // paths already removed by the step below
+	if len(drop) > 0 && len(add) > 0 {
+		var stay []HSPath
+		for _, p := range left {
+			if p.Failed == "" {
+				stay = append(stay, p)
+			}
+		}
+		if len(stay) > 0 {
+			names, err := a.hsDropPaths(ctx, j, t, ir, kh, before, left, stay, drop)
+			if err != nil {
+				return err
+			}
+			early = names
+			before, drop = stay, nil
+		}
+	}
 	// new paths get a free index, like hsPlan gives them
 	_ = a.store.Update(func(st *State) error {
 		used := pendingIndices(st)
@@ -377,6 +464,7 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		_, _ = ir.Run(ctx, teardownScript(pt), nil)
 		_, _ = kh.Run(ctx, teardownScript(pt), nil)
 	}
+	names = append(early, names...)
 	var msg []string
 	if len(names) > 0 {
 		msg = append(msg, "removed "+strings.Join(names, ", "))
