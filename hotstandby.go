@@ -373,7 +373,10 @@ func hsTarget(t *Tunnel, p HSPath, srv, fsrv *Server, set Settings) string {
 // hours (hsSpeedMB, capped), and when the active path degrades — loss ≥ 5 %, speed down to
 // half of its recent best or under 1 Mbit/s — or another path is clearly cheaper, it measures
 // the active path and up to three stable candidates the same way and moves the users to a
-// clearly better one (heavy loss ≥ 15 % loses to a clean path of at least 30 % of its speed or 20 Mbit/s, even if it measures faster). After a move it holds for hsHold; a comparison that changed nothing
+// clearly better one (heavy loss ≥ 15 % loses to a clean path of at least 30 % of its speed or 20 Mbit/s, even if it measures faster).
+// A comparison pings every path it measures 20 times right then (loss and latency of the same
+// moment, not old few-ping readings), and 5 min after a move the new path is measured under
+// the users' traffic: clearly worse than the old one was before the move = back at once. After a move it holds for hsHold; a comparison that changed nothing
 // backs off (30 min, doubling to 2 h), so a bad hour costs little traffic. Standby paths
 // are checked every hsStandby checks (the active one every check), for the same reason.
 const (
@@ -388,7 +391,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 11
+# tp-switcher 12
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -418,11 +421,10 @@ tune() {
 }
 use() { # use <k> <reason>: make-before-break — one atomic swap of the selector; only new
   # connections take the new path, the ones already open finish on the old one (it keeps
-  # running). A dead path's own connections are cleared (flush), so clients reconnect at once.
+  # running). A dead path's own connections are cleared (flush) once it has stayed down
+  # FLUSHAFTER s, so clients reconnect — see the check loop.
   bash up-$1.sh >/dev/null 2>&1
-  local old=$active
   ev switch "$active" "$1" "$2"; active=$1; echo "$1 $(date +%s)" > active
-  [ "$old" -ge 0 ] && [ "${ok[$old]}" != 1 ] && flush $old
 }
 flush() { bash flush-$1.sh >/dev/null 2>&1; flushed[$1]=1; }
 cost() { echo $(( ${qr[$1]:-999} + ${ql[$1]:-0} * 5 / 2 )); } # ms, 1 % loss ≈ 25 ms
@@ -461,9 +463,19 @@ budget() { local t c=0 keep=""; for t in $planat; do [ $((now - t)) -lt 3600 ] &
 planned() { planat="$planat $now"; use "$@"; }
 backmsg() { local c=$(drops $1); echo "path $1 worked for $(need $1)s$([ $c -gt 0 ] && echo " (it dropped ${c}× in the last 30 min)")"; }
 measure() { # measure <kind> <from> <why> <k...>: speed tests in the background
+  # a comparison (cmp, verify) also pings each path 20 times first, all at the same moment:
+  # loss from the few pings of the routine checks (one lost of 6 reads as 17 %) and old
+  # readings of idle paths sent users to paths that were worse than theirs
   local kind=$1 from=$2 why=$3; shift 3
   echo "$kind $from $why" > cmp.run; rm -f cmp.done
-  ( for k in "$@"; do s=$(timeout 20 $P probe speed -addr ${A[$k]} -max $SPMB -secs 10 2>/dev/null); echo "$k ${s:-0}"; done > cmp.tmp; mv cmp.tmp cmp.done ) &
+  ( for k in "$@"; do
+      q="- -"
+      if [ $kind != speed ] && [ -n "${H[$k]}" ]; then
+        read -r r rt jt ls <<< "$(timeout 15 $P probe check -addr ${A[$k]} -n 3 -ping ${H[$k]} -pn 20 2>/dev/null)"
+        [ "$r" = ok ] && q="$rt ${ls:--1}"
+      fi
+      s=$(timeout 20 $P probe speed -addr ${A[$k]} -max $SPMB -secs 10 2>/dev/null); echo "$k ${s:-0} $q"
+    done > cmp.tmp; mv cmp.tmp cmp.done ) &
 }
 declare -a ok since fails qr ql sp spb spat flushed dropat leftat
 active=-1
@@ -473,6 +485,12 @@ if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && {
 [ $active -ge 0 ] || use 0 "start"
 # backoff: after a comparison that changed nothing, the next waits 30 min, doubling to 2 h
 tune; n=0; cmpat=0; backoff=1800; hold=0; badsince=0; cmploss=0
+# after an automatic move: VERIFY s later the new path is measured under the users' traffic and
+# set against what the old one measured under the same load before the move (vso speed, vlo
+# loss, vco cost); clearly worse = back at once. (Measuring the old path now, idle, would
+# always favour it — the bias that made the move look good in the first place.)
+FLUSHAFTER=$(( ${GRACE:-0} + 15 ))
+VERIFY=${VERIFY:-300}; verifyat=0; vfrom=-1; vto=-1; vso=0; vlo=0; vco=0
 pindone=""; [ -s pin.done ] && read -r pindone < pin.done
 while true; do
   M=manual; [ -s mode ] && read -r M < mode
@@ -505,8 +523,11 @@ while true; do
       else
         [ "${ok[$k]}" = 0 ] || since[$k]=$now; ok[$k]=0; fails[$k]=$(( ${fails[$k]:-0} + 1 ))
         [ ${fails[$k]} = $FAILS ] && dropat[$k]="${dropat[$k]} $now"
-        # connections still draining on a path that just died: clear them, so they reconnect
-        [ $k != $active ] && [ ${fails[$k]} -ge $FAILS ] && [ "${flushed[$k]}" != 1 ] && flush $k
+        # connections on a path that died: clear them, so they reconnect — only once it has been
+        # down FLUSHAFTER s. A path whose checks time out under a burst of the users' traffic
+        # (a video loading) is usually back within seconds, and clearing it at once cut every
+        # video and download still running on it.
+        [ $k != $active ] && [ ${fails[$k]} -ge $FAILS ] && [ "${flushed[$k]}" != 1 ] && [ $((now - ${since[$k]:-$now})) -ge $FLUSHAFTER ] && flush $k
       fi
     fi
     st=down; [ "${ok[$k]}" = 1 ] && st=ok
@@ -544,8 +565,10 @@ while true; do
     fi
   elif [ "${ok[$active]}" = 1 ] && [ -f cmp.done ]; then
     read -r kind from why < cmp.run; rm -f cmp.run
-    while read -r k s; do
+    while read -r k s frt fls; do
       [ -n "$k" ] || continue; sp[$k]=$s; spat[$k]=$now
+      [ -n "$frt" ] && [ "$frt" != - ] && qr[$k]=$frt
+      [ -n "$fls" ] && [ "$fls" != - ] && [ "$fls" -ge 0 ] 2>/dev/null && ql[$k]=$((fls * 10))
       if [ "${s:-0}" -gt 0 ]; then
         if [ -z "${spb[$k]}" ] || [ $s -gt $((spb[$k] * 15 / 16)) ]; then spb[$k]=$s; else spb[$k]=$((spb[$k] * 15 / 16)); fi
       fi
@@ -558,7 +581,7 @@ while true; do
         [ -z "$why" ] && recentleft $c && continue # just left it, and nothing is wrong here
         win=0
         if [ $sa = 0 ]; then win=1
-        elif [ $((sc * 10)) -ge $((sa * 15)) ] && [ ${ql[$c]:-0} -le $(( ${ql[$a]:-0} + 20 )) ]; then win=1
+        elif [ $((sc * 10)) -ge $((sa * 15)) ] && [ ${ql[$c]:-0} -le ${ql[$a]:-0} ] && [ ${qr[$c]:-999} -le $(( ${qr[$a]:-0} * 13 / 10 + 20 )) ]; then win=1 # faster, and no lossier or much slower to answer
         elif [ ${ql[$a]:-0} -ge $LOSSBAD ] && [ $(( ${ql[$c]:-0} * 2 )) -le ${ql[$a]:-0} ] && [ $((sc * 10)) -ge $((sa * 8)) ]; then win=1
         elif [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && [ ${ql[$c]:-0} -le 20 ] && { [ $((sc * 10)) -ge $((sa * 3)) ] || [ $sc -ge 20000 ]; }; then win=1 # heavy loss breaks uploads and handshakes even where the download test still looks fast
         elif [ $(( $(cost $c) * 10 )) -le $(( $(cost $a) * 7 )) ] && [ $((sc * 10)) -ge $((sa * 9)) ]; then win=1
@@ -569,17 +592,34 @@ while true; do
       if [ $best -ge 0 ] && budget; then
         planned $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
         leftat[$a]=$now
+        vfrom=$a; vto=$best; vso=$sa; vlo=${ql[$a]:-0}; vco=$(cost $a); verifyat=$((now + VERIFY))
         hold=$((now + HOLD)); backoff=1800
-        # off a heavily lossy path, the connections already open move too (after a moment for
-        # what is in flight): they would go on lagging there
-        [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && ( sleep 15; bash flush-$a.sh ) >/dev/null 2>&1 &
+        # the connections already open stay on the old path until they end: clearing them (as a
+        # move off a lossy path used to, 15 s later) broke videos playing on Instagram / YouTube
       else
         if [ $best -ge 0 ]; then ev keep "$a" "$a" "path $best is better, but $PLANMAX planned moves this hour already — staying"
         else ev keep "$a" "$a" "compared ${why:-paths}: none clearly better ($(mb $sa) Mbit/s here)"; fi
         cmpat=$((now + backoff)); backoff=$((backoff * 2)); [ $backoff -gt 7200 ] && backoff=7200; cmploss=${ql[$a]:-0}
       fi
     fi
+    if [ "$kind" = verify ] && [ "$from" = "$active" ] && [ $active = $vto ] && [ "${ok[$vfrom]}" = 1 ]; then
+      a=$active; o=$vfrom; sa=${sp[$a]:-0}; worse=""
+      if [ $sa = 0 ] && [ $vso -gt 0 ]; then worse="no data passes on it"
+      elif [ $((sa * 10)) -lt $((vso * 8)) ] && [ ${ql[$a]:-0} -ge $vlo ]; then worse="slower"
+      elif [ ${ql[$a]:-0} -ge $LOSSBAD ] && [ ${ql[$a]:-0} -ge $((vlo + 20)) ] && [ $((sa * 10)) -lt $((vso * 12)) ]; then worse="lossier"
+      elif [ $(( $(cost $a) * 10 )) -ge $((vco * 15)) ] && [ $((sa * 10)) -lt $((vso * 12)) ]; then worse="slower to answer"
+      fi
+      if [ -n "$worse" ]; then
+        use $o "auto: back to path $o — path $a turned out $worse after the move: $(mb $sa) vs $(mb $vso) Mbit/s, loss $(pc ${ql[$a]})% vs $(pc $vlo)%, cost $(cost $a) vs $vco"
+        leftat[$o]=""; leftat[$a]=$now; hold=$((now + HOLD))
+      else
+        ev keep "$a" "$a" "auto: path $a checked after the move — $(mb $sa) Mbit/s (path $o had $(mb $vso)), loss $(pc ${ql[$a]})% (was $(pc $vlo)%) — staying"
+      fi
+    fi
     rm -f cmp.done
+  elif [ "${ok[$active]}" = 1 ] && [ "$M" = auto ] && [ ! -f cmp.run ] && [ $verifyat -gt 0 ] && [ $now -ge $verifyat ]; then
+    verifyat=0
+    [ $active = $vto ] && [ "${ok[$vfrom]}" = 1 ] && measure verify $vto "" $vto
   elif [ "${ok[$active]}" = 1 ] && [ ! -f cmp.run ] && [ $((n % 5)) = 0 ]; then
     a=$active; why=""; better=0
     [ ${ql[$a]:-0} -ge $LOSSBAD ] && why="loss $(pc ${ql[$a]})%"
