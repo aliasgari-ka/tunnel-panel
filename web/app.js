@@ -1591,6 +1591,7 @@ function tunnelModal(t) {
       ${isAdmin() && !t.id && (STATE.users || []).length > 1 ? `<label class="f">Account <span class="faint">(who sees and runs it — use that account's servers)</span><select name="owner"><option value="">me (admin)</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}"${STATE.ownerFilter === u.username ? ' selected' : ''}>${esc(u.username)}</option>`).join('')}</select></label>` : ''}
       <label class="row f"><input type="checkbox" id="tFail"${t.noFailover ? '' : ' checked'}> 🔁 Automatic failover <span class="faint" style="font-weight:500">— if the tunnel is down for 5 min, switch to a working method / IPv4⇄IPv6 path; re-check the original every hour and switch back when it works</span></label>
       <label class="row f"><input type="checkbox" id="tHot"${t.hotStandby ? ' checked' : ''}> ⚡ Hot standby <span class="faint" style="font-weight:500">— keep every compatible method (IPv4 and IPv6) running; users go through the chosen one and a switcher on the Iran server moves them to the best working path within seconds (no SSH needed), and back after ${60}s of stability. Order: this route's benchmark. Applies on the next Start/Re-apply.</span></label>
+      <div id="tPaths" class="tpaths" style="margin-inline-start:22px"></div>
       <label class="row f" style="margin-inline-start:22px"><input type="checkbox" id="tHsAuto"${t.hsAuto ? ' checked' : ''}> 🤖 Auto — also move users to a clearly better path when theirs gets slow or lossy <span class="faint" style="font-weight:500">(off = manual: the chosen path, left only while it is down; switchable any time from the tunnel's window or the bot)</span></label>
       <details${sh.enabled ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Traffic shaping / link tuning</summary>
         <div class="ff" style="margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px">
@@ -1608,9 +1609,43 @@ function tunnelModal(t) {
       <div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" id="cancel">Cancel</button><button class="btn pri">Save</button></div>
     </form>`, true);
   $('#cancel', m).onclick = () => m.remove();
+  // which methods hot standby keeps running on this pair of servers: the Routes page's switches
+  // for the pair (off = left out), chosen here before the first Start
+  let skipAll = null, pathsKey = '';
+  const hasFam = (id, f) => { const s = id ? serverById(id) : null; const st = STATE.settings; return f === 'v4' ? !!(s ? s.ipv4 : st.localIPv4 || true) : !!(s ? s.ipv6 : st.localIPv6); };
+  const pair = () => ({ iran: $('[name=serverId]', m).value, foreign: $('[name=foreignId]', m).value || '' });
+  const paintPaths = () => {
+    const box = $('#tPaths', m);
+    if (!$('#tHot', m).checked || !skipAll) { box.innerHTML = ''; return; }
+    const p = pair(), k = p.iran + '|' + p.foreign;
+    const off = pathsKey === k ? $$('[data-path]', box).filter(c => !c.checked).map(c => c.dataset.path) : (skipAll[k] || []);
+    pathsKey = k;
+    const fams = ['v4', 'v6'].filter(f => hasFam(p.iran, f) && hasFam(p.foreign, f));
+    const ms = STATE.methods.filter(x => x.id !== 'spoof' && fams.some(f => x.families.includes(f)));
+    const cells = ms.flatMap(x => fams.filter(f => x.families.includes(f)).map(f => x.id + '|' + f));
+    const on = cells.filter(c => !off.includes(c)).length;
+    box.innerHTML = `<details${on < cells.length ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Paths to keep running: <b data-pn>${on}</b> of ${cells.length} <span class="faint">— only these are installed and started (the method you Start with always runs)</span></summary>
+      <div style="margin-top:8px;padding:10px 12px;background:var(--panel-2);border-radius:10px">
+        <div class="actions" style="margin-bottom:6px"><button type="button" class="btn sm ghost" data-pall="1">All</button><button type="button" class="btn sm ghost" data-pall="0">None</button></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 12px;font-size:13px">${ms.map(x => fams.filter(f => x.families.includes(f)).map(f => `<label class="row"><input type="checkbox" data-path="${esc(x.id)}|${f}"${off.includes(x.id + '|' + f) ? '' : ' checked'}> ${esc(x.title)} <span class="faint">${famName(f)}</span></label>`).join('')).join('')}</div>
+        <div class="faint" style="font-size:12px;margin-top:6px">Saved for this pair of servers (the Routes page shows the same switches).</div></div></details>`;
+    const count = () => { $('[data-pn]', box).textContent = $$('[data-path]', box).filter(c => c.checked).length; };
+    $$('[data-path]', box).forEach(c => c.onchange = count);
+    $$('[data-pall]', box).forEach(b => b.onclick = () => { $$('[data-path]', box).forEach(c => c.checked = b.dataset.pall === '1'); count(); });
+  };
+  api('/routes/skip').then(r => { skipAll = r || {}; paintPaths(); }).catch(() => {});
+  $('#tHot', m).addEventListener('change', paintPaths);
+  $('[name=serverId]', m).addEventListener('change', paintPaths);
+  $('[name=foreignId]', m).addEventListener('change', paintPaths);
   $('#tf', m).onsubmit = async (ev) => {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
+    const picks = $$('[data-path]', m);
+    if ($('#tHot', m).checked && picks.length) {
+      const p = pair(), offNow = picks.filter(c => !c.checked).map(c => c.dataset.path);
+      const before = (skipAll[p.iran + '|' + p.foreign] || []).slice().sort().join(','), after = offNow.slice().sort().join(',');
+      if (before !== after) { try { await api('/routes/skip', { iran: p.iran, foreign: p.foreign, off: offNow }); } catch (e) { alertModal('Error', e.message); return; } }
+    }
     if (t.id) fd.ID = t.id;
     fd.noFailover = !$('#tFail', m).checked;
     fd.hotStandby = $('#tHot', m).checked;
