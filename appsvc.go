@@ -154,7 +154,7 @@ wait:
 			}
 			return nil
 		})
-		// missing IPs are read from the server itself; first contact also pre-installs binaries.
+		// missing IPs are read from the server itself; first contact also installs the base packages.
 		// It runs on its own: the answer waits for it at most testSetupWait (it used to add up
 		// to a minute, and behind Cloudflare a test over 100 s came back as "Test failed")
 		done := make(chan struct{})
@@ -252,8 +252,8 @@ func isPublic(ip net.IP) bool {
 	return !cgnat.Contains(ip)
 }
 
-// autoSetup fills in a server's missing addresses from the server itself, then
-// pre-installs every method's binaries once (see Prepare).
+// autoSetup fills in a server's missing addresses from the server itself and installs the
+// packages every method relies on.
 func (a *App) autoSetup(ctx context.Context, srv *Server, h Host) {
 	if srv.IPv4 == "" || srv.IPv6 == "" {
 		v4, v6 := detectAddrs(ctx, h)
@@ -272,9 +272,15 @@ func (a *App) autoSetup(ctx context.Context, srv *Server, h Host) {
 	if cur := a.store.Server(srv.ID); cur != nil {
 		_ = a.fixIPv6(ctx, h, srv.ID, cur.IPv6)
 	}
-	if cur := a.store.Server(srv.ID); cur != nil && cur.Provisioned == 0 {
-		_, _ = a.Prepare(cur)
-	}
+	// only the common packages: each method's binaries go up when a tunnel first uses it
+	// (pre-installing all of them made a tunnel with 4 chosen paths install every method);
+	// "Install packages" on the server still pre-installs everything
+	// (on its own: apt can take longer than the setup's budget)
+	go func() {
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Minute)
+		defer cancel()
+		_, _ = h.Run(pctx, basePkgScript, nil)
+	}()
 }
 
 // autoSetupLocal fills the panel host's own addresses in Settings when blank and

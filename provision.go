@@ -183,7 +183,14 @@ func (a *App) sideArtifacts(iran bool) []Artifact {
 const prepScript = ipv6RAFix + aptFix + `pk=""
 command -v swanctl >/dev/null 2>&1 || pk="$pk strongswan-swanctl charon-systemd libcharon-extra-plugins"
 command -v swanctl >/dev/null 2>&1 && ! systemctl cat strongswan.service >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1 && pk="$pk charon-systemd"
-command -v ethtool >/dev/null 2>&1 || pk="$pk ethtool"
+` + pkgTail
+
+// basePkgScript is prepScript without strongSwan (IPsec installs it on first use): what a
+// server gets on first contact.
+const basePkgScript = ipv6RAFix + aptFix + `pk=""
+` + pkgTail
+
+const pkgTail = `command -v ethtool >/dev/null 2>&1 || pk="$pk ethtool"
 command -v iptables >/dev/null 2>&1 || pk="$pk iptables"
 command -v openssl >/dev/null 2>&1 || pk="$pk openssl"
 command -v ping >/dev/null 2>&1 || pk="$pk iputils-ping"

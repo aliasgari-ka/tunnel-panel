@@ -51,22 +51,62 @@ func (a *App) setRouteSkip(iran, foreign, mid, fam string, skip bool) {
 	})
 }
 
-// routeSkip: GET → every route's exclusions; POST {iran, foreign, method, family, skip}.
+// setRouteSkipAll replaces a route's exclusions with off.
+func (a *App) setRouteSkipAll(iran, foreign string, off []string) {
+	_ = a.store.Update(func(st *State) error {
+		k := routeKey(iran, foreign)
+		seen := map[string]bool{}
+		var keep []string
+		for _, v := range off {
+			if !seen[v] {
+				seen[v] = true
+				keep = append(keep, v)
+			}
+		}
+		if len(keep) == 0 {
+			delete(st.RouteSkip, k)
+			return nil
+		}
+		if st.RouteSkip == nil {
+			st.RouteSkip = map[string][]string{}
+		}
+		st.RouteSkip[k] = keep
+		return nil
+	})
+}
+
+// routeSkip: GET → every route's exclusions; POST {iran, foreign, method, family, skip}, or {iran, foreign, off: [...]} for the whole list.
 func (s *Server2) routeSkip(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		var in struct {
 			Iran, Foreign, Method, Family string
 			Skip                          bool
+			// Off, when set, replaces the route's whole list ("method|family" each): the tunnel
+			// window's checklist of which paths hot standby keeps running
+			Off *[]string
 		}
-		if err := readJSON(r, &in); err != nil || methodByID[in.Method] == nil || (in.Family != "v4" && in.Family != "v6") {
+		if err := readJSON(r, &in); err != nil || (in.Off == nil && (methodByID[in.Method] == nil || (in.Family != "v4" && in.Family != "v6"))) {
 			httpErr(w, 400, "bad request")
 			return
+		}
+		if in.Off != nil {
+			for _, v := range *in.Off {
+				mid, fam, _ := strings.Cut(v, "|")
+				if methodByID[mid] == nil || (fam != "v4" && fam != "v6") {
+					httpErr(w, 400, "bad request")
+					return
+				}
+			}
 		}
 		if user, admin := s.who(r); !s.pairVisible(user, admin, in.Iran, in.Foreign) {
 			httpErr(w, 404, "not found")
 			return
 		}
-		s.app.setRouteSkip(in.Iran, in.Foreign, in.Method, in.Family, in.Skip)
+		if in.Off != nil {
+			s.app.setRouteSkipAll(in.Iran, in.Foreign, *in.Off)
+		} else {
+			s.app.setRouteSkip(in.Iran, in.Foreign, in.Method, in.Family, in.Skip)
+		}
 		s.app.routeSkipChanged(in.Iran, in.Foreign)
 	}
 	out := map[string][]string{}
