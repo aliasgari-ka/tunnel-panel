@@ -16,8 +16,17 @@ import (
 
 const repairJobKey = "repair"
 
-// hsSwitcherVersion marks the switcher script; an older one on a server is replaced.
-const hsSwitcherVersion = "tp-switcher 11"
+// hsSwitcherVersion marks the switcher script ("# tp-switcher N" line); an older one on a
+// server is replaced. Read from the script itself: a copy kept here by hand fell behind
+// once, and Repair then left every running switcher on the old logic.
+var hsSwitcherVersion = func() string {
+	for _, l := range strings.Split(hsSwitcher, "\n") {
+		if strings.HasPrefix(l, "# tp-switcher ") {
+			return l
+		}
+	}
+	panic("hsSwitcher has no '# tp-switcher N' line")
+}()
 
 // Repair starts the repair job.
 func (a *App) Repair(why string) (*Job, error) {
@@ -146,7 +155,7 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 				}
 			}
 		})
-		out, _ := ir.Run(cctx, "grep -q "+shq(hsSwitcherVersion)+" "+shq(hsDir(t)+"/switch.sh")+" 2>/dev/null && echo NEW || echo OLD", nil)
+		out, _ := ir.Run(cctx, "grep -qx "+shq(hsSwitcherVersion)+" "+shq(hsDir(t)+"/switch.sh")+" 2>/dev/null && echo NEW || echo OLD", nil)
 		switch {
 		case err != nil:
 			why = "switcher not running: " + err.Error()
