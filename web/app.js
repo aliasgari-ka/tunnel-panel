@@ -138,7 +138,6 @@ function renderAuth(mode, name) {
       <div id="aerr" style="color:var(--crit);min-height:16px;font-size:13px"></div>
     </form></div></div>`);
   document.body.appendChild(el);
-  quantumBg.start();
   wirePasswordUX(el);
   $('#af').onsubmit = async (ev) => {
     ev.preventDefault();
@@ -146,189 +145,6 @@ function renderAuth(mode, name) {
     catch (e) { $('#aerr').textContent = e.message; }
   };
 }
-
-/* ---------------- live background: molten core + quantum orbits ---------------- */
-// A slowly turning molten globe (an Earth's-core lava texture, rendered per pixel at low
-// resolution and scaled up), electron-like quanta on tilted orbits around it that pass
-// behind and in front of it, rising embers and faint drifting particles. ≤30 fps,
-// paused while the tab is hidden, a still frame for prefers-reduced-motion, toggle in
-// the sidebar.
-const quantumBg = (() => {
-  let cv, ctx, raf = 0, last = 0, W = 0, H = 0, dpr = 1, on = false, time = 0;
-  // off unless turned on: a moving, glowing background tires the eyes on a page you watch for hours
-  on = false; try { on = localStorage.getItem('tp-bg') === 'on'; } catch (e) {}
-  const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // ---- molten texture (equirectangular, seamless in longitude) ----
-  const TW = 512, TH = 256;
-  let tex = null, pal = null;
-  const hash = (x, y, s) => { let h = (x * 374761393 + y * 668265263 + s * 982451653) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967295; };
-  const sm = (t) => t * t * (3 - 2 * t);
-  function noise(x, y, per, s) {
-    const xi = Math.floor(x), yi = Math.floor(y), u = sm(x - xi), v = sm(y - yi), w = (k) => ((k % per) + per) % per;
-    const a = hash(w(xi), yi, s), b = hash(w(xi + 1), yi, s), c = hash(w(xi), yi + 1, s), d = hash(w(xi + 1), yi + 1, s);
-    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-  }
-  function fbm(x, y, per, s) { let t = 0, amp = .5, f = 1; for (let o = 0; o < 5; o++) { t += amp * noise(x * f, y * f, per * f, s + o); amp *= .5; f *= 2; } return t; }
-  function buildTex() {
-    tex = new Float32Array(TW * TH);
-    for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) {
-      const x = i / TW, y = j / TH;
-      const base = fbm(x * 6, y * 3, 6, 1);
-      const r = 1 - Math.abs(2 * fbm(x * 12 + .3, y * 6 + 2, 12, 7) - 1);   // ridges → glowing cracks
-      const veins = Math.pow(r, 7);
-      // "continents": cooled dark crust plates with glowing cracks, in oceans of lava
-      const k = fbm(x * 3, y * 1.5 + 20, 3, 11), cont = sm(Math.min(1, Math.max(0, (k - .47) / .08)));
-      const lava = .42 + .42 * base + .45 * veins, crust = .04 + .12 * base + .95 * Math.pow(veins, 1.3);
-      const polar = Math.pow(Math.abs(y - .5) * 2, 6) * .25;                  // slightly cooler poles
-      tex[j * TW + i] = Math.min(1, Math.max(0, lava + (crust - lava) * cont - polar));
-    }
-    // black → deep red → orange → gold → white-hot
-    const stops = [[0, 8, 2, 0], [.25, 70, 6, 0], [.45, 170, 28, 0], [.62, 240, 90, 8], [.78, 255, 160, 40], [.9, 255, 215, 110], [1, 255, 250, 225]];
-    pal = new Uint8ClampedArray(256 * 3);
-    for (let k = 0; k < 256; k++) {
-      const t = k / 255; let i = 0; while (i < stops.length - 2 && t > stops[i + 1][0]) i++;
-      const A = stops[i], B = stops[i + 1], f = (t - A[0]) / (B[0] - A[0]);
-      for (let c = 0; c < 3; c++) pal[k * 3 + c] = A[c + 1] + (B[c + 1] - A[c + 1]) * f;
-    }
-  }
-  // ---- globe buffer + per-pixel sphere lookup ----
-  let G, g, GS = 0, img, lut, R = 0, cx = 0, cy = 0, rotA = 0, rotB = 0;
-  function buildGlobe() {
-    GS = W < 700 ? 170 : 240;
-    G = document.createElement('canvas'); G.width = G.height = GS; g = G.getContext('2d');
-    img = g.createImageData(GS, GS);
-    const tilt = -0.41, ct = Math.cos(tilt), st = Math.sin(tilt), L = [];
-    for (let py = 0; py < GS; py++) for (let px = 0; px < GS; px++) {
-      const nx = (px + .5) / GS * 2 - 1, ny = (py + .5) / GS * 2 - 1, d2 = nx * nx + ny * ny;
-      if (d2 >= 1) continue;
-      const nz = Math.sqrt(1 - d2), rx = nx * ct - ny * st, ry = nx * st + ny * ct;
-      const u = (Math.atan2(rx, nz) / (2 * Math.PI) + .5) * TW, v = (Math.asin(ry) / Math.PI + .5) * (TH - 1);
-      const edge = Math.min(1, (1 - Math.sqrt(d2)) * 18);           // anti-aliased rim
-      L.push(py * GS + px, u, v, .38 + .62 * Math.pow(nz, .55), edge);
-    }
-    lut = new Float32Array(L);
-  }
-  function renderGlobe() {
-    const d = img.data, n = lut.length, pulse = .92 + .08 * Math.sin(time * .0011);
-    // bilinear sample, wrapping in longitude
-    const samp = (u, v) => {
-      const x0 = Math.floor(u), y0 = Math.min(TH - 2, Math.floor(v)), fx = u - x0, fy = v - y0;
-      const a = ((x0 % TW) + TW) % TW, b = (a + 1) % TW, r0 = y0 * TW, r1 = r0 + TW;
-      const t0 = tex[r0 + a] + (tex[r0 + b] - tex[r0 + a]) * fx, t1 = tex[r1 + a] + (tex[r1 + b] - tex[r1 + a]) * fx;
-      return t0 + (t1 - t0) * fy;
-    };
-    for (let k = 0; k < n; k += 5) {
-      const p = lut[k] * 4, u = lut[k + 1], v = lut[k + 2], sh = lut[k + 3];
-      // the crust drifts with the rotation; a second, faster lava layer churns underneath
-      const i1 = samp(u + rotA, v);
-      const i2 = samp(u + rotB + TW / 2, TH - 1.001 - v);
-      const I = Math.max(i1, i2 * .55 + .1 * i1) * sh * pulse;
-      const c = Math.min(255, (I * 255) | 0) * 3;
-      d[p] = pal[c]; d[p + 1] = pal[c + 1]; d[p + 2] = pal[c + 2]; d[p + 3] = 255 * lut[k + 4];
-    }
-    g.putImageData(img, 0, 0);
-  }
-  // ---- scene objects ----
-  let orbits = [], embers = [], dust = [];
-  function layout() {
-    dpr = Math.min(2, window.devicePixelRatio || 1); W = innerWidth; H = innerHeight;
-    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const narrow = W < 860;
-    R = Math.min(W, H) * (narrow ? .3 : .25);
-    cx = narrow ? W * .5 : 232 + (W - 232) * .7; cy = H * (narrow ? .64 : .56);
-    buildGlobe();
-    orbits = [[1.55, .36, -.42, 3, 1], [1.85, .52, .55, 2, -.7], [1.3, .3, 1.32, 2, 1.3]].map(([a, b, tilt, n, sp]) => ({
-      a: R * a, b: R * a * b, tilt, sp: sp * .006, q: Array.from({ length: n }, (_, i) => ({ th: i * 6.283 / n + Math.random(), trail: [] })) }));
-    dust = Array.from({ length: Math.round(Math.min(40, W * H / 40000)) }, () => ({ x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - .5) * .2, vy: (Math.random() - .5) * .2, ph: Math.random() * 6.3 }));
-    embers = [];
-  }
-  const dark = () => { const t = document.documentElement.getAttribute('data-theme'); return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; };
-  function frame(ts) {
-    raf = requestAnimationFrame(frame);
-    if (document.hidden || ts - last < 33) return;
-    const dt = Math.min(3, (ts - last) / 16.7); last = ts; time = ts;
-    step(dt); draw();
-  }
-  function step(dt) {
-    rotA = (rotA + .2 * dt) % TW; rotB = (rotB + .34 * dt) % TW;
-    for (const o of orbits) for (const q of o.q) {
-      q.th = (q.th + o.sp * dt * (1 + .4 * Math.sin(q.th * 2))) % 6.2832;
-      q.trail.unshift(q.th); if (q.trail.length > 14) q.trail.pop();
-    }
-    if (embers.length < 46 && Math.random() < .5 * dt) {
-      const an = Math.random() * 6.283, r0 = R * (.98 + Math.random() * .05);
-      embers.push({ x: cx + Math.cos(an) * r0, y: cy + Math.sin(an) * r0, vx: Math.cos(an) * .35, vy: Math.sin(an) * .35 - .25, life: 1, s: .8 + Math.random() * 1.6 });
-    }
-    for (const e of embers) { e.x += e.vx * dt; e.y += e.vy * dt; e.vy -= .004 * dt; e.life -= .009 * dt; }
-    embers = embers.filter(e => e.life > 0);
-    for (const p of dust) { p.x += p.vx * dt; p.y += p.vy * dt; p.ph += .03 * dt; if (p.x < 0) p.x = W; if (p.x > W) p.x = 0; if (p.y < 0) p.y = H; if (p.y > H) p.y = 0; }
-  }
-  const qpos = (o, th) => { const x = o.a * Math.cos(th), y = o.b * Math.sin(th), c = Math.cos(o.tilt), s = Math.sin(o.tilt); return [cx + x * c - y * s, cy + x * s + y * c, Math.sin(th)]; };
-  function drawOrbits(front) {
-    ctx.lineWidth = 1.1;
-    for (const o of orbits) {
-      ctx.strokeStyle = front ? 'rgba(130,200,255,.38)' : 'rgba(130,200,255,.14)';
-      ctx.beginPath(); ctx.ellipse(cx, cy, o.a, o.b, o.tilt, front ? 0 : Math.PI, front ? Math.PI : 2 * Math.PI); ctx.stroke();
-      for (const q of o.q) {
-        const [x, y, z] = qpos(o, q.th);
-        if ((z > 0) !== front) continue;
-        // probability smear: fading copies along the recent path
-        q.trail.forEach((th, i) => {
-          const [tx, ty] = qpos(o, th), al = (1 - i / q.trail.length) * .35;
-          ctx.fillStyle = `rgba(150,170,255,${al})`; ctx.beginPath(); ctx.arc(tx, ty, 2.4 * (1 - i / q.trail.length) + .6, 0, 6.283); ctx.fill();
-        });
-        const gr = ctx.createRadialGradient(x, y, 0, x, y, 16);
-        gr.addColorStop(0, 'rgba(220,240,255,.95)'); gr.addColorStop(.25, 'rgba(120,190,255,.6)'); gr.addColorStop(1, 'rgba(140,110,255,0)');
-        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, 16, 0, 6.283); ctx.fill();
-      }
-    }
-  }
-  function draw() {
-    const A = dark() ? 1 : .62;
-    ctx.clearRect(0, 0, W, H);
-    ctx.globalAlpha = A;
-    // drifting dust, faint links
-    for (let i = 0; i < dust.length; i++) {
-      const p = dust[i];
-      ctx.fillStyle = `rgba(255,150,70,${.18 + .2 * Math.sin(p.ph)})`; ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 6.283); ctx.fill();
-      for (let j = i + 1; j < dust.length; j++) { const q = dust[j], dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy; if (d2 < 120 * 120) { ctx.strokeStyle = `rgba(255,140,60,${(1 - Math.sqrt(d2) / 120) * .12})`; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke(); } }
-    }
-    // heat haze around the core
-    let gr = ctx.createRadialGradient(cx, cy, R * .6, cx, cy, R * 2.3);
-    gr.addColorStop(0, 'rgba(255,110,20,.34)'); gr.addColorStop(.45, 'rgba(200,40,0,.12)'); gr.addColorStop(1, 'rgba(120,0,0,0)');
-    ctx.fillStyle = gr; ctx.fillRect(cx - R * 2.4, cy - R * 2.4, R * 4.8, R * 4.8);
-    drawOrbits(false);
-    renderGlobe();
-    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(G, cx - R, cy - R, R * 2, R * 2);
-    // glowing rim (corona)
-    gr = ctx.createRadialGradient(cx, cy, R * .86, cx, cy, R * 1.12);
-    gr.addColorStop(0, 'rgba(255,170,60,0)'); gr.addColorStop(.55, 'rgba(255,170,60,.38)'); gr.addColorStop(1, 'rgba(255,90,0,0)');
-    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(cx, cy, R * 1.12, 0, 6.283); ctx.fill();
-    // embers
-    for (const e of embers) {
-      ctx.fillStyle = `rgba(255,${120 + 100 * e.life | 0},40,${e.life * .8})`;
-      ctx.beginPath(); ctx.arc(e.x, e.y, e.s * e.life + .3, 0, 6.283); ctx.fill();
-    }
-    drawOrbits(true);
-    ctx.globalAlpha = 1;
-  }
-  function start() {
-    if (!on) return;
-    if (!cv) {
-      cv = document.createElement('canvas'); cv.id = 'qbg'; cv.setAttribute('aria-hidden', 'true'); ctx = cv.getContext('2d');
-      buildTex();
-      addEventListener('resize', () => { if (cv.isConnected) { layout(); if (reduce) draw(); } });
-    }
-    if (!cv.isConnected) document.body.prepend(cv);
-    layout();
-    cancelAnimationFrame(raf);
-    if (reduce) { step(0); draw(); } else raf = requestAnimationFrame(frame);
-  }
-  function stop() { cancelAnimationFrame(raf); raf = 0; if (cv) cv.remove(); }
-  function toggle() { on = !on; try { localStorage.setItem('tp-bg', on ? 'on' : 'off'); } catch (e) {} on ? start() : stop(); toast(on ? 'Live background on' : 'Live background off'); }
-  return { start, stop, toggle };
-})();
 
 /* ---------------- shell ---------------- */
 function renderShell() {
@@ -340,13 +156,11 @@ function renderShell() {
       <div class="brand"><div class="dot"></div><div><b>${esc(STATE.settings.panelName || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
       <nav class="nav">${nav.map(n => `<button data-v="${n[0]}"><span class="ni">${n[2]}</span><span class="nl">${n[1]}</span>${n[0] === 'tunnels' && STATE.tunnels.length ? `<em class="nb" title="running / all">${STATE.tunnels.filter(t => t.active && shownOwner(t.owner)).length}/${STATE.tunnels.filter(t => shownOwner(t.owner)).length}</em>` : ''}</button>`).join('')}</nav>
       <div class="foot">
-        <div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div>
         ${isAdmin() && (STATE.users || []).length > 1 ? `<label class="f vf" title="show the servers and tunnels of one account">👁 View<select id="ownerSel"><option value="">All accounts</option><option value="-">My own</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join('')}</select></label>` : ''}
-        ${isAdmin() ? '' : '<!--'}<a class="btn sm bkbtn" href="/api/backup" download title="Download a backup of the whole panel: servers, tunnels, settings, users (keep the file private). Restore it under Settings.">💾 Backup now</a>${isAdmin() ? '' : '-->'}
-        <button class="btn ghost sm" id="themeBtn">◐ Theme</button>
-        <button class="btn ghost sm" id="bgBtn" title="Animated background on/off">✦ Live background</button>
-        <div class="faint" style="font-size:11px;padding:0 8px">Signed in as <b>${esc(STATE.user)}</b>${isAdmin() ? ' <span class="chip own">admin</span>' : ''}${STATE.version ? `<br>version <span class="mono">${esc(STATE.version)}</span>` : ''}</div>
-        <button class="btn ghost sm" id="logout">Sign out</button>
+        ${isAdmin() ? '' : '<!--'}<a class="btn ghost sm bkbtn" href="/api/backup" download title="Download a backup of the whole panel: servers, tunnels, settings, users (keep the file private). Restore it under Settings.">💾 Backup</a>${isAdmin() ? '' : '-->'}
+        <div class="sep"></div>
+        <div class="look"><button class="btn ghost sm" id="themeBtn" title="Light / dark">◐</button><div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div></div>
+        <div class="who"><span class="faint"><b>${esc(STATE.user)}</b>${isAdmin() ? ' <span class="chip own">admin</span>' : ''}${STATE.version ? ` · <span class="mono" title="version">${esc(STATE.version)}</span>` : ''}</span><button class="btn ghost sm" id="logout">Sign out</button></div>
       </div></aside>
     <main class="main" id="work"></main></div>`);
   document.body.appendChild(shell);
@@ -357,8 +171,6 @@ function renderShell() {
   if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { setOwnerFilter(os.value); renderShell(); }; } // the sidebar's counts follow it too
   $$('[data-acc]', shell).forEach(b => b.onclick = () => setAccent(b.dataset.acc));
   paintAccent();
-  $('#bgBtn').onclick = () => quantumBg.toggle();
-  quantumBg.start();
   paintNav(); renderView();
 }
 function paintNav() { $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.v === STATE.view)); }
