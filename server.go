@@ -88,6 +88,8 @@ func (a *App) routes() http.Handler {
 	g("/api/servers/bridge", "admin", s.serverBridge) // opens a port on the panel host
 	g("/api/servers/optimize", "server", s.serverOptimize)
 	g("/api/servers/prepare", "server", s.serverPrepare)
+	// a websocket (console.go), not JSON: the shell on the server, in the browser
+	mux.HandleFunc("/api/servers/console", s.auth(s.guard("server", s.serverConsole)))
 	g("/api/tunnels", "self", s.tunnels)
 	g("/api/tunnels/save", "self", s.tunnelSave)
 	g("/api/tunnels/delete", "tunnel", s.tunnelDelete)

@@ -509,6 +509,8 @@ async function trafficTick() {
   let d; try { d = await api('/traffic'); } catch (e) { return; }
   const tun = d.tunnels || {}, srv = d.servers || {}, speed = d.speed || {};
   $$('[data-res]').forEach(el => renderRes(el, (d.res || {})[el.dataset.res]));
+  // the server list's CPU · RAM
+  $$('[data-mini]').forEach(el => { const r = (d.res || {})[el.dataset.mini]; el.textContent = r && !r.error ? `${r.cpu.toFixed(0)}% · ${(r.memTotal ? 100 * r.memUsed / r.memTotal : 0).toFixed(0)}%` : ''; });
   // the totals follow the View selector, like the cards
   const shownIds = new Set(STATE.tunnels.filter(t => shownOwner(t.owner)).map(t => t.id));
   const sum = Object.entries(tun).reduce((a, [id, x]) => (x.error || !shownIds.has(id) ? a : [a[0] + x.down, a[1] + x.up]), [0, 0]);
@@ -862,23 +864,60 @@ function ownerModal(kind, id) {
 
 /* ---------------- servers ---------------- */
 // Two clearly separate groups: Iran (entry) and foreign (exit, incl. this panel host).
+// A compact list of every server on the left; the chosen one's details, live load and
+// actions on the right (on a phone: the list, then the details under it).
 function viewServers(w) {
   w.innerHTML = topbar('Servers', 'Iran servers (users connect here) and foreign servers (traffic exits there), with their live load.');
   const ir = iranServers().filter(x => shownOwner(x.owner)), fg = foreignServers().filter(x => shownOwner(x.owner));
   const hostShown = isAdmin() && (!STATE.ownerFilter || STATE.ownerFilter === '-'); // the panel host is the admin's
-  const sec = (key, title, sub, n, add) => h(`<section class="group">
-    <div class="ghd"><div><h2>${title} <span class="count">${n}</span></h2><p>${sub}</p></div><button class="btn pri sm" data-add="${key}">${add}</button></div>
-    <div class="grid cards" data-list="${key}"></div></section>`);
-  const irSec = sec('iran', '🇮🇷 Iran servers', 'Entry side — users connect here; the tunnel forwards their traffic abroad.', ir.length, '+ Add Iran server');
-  const fgSec = sec('foreign', '🌍 Foreign servers', `Exit side — your services (xray/v2ray…) run here.${hostShown ? ' This panel host counts as one.' : ''}`, fg.length + (hostShown ? 1 : 0), '+ Add foreign server');
-  const irList = $('[data-list=iran]', irSec), fgList = $('[data-list=foreign]', fgSec);
-  if (!ir.length) irList.appendChild(h(`<div class="card empty small"><div class="big">🇮🇷</div>No Iran server yet — add one to start building tunnels.</div>`));
-  ir.forEach(x => irList.appendChild(serverCard(x)));
-  if (hostShown) fgList.appendChild(panelHostCard());
-  fg.forEach(x => fgList.appendChild(serverCard(x)));
-  w.appendChild(irSec); w.appendChild(fgSec);
+  const all = [...ir, ...fg];
+  let cur = recall('tp-srv');
+  if (!(cur === 'host' && hostShown) && !all.some(x => x.id === cur)) cur = all.length ? all[0].id : hostShown ? 'host' : '';
+  const row = (s) => {
+    const host = s === 'host', id = host ? 'host' : s.id;
+    const led = host || s.agentOnline ? 'on' : s.prepared ? 'ok2' : 'off';
+    const tip = host ? 'local' : s.agentOnline ? 'agent online' : s.prepared ? 'reachable' : 'not tested';
+    const n = host ? STATE.tunnels.filter(t => !t.foreignId).length : STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id).length;
+    const fl = host ? '🖥' : s.country ? flag(s.country) : ((s.role || 'iran') === 'iran' ? '🇮🇷' : '🌍');
+    const ip = host ? STATE.settings.localIPv4 : (s.ipv4 || s.ipv6);
+    return `<button class="srow${id === cur ? ' on' : ''}" data-pick="${id}">
+      <span class="sflag">${fl}</span>
+      <span class="sinfo"><b>${esc(host ? 'This panel host' : s.name || '(unnamed)')}${host ? '' : ' ' + ownerChip(s.owner)}</b><small class="mono">${esc(ip || '—')}</small></span>
+      <span class="smeta"><span class="led ${led}" title="${tip}"></span><small class="faint" title="tunnels">🛰 ${n}</small><small class="faint mono" data-mini="${host ? '' : s.id}" title="CPU · RAM"></small></span>
+    </button>`;
+  };
+  const grp = (key, title, items, add) => `<div class="sgrp"><div class="sgh"><span>${title} <span class="count">${items.length}</span></span><button class="btn sm" data-add="${key}">${add}</button></div>
+    ${items.length ? items.map(row).join('') : `<div class="faint sempty">${key === 'iran' ? 'No Iran server yet — add one to start building tunnels.' : 'No foreign server yet.'}</div>`}</div>`;
+  const split = h(`<div class="srvsplit">
+    <aside class="card srvlist">
+      ${all.length > 6 ? '<input class="sq" type="search" placeholder="Filter by name or IP…" data-sq>' : ''}
+      ${grp('iran', '🇮🇷 Iran · entry', ir, '+ Add')}
+      ${grp('foreign', '🌍 Foreign · exit', hostShown ? ['host', ...fg] : fg, '+ Add')}
+    </aside>
+    <div class="srvdetail" data-detail></div>
+  </div>`);
+  w.appendChild(split);
   if (isAdmin()) w.appendChild(outageSection());
-  $$('[data-add]', w).forEach(b => b.onclick = () => serverModal({ role: b.dataset.add }));
+  const det = $('[data-detail]', split);
+  const show = (id, scroll) => {
+    cur = id; remember('tp-srv', id);
+    $$('.srow', split).forEach(r => r.classList.toggle('on', r.dataset.pick === id));
+    const s = STATE.servers.find(x => x.id === id);
+    det.innerHTML = '';
+    if (id === 'host' && hostShown) det.appendChild(panelHostCard());
+    else if (s) det.appendChild(serverCard(s));
+    else det.innerHTML = '<div class="card empty"><div class="big">🖥</div><h3>No servers here yet</h3><p class="muted">Add an Iran server (entry) and a foreign server (exit), then build a tunnel between them.</p></div>';
+    bindServerActions(det);
+    if (scroll && window.innerWidth <= 860) det.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  $$('[data-pick]', split).forEach(b => b.onclick = () => show(b.dataset.pick, true));
+  $$('[data-add]', split).forEach(b => b.onclick = () => serverModal({ role: b.dataset.add }));
+  const q = $('[data-sq]', split);
+  if (q) q.oninput = () => { const v = q.value.trim().toLowerCase(); $$('.srow', split).forEach(r => r.hidden = !!v && !r.textContent.toLowerCase().includes(v)); };
+  show(cur, false);
+}
+function bindServerActions(w) {
+  $$('[data-con]', w).forEach(b => b.onclick = () => consoleModal(b.dataset.con));
   $$('[data-edit]', w).forEach(b => b.onclick = () => serverModal(STATE.servers.find(x => x.id === b.dataset.edit)));
   $$('[data-del]', w).forEach(b => b.onclick = async () => { if (!confirmInline(b, 'Click again to delete')) return; try { await api('/servers/delete', { ID: b.dataset.del }); await loadAll(); renderView(); } catch (e) { alertModal('Error', e.message); } });
   $$('[data-test]', w).forEach(b => b.onclick = () => testServer(b.dataset.test, b));
@@ -983,29 +1022,16 @@ function serverCard(s) {
   const status = s.agentOnline ? `<span class="pill on"><span class="led"></span>agent online</span>`
     : s.prepared ? `<span class="pill ok2"><span class="led"></span>reachable</span>`
     : `<span class="pill off"><span class="led"></span>not tested</span>`;
-  const n = STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id).length;
+  const tl = STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id);
   const sub = [s.city, s.os && s.arch ? `${s.os} ${s.arch}` : ''].filter(Boolean).join(' · ');
   return h(`<div class="card scard ${isIran ? 'ir' : 'fg'}">
     <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${esc(s.name || '(unnamed)')} ${ownerChip(s.owner)}</h3><small>${esc(sub || (isIran ? 'Iran · entry' : 'foreign · exit'))}</small></div></div>${status}</div>
-    <dl class="kv">
-      <dt>IPv4</dt><dd class="mono">${esc(s.ipv4 || '—')}</dd>
-      <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</dd>
-      <dt>Tunnels</dt><dd>${n}${s.provisioned ? '' : ' · <span class="faint">packages not installed yet</span>'}</dd>
-    </dl>
-    <details class="sdet"><summary>Details</summary><dl class="kv">
-      <dt>SSH</dt><dd class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</dd>
-      ${s.lastPath ? `<dt>Reached via</dt><dd>${esc(s.lastPath)}</dd>` : ''}
-      ${s.proxy ? `<dt>Proxy</dt><dd class="mono">${esc(s.proxy)}</dd>` : ''}
-      <dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not yet</span>'}</dd>
-    </dl></details>
-    <div class="nic" data-nic="${s.id}"></div>
-    <div class="res" data-res="${s.id}"></div>
     <div class="sfoot">
+      <button class="btn sm pri" data-con="${s.id}" title="A shell on this server in the browser, over the panel's own path to it">&gt;_ Console</button>
       <button class="btn sm" data-test="${s.id}">Test connection</button>
-      ${s.provisioned ? '' : `<button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">Install packages</button>`}
+      <button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">${s.provisioned ? '📦 Update packages' : 'Install packages'}</button>
       <span class="grow"></span>
       ${moreMenu([
-        s.provisioned ? { label: '📦 Update packages', attr: `data-prep="${s.id}"` } : null,
         { label: '⚡ Optimize kernel', attr: `data-optz="${s.id}"` },
         isIran ? { label: '📡 Agent install command', attr: `data-agent="${s.id}"` } : null,
         isAdmin() ? { label: '🔑 SSH bridge', attr: `data-bridge="${s.id}"` } : null,
@@ -1013,7 +1039,19 @@ function serverCard(s) {
         { label: '✎ Edit', attr: `data-edit="${s.id}"` },
         { label: '🗑 Delete', attr: `data-del="${s.id}"`, danger: true },
       ])}
-    </div><div data-paths="${s.id}"></div></div>`);
+    </div>
+    <div data-paths="${s.id}"></div>
+    <dl class="kv">
+      <dt>IPv4</dt><dd class="mono">${esc(s.ipv4 || '—')}</dd>
+      <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</dd>
+      <dt>SSH</dt><dd class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</dd>
+      ${s.lastPath ? `<dt>Reached via</dt><dd>${esc(s.lastPath)}</dd>` : ''}
+      ${s.proxy ? `<dt>Proxy</dt><dd class="mono">${esc(s.proxy)}</dd>` : ''}
+      <dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not installed yet</span>'}</dd>
+      <dt>Tunnels</dt><dd>${tl.length ? tl.map(t => `<span class="tchip${t.active ? '' : ' off'}">${esc(t.name || t.id)}</span>`).join(' ') : '<span class="faint">none</span>'}</dd>
+    </dl>
+    <div class="nic" data-nic="${s.id}"></div>
+    <div class="res" data-res="${s.id}"></div></div>`);
 }
 async function testServer(id, btn) {
   btn.disabled = true; const o = btn.textContent; btn.textContent = 'Testing… (up to ~30 s)';
@@ -1061,6 +1099,51 @@ function bridgeModal(id) {
       const box = $('#bcmd', m); box.hidden = false; box.querySelector('code').textContent = r.command + '\n# ' + r.note;
     } catch (e) { alertModal('Error', e.message); }
   };
+}
+// The web SSH console (console.go): xterm.js, loaded the first time it is opened
+let xtermLoad;
+function loadXterm() {
+  const add = (tag, attrs) => new Promise((ok, bad) => { const el = Object.assign(document.createElement(tag), attrs); el.onload = ok; el.onerror = () => bad(new Error('could not load ' + (attrs.src || attrs.href))); document.head.appendChild(el); });
+  xtermLoad = xtermLoad || Promise.all([add('link', { rel: 'stylesheet', href: '/vendor/xterm.css' }), add('script', { src: '/vendor/xterm.js' })])
+    .then(() => add('script', { src: '/vendor/addon-fit.js' }))
+    .catch(e => { xtermLoad = null; throw e; });
+  return xtermLoad;
+}
+async function consoleModal(id) {
+  const s = STATE.servers.find(x => x.id === id); if (!s) return;
+  const m = h(`<div class="modal conm"><div class="card">
+    <div class="conhd"><b>&gt;_ ${esc(s.name)}</b><span class="faint mono" style="font-size:12px">${esc(s.sshUser || 'root')}@${esc(s.ipv4 || s.sshHost || s.ipv6 || '')}</span><span class="pill off" data-cst><span class="led"></span>connecting</span><span class="grow"></span>
+      <button class="btn sm ghost" data-crec title="Open a new session">⟳ Reconnect</button><button class="btn sm ghost" data-cmax title="Full screen">⤢</button><button class="btn sm" data-cclose>Close</button></div>
+    <div class="term" data-term></div></div></div>`);
+  document.body.appendChild(m);
+  const st = $('[data-cst]', m), setSt = (cls, txt) => { st.className = 'pill ' + cls; st.innerHTML = `<span class="led"></span>${txt}`; };
+  try { await loadXterm(); } catch (e) { setSt('off', esc(e.message)); return; }
+  const dark = getComputedStyle(document.documentElement).colorScheme.includes('dark');
+  const term = new Terminal({ cursorBlink: true, fontSize: 13, fontFamily: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace', scrollback: 5000,
+    theme: dark ? { background: '#0d1117', foreground: '#d6dbe4' } : { background: '#fbfcfe', foreground: '#1b2030', cursor: '#1b2030', selectionBackground: '#c9d4f5' } });
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
+  const box = $('[data-term]', m); box.style.background = term.options.theme.background;
+  term.open(box); fit.fit(); term.focus();
+  let ws, ping;
+  const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+  const connect = () => {
+    if (ws) ws.close();
+    clearInterval(ping); setSt('off', 'connecting');
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/servers/console?id=${encodeURIComponent(id)}&c=${term.cols}&r=${term.rows}`);
+    ws.binaryType = 'arraybuffer';
+    const me = ws;
+    ws.onopen = () => { setSt('on', 'connected'); ping = setInterval(() => send({ t: 'p' }), 30000); };
+    ws.onmessage = (e) => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+    ws.onclose = () => { if (me !== ws) return; clearInterval(ping); setSt('off', 'closed'); };
+  };
+  term.onData(d => send({ t: 'i', d }));
+  term.onResize(({ cols, rows }) => send({ t: 'r', c: cols, r: rows }));
+  const ro = new ResizeObserver(() => { try { fit.fit(); } catch (e) {} }); ro.observe($('[data-term]', m));
+  const close = () => { ro.disconnect(); clearInterval(ping); if (ws) { const x = ws; ws = null; x.close(); } term.dispose(); m.remove(); };
+  $('[data-cclose]', m).onclick = close;
+  $('[data-crec]', m).onclick = () => { term.reset(); connect(); term.focus(); };
+  $('[data-cmax]', m).onclick = () => { m.classList.toggle('full'); term.focus(); };
+  connect();
 }
 function serverModal(s) {
   s = s || {};
