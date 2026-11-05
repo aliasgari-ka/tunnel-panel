@@ -509,6 +509,14 @@ optgroup option{color:var(--fg);font-weight:500}
 /* Persian (i18n.js sets dir=rtl): the layout mirrors; switches, code and numbers stay left-to-right */
 [dir=rtl] .shell{background:linear-gradient(to left,var(--panel) 231px,var(--line) 231px 232px,transparent 232px)}
 [dir=rtl] .side{border-right:0;border-left:1px solid var(--line)}
+/* phones in Persian: the menu slides in from the right and hides off the right edge (the
+   left-to-right -110% put it on screen over the page), and no desktop sidebar strip behind it */
+@media(max-width:860px){
+  .side{top:0;inset-inline-start:0}
+  [dir=rtl] .shell{background:transparent}
+  [dir=rtl] .side{transform:translateX(110%)}
+  [dir=rtl] .side.open{transform:none}
+}
 [dir=rtl] .rt-sw,[dir=rtl] .sw1,[dir=rtl] .sw2,[dir=rtl] .mono,[dir=rtl] pre,[dir=rtl] code,[dir=rtl] input,[dir=rtl] .uspark{direction:ltr}
 [dir=rtl] input{text-align:right}
 [dir=rtl] .utbl td,[dir=rtl] .ukpi b{unicode-bidi:plaintext}
