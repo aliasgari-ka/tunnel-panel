@@ -169,7 +169,7 @@ func serveFile(w http.ResponseWriter, root fs.FS, name, ct string) {
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "no-cache")
 	// cache-bust the script per build, so a new version is picked up without a hard refresh
-	b = bytes.ReplaceAll(b, []byte(`src="/app.js"`), []byte(`src="/app.js?v=`+version+`"`))
+	b = bytes.ReplaceAll(bytes.ReplaceAll(b, []byte(`src="/app.js"`), []byte(`src="/app.js?v=`+version+`"`)), []byte(`src="/i18n.js"`), []byte(`src="/i18n.js?v=`+version+`"`))
 	_, _ = w.Write(b)
 }
 

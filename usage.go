@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,14 +16,25 @@ import (
 // counters (traffic.go) are read once even when no one is looking, and the increase since
 // the last read goes into the current hour's bucket and the current (Tehran) day's. A
 // counter that went down was restarted (tunnel restart, reboot): its whole new value is the
-// increase. Hours are kept 2 days (the 1-day view), days usageKeepDays (7 / 30 day views);
-// all of it is saved to usage.json, so a panel restart loses at most one tick.
+// increase. Hours are kept usageKeep (hour-by-hour tables), days usageKeepDays; all of it is
+// saved to usage.json, so a panel restart loses at most one tick.
+//
+// What costs is what an Iran server receives (Iran's upload is free). Per tunnel that is its
+// users' upload plus what its foreign server sent the Iran server (the peer counters,
+// traffic.go peerScript) — tunnels of one Iran server to two foreign servers each get their
+// own; tunnels sharing one Iran ⇄ foreign pair split it by their users' download.
 
 const (
 	usageTick     = 5 * time.Minute
-	usageKeep     = 48  // hours
-	usageKeepDays = 400 // days
+	usageKeep     = 35 * 24 // hours
+	usageKeepDays = 400     // days
 )
+
+// hours start at Tehran's full hours (it is UTC+3:30, so not at UTC's)
+func hourStart(t time.Time) int64 {
+	y, m, d := t.In(tehran).Date()
+	return time.Date(y, m, d, t.In(tehran).Hour(), 0, 0, 0, tehran).Unix()
+}
 
 // days start at Tehran's midnight (tehran: servermon.go)
 func dayStart(t time.Time) int64 {
@@ -39,7 +51,8 @@ type UsageBytes struct {
 type usageBucket struct {
 	Hour    int64                  `json:"h"` // unix, start of the hour (or day)
 	Tunnels map[string]*UsageBytes `json:"t"`
-	Servers map[string]*UsageBytes `json:"s"` // "" = the panel host
+	Servers map[string]*UsageBytes `json:"s"`           // "" = the panel host
+	Peers   map[string]*UsageBytes `json:"p,omitempty"` // "<iran id>|<foreign id>": Down = Iran received from it
 }
 
 type usageLast struct {
@@ -100,7 +113,8 @@ func (u *usageLog) saveLocked() {
 }
 
 // add records one counter read into the hour and the day; the first read of a counter only
-// sets its baseline.
+// sets its baseline. A peer counter ("p") is one per foreign address, kept under
+// "<iran>|<foreign>" in the buckets.
 func (u *usageLog) addLocked(now time.Time, kind, id string, d, up uint64) {
 	key := kind + ":" + id
 	l := u.Last[key]
@@ -116,11 +130,20 @@ func (u *usageLog) addLocked(now time.Time, kind, id string, d, up uint64) {
 		du = up
 	}
 	for _, b := range []*usageBucket{u.hourLocked(now), u.dayLocked(now)} {
-		m := b.Tunnels
-		if kind == "s" {
+		m, bid := b.Tunnels, id
+		switch kind {
+		case "s":
 			m = b.Servers
+		case "p":
+			if b.Peers == nil {
+				b.Peers = map[string]*UsageBytes{}
+			}
+			m = b.Peers
+			if i := strings.LastIndex(id, "|"); i > 0 {
+				bid = id[:i]
+			}
 		}
-		addBytes(m, id, dd, du)
+		addBytes(m, bid, dd, du)
 	}
 }
 
@@ -137,7 +160,7 @@ func bucketIn(list *[]*usageBucket, at int64, keep int) *usageBucket {
 }
 
 func (u *usageLog) hourLocked(now time.Time) *usageBucket {
-	return bucketIn(&u.Buckets, now.Truncate(time.Hour).Unix(), usageKeep)
+	return bucketIn(&u.Buckets, hourStart(now), usageKeep)
 }
 
 func (u *usageLog) dayLocked(now time.Time) *usageBucket {
@@ -176,6 +199,11 @@ func (a *App) usageRecord(start time.Time) {
 			reads = append(reads, rd{"s", id, s.TotalDown, s.TotalUp})
 		}
 	}
+	for id, s := range tm.peers {
+		if s.Error == "" && s.Updated >= fresh {
+			reads = append(reads, rd{"p", id, s.TotalDown, s.TotalUp})
+		}
+	}
 	tm.mu.Unlock()
 
 	u := a.usage
@@ -191,21 +219,88 @@ func (a *App) usageRecord(start time.Time) {
 	u.saveLocked()
 }
 
-// UsageSum is one tunnel's or server's bytes over the asked window, with its series.
-type UsageSum struct {
-	ID     string   `json:"id"`
-	Down   uint64   `json:"down"`
-	Up     uint64   `json:"up"`
-	Series []uint64 `json:"series"` // down+up per step, oldest first
+// UsageStep is one hour's (or day's) bytes: users' download / upload, and Paid = what the
+// Iran server received for it (the tunnels only).
+type UsageStep struct {
+	Down uint64 `json:"d"`
+	Up   uint64 `json:"u"`
+	Paid uint64 `json:"p,omitempty"`
 }
 
-// usageGet: GET /api/usage?days=1|7|30 — bytes per tunnel and per server over the last
-// days: 1 day hour by hour (the last 24 hours), more day by day (Tehran days, today included).
+// UsageSum is one tunnel's or server's bytes over the asked window, with its steps. For a
+// server Down/Up are what its network card received / sent; Paid is unused.
+type UsageSum struct {
+	ID     string      `json:"id"`
+	Down   uint64      `json:"down"`
+	Up     uint64      `json:"up"`
+	Paid   uint64      `json:"paid,omitempty"`
+	Est    bool        `json:"est,omitempty"` // some of Paid is estimated (hours before the peer counters)
+	Series []UsageStep `json:"series"`
+}
+
+// usagePaid splits one bucket's paid bytes between the tunnels on it. pairs: tunnel id ->
+// [iran id, foreign id] of the tunnels the asker sees and the ones that share their servers.
+// With peer counters for the Iran server, a tunnel pays its users' upload plus its share
+// (by users' download) of what its foreign server sent; before them (est) its Iran server's
+// whole intake is split by the users' total.
+func usagePaid(b *usageBucket, pairs map[string][2]string) (paid map[string]uint64, est map[string]bool) {
+	paid, est = map[string]uint64{}, map[string]bool{}
+	hasPeer := map[string]bool{}
+	for k := range b.Peers {
+		hasPeer[strings.SplitN(k, "|", 2)[0]] = true
+	}
+	pairDown, srvTot := map[string]uint64{}, map[string]uint64{}
+	pairN, srvN := map[string]int{}, map[string]int{}
+	for id, p := range pairs {
+		x := b.Tunnels[id]
+		if x == nil {
+			x = &UsageBytes{}
+		}
+		pk := p[0] + "|" + p[1]
+		pairDown[pk] += x.Down
+		pairN[pk]++
+		srvTot[p[0]] += x.Down + x.Up
+		srvN[p[0]]++
+	}
+	share := func(total, part, sum uint64, n int) uint64 {
+		if sum == 0 {
+			return total / uint64(n)
+		}
+		return uint64(float64(total) * float64(part) / float64(sum))
+	}
+	for id, p := range pairs {
+		x := b.Tunnels[id]
+		if x == nil {
+			x = &UsageBytes{}
+		}
+		if hasPeer[p[0]] {
+			pk := p[0] + "|" + p[1]
+			var from uint64
+			if pr := b.Peers[pk]; pr != nil {
+				from = share(pr.Down, x.Down, pairDown[pk], pairN[pk])
+			}
+			paid[id] = x.Up + from
+			continue
+		}
+		if nic := b.Servers[p[0]]; nic != nil && nic.Down > 0 {
+			paid[id] = share(nic.Down, x.Down+x.Up, srvTot[p[0]], srvN[p[0]])
+			est[id] = true
+		}
+	}
+	return paid, est
+}
+
+// usageGet: GET /api/usage?days=1|7|30[&hourly=1] or ?date=<unix, a Tehran midnight> —
+// bytes per tunnel and per server. days=1 and date are hour by hour (the last 24 hours /
+// that day); more days are day by day (Tehran days, today included) unless hourly=1
+// (hours are kept usageKeep).
 func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
-	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	q := r.URL.Query()
+	days, _ := strconv.Atoi(q.Get("days"))
 	if days <= 0 || days > usageKeepDays {
 		days = 1
 	}
+	date, _ := strconv.ParseInt(q.Get("date"), 10, 64)
 	user, admin := s.who(r)
 	u := s.app.usage
 	if u == nil {
@@ -213,25 +308,36 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
-	n, step, from := 24, int64(3600), now.Truncate(time.Hour).Add(-23*time.Hour).Unix()
-	if days > 1 {
+	n, step, from := 24, int64(3600), hourStart(now)-23*3600
+	switch {
+	case date > 0:
+		from = dayStart(time.Unix(date, 0))
+		days = 1
+	case days > 1 && q.Get("hourly") == "1" && days*24 <= usageKeep:
+		n, from = days*24, hourStart(now)-int64(days*24-1)*3600
+	case days > 1:
 		n, step, from = days, 86400, dayStart(now)-int64(days-1)*86400
 	}
+	// the tunnels' servers, as they are now (a tunnel's whole history is counted on them)
+	pairs := map[string][2]string{}
+	s.app.store.View(func(st *State) {
+		for _, t := range st.Tunnels {
+			pairs[t.ID] = [2]string{t.ServerID, t.ForeignID}
+		}
+	})
 	tun, srv := map[string]*UsageSum{}, map[string]*UsageSum{}
-	put := func(m map[string]*UsageSum, id string, i int, x *UsageBytes) {
+	get := func(m map[string]*UsageSum, id string) *UsageSum {
 		v := m[id]
 		if v == nil {
-			v = &UsageSum{ID: id, Series: make([]uint64, n)}
+			v = &UsageSum{ID: id, Series: make([]UsageStep, n)}
 			m[id] = v
 		}
-		v.Down += x.Down
-		v.Up += x.Up
-		v.Series[i] += x.Down + x.Up
+		return v
 	}
 	u.mu.Lock()
 	started := u.Started
 	list := u.Buckets
-	if days > 1 {
+	if step == 86400 {
 		list = u.Days
 	}
 	for _, b := range list {
@@ -242,14 +348,28 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 		if i >= n {
 			continue
 		}
+		paid, est := usagePaid(b, pairs)
 		for id, x := range b.Tunnels {
-			if s.tunnelVisible(user, admin, id) {
-				put(tun, id, i, x)
+			if !s.tunnelVisible(user, admin, id) {
+				continue
 			}
+			v := get(tun, id)
+			v.Down += x.Down
+			v.Up += x.Up
+			v.Paid += paid[id]
+			v.Est = v.Est || est[id]
+			st := &v.Series[i]
+			st.Down += x.Down
+			st.Up += x.Up
+			st.Paid += paid[id]
 		}
 		for id, x := range b.Servers {
 			if admin || (id != "" && s.serverVisible(user, admin, id)) {
-				put(srv, id, i, x)
+				v := get(srv, id)
+				v.Down += x.Down
+				v.Up += x.Up
+				v.Series[i].Down += x.Down
+				v.Series[i].Up += x.Up
 			}
 		}
 	}
@@ -262,6 +382,6 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(out, func(i, j int) bool { return out[i].Down+out[i].Up > out[j].Down+out[j].Up })
 		return out
 	}
-	writeJSON(w, map[string]any{"days": days, "from": from, "step": step, "started": started,
+	writeJSON(w, map[string]any{"days": days, "from": from, "step": step, "n": n, "started": started,
 		"tunnels": sorted(tun), "servers": sorted(srv)})
 }
