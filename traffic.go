@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +21,9 @@ import (
 //     (--dport, users -> Iran = upload). The chains only count (no target) and are created
 //     on first read, so tunnels deployed before this feature are covered too.
 //   - each server's default-route NIC, for the whole-server picture.
+//   - on an Iran server, the bytes to and from each foreign server's address (peerScript):
+//     what it receives from each foreign server is what each of its routes costs, so one
+//     Iran server with tunnels to two foreign servers is split between them.
 
 const (
 	trafficTick = 2 * time.Second
@@ -64,6 +69,7 @@ type trafficMon struct {
 	mu      sync.Mutex
 	tunnels map[string]*TrafficStat
 	servers map[string]*TrafficStat
+	peers   map[string]*TrafficStat // "<iran id>|<foreign id>|<foreign ip>": Down = received from it
 	wanted  time.Time
 	running bool
 	busy    map[string]bool       // server id -> a read is in flight
@@ -72,7 +78,7 @@ type trafficMon struct {
 }
 
 func newTrafficMon() *trafficMon {
-	return &trafficMon{tunnels: map[string]*TrafficStat{}, servers: map[string]*TrafficStat{},
+	return &trafficMon{tunnels: map[string]*TrafficStat{}, servers: map[string]*TrafficStat{}, peers: map[string]*TrafficStat{},
 		busy: map[string]bool{}, backoff: map[string]time.Time{}}
 }
 
@@ -206,10 +212,25 @@ done
 func (a *App) trafficCollect() {
 	tm := a.traffic
 	byServer := map[string][]*Tunnel{}
+	peers := map[string]map[string]string{} // iran id -> foreign ip -> foreign id
 	a.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
 			if t.Active != "" {
 				byServer[t.ServerID] = append(byServer[t.ServerID], t)
+				ips := []string{st.Settings.LocalIPv4, st.Settings.LocalIPv6}
+				if f := a.store.serverLocked(st, t.ForeignID); t.ForeignID != "" && f != nil {
+					ips = []string{f.IPv4, f.IPv6}
+				} else if t.ForeignID != "" {
+					continue
+				}
+				for _, ip := range ips {
+					if net.ParseIP(ip) != nil {
+						if peers[t.ServerID] == nil {
+							peers[t.ServerID] = map[string]string{}
+						}
+						peers[t.ServerID][net.ParseIP(ip).String()] = t.ForeignID
+					}
+				}
 			}
 		}
 		// every server, for its NIC and resources (unreachable ones back off)
@@ -241,6 +262,7 @@ func (a *App) trafficCollect() {
 		var sb strings.Builder
 		sb.WriteString(nicRead)
 		sb.WriteString(a.resScript(id))
+		sb.WriteString(peerScript(peers[id]))
 		for _, t := range ts {
 			if t.HotStandby && len(t.Paths) > 0 {
 				sb.WriteString(hsAcct(t))
@@ -257,6 +279,7 @@ func (a *App) trafficCollect() {
 			return
 		}
 		a.trafficParse(id, ts, out)
+		a.peerParse(id, peers[id], out)
 		a.resParse(id, out)
 	}
 	tm.mu.Lock()
@@ -284,8 +307,85 @@ func (a *App) trafficCollect() {
 			delete(tm.tunnels, id)
 		}
 	}
+	for k := range tm.peers {
+		f := strings.SplitN(k, "|", 3)
+		if fid, ok := peers[f[0]][f[2]]; !ok || fid != f[1] {
+			delete(tm.peers, k)
+		}
+	}
 	tm.mu.Unlock()
 	wg.Wait()
+}
+
+// peerScript counts what an Iran server exchanges with each foreign address: mangle chains
+// TPPR (PREROUTING, -s ip: received) and TPPT (POSTROUTING, -d ip: sent) with one rule per
+// address, no target (they only count). Rules are only ever added, so the counters run on
+// across reads; an address no longer used keeps a harmless rule. Prints "P <ip> <rx> <tx>".
+func peerScript(ips map[string]string) string {
+	if len(ips) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`tpp_chain() {
+  $1 -w -t mangle -nL TPPR >/dev/null 2>&1 || $1 -w -t mangle -N TPPR
+  $1 -w -t mangle -nL TPPT >/dev/null 2>&1 || $1 -w -t mangle -N TPPT
+  $1 -w -t mangle -C PREROUTING -j TPPR 2>/dev/null || $1 -w -t mangle -I PREROUTING -j TPPR
+  $1 -w -t mangle -C POSTROUTING -j TPPT 2>/dev/null || $1 -w -t mangle -I POSTROUTING -j TPPT
+}
+tpp() { # ipt ip
+  $1 -w -t mangle -C TPPR -s $2 2>/dev/null || $1 -w -t mangle -A TPPR -s $2
+  $1 -w -t mangle -C TPPT -d $2 2>/dev/null || $1 -w -t mangle -A TPPT -d $2
+  rx=$($1 -w -t mangle -vS TPPR 2>/dev/null | awk -v ip="$2" '$3=="-s" && ($4==ip"/32" || $4==ip"/128") {print $NF; exit}')
+  tx=$($1 -w -t mangle -vS TPPT 2>/dev/null | awk -v ip="$2" '$3=="-d" && ($4==ip"/32" || $4==ip"/128") {print $NF; exit}')
+  echo "P $2 ${rx:--} ${tx:--}"
+}
+`)
+	keys := make([]string, 0, len(ips))
+	for ip := range ips {
+		keys = append(keys, ip)
+	}
+	sort.Strings(keys)
+	v4, v6 := false, false
+	for _, ip := range keys {
+		if strings.Contains(ip, ":") {
+			v6 = true
+		} else {
+			v4 = true
+		}
+	}
+	if v4 {
+		b.WriteString("command -v iptables >/dev/null 2>&1 && tpp_chain iptables\n")
+	}
+	if v6 {
+		b.WriteString("command -v ip6tables >/dev/null 2>&1 && tpp_chain ip6tables\n")
+	}
+	for _, ip := range keys {
+		ipt := "iptables"
+		if strings.Contains(ip, ":") {
+			ipt = "ip6tables"
+		}
+		fmt.Fprintf(&b, "command -v %s >/dev/null 2>&1 && tpp %s %s\n", ipt, ipt, ip)
+	}
+	return b.String()
+}
+
+// peerParse records the "P" lines of an Iran server's read.
+func (a *App) peerParse(serverID string, ips map[string]string, out string) {
+	tm := a.traffic
+	now := time.Now()
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) != 4 || f[0] != "P" {
+			continue
+		}
+		fid, ok := ips[f[1]]
+		if !ok {
+			continue
+		}
+		tm.update(tm.stat(tm.peers, serverID+"|"+fid+"|"+f[1]), "peer", f[2], f[3], now)
+	}
 }
 
 // quickHost returns a host without the store writes reach() does: agent, then a cached SSH client.

@@ -315,6 +315,8 @@ details.more .pop{position:absolute;inset-inline-end:0;top:calc(100% + 4px);z-in
 .ulegend{display:flex;flex-direction:column;gap:5px;font-size:12.5px}
 .uscroll{overflow-x:auto}.utbl td{font-variant-numeric:tabular-nums;white-space:nowrap}
 .seg{display:flex;gap:6px}.uspark.w i{width:2px}
+.urow{cursor:pointer}.urow:hover td{background:var(--hover,rgba(127,127,127,.08))}.utbl tfoot td{border-top:2px solid var(--line)}.ucoef{color:var(--good)}.ucoef.warn{color:var(--warn)}.ucoef.bad{color:var(--crit)}.ukpi .paid{border-color:var(--accent)}
+.ubar{display:inline-block;width:110px;height:8px;border-radius:4px;background:var(--line);overflow:hidden;vertical-align:middle}.ubar i{display:block;height:100%;background:var(--accent)}.uhours{max-height:560px;overflow-y:auto}
 .uspark{display:inline-flex;align-items:flex-end;gap:1px;height:22px}.uspark i{display:block;width:3px;background:var(--accent);border-radius:1px;opacity:.75}
 .tbl th{text-align:start;color:var(--faint);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px;border-bottom:1px solid var(--line)}
 .tbl td{padding:7px 8px;border-bottom:1px solid var(--line)}
@@ -475,8 +477,15 @@ optgroup option{color:var(--fg);font-weight:500}
   .igp .mat .tbl td select{width:100%}
   .igp .svcs{grid-template-columns:1fr 1fr 1fr}.igp .svc{padding:6px 7px}
 }
+/* Persian (i18n.js sets dir=rtl): the layout mirrors; switches, code and numbers stay left-to-right */
+[dir=rtl] .shell{background:linear-gradient(to left,var(--panel) 231px,var(--line) 231px 232px,transparent 232px)}
+[dir=rtl] .side{border-right:0;border-left:1px solid var(--line)}
+[dir=rtl] .rt-sw,[dir=rtl] .sw1,[dir=rtl] .sw2,[dir=rtl] .mono,[dir=rtl] pre,[dir=rtl] code,[dir=rtl] input,[dir=rtl] .uspark{direction:ltr}
+[dir=rtl] input{text-align:right}
+[dir=rtl] .utbl td,[dir=rtl] .ukpi b{unicode-bidi:plaintext}
 </style>
 </head>
 <body></body>
+<script src="/i18n.js"></script>
 <script src="/app.js"></script>
 </html>

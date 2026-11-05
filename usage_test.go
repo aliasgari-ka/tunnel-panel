@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,5 +59,49 @@ func TestUsageFoldHours(t *testing.T) {
 	got := loadUsage()
 	if len(got.Days) != 1 || got.Days[0].Tunnels["x"].Down != 12 || got.Days[0].Tunnels["x"].Up != 3 {
 		t.Fatalf("days %+v", got.Days)
+	}
+}
+
+// TestUsagePaid: an Iran server with tunnels to two foreign servers pays each its own peer
+// intake plus its users' upload; two tunnels on one pair split it by download; a bucket
+// from before the peer counters splits the Iran card's intake (estimated).
+func TestUsagePaid(t *testing.T) {
+	pairs := map[string][2]string{"a": {"ir", "us"}, "b": {"ir", "fr"}, "c": {"ir", "fr"}}
+	b := &usageBucket{
+		Tunnels: map[string]*UsageBytes{"a": {Down: 1000, Up: 100}, "b": {Down: 300, Up: 10}, "c": {Down: 100, Up: 20}},
+		Servers: map[string]*UsageBytes{"ir": {Down: 2000}},
+		Peers:   map[string]*UsageBytes{"ir|us": {Down: 1100}, "ir|fr": {Down: 400}},
+	}
+	paid, est := usagePaid(b, pairs)
+	if paid["a"] != 1200 || paid["b"] != 310 || paid["c"] != 120 || len(est) != 0 {
+		t.Fatalf("paid %v est %v", paid, est)
+	}
+	b.Peers = nil
+	paid, est = usagePaid(b, pairs)
+	if !est["a"] || paid["a"]+paid["b"]+paid["c"] < 1990 || paid["a"] < paid["b"] {
+		t.Fatalf("fallback paid %v est %v", paid, est)
+	}
+	// peer reads are kept per address and summed per pair
+	u := &usageLog{Last: map[string]*usageLast{}}
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, tehran)
+	for _, ip := range []string{"1.1.1.1", "2a01::1"} {
+		u.addLocked(now, "p", "ir|us|"+ip, 100, 10)
+		u.addLocked(now, "p", "ir|us|"+ip, 150, 20)
+	}
+	if got := u.Buckets[0].Peers["ir|us"]; got == nil || got.Down != 100 || got.Up != 20 {
+		t.Fatalf("peer bucket %+v", got)
+	}
+}
+
+// TestPeerScript: one rule per foreign address, in the right iptables.
+func TestPeerScript(t *testing.T) {
+	s := peerScript(map[string]string{"1.2.3.4": "us", "2a01::1": "us"})
+	for _, want := range []string{"tpp iptables 1.2.3.4", "tpp ip6tables 2a01::1", "tpp_chain iptables", "tpp_chain ip6tables"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in\n%s", want, s)
+		}
+	}
+	if peerScript(nil) != "" {
+		t.Fatal("empty")
 	}
 }
