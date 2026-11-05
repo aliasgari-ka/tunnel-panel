@@ -396,6 +396,13 @@ label.vf{padding:0 8px;font-size:11.5px}label.vf select{background:var(--panel-2
 .sw{width:16px;height:16px;border-radius:50%;border:2px solid var(--panel);background:var(--c,var(--accent));box-shadow:0 0 0 1px var(--line);cursor:pointer;padding:0}
 .sw[data-acc=""]{background:conic-gradient(from 45deg,var(--panel-2) 0 50%,var(--fg) 0 100%)}
 .sw.on,.sw:hover{box-shadow:0 0 0 2px var(--accent)}
+.set1{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px;border-radius:10px;background:var(--panel-2)}.set1 b{font-size:13.5px}
+.sw1{position:relative;display:inline-block;width:42px;height:24px;flex:none;cursor:pointer}
+.sw1 input{position:absolute;opacity:0;width:0;height:0}
+.sw1 i{position:absolute;inset:0;border-radius:99px;background:color-mix(in srgb,var(--faint) 45%,transparent);transition:background .15s}
+.sw1 i::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.sw1 input:checked+i{background:var(--good)}.sw1 input:checked+i::after{transform:translateX(18px)}
+.sw1 input:focus-visible+i{outline:2px solid var(--accent);outline-offset:2px}
 .who{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 8px;font-size:11.5px}.who>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.who .btn{white-space:nowrap;flex:none;padding:4px 8px}
 .modal .card{border-radius:16px;box-shadow:var(--shadow-up)}
 .toast{border-radius:999px}
