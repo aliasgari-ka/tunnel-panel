@@ -73,7 +73,7 @@ func (a *App) routes() http.Handler {
 		if !reads[path] {
 			h = postOnly(h)
 		}
-		mux.HandleFunc(path, s.auth(s.json(s.guard(kind, h))))
+		mux.HandleFunc(path, slowLog(s.auth(s.json(s.guard(kind, h)))))
 	}
 	g("/api/me", "self", s.me)
 	g("/api/password", "self", s.password)
@@ -1193,7 +1193,7 @@ func (s *Server2) tunnelStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
-	ir, kh, link := s.app.Health(ctx, t)
+	ir, kh, link := s.app.recentHealth(ctx, t)
 	writeJSON(w, map[string]string{"active": t.Active, "iran": ir, "foreign": kh, "link": link})
 }
 

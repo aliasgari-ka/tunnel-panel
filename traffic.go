@@ -22,7 +22,9 @@ import (
 
 const (
 	trafficTick = 2 * time.Second
-	trafficIdle = 20 * time.Second // stop polling this long after the last viewer
+	// stop polling this long after the last viewer; long enough that a reload or a quick
+	// return finds the rates already there instead of waiting for two fresh samples
+	trafficIdle = 2 * time.Minute
 	trafficHist = 90               // points kept (3 min at 2 s)
 )
 

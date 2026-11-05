@@ -189,9 +189,11 @@ type App struct {
 
 	srvMon      *serverMon // the SSH-port server monitor (nil until it runs)
 	healthMu    sync.Mutex
-	hsViews     map[string]*hsView   // hot-standby switchers' state, as last read
-	healthCache map[string]string    // tunnel id -> "" healthy / reason, from the monitor
-	foNext      map[string]time.Time // tunnel id -> next automatic failover allowed
+	hsViews     map[string]*hsView     // hot-standby switchers' state, as last read
+	healthCache map[string]string      // tunnel id -> "" healthy / reason, from the monitor
+	foNext      map[string]time.Time   // tunnel id -> next automatic failover allowed
+	healthLast  map[string]*healthSnap // tunnel id -> last Health result (statuscache.go)
+	healthBusy  map[string]bool        // tunnel id -> a background Health check is running
 
 	traffic  *trafficMon
 	usage    *usageLog // bytes per hour (usage.go)
@@ -604,6 +606,16 @@ func (a *App) Status(ctx context.Context, t *Tunnel) (ir, kh string) {
 // address; reverse/port-forward methods look for the peer's established connection on
 // the Iran tunnel port.
 func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
+	var mid string
+	a.store.View(func(*State) { mid = t.Active })
+	ir, kh, link = a.healthLive(ctx, t)
+	if ctx.Err() == nil { // a cut-off check says nothing about the tunnel
+		a.keepHealth(t.ID, mid, ir, kh, link)
+	}
+	return ir, kh, link
+}
+
+func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	cmd := "systemctl is-active " + unitName(t) + " 2>/dev/null || true"
 	if kHost, _, err := a.foreignHost(ctx, t, nil); err == nil {
 		out, _ := kHost.Run(ctx, cmd, nil)
