@@ -127,9 +127,11 @@ wait:
 
 	var res TestResult
 	var okHost Host
+	pending := 0
 	for i, c := range cands {
 		r := got[i]
 		if r == nil {
+			pending++
 			res.Paths = append(res.Paths, PathResult{Path: c.name, Info: fmt.Sprintf("no answer within %d s", int(testWait/time.Second))})
 			continue
 		}
@@ -137,6 +139,25 @@ wait:
 			okHost, res.Arch, res.OS = c.h, r.arch, r.os
 		}
 		res.Paths = append(res.Paths, r.pr)
+	}
+	// the probes' connections are the test's own: none may stay open (each one left behind
+	// was an sshd session on the server — and on the jump host — for as long as the panel ran)
+	closeHost := func(h Host) {
+		if c, ok := h.(interface{ Close() }); ok {
+			c.Close()
+		}
+	}
+	for i, c := range cands {
+		if got[i] != nil && c.h != okHost {
+			closeHost(c.h)
+		}
+	}
+	if pending > 0 {
+		go func() {
+			for n := 0; n < pending; n++ {
+				closeHost(cands[(<-ch).i].h)
+			}
+		}()
 	}
 
 	for _, p := range res.Paths {
@@ -160,6 +181,7 @@ wait:
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			defer closeHost(okHost)
 			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 			defer cancel()
 			a.autoSetup(sctx, srv, okHost)
