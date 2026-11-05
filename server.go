@@ -520,6 +520,10 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if in.TelegramChannel = strings.TrimSpace(in.TelegramChannel); in.TelegramChannel != "" && !tgChanRe.MatchString(in.TelegramChannel) {
+		httpErr(w, 400, "Alert channel: a chat id like -1001234567890 or @channelname (blank = the admin chat)")
+		return
+	}
 	if in.LocalIPv4, err = normIP(in.LocalIPv4, false); err != nil {
 		httpErr(w, 400, "IPv4: "+err.Error())
 		return

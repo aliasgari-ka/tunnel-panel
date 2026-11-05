@@ -107,7 +107,7 @@ func main() {
 	app.syncAgentTokens()
 	app.agents.onChange = func(serverID string, online bool) {
 		if online {
-			app.push("🟢 agent online: " + serverName(app, serverID))
+			app.pushCh("🟢 agent online: " + serverName(app, serverID))
 			if srv := app.store.Server(serverID); srv != nil {
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -135,6 +135,7 @@ func main() {
 	go app.repairAfterUpdate()
 	go app.memNightly()
 	go app.igImport()
+	go app.igAlertLoop()
 	app.usage = loadUsage()
 	go app.usageLoop()
 

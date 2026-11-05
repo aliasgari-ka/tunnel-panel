@@ -129,7 +129,7 @@ func (a *App) runCleanups(id string) {
 			return // didn't get through: the next time the server answers
 		}
 		a.dropCleanup(id, c.TunnelID)
-		a.push(fmt.Sprintf("🧹 %s: removed what tunnel %q left there while the server was unreachable (since %s Tehran)", srv.Name, c.Name, clock(time.Unix(c.Since, 0))))
+		a.pushCh(fmt.Sprintf("🧹 %s: removed what tunnel %q left there while the server was unreachable (since %s Tehran)", srv.Name, c.Name, clock(time.Unix(c.Since, 0))))
 	}
 }
 

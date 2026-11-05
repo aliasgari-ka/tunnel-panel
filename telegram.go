@@ -145,7 +145,7 @@ func (b *Bot) Run() {
 		default:
 		}
 		res, err := b.api("getUpdates", url.Values{"offset": {fmt.Sprint(offset)}, "timeout": {"50"},
-			"allowed_updates": {`["message","callback_query"]`}})
+			"allowed_updates": {`["message","callback_query","my_chat_member"]`}})
 		if err != nil {
 			time.Sleep(3 * time.Second)
 			continue
@@ -168,6 +168,7 @@ func (b *Bot) Run() {
 					} `json:"chat"`
 				} `json:"message"`
 			} `json:"callback_query"`
+			Member *chatMember `json:"my_chat_member"`
 		}
 		if err := json.Unmarshal(res, &updates); err != nil {
 			continue
@@ -181,8 +182,47 @@ func (b *Bot) Run() {
 				go b.onText(fmt.Sprint(u.Message.Chat.ID), strings.TrimSpace(u.Message.Text))
 			case u.Callback != nil:
 				go b.onCallback(fmt.Sprint(u.Callback.Msg.Chat.ID), u.Callback.Msg.ID, u.Callback.ID, u.Callback.Data)
+			case u.Member != nil:
+				go b.onMember(u.Member)
 			}
 		}
+	}
+}
+
+type chatMember struct {
+	Chat struct {
+		ID    int64  `json:"id"`
+		Type  string `json:"type"`
+		Title string `json:"title"`
+	} `json:"chat"`
+	From struct {
+		ID int64 `json:"id"`
+	} `json:"from"`
+	New struct {
+		Status string `json:"status"`
+	} `json:"new_chat_member"`
+}
+
+// onMember: an admin made the admin's bot an administrator of a channel (or group) -> it
+// becomes the alert channel, unless one is set already (then the admin is told its id).
+func (b *Bot) onMember(m *chatMember) {
+	if b.owner != "" || !b.authed(fmt.Sprint(m.From.ID)) || m.Chat.Type == "private" {
+		return
+	}
+	id := fmt.Sprint(m.Chat.ID)
+	cur := strings.TrimSpace(b.app.settings().TelegramChannel)
+	switch {
+	case m.New.Status != "administrator":
+		if cur == id && (m.New.Status == "left" || m.New.Status == "kicked") {
+			_ = b.app.store.Update(func(st *State) error { st.Settings.TelegramChannel = ""; return nil })
+			b.push(fmt.Sprintf("📣 The bot left %q — tunnel and server alerts come here again.", m.Chat.Title))
+		}
+	case cur == "" || cur == id:
+		_ = b.app.store.Update(func(st *State) error { st.Settings.TelegramChannel = id; return nil })
+		b.send(id, esc("📣 Tunnel and server alerts of the panel come to this channel from now on."))
+		b.push(fmt.Sprintf("📣 Alert channel set: %q (%s). Tunnel and server up/down alerts go there now; WARP / Instagram / Gemini alerts stay here, only the important ones.", m.Chat.Title, id))
+	default:
+		b.push(fmt.Sprintf("📣 The bot is an admin of %q (%s), but the alert channel is %s. To use this one: Settings → Alert channel → %s", m.Chat.Title, id, cur, id))
 	}
 }
 

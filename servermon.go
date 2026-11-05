@@ -271,7 +271,7 @@ func (a *App) transition(m *serverMon, id, kind, name string, down bool, at time
 	now := time.Now()
 	a.endOutage(oid, now)
 	icon := map[string]string{"server": "🟢 Server reachable again", "panel": "🟢 Panel host back online", "ssh-v4": "🟢 SSH over IPv4 back", "ssh-v6": "🟢 SSH over IPv6 back"}[kind]
-	a.push(fmt.Sprintf("%s: %s\ndown %s\n%s → %s (Tehran)", icon, name, shortDur(now.Sub(since)), clock(since), clock(now)))
+	a.pushCh(fmt.Sprintf("%s: %s\ndown %s\n%s → %s (Tehran)", icon, name, shortDur(now.Sub(since)), clock(since), clock(now)))
 }
 
 // tunnelCause says, for a tunnel that just went down, whether its servers answered.
