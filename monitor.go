@@ -225,6 +225,7 @@ func (a *App) checkHealth(ctx context.Context, t *Tunnel) string {
 func (a *App) clearHealth(id string) {
 	a.healthMu.Lock()
 	delete(a.healthCache, id)
+	delete(a.healthLast, id)
 	a.healthMu.Unlock()
 }
 
