@@ -24,6 +24,10 @@ func main() {
 		return
 	}
 	// set-domain: tunnel-panel set-domain panel.example.com[,other] — HTTPS on those domains
+	if len(os.Args) > 1 && os.Args[1] == "gemini-check" {
+		gemCheckCmd(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "set-domain" {
 		if err := setDomainCmd(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -136,6 +140,7 @@ func main() {
 	go app.memNightly()
 	go app.igImport()
 	go app.igAlertLoop()
+	go app.gemLoop()
 	app.usage = loadUsage()
 	go app.usageLoop()
 
