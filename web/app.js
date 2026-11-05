@@ -532,7 +532,7 @@ document.addEventListener('toggle', (e) => {
 }, true);
 function renderRes(el, r) {
   if (!r) { el.innerHTML = ''; return; }
-  if (r.error) { el.innerHTML = `<span class="faint" style="font-size:12px">resources: ${esc(r.error)}</span>`; return; }
+  if (r.error) { el.innerHTML = `<span class="faint" style="font-size:12px" title="${esc(r.error)}">⚠ live load unavailable — ${esc(r.error.split(/[:;—]/)[0].trim())}</span>`; return; }
   const p = (a, b) => b ? 100 * a / b : 0;
   const bar = (label, v, txt, title) => `<div class="rbar${v >= 90 ? ' crit' : v >= 70 ? ' warn' : ''}" title="${esc(title || '')}"><span class="rl">${label}</span><span class="rt"><i style="width:${Math.min(100, v).toFixed(1)}%"></i></span><span class="rv">${v.toFixed(0)}%</span><span class="rx faint">${txt}</span></div>`;
   const mem = p(r.memUsed, r.memTotal), disk = p(r.diskUsed, r.diskTotal);
@@ -971,19 +971,22 @@ function serverCard(s) {
     <dl class="kv">
       <dt>IPv4</dt><dd class="mono">${esc(s.ipv4 || '—')}</dd>
       <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</dd>
+      <dt>Tunnels</dt><dd>${n}${s.provisioned ? '' : ' · <span class="faint">packages not installed yet</span>'}</dd>
+    </dl>
+    <details class="sdet"><summary>Details</summary><dl class="kv">
       <dt>SSH</dt><dd class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</dd>
       ${s.lastPath ? `<dt>Reached via</dt><dd>${esc(s.lastPath)}</dd>` : ''}
       ${s.proxy ? `<dt>Proxy</dt><dd class="mono">${esc(s.proxy)}</dd>` : ''}
-      <dt>Tunnels</dt><dd>${n}</dd>
       <dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not yet</span>'}</dd>
-    </dl>
+    </dl></details>
     <div class="nic" data-nic="${s.id}"></div>
     <div class="res" data-res="${s.id}"></div>
     <div class="sfoot">
       <button class="btn sm" data-test="${s.id}">Test connection</button>
-      <button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">${s.provisioned ? 'Update packages' : 'Install packages'}</button>
+      ${s.provisioned ? '' : `<button class="btn sm" data-prep="${s.id}" title="Pre-install every method's binaries and packages once, so switching methods is instant">Install packages</button>`}
       <span class="grow"></span>
       ${moreMenu([
+        s.provisioned ? { label: '📦 Update packages', attr: `data-prep="${s.id}"` } : null,
         { label: '⚡ Optimize kernel', attr: `data-optz="${s.id}"` },
         isIran ? { label: '📡 Agent install command', attr: `data-agent="${s.id}"` } : null,
         isAdmin() ? { label: '🔑 SSH bridge', attr: `data-bridge="${s.id}"` } : null,
@@ -1160,7 +1163,8 @@ function tunnelCard(t) {
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
-    <div class="tc-m"><span class="chip mth" title="${esc(groupOf(shownM) + ' · ' + (shownM?.title || ''))}">${shownM ? groupIcon(shownM) + ' ' : ''}${esc(shownM?.title || '—')}</span><span class="chip mono">:${esc(t.ports)}</span><span class="chip">${famName(shownFam)}</span>${mainFail ? `<span class="chip warn" title="${esc(mainFail.failed)} — tried again every hour">⚠ ${esc(methodTitle(t.active))} didn't start here</span>` : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : (t.noFailover ? '' : '<span class="chip" title="automatic failover is on">🔁 auto</span>')}</div>
+    <div class="tc-i" title="${esc(groupOf(shownM) + ' · ' + (shownM?.title || ''))}">${shownM ? groupIcon(shownM) + ' ' : ''}<b>${esc(shownM?.title || '—')}</b><span>${famName(shownFam)}</span><span class="mono">:${esc(t.ports)}</span></div>
+    <div class="tc-m">${mainFail ? `<span class="chip warn" title="${esc(mainFail.failed)} — tried again every hour">⚠ ${esc(methodTitle(t.active))} didn't start here</span>` : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : ''}</div>
     ${t.active ? `<div class="traf mini" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
@@ -1168,7 +1172,7 @@ function tunnelCard(t) {
       : `<div class="tc-idle">Not running${selM ? ` · selected: <b>${esc(selM.title)}</b>` : ''}</div>`}
     <div class="tc-f">
       <button class="btn sm pri" data-manage>⚙ Manage</button>
-      ${t.active ? `<button class="btn sm" data-stop>■ Stop</button>` : `<button class="btn sm" data-start>▶ Start</button>`}
+      ${t.active ? `<button class="btn sm ghost" data-stop>■ Stop</button>` : `<button class="btn sm" data-start>▶ Start</button>`}
       <button class="btn sm ghost" data-log>Logs</button>
       <span class="grow"></span>
       ${moreMenu([
