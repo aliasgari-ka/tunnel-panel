@@ -1112,9 +1112,9 @@ function loadXterm() {
 async function consoleModal(id) {
   const s = STATE.servers.find(x => x.id === id); if (!s) return;
   const m = h(`<div class="modal conm"><div class="card">
-    <div class="conhd"><b>&gt;_ ${esc(s.name)}</b><span class="faint mono" style="font-size:12px">${esc(s.sshUser || 'root')}@${esc(s.ipv4 || s.sshHost || s.ipv6 || '')}</span><span class="pill off" data-cst><span class="led"></span>connecting</span><span class="grow"></span>
+    <div class="conhd"><b data-notr>&gt;_ ${esc(s.name)}</b><span class="faint mono" style="font-size:12px">${esc(s.sshUser || 'root')}@${esc(s.ipv4 || s.sshHost || s.ipv6 || '')}</span><span class="pill off" data-cst><span class="led"></span>connecting</span><span class="grow"></span>
       <button class="btn sm ghost" data-crec title="Open a new session">⟳ Reconnect</button><button class="btn sm ghost" data-cmax title="Full screen">⤢</button><button class="btn sm" data-cclose>Close</button></div>
-    <div class="term" data-term></div></div></div>`);
+    <div class="term" data-term data-notr dir="ltr"></div></div></div>`);
   document.body.appendChild(m);
   const st = $('[data-cst]', m), setSt = (cls, txt) => { st.className = 'pill ' + cls; st.innerHTML = `<span class="led"></span>${txt}`; };
   try { await loadXterm(); } catch (e) { setSt('off', esc(e.message)); return; }

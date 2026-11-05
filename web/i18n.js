@@ -833,7 +833,22 @@ window.TP_FA = {
 "🚀 Speed test": "🚀 تست سرعت",
 "🛠 Repair": "🛠 تعمیر",
 "🤖 Your Telegram bot": "🤖 ربات Telegram شما",
-"🩺 Diagnose": "🩺 عیب‌یابی"
+"🩺 Diagnose": "🩺 عیب‌یابی",
+">_ Console": ">_ کنسول",
+"⟳ Reconnect": "⟳ اتصال دوباره",
+"Open a new session": "یک نشست تازه باز کن",
+"Full screen": "تمام‌صفحه",
+"connecting": "در حال اتصال",
+"connected": "وصل",
+"closed": "بسته شد",
+"Filter by name or IP…": "جستجو با نام یا IP…",
+"+ Add": "+ افزودن",
+"none": "هیچ",
+"not installed yet": "هنوز نصب نشده",
+"tunnels": "تانل‌ها",
+"No foreign server yet.": "هنوز سرور خارجی نیست.",
+"Add an Iran server (entry) and a foreign server (exit), then build a tunnel between them.": "یک سرور ایران (ورودی) و یک سرور خارج (خروجی) اضافه کنید، بعد بینشان تانل بسازید.",
+"A shell on this server in the browser, over the panel's own path to it": "شل این سرور در مرورگر، از همان مسیری که پنل به آن وصل می‌شود"
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title
