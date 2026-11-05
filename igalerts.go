@@ -14,8 +14,8 @@ import (
 // The igproxy agents log a lot (a WARP swapped, a new IP, Google moved...): almost all of it
 // they fix by themselves. igAlertLoop reads their logs every igAlertEvery and sends the admin
 // one short message with only what a person may need to know: users' Instagram / Gemini path
-// broken (and not back within the round), the router down, Instagram or Google left on a proxy,
-// the test account logged out. The same alert of a server waits its cooldown before it is
+// broken (and not back within the round), the router down, Instagram or Google left on a proxy
+// (not the Instagram test account: the keyless country check does its job). The same alert of a server waits its cooldown before it is
 // sent again.
 
 const igAlertEvery = 10 * time.Minute
@@ -36,7 +36,6 @@ var igAlertRules = []igAlertRule{
 	{regexp.MustCompile(`^Instagram: (no WARP in a music country \(all|no WARP and no proxy|still no WARP)`), "igproxy", "🟠", 6 * time.Hour},
 	{regexp.MustCompile(`^Instagram: WARP [0-9]+ is in a music country`), "igback", "✅", 6 * time.Hour},
 	{regexp.MustCompile(`no WARP has music AND`), "nomusic", "🟠", 6 * time.Hour},
-	{regexp.MustCompile(`test account not accepted`), "igacct", "🔑", 24 * time.Hour},
 }
 
 var (
