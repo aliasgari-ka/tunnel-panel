@@ -115,6 +115,10 @@ func (a *App) routes() http.Handler {
 	g("/api/helpers", "self", s.helpers) // read-only list
 	// multipart, not JSON
 	mux.HandleFunc("/api/helpers/upload", s.auth(s.guard("admin", s.helperUpload)))
+	// the Google test browser (gbrowser.go): the admin only
+	gb := s.auth(s.guard("admin", s.gbrowser()))
+	mux.HandleFunc("/gbrowser", gb)
+	mux.HandleFunc("/gbrowser/", gb)
 	g("/api/helpers/fetch", "admin", s.helperFetch)
 	g("/api/users", "admin", s.users)
 	g("/api/users/delete", "admin", s.userDelete)
