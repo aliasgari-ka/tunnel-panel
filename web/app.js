@@ -1211,15 +1211,6 @@ function hsChip(t) {
   const n = v.ok.filter(Boolean).length, cur = v.paths[v.active] || '—';
   return `<span class="chip${n ? '' : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '')).join('\n'))}">⚡ ${n}/${v.paths.length} paths · on ${esc(cur)}</span>`;
 }
-// what a tunnel does when its users' path fails: one choice instead of three switches
-// (automatic failover, hot standby, hot standby's auto mode)
-const FAILMODES = [
-  ['off', '✋ Stay', 'Nothing switches: the tunnel stays on its method even when it is down.'],
-  ['fail', '🔁 Failover', 'After 5 min down, the panel switches to a working method or IPv4⇄IPv6 path, re-checks the original every hour and goes back when it works.'],
-  ['hs', '⚡ Standby', "Every compatible path keeps running; users move to a working one within seconds when theirs is down, and back once it's stable. Applies on the next Start/Re-apply."],
-  ['hsauto', '🤖 Best path', 'Like Standby, and users also move to a clearly faster path when theirs gets slow or lossy. Applies on the next Start/Re-apply.'],
-];
-function failMode(t) { return t.hotStandby ? (t.hsAuto ? 'hsauto' : 'hs') : (t.noFailover ? 'off' : 'fail'); }
 function hsBox(t) {
   const v = t.hs;
   if (!t.hotStandby) return '';
@@ -1415,9 +1406,8 @@ function tunnelModal(t) {
       </div>
       <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
       ${isAdmin() && !t.id && (STATE.users || []).length > 1 ? `<label class="f">Account <span class="faint">(who sees and runs it — use that account's servers)</span><select name="owner"><option value="">me (admin)</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}"${STATE.ownerFilter === u.username ? ' selected' : ''}>${esc(u.username)}</option>`).join('')}</select></label>` : ''}
-      <div class="f"><span>If the users' path fails</span>
-        <div class="seg" id="tMode">${FAILMODES.map(x => `<button type="button" data-mode="${x[0]}" class="${failMode(t) === x[0] ? 'on' : ''}">${x[1]}</button>`).join('')}</div>
-        <small class="fhelp" id="tModeHelp"></small></div>
+      <div class="set1"><div><b>⚡ Keep users connected</b><small class="fhelp" id="tModeHelp"></small></div>
+        <label class="sw1"><input type="checkbox" id="tAuto"${t.hotStandby ? ' checked' : ''}><i></i></label></div>
       <div id="tPaths" class="tpaths"></div>
       <details${sh.enabled ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Traffic shaping / link tuning</summary>
         <div class="ff" style="margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px">
@@ -1442,7 +1432,7 @@ function tunnelModal(t) {
   const pair = () => ({ iran: $('[name=serverId]', m).value, foreign: $('[name=foreignId]', m).value || '' });
   const paintPaths = () => {
     const box = $('#tPaths', m);
-    if (!mode.startsWith('hs') || !skipAll) { box.innerHTML = ''; return; }
+    if (!$('#tAuto', m).checked || !skipAll) { box.innerHTML = ''; return; }
     const p = pair(), k = p.iran + '|' + p.foreign;
     const off = pathsKey === k ? $$('[data-path]', box).filter(c => !c.checked).map(c => c.dataset.path) : (skipAll[k] || []);
     pathsKey = k;
@@ -1460,9 +1450,12 @@ function tunnelModal(t) {
     $$('[data-pall]', box).forEach(b => b.onclick = () => { $$('[data-path]', box).forEach(c => c.checked = b.dataset.pall === '1'); count(); });
   };
   api('/routes/skip').then(r => { skipAll = r || {}; paintPaths(); }).catch(() => {});
-  let mode = failMode(t);
-  const paintMode = () => { $$('#tMode button', m).forEach(b => b.classList.toggle('on', b.dataset.mode === mode)); $('#tModeHelp', m).textContent = FAILMODES.find(x => x[0] === mode)[2]; paintPaths(); };
-  $$('#tMode button', m).forEach(b => b.onclick = () => { mode = b.dataset.mode; paintMode(); });
+  // one switch: on = hot standby (every path running, users moved within seconds; new tunnels also
+  // move to a clearly faster path), off = the plain failover after 5 min down
+  const paintMode = () => { $('#tModeHelp', m).textContent = $('#tAuto', m).checked
+    ? 'On: backup paths stay running and users move to a working one within seconds when theirs fails — or to a clearly faster one. Applies on the next Start/Re-apply.'
+    : (t.noFailover ? 'Off: nothing switches.' : 'Off: after 5 min down the tunnel switches to a working method, and goes back when the original works.'); paintPaths(); };
+  $('#tAuto', m).onchange = paintMode;
   paintMode();
   $('[name=serverId]', m).addEventListener('change', paintPaths);
   $('[name=foreignId]', m).addEventListener('change', paintPaths);
@@ -1470,15 +1463,15 @@ function tunnelModal(t) {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(ev.target));
     const picks = $$('[data-path]', m);
-    if (mode.startsWith('hs') && picks.length) {
+    if ($('#tAuto', m).checked && picks.length) {
       const p = pair(), offNow = picks.filter(c => !c.checked).map(c => c.dataset.path);
       const before = (skipAll[p.iran + '|' + p.foreign] || []).slice().sort().join(','), after = offNow.slice().sort().join(',');
       if (before !== after) { try { await api('/routes/skip', { iran: p.iran, foreign: p.foreign, off: offNow }); } catch (e) { alertModal('Error', e.message); return; } }
     }
     if (t.id) fd.ID = t.id;
-    fd.noFailover = mode === 'off';
-    fd.hotStandby = mode.startsWith('hs');
-    fd.hsAuto = mode === 'hsauto';
+    fd.noFailover = !!t.noFailover;
+    fd.hotStandby = $('#tAuto', m).checked;
+    fd.hsAuto = fd.hotStandby && (t.hotStandby ? !!t.hsAuto : true); // manual/auto stays switchable in the tunnel's window
     if (t.selected) fd.selected = t.selected;
     fd.shape = {
       enabled: $('#shEnabled', m).checked, qdisc: $('#shQdisc', m).value,
