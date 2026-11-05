@@ -20,7 +20,7 @@ func TestIgAlertLines(t *testing.T) {
 		"test account not accepted by Instagram (login_required) - log in again (igpm -> server -> 6)",
 	}, now)
 	j := strings.Join(got, "\n")
-	if len(got) != 3 || !strings.Contains(j, "router DOWN") || !strings.Contains(j, "test account") || !strings.Contains(j, "Instagram broken") {
+	if len(got) != 2 || !strings.Contains(j, "router DOWN") || strings.Contains(j, "test account") || !strings.Contains(j, "Instagram broken") {
 		t.Fatalf("first round:\n%s", j)
 	}
 	// the same again within the cooldowns: nothing; Instagram back: its recovery
