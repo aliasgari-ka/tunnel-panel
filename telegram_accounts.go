@@ -140,7 +140,7 @@ func (a *App) startUserBotsLocked(adminTok string) {
 // pushTo sends an alert to the admin's bot and, when the object belongs to an account with
 // its own bot, to that bot too.
 func (a *App) pushTo(owner, msg string) {
-	a.push(msg)
+	a.pushCh(msg)
 	if owner == "" {
 		return
 	}
@@ -173,7 +173,7 @@ func (a *App) pushServer(id, msg string) {
 			}
 		}
 	})
-	a.push(msg)
+	a.pushCh(msg)
 	a.botMu.Lock()
 	var bots []*Bot
 	for o := range owners {
@@ -186,6 +186,8 @@ func (a *App) pushServer(id, msg string) {
 		go b.push(msg)
 	}
 }
+
+var tgChanRe = regexp.MustCompile(`^(-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{3,31})$`)
 
 var chatIDsRe = regexp.MustCompile(`^-?[0-9]{1,20}(,-?[0-9]{1,20})*$`)
 

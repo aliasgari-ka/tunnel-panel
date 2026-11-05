@@ -31,6 +31,9 @@ type Settings struct {
 	TelegramBackup string `json:"telegramBackup"`
 	// TelegramReport "HH:MM" (Tehran time): the bot's daily report; "" = off
 	TelegramReport string `json:"telegramReport,omitempty"`
+	// TelegramChannel: the channel/group (id like -100…, or @name) that tunnel and server
+	// alerts go to instead of the admin chat; "" = the admin chat. The bot must be its admin.
+	TelegramChannel string `json:"telegramChannel,omitempty"`
 }
 
 // Server is a remote Iran server reached over SSH.

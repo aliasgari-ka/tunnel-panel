@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -556,6 +557,25 @@ func (a *App) push(msg string) {
 	if a.notify != nil {
 		go a.notify(msg)
 	}
+}
+
+// pushCh sends a tunnel or server alert to the alert channel (Settings.TelegramChannel), or
+// to the admin chat when there is none or the channel refuses it.
+func (a *App) pushCh(msg string) {
+	ch := strings.TrimSpace(a.settings().TelegramChannel)
+	a.botMu.Lock()
+	b := a.bot
+	a.botMu.Unlock()
+	if ch == "" || b == nil {
+		a.push(msg)
+		return
+	}
+	go func() {
+		if _, err := b.api("sendMessage", url.Values{"chat_id": {ch}, "text": {esc(msg)},
+			"parse_mode": {"HTML"}, "disable_web_page_preview": {"true"}}); err != nil {
+			b.push(msg + "\n\n(the alert channel refused it: " + err.Error() + ")")
+		}
+	}()
 }
 
 // Status returns the unit state on both sides ("active", "inactive", "unreachable", ...).
