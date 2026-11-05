@@ -281,12 +281,14 @@ type gemSrvState struct {
 	verdict string // the last counted one
 	pending bool   // refused once, a second look is due
 	why     string
+	moved   time.Time // the last time its Google was moved (at most once per gemServerEvery)
 }
 
 func (a *App) gemLoop() {
 	st := map[string]*gemSrvState{}
 	var signedOutSent time.Time
 	time.Sleep(3 * time.Minute)
+	relays := map[string]string{} // server id -> the allow-list it last took
 	for ; ; time.Sleep(gemTick) {
 		var list []*Server
 		a.store.View(func(s *State) {
@@ -296,6 +298,7 @@ func (a *App) gemLoop() {
 				}
 			}
 		})
+		a.gemRelaySync(list, relays)
 		// the one most overdue: a pending second look first, then the longest unchecked
 		now := time.Now()
 		var pick *Server
@@ -343,6 +346,13 @@ func (a *App) gemLoop() {
 				a.push(fmt.Sprintf("✅ Gemini (signed in) works again on %s (%s)", igLabel(pick), why))
 			}
 			g.verdict, g.why = v, why
+			// one Google country for every server: users move between servers, and an account that
+			// hops countries looks suspicious to Google
+			inf := a.igInfo(context.Background(), pick)
+			if d := inf["gdom"]; pick.Owner == "" && d != "" && d != "-" && d != gemWantDom && time.Since(g.moved) > gemServerEvery {
+				g.moved = time.Now()
+				a.push(fmt.Sprintf("🌍 Google places the users of %s in .%s (not .%s)\n→ %s", igLabel(pick), d, gemWantDom, a.gemFix(pick, inf)))
+			}
 		case "refused", "signedout":
 			if !g.pending && g.verdict != v {
 				g.pending, g.next = true, g.last.Add(gemRecheck)
@@ -350,10 +360,11 @@ func (a *App) gemLoop() {
 			}
 			g.pending = false
 			if g.verdict != v {
-				route := a.igInfo(context.Background(), pick)["google"]
-				msg := fmt.Sprintf("🔴 Gemini (signed in) refused on %s: %s\nGoogle route there: %s", igLabel(pick), why, route)
-				if fixed := a.gemFix(pick, route); fixed != "" {
-					msg += "\n→ " + fixed
+				inf := a.igInfo(context.Background(), pick)
+				msg := fmt.Sprintf("🔴 Gemini (signed in) refused on %s: %s\nGoogle route there: %s", igLabel(pick), why, igProxyName(inf, inf["google"], a.igServerByIP))
+				if pick.Owner == "" {
+					g.moved = time.Now()
+					msg += "\n→ " + a.gemFix(pick, inf)
 				}
 				a.push(msg)
 			}
@@ -370,45 +381,3 @@ func (a *App) gemLoop() {
 	}
 }
 
-// gemFix moves a refused server's Google to an exit the signed-in check passes: its own IP,
-// else one of its relay proxies (another server's own IP). Only the admin's servers; the
-// change is the same "igproxy route GOOGLE …" the page runs.
-func (a *App) gemFix(srv *Server, route string) string {
-	if srv.Owner != "" {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
-	defer cancel()
-	type cand struct{ via, proxy, what string }
-	var cs []cand
-	if route != "direct" {
-		cs = append(cs, cand{"direct", fmt.Sprintf("socks5://%s:12371", srv.IPv4), "its own IP"})
-	}
-	if h, err := a.igHost(ctx, srv); err == nil {
-		// only the socks5 relays (no passwords leave the server): "N host port"
-		out, _ := h.Run(ctx, `awk 'NF && $1=="socks5" && $4=="-" {print NR, $2, $3}' /etc/igproxy/proxies 2>/dev/null`, nil)
-		for _, l := range strings.Split(out, "\n") {
-			f := strings.Fields(l)
-			if len(f) == 3 && igNum.MatchString(f[0]) && igHostRx.MatchString(f[1]) && igPort.MatchString(f[2]) && "proxy"+f[0] != route {
-				cs = append(cs, cand{"proxy" + f[0], "socks5://" + f[1] + ":" + f[2], "proxy" + f[0] + " (" + f[1] + ")"})
-			}
-		}
-	}
-	for _, c := range cs {
-		pc, pcancel := context.WithTimeout(ctx, 2*time.Minute)
-		v, _, _ := gemProbe(pc, c.proxy)
-		pcancel()
-		if v != "ok" {
-			continue
-		}
-		if rc, out := a.igRun(ctx, srv, []string{"route", "GOOGLE", c.via}, "", 180, nil); rc != 0 {
-			return "could not move Google to " + c.what + ": " + clipTo(lastLineOf(out), 100)
-		}
-		a.igForget(srv.ID)
-		return "Google moved to " + c.what + " (signed-in Gemini works there)"
-	}
-	if len(cs) == 0 {
-		return "no other exit to try — move it by hand"
-	}
-	return "no other exit opens Gemini signed in (" + fmt.Sprint(len(cs)) + " tried) — left as is"
-}

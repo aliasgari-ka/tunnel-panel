@@ -1670,7 +1670,11 @@ const IGWIDE = ['ADULT', 'SPOTIFY', 'SCLOUD', 'CUSTOM'];
 const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'],
   CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
 const igBad = (s) => (IGST[s] || ['', 'bad'])[1] === 'bad';
-const igViaW = (v) => { v = v || ''; if (v === 'proxy') return 'Proxy'; if (/^proxy\d+$/.test(v)) return 'Proxy ' + v.slice(5); return { warp: 'WARP', warp6: 'WARP IPv6', ipv6: 'IPv6', direct: 'Direct' }[v] || v || '—'; };
+// a proxy that is one of our servers (the agent's relay: own IP = port 12371, WARP n = 12371+n) -> "internal · name"
+const igSrvByIP = (ip) => ((IG.data && IG.data.servers) || []).find(s => s.host === ip);
+const igInternal = (ip, port) => { const s = igSrvByIP(ip); return 'internal · ' + (s ? s.name : ip) + (+port === 12371 ? '' : ' WARP ' + (port - 12371)); };
+const igRelayOf = (i, v) => { const m = /^proxy(\d+)$/.exec(v || ''); if (!m || !i || !i.prelay) return ''; for (const x of i.prelay.split(',')) { const [n, h, p] = x.split(':'); if (n === m[1]) return igInternal(h, p); } return ''; };
+const igViaW = (v, i) => { v = v || ''; if (v === 'proxy') return 'Proxy'; if (/^proxy\d+$/.test(v)) { const r = igRelayOf(i, v); return 'Proxy ' + v.slice(5) + (r ? ' · ' + r : ''); } return { warp: 'WARP', warp6: 'WARP IPv6', ipv6: 'IPv6', direct: 'Direct' }[v] || v || '—'; };
 const igViaC = (v) => 'v-' + (String(v || '').replace(/\d+$/, '').replace('warp6', 'warp') || 'direct');
 const igPill = (st) => { const w = IGST[st] || [st, 'bad']; return `<span class="pill ${w[1]}"><span class="led"></span>${esc(w[0])}</span>`; };
 const igChk = (v) => v === 'OK' ? '<i class="igd ok"></i>OK' : v === 'FAIL' ? '<i class="igd bad"></i>fail' : '<i class="igd"></i>—';
@@ -1811,9 +1815,17 @@ function igCards() {
   box.innerHTML = L.length ? L.map(igCard).join('') : '<div class="empty card"><div class="big">🔍</div>No server matches</div>';
   $$('.scard', box).forEach(c => c.onclick = () => { IG.cur = IG.data.servers.find(x => x.id === c.dataset.id); IG.tab = 'routes'; igRender(); scrollTo(0, 0); });
 }
+// the country the users' exit gets now, measured by the agent through the users' route:
+// Instagram's country_code and Google's OneGoogle domain
+function igCC(g, i) {
+  const v = g === 'IG' ? i.igcc : g === 'GOOGLE' ? i.gdom : '';
+  if (!v || v === '-') return '';
+  const bad = g === 'IG' ? v === 'IR' : v !== 'de';
+  return `<span class="note mono" style="color:${bad ? 'var(--crit)' : 'var(--faint)'}" title="${g === 'IG' ? 'the country Instagram places the users of this server in' : 'the Google country of the users of this server (all should be .de)'}">${g === 'IG' ? 'Instagram sees ' + esc(v) : 'Google sees .' + esc(v)}</span>`;
+}
 function igCard(s) {
   const i = s.info;
-  const svc = (g) => `<div class="svc"><small>${IGSV[g]}</small><b class="${igViaC(i[g.toLowerCase()])}">${igViaW(i[g.toLowerCase()])}</b>${g === 'GOOGLE' && /^warp/.test(i.google || '') && i.gcc && i.gcc !== '-' ? `<span class="note mono" style="color:${i.gcc === 'PROXY' ? 'var(--crit)' : 'var(--faint)'}">${i.gcc === 'PROXY' ? 'on a proxy for now' : 'country ' + esc(i.gcc)}</span>` : ''}</div>`;
+  const svc = (g) => `<div class="svc"><small>${IGSV[g]}</small><b class="${igViaC(i[g.toLowerCase()])}">${igViaW(i[g.toLowerCase()], i)}</b>${igCC(g, i)}${g === 'GOOGLE' && /^warp/.test(i.google || '') && i.gcc && i.gcc !== '-' ? `<span class="note mono" style="color:${i.gcc === 'PROXY' ? 'var(--crit)' : 'var(--faint)'}">${i.gcc === 'PROXY' ? 'on a proxy for now' : 'country ' + esc(i.gcc)}</span>` : ''}</div>`;
   const n = igWarpNeed(i);
   return `<div class="card scard${igBad(i.state) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div>${igPill(i.state)}</div>
     ${i.ig ? `<div class="svcs">${svc('IG')}${svc('GOOGLE')}${svc('YTM')}</div>
@@ -1895,18 +1907,18 @@ function igDetail(w) {
   }
   (IGTAB[IG.tab] || IGTAB.routes)();
 }
-function igViaOpts(svc, cur, nprox) {
+function igViaOpts(svc, cur, nprox, i) {
   const o = ['proxy']; for (let k = 1; k <= nprox; k++) o.push('proxy' + k); o.push('warp'); if (!IGWIDE.includes(svc)) o.push('warp6', 'ipv6'); o.push('direct');
   if (cur && !o.includes(cur)) o.push(cur);
-  return o.map(v => `<option value="${v}"${v === cur ? ' selected' : ''}>${igViaW(v)}</option>`).join('');
+  return o.map(v => `<option value="${v}"${v === cur ? ' selected' : ''}>${igViaW(v, i)}</option>`).join('');
 }
 const igSecret = 'type="text" class="inp mono secret" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false"';
 const IGTAB = {
   routes() {
     const i = IG.cur.info;
     $('#igtab').innerHTML = `<div class="card pad"><table class="tbl igt"><tr><th>Service</th><th>Goes out through</th><th></th></tr>
-      ${Object.keys(IGSV).map(g => `<tr><td><b>${IGSV[g]}</b>${g === 'CUSTOM' ? ` <span class="faint">(${+i.ncustom || 0} sites)</span>` : ''}${g === 'GOOGLE' && /^warp/.test(i.google || '') ? ' ' + igGccChip(i) : ''}</td>
-      <td><select data-g="${g}" data-cur="${esc(i[g.toLowerCase()])}">${igViaOpts(g, i[g.toLowerCase()], +i.proxies || 0)}</select></td>
+      ${Object.keys(IGSV).map(g => `<tr><td><b>${IGSV[g]}</b>${g === 'CUSTOM' ? ` <span class="faint">(${+i.ncustom || 0} sites)</span>` : ''}${g === 'GOOGLE' && /^warp/.test(i.google || '') ? ' ' + igGccChip(i) : ''} ${igCC(g, i)}</td>
+      <td><select data-g="${g}" data-cur="${esc(i[g.toLowerCase()])}">${igViaOpts(g, i[g.toLowerCase()], +i.proxies || 0, i)}</select></td>
       <td style="text-align:end"><button class="btn sm pri" data-ap="${g}" hidden>Apply</button></td></tr>`).join('')}</table>
       <div class="mdesc">Proxy = the fastest healthy proxy · "Proxy N" = only that one · WARP = Cloudflare WARP · IPv6 = the server's own IPv6 (Instagram, Google, YouTube Music only) · Direct = the server's own IP.
       The router restarts (a few seconds) only when a setting really changes.</div>
@@ -2058,7 +2070,8 @@ async function igListInto(sel, action, slow, delA, useA, gA) {
     const gw = (IG.cur.info.gw || '').split(',');
     box.innerHTML = ls.length ? ls.map(l => {
       const m = l.match(/^\s*(\d+)\)/) || l.match(/^\s*WARP (\d+)\b/), hl = l.includes('ACTIVE') || l.includes('GOOGLE');
-      return `<div class="ln${hl ? ' hl' : ''}"><span class="t mono" title="${esc(l.trim())}">${esc(l.trim())}</span>${m && gA && gw.includes(m[1]) ? `<button class="btn sm" data-gu="${m[1]}" title="only Google moves to this WARP">Google</button>` : ''}${m && useA ? `<button class="btn sm" data-u="${m[1]}">Use</button>` : ''}${m && delA ? `<button class="btn sm danger" data-d="${m[1]}">Delete</button>` : ''}</div>`;
+      const im = l.match(/(\d+\.\d+\.\d+\.\d+):(1237\d)\b/), lt = l.trim() + (im && igSrvByIP(im[1]) ? '  · ' + igInternal(im[1], im[2]) : '');
+      return `<div class="ln${hl ? ' hl' : ''}"><span class="t mono" title="${esc(lt)}">${esc(lt)}</span>${m && gA && gw.includes(m[1]) ? `<button class="btn sm" data-gu="${m[1]}" title="only Google moves to this WARP">Google</button>` : ''}${m && useA ? `<button class="btn sm" data-u="${m[1]}">Use</button>` : ''}${m && delA ? `<button class="btn sm danger" data-d="${m[1]}">Delete</button>` : ''}</div>`;
     }).join('') : '<div class="faint">empty</div>';
     $$('[data-d]', box).forEach(b => b.onclick = () => igAct(igS({ action: delA, n: b.dataset.d }), 'Delete number ' + b.dataset.d + '?'));
     $$('[data-u]', box).forEach(b => b.onclick = () => igAct(igS({ action: useA, n: b.dataset.u })));
@@ -2074,7 +2087,7 @@ function igMatrix(box) {
   box.innerHTML = `<div class="card pad mat"><div class="actions" style="justify-content:flex-end;margin-bottom:6px"><button class="btn pri" id="igmApply" disabled>Apply changes</button></div>
     <table class="tbl igt"><thead><tr><th>Server</th>${Object.keys(IGSV).map(g => `<th>${IGSV[g]}</th>`).join('')}</tr></thead><tbody>
     <tr><td><b>All servers →</b></td>${Object.keys(IGSV).map(g => `<td data-l="${IGSV[g]}"><select data-all="${g}"><option value="">—</option>${igViaOpts(g, '', maxp)}</select></td>`).join('')}</tr>
-    ${L.map(s => `<tr><td><b>${esc(s.name)}</b> ${igOwner(s)} ${s.info.state === 'OK' ? '' : igPill(s.info.state)}</td>${Object.keys(IGSV).map(g => { const v = s.info[g.toLowerCase()]; return `<td data-l="${IGSV[g]}"><select data-s="${esc(s.id)}" data-g="${g}" data-cur="${esc(v)}">${igViaOpts(g, v, +s.info.proxies || 0)}</select></td>`; }).join('')}</tr>`).join('')}</tbody>
+    ${L.map(s => `<tr><td><b>${esc(s.name)}</b> ${igOwner(s)} ${s.info.state === 'OK' ? '' : igPill(s.info.state)}</td>${Object.keys(IGSV).map(g => { const v = s.info[g.toLowerCase()]; return `<td data-l="${IGSV[g]}"><select data-s="${esc(s.id)}" data-g="${g}" data-cur="${esc(v)}">${igViaOpts(g, v, +s.info.proxies || 0, s.info)}</select></td>`; }).join('')}</tr>`).join('')}</tbody>
     </table><div class="mdesc">The "All servers" row sets one service on every row (not applied yet). Servers that are offline or without the agent aren't in the table.</div></div>`;
   const mark = () => { let n = 0; $$('select[data-s]', box).forEach(x => { const c = x.value !== x.dataset.cur; x.classList.toggle('chg', c); n += c; }); $('#igmApply').disabled = !n; $('#igmApply').textContent = n ? `Apply ${n} change${n > 1 ? 's' : ''}` : 'Apply changes'; };
   $$('select[data-s]', box).forEach(x => x.onchange = mark);
