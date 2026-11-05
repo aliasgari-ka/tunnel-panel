@@ -238,13 +238,38 @@ func (a *App) jumpDial(ctx context.Context, via *Server) dialFunc {
 				sh6 := newSSHHost(a.store, via, directDial)
 				sh6.v6 = true
 				if _, err6 := sh6.client(); err6 == nil {
-					return sh6.Dial(addr)
+					return jumpOnward(sh6, addr)
 				}
 			}
 			return nil, fmt.Errorf("jump host %s unreachable: %w", via.Name, err)
 		}
-		return sh.Dial(addr)
+		return jumpOnward(sh, addr)
 	}
+}
+
+// jumpOnward dials addr through the jump host's SSH connection, which then lives exactly as
+// long as the returned conn. It used to stay open for good: every jump (each monitor round,
+// each connection test) left one more sshd session on the jump host — seen live, 1300 on
+// one server and 1600 on another, eating its RAM/CPU until sshd stopped answering.
+func jumpOnward(via *SSHHost, addr string) (net.Conn, error) {
+	c, err := via.Dial(addr)
+	if err != nil {
+		via.Close()
+		return nil, err
+	}
+	return &jumpConn{Conn: c, via: via}, nil
+}
+
+type jumpConn struct {
+	net.Conn
+	via  *SSHHost
+	once sync.Once
+}
+
+func (c *jumpConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.via.Close)
+	return err
 }
 
 // ---- dialers ----
