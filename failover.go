@@ -280,6 +280,20 @@ func (a *App) switchFamily(t *Tunnel, m *Method, fam string) error {
 // ApplyRoute is a hand-picked Apply of method mid over family fam (empty = the tunnel's
 // current one): the user's choice wins over a running automatic failover, and the family
 // is put back if the apply cannot start.
+// rebuildMode re-applies t's running method after hot standby was switched on or off, so
+// the servers match the switch: on starts the paths and the switcher, off removes them.
+func (a *App) rebuildMode(t *Tunnel) (*Job, error) {
+	var mid string
+	a.store.View(func(*State) { mid = t.Active })
+	if mid == "" {
+		return nil, fmt.Errorf("the tunnel is not running")
+	}
+	if id := a.jobs.running(failoverJobKey + t.ID); id != "" {
+		_, _ = a.jobs.cancel(id)
+	}
+	return a.Apply(t, mid)
+}
+
 func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 	m := methodByID[mid]
 	if m == nil {

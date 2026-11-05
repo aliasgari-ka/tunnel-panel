@@ -1452,9 +1452,12 @@ function tunnelModal(t) {
   api('/routes/skip').then(r => { skipAll = r || {}; paintPaths(); }).catch(() => {});
   // one switch: on = hot standby (every path running, users moved within seconds; new tunnels also
   // move to a clearly faster path), off = the plain failover after 5 min down
-  const paintMode = () => { $('#tModeHelp', m).textContent = $('#tAuto', m).checked
-    ? 'On: backup paths stay running and users move to a working one within seconds when theirs fails — or to a clearly faster one. Applies on the next Start/Re-apply.'
-    : (t.noFailover ? 'Off: nothing switches.' : 'Off: after 5 min down the tunnel switches to a working method, and goes back when the original works.'); paintPaths(); };
+  const paintMode = () => { $('#tModeHelp', m).textContent = ($('#tAuto', m).checked
+    ? 'On: backup paths stay running and users move to a working one within seconds when theirs fails — or to a clearly faster one.'
+    : (t.noFailover ? 'Off: nothing switches.' : 'Off: after 5 min down the tunnel switches to a working method, and goes back when the original works.'))
+    // a running tunnel is rebuilt on Save when the switch no longer matches what runs on the servers
+    + (t.active && $('#tAuto', m).checked !== ((t.paths || []).length > 0) ? ' Saving rebuilds the running tunnel now — its users drop for about a minute.' : '');
+    paintPaths(); };
   $('#tAuto', m).onchange = paintMode;
   paintMode();
   $('[name=serverId]', m).addEventListener('change', paintPaths);
@@ -1478,7 +1481,13 @@ function tunnelModal(t) {
       mss: parseInt($('#shMss', m).value || '0', 10), iface: $('#shIface', m).value.trim(),
       jitter: $('#shJitter', m).checked, onBoth: $('#shBoth', m).checked,
     };
-    try { await api('/tunnels/save', fd); m.remove(); await loadAll(); renderView(); toast('Tunnel saved'); } catch (e) { alertModal('Error', e.message); }
+    try {
+      const r = await api('/tunnels/save', fd); m.remove(); await loadAll(); renderView();
+      // switching "Keep users connected" on a running tunnel rebuilds it on the servers
+      if (r.job) openLog(STATE.tunnels.find(x => x.id === r.id) || t, r.job);
+      else if (r.warn) alertModal('Saved', r.warn);
+      else toast('Tunnel saved');
+    } catch (e) { alertModal('Error', e.message); }
   };
 }
 

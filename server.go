@@ -954,6 +954,9 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
+	// a running tunnel whose hot standby was switched (or never built) is rebuilt: the
+	// flag alone changed nothing on the servers, so it showed hot standby with one path
+	var rebuild *Tunnel
 	err := s.app.store.Update(func(st *State) error {
 		if in.ID == "" {
 			in.ID = newID()
@@ -1006,6 +1009,9 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		t.Shape = normalizeShape(in.Shape)
 		t.NoFailover = in.NoFailover
 		t.HotStandby = in.HotStandby
+		if t.Active != "" && t.HotStandby != (len(t.Paths) > 0) {
+			rebuild = t
+		}
 		if t.HSAuto != in.HSAuto {
 			t.HSAuto = in.HSAuto
 			if t.HotStandby && t.Active != "" {
@@ -1032,7 +1038,15 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
-	writeJSON(w, map[string]string{"ok": "1", "id": in.ID})
+	out := map[string]string{"ok": "1", "id": in.ID}
+	if rebuild != nil {
+		if j, err := s.app.rebuildMode(rebuild); err != nil {
+			out["warn"] = "Saved, but not applied yet (" + err.Error() + ") — press Re-apply on the tunnel."
+		} else {
+			out["job"] = j.ID
+		}
+	}
+	writeJSON(w, out)
 }
 
 func (s *Server2) tunnelDelete(w http.ResponseWriter, r *http.Request) {
