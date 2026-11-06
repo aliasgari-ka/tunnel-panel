@@ -1231,7 +1231,28 @@ func (s *Server2) trafficGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, map[string]any{"tunnels": snap.Tunnels, "servers": snap.Servers, "res": snap.Res, "speed": speed})
+	// ?since=<unix>: only the chart points after it — the page keeps the rest. The full
+	// history every 2 s was ~150 KB a poll and made the panel slow on Iranian links
+	if since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64); since > 0 {
+		for _, m := range []map[string]*TrafficStat{snap.Tunnels, snap.Servers} {
+			for _, v := range m {
+				v.Hist = histAfter(v.Hist, since, func(p TrafficPoint) int64 { return p.T })
+			}
+		}
+		for _, v := range snap.Res {
+			v.Hist = histAfter(v.Hist, since, func(p ResPoint) int64 { return p.T })
+		}
+	}
+	writeJSON(w, map[string]any{"tunnels": snap.Tunnels, "servers": snap.Servers, "res": snap.Res, "speed": speed, "now": time.Now().Unix()})
+}
+
+// histAfter keeps the points newer than since (they're in time order).
+func histAfter[P any](h []P, since int64, t func(P) int64) []P {
+	i := len(h)
+	for i > 0 && t(h[i-1]) > since {
+		i--
+	}
+	return h[i:]
 }
 
 func (s *Server2) tunnelSpeedTest(w http.ResponseWriter, r *http.Request) {
