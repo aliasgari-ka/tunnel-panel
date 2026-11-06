@@ -1929,15 +1929,18 @@ function igCards() {
 }
 // the country the users' exit gets now, measured by the agent through the users' route:
 // Instagram's country_code and Google's OneGoogle domain
-function igCC(g, i) {
+// Google should place a server's users in the server's own country (US -> .com)
+const igGDom = (cc) => { cc = (cc || '').toLowerCase(); return ({ us: 'com', gb: 'co.uk', uk: 'co.uk', jp: 'co.jp', kr: 'co.kr', in: 'co.in', za: 'co.za', nz: 'co.nz', au: 'com.au', br: 'com.br', tr: 'com.tr', hk: 'com.hk', sg: 'com.sg' })[cc] || cc; };
+function igCC(g, i, s) {
   const v = g === 'IG' ? i.igcc : g === 'GOOGLE' ? i.gdom : '';
   if (!v || v === '-') return '';
-  const bad = g === 'IG' ? v === 'IR' : v !== 'de';
-  return `<span class="note mono" style="color:${bad ? 'var(--crit)' : 'var(--faint)'}" title="${g === 'IG' ? 'the country Instagram places the users of this server in' : 'the Google country of the users of this server (all should be .de)'}">${g === 'IG' ? 'Instagram sees ' + esc(v) : 'Google sees .' + esc(v)}</span>`;
+  const want = igGDom(s && s.country);
+  const bad = g === 'IG' ? v === 'IR' : !!want && v !== want;
+  return `<span class="note mono" style="color:${bad ? 'var(--crit)' : 'var(--faint)'}" title="${g === 'IG' ? 'the country Instagram places the users of this server in' : 'the Google country of the users of this server' + (want ? ' (should be .' + esc(want) + ', the server\'s own country)' : '')}">${g === 'IG' ? 'Instagram sees ' + esc(v) : 'Google sees .' + esc(v)}</span>`;
 }
 function igCard(s) {
   const i = s.info;
-  const svc = (g) => `<div class="svc"><small>${IGSV[g]}</small><b class="${igViaC(i[g.toLowerCase()])}">${igViaW(i[g.toLowerCase()], i)}</b>${igCC(g, i)}${g === 'GOOGLE' && /^warp/.test(i.google || '') && i.gcc && i.gcc !== '-' ? `<span class="note mono" style="color:${i.gcc === 'PROXY' ? 'var(--crit)' : 'var(--faint)'}">${i.gcc === 'PROXY' ? 'on a proxy for now' : 'country ' + esc(i.gcc)}</span>` : ''}</div>`;
+  const svc = (g) => `<div class="svc"><small>${IGSV[g]}</small><b class="${igViaC(i[g.toLowerCase()])}">${igViaW(i[g.toLowerCase()], i)}</b>${igCC(g, i, s)}${g === 'GOOGLE' && /^warp/.test(i.google || '') && i.gcc && i.gcc !== '-' ? `<span class="note mono" style="color:${i.gcc === 'PROXY' ? 'var(--crit)' : 'var(--faint)'}">${i.gcc === 'PROXY' ? 'on a proxy for now' : 'country ' + esc(i.gcc)}</span>` : ''}</div>`;
   const n = igWarpNeed(i);
   return `<div class="card scard${igBad(i.state) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div>${igPill(i.state)}</div>
     ${i.ig ? `<div class="svcs">${svc('IG')}${svc('GOOGLE')}${svc('YTM')}</div>
@@ -2029,7 +2032,7 @@ const IGTAB = {
   routes() {
     const i = IG.cur.info;
     $('#igtab').innerHTML = `<div class="card pad"><table class="tbl igt"><tr><th>Service</th><th>Goes out through</th><th></th></tr>
-      ${Object.keys(IGSV).map(g => `<tr><td><b>${IGSV[g]}</b>${g === 'CUSTOM' ? ` <span class="faint">(${+i.ncustom || 0} sites)</span>` : ''}${g === 'GOOGLE' && /^warp/.test(i.google || '') ? ' ' + igGccChip(i) : ''} ${igCC(g, i)}</td>
+      ${Object.keys(IGSV).map(g => `<tr><td><b>${IGSV[g]}</b>${g === 'CUSTOM' ? ` <span class="faint">(${+i.ncustom || 0} sites)</span>` : ''}${g === 'GOOGLE' && /^warp/.test(i.google || '') ? ' ' + igGccChip(i) : ''} ${igCC(g, i, IG.cur)}</td>
       <td><select data-g="${g}" data-cur="${esc(i[g.toLowerCase()])}">${igViaOpts(g, i[g.toLowerCase()], +i.proxies || 0, i)}</select></td>
       <td style="text-align:end"><button class="btn sm pri" data-ap="${g}" hidden>Apply</button></td></tr>`).join('')}</table>
       <div class="mdesc">Proxy = the fastest healthy proxy · "Proxy N" = only that one · WARP = Cloudflare WARP · IPv6 = the server's own IPv6 (Instagram, Google, YouTube Music only) · Direct = the server's own IP.

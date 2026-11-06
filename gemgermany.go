@@ -1,10 +1,10 @@
 package main
 
-// One Google country for everyone. Users move between our servers (failover, a new
-// subscription), and a Google account that hops countries looks suspicious to Google. So
-// every server's Google goes out in Germany, where most of our servers are: its own IP when
-// Google places that in Germany, else the own IP of one of our German servers through the
-// agent's relay (an "internal" proxy).
+// Each server's Google goes out in the server's own country: a customer who buys a US
+// server wants Gemini's US features (Germany lacked some, e.g. video editing). Its own IP
+// when Google places that in the country, else one of its WARPs that Google places there,
+// else the own IP of another of our servers in that country (through the agent's relay, an
+// "internal" proxy). Each choice must first pass the signed-in Gemini check.
 
 import (
 	"bytes"
@@ -24,8 +24,19 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// gemWantDom: the Google country every server's users get (OneGoogle domain).
-const gemWantDom = "de"
+// gemGoogleDom: Google's OneGoogle domain for a country ("US" -> "com", "GB" -> "co.uk").
+var gemGoogleDom = map[string]string{"us": "com", "gb": "co.uk", "uk": "co.uk", "jp": "co.jp", "kr": "co.kr", "in": "co.in",
+	"za": "co.za", "nz": "co.nz", "au": "com.au", "br": "com.br", "tr": "com.tr", "hk": "com.hk", "sg": "com.sg"}
+
+// gemWantDom: the Google country a server's users should get — the server's own country
+// ("" when its country is unknown: then it is left alone).
+func gemWantDom(srv *Server) string {
+	cc := strings.ToLower(srv.Country)
+	if d, ok := gemGoogleDom[cc]; ok {
+		return d
+	}
+	return cc
+}
 
 var gemDomRe = regexp.MustCompile(`og[.]qtm[^"]*","([a-z.]{2,8})"`)
 
@@ -126,20 +137,34 @@ func igProxyName(inf map[string]string, route string, byIP func(string) *Server)
 	return fmt.Sprintf("%s (internal: %s WARP %d)", route, name, p-12371)
 }
 
-// gemFix moves a server's Google to a German exit that the signed-in check passes: its own IP
-// when Google places that in Germany, else the own IP of one of our German servers (an
-// internal relay proxy, added when missing). Each server keeps the same choice (spread by id).
+// gemFix moves a server's Google to an exit in its own country that the signed-in check
+// passes: its own IP, else one of its WARPs, else the own IP of another of our servers there
+// (an internal relay proxy, added when missing; spread by id so each server keeps its choice).
 func (a *App) gemFix(srv *Server, inf map[string]string) string {
+	want := gemWantDom(srv)
+	if want == "" {
+		return "the server's country is unknown — set it on the Servers page"
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	var cands []*Server
-	if inf["google"] != "direct" && gemOwnDomOf(ctx, srv) == gemWantDom {
-		cands = append(cands, srv)
+	type cand struct {
+		ip, port, what string
+		own            bool // the server's own IP: route "direct"
+	}
+	var cands []cand
+	if inf["google"] != "direct" && gemOwnDomOf(ctx, srv) == want {
+		cands = append(cands, cand{srv.IPv4, "12371", "its own IP", true})
+	}
+	for n := 1; n <= 8; n++ {
+		port := strconv.Itoa(12371 + n)
+		if gemDom(ctx, srv.IPv4+":"+port) == want {
+			cands = append(cands, cand{srv.IPv4, port, fmt.Sprintf("its WARP %d", n), false})
+		}
 	}
 	var others []*Server
 	a.store.View(func(s *State) {
 		for _, x := range s.Servers {
-			if x.Igproxy && x.Owner == "" && x.ID != srv.ID && x.IPv4 != "" {
+			if x.Igproxy && x.Owner == "" && x.ID != srv.ID && x.IPv4 != "" && x.IPv4 != srv.IPv4 {
 				others = append(others, x)
 			}
 		}
@@ -149,13 +174,13 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		return bytes.Compare(hi[:], hj[:]) < 0
 	})
 	for _, x := range others {
-		if gemOwnDomOf(ctx, x) == gemWantDom {
-			cands = append(cands, x)
+		if gemOwnDomOf(ctx, x) == want {
+			cands = append(cands, cand{x.IPv4, "12371", x.Name + " own IP", false})
 		}
 	}
-	find := func(inf map[string]string, ip string) string {
+	find := func(inf map[string]string, ip, port string) string {
 		for n, r := range igRelays(inf) {
-			if r[0] == ip && r[1] == "12371" {
+			if r[0] == ip && r[1] == port {
 				return "proxy" + strconv.Itoa(n)
 			}
 		}
@@ -163,35 +188,35 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 	}
 	for _, c := range cands {
 		pc, pcancel := context.WithTimeout(ctx, 2*time.Minute)
-		v, _, _ := gemProbe(pc, "socks5://"+c.IPv4+":12371")
+		v, _, _ := gemProbe(pc, "socks5://"+c.ip+":"+c.port)
 		pcancel()
 		if v != "ok" {
 			continue
 		}
-		via, what := "direct", "its own IP"
-		if c != srv {
-			if via = find(inf, c.IPv4); via == "" { // not in its list yet: add it (the agent tests it first)
-				if rc, out := a.igRun(ctx, srv, []string{"proxy", "add", "-"}, "socks5 "+c.IPv4+" 12371 - -", 120, nil); rc != 0 {
-					log.Printf("gemini fix %s: adding %s: %s", srv.Name, c.Name, lastLineOf(out))
+		via, what := "direct", c.what
+		if !c.own {
+			if via = find(inf, c.ip, c.port); via == "" { // not in its list yet: add it (the agent tests it first)
+				if rc, out := a.igRun(ctx, srv, []string{"proxy", "add", "-"}, "socks5 "+c.ip+" "+c.port+" - -", 120, nil); rc != 0 {
+					log.Printf("gemini fix %s: adding %s: %s", srv.Name, c.what, lastLineOf(out))
 					continue
 				}
 				a.igForget(srv.ID)
-				if via = find(a.igInfo(ctx, srv), c.IPv4); via == "" {
+				if via = find(a.igInfo(ctx, srv), c.ip, c.port); via == "" {
 					continue
 				}
 			}
-			what = via + " (internal: " + c.Name + " own IP)"
+			what = via + " (internal: " + c.what + ")"
 		}
 		if rc, out := a.igRun(ctx, srv, []string{"route", "GOOGLE", via}, "", 180, nil); rc != 0 {
 			return "could not move Google to " + what + ": " + clipTo(lastLineOf(out), 100)
 		}
 		a.igForget(srv.ID)
-		return "Google moved to " + what + " — Germany, signed-in Gemini works there"
+		return "Google moved to " + what + " — ." + want + ", signed-in Gemini works there"
 	}
 	if len(cands) == 0 {
-		return "no German exit found — move it by hand"
+		return "no exit that Google places in ." + want + " — move it by hand"
 	}
-	return fmt.Sprintf("no German exit opens Gemini signed in (%d tried) — left as is", len(cands))
+	return fmt.Sprintf("no .%s exit opens Gemini signed in (%d tried) — left as is", want, len(cands))
 }
 
 // gemRelaySync gives every agent the IPv4 list of all our agent servers: they may use each
