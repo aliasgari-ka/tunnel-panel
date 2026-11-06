@@ -24,3 +24,11 @@ func TestGemVerdict(t *testing.T) {
 		}
 	}
 }
+
+func TestGemWantDom(t *testing.T) {
+	for cc, want := range map[string]string{"US": "com", "us": "com", "DE": "de", "GB": "co.uk", "FR": "fr", "": ""} {
+		if got := gemWantDom(&Server{Country: cc}); got != want {
+			t.Errorf("%q: got %q, want %q", cc, got, want)
+		}
+	}
+}

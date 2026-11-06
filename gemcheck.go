@@ -346,12 +346,11 @@ func (a *App) gemLoop() {
 				a.push(fmt.Sprintf("✅ Gemini (signed in) works again on %s (%s)", igLabel(pick), why))
 			}
 			g.verdict, g.why = v, why
-			// one Google country for every server: users move between servers, and an account that
-			// hops countries looks suspicious to Google
+			// Google in the server's own country (a US server gets Gemini's US features)
 			inf := a.igInfo(context.Background(), pick)
-			if d := inf["gdom"]; pick.Owner == "" && d != "" && d != "-" && d != gemWantDom && time.Since(g.moved) > gemServerEvery {
+			if d, want := inf["gdom"], gemWantDom(pick); pick.Owner == "" && want != "" && d != "" && d != "-" && d != want && time.Since(g.moved) > gemServerEvery {
 				g.moved = time.Now()
-				a.push(fmt.Sprintf("🌍 Google places the users of %s in .%s (not .%s)\n→ %s", igLabel(pick), d, gemWantDom, a.gemFix(pick, inf)))
+				a.push(fmt.Sprintf("🌍 Google places the users of %s in .%s (not .%s)\n→ %s", igLabel(pick), d, want, a.gemFix(pick, inf)))
 			}
 		case "refused", "signedout":
 			if !g.pending && g.verdict != v {
