@@ -105,3 +105,15 @@ func TestPeerScript(t *testing.T) {
 		t.Fatal("empty")
 	}
 }
+
+func TestUsageNicSetChange(t *testing.T) {
+	u := &usageLog{Last: map[string]*usageLast{}}
+	now := time.Now()
+	u.addSrcLocked(now, "s", "ir", "nic eth0", 1000, 100)
+	u.addSrcLocked(now, "s", "ir", "nic eth0", 1500, 200)
+	u.addSrcLocked(now, "s", "ir", "nic eth0+eth1", 90000, 9000) // a second card: baseline only
+	u.addSrcLocked(now, "s", "ir", "nic eth0+eth1", 90700, 9100)
+	if x := u.Days[0].Servers["ir"]; x == nil || x.Down != 1200 || x.Up != 200 {
+		t.Fatalf("got %+v, want 1200/200", x)
+	}
+}

@@ -57,6 +57,7 @@ type usageBucket struct {
 
 type usageLast struct {
 	D, U uint64
+	Src  string `json:"s,omitempty"` // a server's network cards ("eth0+eth1"); other set = new counter
 }
 
 type usageLog struct {
@@ -116,10 +117,16 @@ func (u *usageLog) saveLocked() {
 // sets its baseline. A peer counter ("p") is one per foreign address, kept under
 // "<iran>|<foreign>" in the buckets.
 func (u *usageLog) addLocked(now time.Time, kind, id string, d, up uint64) {
+	u.addSrcLocked(now, kind, id, "", d, up)
+}
+
+// addSrcLocked is addLocked for a counter made of parts (src names them): when the parts
+// change the read only sets a new baseline.
+func (u *usageLog) addSrcLocked(now time.Time, kind, id, src string, d, up uint64) {
 	key := kind + ":" + id
 	l := u.Last[key]
-	u.Last[key] = &usageLast{D: d, U: up}
-	if l == nil {
+	u.Last[key] = &usageLast{D: d, U: up, Src: src}
+	if l == nil || l.Src != src {
 		return
 	}
 	dd, du := d-l.D, up-l.U
@@ -182,8 +189,8 @@ func (a *App) usageLoop() {
 // unreachable, tunnel down — keeps its baseline and is counted on its next good read).
 func (a *App) usageRecord(start time.Time) {
 	type rd struct {
-		kind, id string
-		d, u     uint64
+		kind, id, src string
+		d, u          uint64
 	}
 	var reads []rd
 	tm := a.traffic
@@ -191,17 +198,17 @@ func (a *App) usageRecord(start time.Time) {
 	fresh := start.Add(-time.Minute).Unix()
 	for id, s := range tm.tunnels {
 		if s.Error == "" && s.Updated >= fresh {
-			reads = append(reads, rd{"t", id, s.TotalDown, s.TotalUp})
+			reads = append(reads, rd{"t", id, "", s.TotalDown, s.TotalUp})
 		}
 	}
 	for id, s := range tm.servers {
 		if s.Error == "" && s.Updated >= fresh {
-			reads = append(reads, rd{"s", id, s.TotalDown, s.TotalUp})
+			reads = append(reads, rd{"s", id, s.Source, s.TotalDown, s.TotalUp})
 		}
 	}
 	for id, s := range tm.peers {
 		if s.Error == "" && s.Updated >= fresh {
-			reads = append(reads, rd{"p", id, s.TotalDown, s.TotalUp})
+			reads = append(reads, rd{"p", id, "", s.TotalDown, s.TotalUp})
 		}
 	}
 	tm.mu.Unlock()
@@ -214,7 +221,7 @@ func (a *App) usageRecord(start time.Time) {
 	}
 	now := time.Now()
 	for _, r := range reads {
-		u.addLocked(now, r.kind, r.id, r.d, r.u)
+		u.addSrcLocked(now, r.kind, r.id, r.src, r.d, r.u)
 	}
 	u.saveLocked()
 }
