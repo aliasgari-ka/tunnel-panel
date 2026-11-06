@@ -190,6 +190,9 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		pc, pcancel := context.WithTimeout(ctx, 2*time.Minute)
 		v, _, _ := gemProbe(pc, "socks5://"+c.ip+":"+c.port)
 		pcancel()
+		if v == "signedout" {
+			return "the Gemini test account is signed out — log in again (IG Routing → 🔑 Google test browser), then Google is moved on the next round"
+		}
 		if v != "ok" {
 			continue
 		}

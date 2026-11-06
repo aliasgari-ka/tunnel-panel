@@ -11,7 +11,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -265,27 +264,18 @@ func gemWhy(p gemPage) string {
 	return ""
 }
 
-// ---- the loop: one server per round, each about every gemServerEvery; Google sees one
-// signed-in page now and then, the way a person opens it (no prompts, never a captcha solved:
-// a captcha only makes that exit wait longer).
+// ---- the loop. The signed-in test account is used only when Google is about to be moved
+// (gemFix checks each candidate signed in): Google signed it out after it was seen every
+// 20 minutes from a different country and IP. The rest is keyless: the agent measures the
+// Google country of the users' route (gdom) every 10 minutes.
 
 const (
 	gemTick        = 20 * time.Minute
-	gemServerEvery = 6 * time.Hour
-	gemRecheck     = 10 * time.Minute // a refusal is looked at once more before it counts
+	gemServerEvery = 6 * time.Hour // a server's Google is moved at most this often
 )
 
-type gemSrvState struct {
-	last    time.Time
-	next    time.Time
-	verdict string // the last counted one
-	pending bool   // refused once, a second look is due
-	why     string
-	moved   time.Time // the last time its Google was moved (at most once per gemServerEvery)
-}
-
 func (a *App) gemLoop() {
-	st := map[string]*gemSrvState{}
+	moved := map[string]time.Time{}
 	var signedOutSent time.Time
 	time.Sleep(3 * time.Minute)
 	relays := map[string]string{} // server id -> the allow-list it last took
@@ -299,83 +289,29 @@ func (a *App) gemLoop() {
 			}
 		})
 		a.gemRelaySync(list, relays)
-		// the one most overdue: a pending second look first, then the longest unchecked
-		now := time.Now()
-		var pick *Server
+		// one move per round at most: few signed-in visits
 		for _, s := range list {
-			g := st[s.ID]
-			if g == nil {
-				g = &gemSrvState{}
-				st[s.ID] = g
-			}
-			if now.Before(g.next) {
+			want := gemWantDom(s)
+			if s.Owner != "" || want == "" || time.Since(moved[s.ID]) < gemServerEvery {
 				continue
 			}
-			if pick == nil || g.pending && !st[pick.ID].pending || g.pending == st[pick.ID].pending && g.last.Before(st[pick.ID].last) {
-				pick = s
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			inf := a.igInfo(ctx, s)
+			cancel()
+			if d := inf["gdom"]; d == "" || d == "-" || d == want {
+				continue
 			}
-		}
-		if pick == nil {
-			continue
-		}
-		g := st[pick.ID]
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		v, page, err := gemProbe(ctx, fmt.Sprintf("socks5://%s:%d", pick.IPv4, gemRelayPort))
-		if v == "signedout" { // the account itself, or only this exit? the browser's own exit tells
-			if ov, _, oerr := gemProbe(ctx, ""); oerr == nil && ov == "signedout" {
-				cancel()
-				if time.Since(signedOutSent) > 24*time.Hour {
-					signedOutSent = time.Now()
-					a.push("🔑 Gemini test account (Google test browser) is signed out — log in again: IG Routing → 🔑 Google test browser. The signed-in Gemini checks wait until then.")
+			moved[s.ID] = time.Now()
+			res := a.gemFix(s, inf)
+			if strings.Contains(res, "signed out") { // tried again next round; told once a day
+				delete(moved, s.ID)
+				if time.Since(signedOutSent) < 24*time.Hour {
+					break
 				}
-				continue
+				signedOutSent = time.Now()
 			}
-		}
-		cancel()
-		g.last = time.Now()
-		g.next = g.last.Add(gemServerEvery)
-		if err != nil && v == "" {
-			log.Printf("gemini check %s: %v", pick.Name, err)
-			continue // the browser or the tunnel to it; not this server's fault
-		}
-		why := gemWhy(page)
-		switch v {
-		case "ok":
-			g.pending = false
-			if g.verdict != "" && g.verdict != "ok" && g.verdict != "noanswer" {
-				a.push(fmt.Sprintf("✅ Gemini (signed in) works again on %s (%s)", igLabel(pick), why))
-			}
-			g.verdict, g.why = v, why
-			// Google in the server's own country (a US server gets Gemini's US features)
-			inf := a.igInfo(context.Background(), pick)
-			if d, want := inf["gdom"], gemWantDom(pick); pick.Owner == "" && want != "" && d != "" && d != "-" && d != want && time.Since(g.moved) > gemServerEvery {
-				g.moved = time.Now()
-				a.push(fmt.Sprintf("🌍 Google places the users of %s in .%s (not .%s)\n→ %s", igLabel(pick), d, want, a.gemFix(pick, inf)))
-			}
-		case "refused", "signedout":
-			if !g.pending && g.verdict != v {
-				g.pending, g.next = true, g.last.Add(gemRecheck)
-				continue
-			}
-			g.pending = false
-			if g.verdict != v {
-				inf := a.igInfo(context.Background(), pick)
-				msg := fmt.Sprintf("🔴 Gemini (signed in) refused on %s: %s\nGoogle route there: %s", igLabel(pick), why, igProxyName(inf, inf["google"], a.igServerByIP))
-				if pick.Owner == "" {
-					g.moved = time.Now()
-					msg += "\n→ " + a.gemFix(pick, inf)
-				}
-				a.push(msg)
-			}
-			g.verdict, g.why = v, why
-		case "captcha":
-			g.next = g.last.Add(3 * gemServerEvery)
-			if g.verdict != v {
-				a.push(fmt.Sprintf("🟠 Google shows a captcha to the Gemini test account on %s — that exit is checked less often now", igLabel(pick)))
-			}
-			g.verdict = v
-		default: // noanswer: the relay is not there (older agent) or the page hung; checked again next time
-			log.Printf("gemini check %s: no answer (%v) %s", pick.Name, err, clipTo(page.Text, 100))
+			a.push(fmt.Sprintf("🌍 Google places the users of %s in .%s (not .%s)\n→ %s", igLabel(s), inf["gdom"], want, res))
+			break
 		}
 	}
 }

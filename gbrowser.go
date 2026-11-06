@@ -21,7 +21,7 @@ func (s *Server2) gbrowser() http.HandlerFunc {
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/gbrowser" || r.URL.Path == "/gbrowser/" {
-			http.Redirect(w, r, "/gbrowser/vnc.html?path=gbrowser/websockify&autoconnect=1&resize=remote&reconnect=1", http.StatusFound)
+			http.Redirect(w, r, "/gbrowser/vnc.html?path=gbrowser/websockify&autoconnect=1&resize=scale&reconnect=1", http.StatusFound)
 			return
 		}
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/gbrowser")
