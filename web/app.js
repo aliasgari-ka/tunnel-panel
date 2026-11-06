@@ -494,6 +494,7 @@ function shortErr(e) {
 // Polls /api/traffic while the tunnels or servers page is open; the server only reads
 // counters while someone polls, and stops ~20 s after the page goes away.
 let trafficTimer = null;
+const trafficMem = { since: 0, at: 0, h: { tunnels: {}, servers: {}, res: {} } };
 const fmtRate = (bps) => bps >= 1e9 ? (bps / 1e9).toFixed(2) + ' Gbps' : bps >= 1e6 ? (bps / 1e6).toFixed(1) + ' Mbps' : bps >= 1e3 ? (bps / 1e3).toFixed(0) + ' Kbps' : Math.round(bps) + ' bps';
 const fmtBytes = (b) => b >= 2 ** 40 ? (b / 2 ** 40).toFixed(2) + ' TB' : b >= 2 ** 30 ? (b / 2 ** 30).toFixed(2) + ' GB' : b >= 2 ** 20 ? (b / 2 ** 20).toFixed(1) + ' MB' : b >= 1024 ? (b / 1024).toFixed(0) + ' KB' : b + ' B';
 const ago = (ts) => { const s = Math.max(0, Date.now() / 1000 - ts); return s < 60 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
@@ -506,7 +507,16 @@ function trafficWatch() {
 async function trafficTick() {
   if (STATE.view !== 'tunnels' && STATE.view !== 'servers') { clearInterval(trafficTimer); trafficTimer = null; return; }
   if (document.hidden) return;
-  let d; try { d = await api('/traffic'); } catch (e) { return; }
+  // after the first poll only the new chart points come (?since); the history is kept here
+  const fresh = !trafficMem.since || Date.now() / 1000 - trafficMem.at > 20;
+  let d; try { d = await api('/traffic' + (fresh ? '' : '?since=' + (trafficMem.since - 1))); } catch (e) { return; }
+  if (fresh) trafficMem.h = { tunnels: {}, servers: {}, res: {} };
+  for (const k of ['tunnels', 'servers', 'res']) for (const [id, x] of Object.entries(d[k] || {})) {
+    if (!x || !x.hist) continue;
+    const old = trafficMem.h[k][id] || [], first = x.hist.length ? x.hist[0].t : Infinity;
+    x.hist = trafficMem.h[k][id] = old.filter(p => p.t < first).concat(x.hist).slice(-90);
+  }
+  trafficMem.since = d.now || 0; trafficMem.at = Date.now() / 1000;
   const tun = d.tunnels || {}, srv = d.servers || {}, speed = d.speed || {};
   $$('[data-res]').forEach(el => renderRes(el, (d.res || {})[el.dataset.res]));
   // the server list's CPU · RAM
