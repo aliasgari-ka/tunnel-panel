@@ -20,7 +20,7 @@ import (
 //     TPAO_<id> in OUTPUT (--sport, Iran -> users = download) and TPAI_<id> in INPUT
 //     (--dport, users -> Iran = upload). The chains only count (no target) and are created
 //     on first read, so tunnels deployed before this feature are covered too.
-//   - each server's default-route NIC, for the whole-server picture.
+//   - each server's network cards together (nicRead), for the whole-server picture.
 //   - on an Iran server, the bytes to and from each foreign server's address (peerScript):
 //     what it receives from each foreign server is what each of its routes costs, so one
 //     Iran server with tunnels to two foreign servers is split between them.
@@ -150,9 +150,22 @@ func trafficIface(t *Tunnel) string {
 	return fmt.Sprintf("tp%d", t.Index)
 }
 
-const nicRead = `IF=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
-[ -n "$IF" ] || IF=$(awk -F'[: ]+' 'NR>2{sub(/^ +/,""); split($0,a,/[: ]+/); if (a[1]!="lo" && a[2]+0>=m) {m=a[2]+0; n=a[1]}} END{print n}' /proc/net/dev)
-[ -n "$IF" ] && echo "N $(cat /sys/class/net/$IF/statistics/rx_bytes 2>/dev/null || echo -) $(cat /sys/class/net/$IF/statistics/tx_bytes 2>/dev/null || echo -) $IF"
+// nicRead prints "N <rx> <tx> <names>" summed over the server's real network cards (the
+// ones backed by a device: not lo, tunnels, bridges, veth or VLANs on top of a card), so a
+// server whose users arrive on a second card is counted whole; without any (a container's
+// venet0) it falls back to the default-route interface.
+const nicRead = `R=0; X=0; L=
+for d in /sys/class/net/*; do
+  [ -e "$d/device" ] || continue
+  r=$(cat "$d/statistics/rx_bytes" 2>/dev/null) && x=$(cat "$d/statistics/tx_bytes" 2>/dev/null) || continue
+  R=$((R+r)); X=$((X+x)); L="$L${L:++}${d##*/}"
+done
+if [ -z "$L" ]; then
+  IF=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+  [ -n "$IF" ] || IF=$(awk -F'[: ]+' 'NR>2{sub(/^ +/,""); split($0,a,/[: ]+/); if (a[1]!="lo" && a[2]+0>=m) {m=a[2]+0; n=a[1]}} END{print n}' /proc/net/dev)
+  [ -n "$IF" ] && R=$(cat /sys/class/net/$IF/statistics/rx_bytes 2>/dev/null || echo -) && X=$(cat /sys/class/net/$IF/statistics/tx_bytes 2>/dev/null || echo -) && L=$IF
+fi
+[ -n "$L" ] && echo "N $R $X $L"
 `
 
 // acctChains returns the counting-chain names for a port-forward tunnel.
@@ -477,9 +490,10 @@ func (tm *trafficMon) update(s *TrafficStat, src, dStr, uStr string, now time.Ti
 		s.Down, s.Up, s.haveLast = 0, 0, false
 		return
 	}
+	same := s.Source == src // a NIC that gained or lost a card is a new counter
 	s.Source, s.Error, s.Updated = src, "", now.Unix()
 	s.TotalDown, s.TotalUp = d, u
-	if s.haveLast && d >= s.lastD && u >= s.lastU {
+	if s.haveLast && same && d >= s.lastD && u >= s.lastU {
 		dt := now.Sub(s.lastT).Seconds()
 		if dt > 0 {
 			s.Down = float64(d-s.lastD) * 8 / dt
