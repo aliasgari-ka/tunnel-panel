@@ -214,6 +214,17 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 			return "could not move Google to " + what + ": " + clipTo(lastLineOf(out), 100)
 		}
 		a.igForget(srv.ID)
+		// the exit passed in the test browser, but the users' route must reach it too (a server's
+		// own WARP relayed through its own IP did not): check the users' relay, else put Google back
+		time.Sleep(5 * time.Second)
+		if d := gemDom(ctx, srv.IPv4+":12370"); d != want {
+			if prev := inf["google"]; prev != "" && prev != "-" {
+				a.igRun(ctx, srv, []string{"route", "GOOGLE", prev}, "", 180, nil)
+				a.igForget(srv.ID)
+			}
+			log.Printf("gemini fix %s: %s works in the test browser, but the users' route gets %q there -> put back to %s", srv.Name, what, d, inf["google"])
+			continue
+		}
 		return "Google moved to " + what + " — ." + want + ", signed-in Gemini works there"
 	}
 	if len(cands) == 0 {
