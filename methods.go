@@ -233,12 +233,13 @@ var methods []*Method
 var methodByID = map[string]*Method{}
 
 // methodGroups puts related methods together in the UI (all Backhaul cores in one place;
-// the UI lists the groups in this order: Backhaul, BackPack, Kernel, Other).
+// the UI lists the groups in this order: Backhaul, BackPack, Kernel, TP, Other).
 var methodGroups = map[string]string{
 	"backhaul": "Backhaul", "premium": "Backhaul", "premium1": "Backhaul",
 	"bp_reverse": "BackPack", "bp_l3": "BackPack",
 	"gre": groupKernel, "direct6": groupKernel, "ipsec6": groupKernel, "espsk": groupKernel, "wg": groupKernel,
 	"frp": "Other", "golden": "Other", "icmp": "Other", "paqet": "Other", "spoof": "Other",
+	"tpk": "TP", "tpk_rev": "TP",
 }
 
 const groupKernel = "Kernel GRE / IPsec / WireGuard"
