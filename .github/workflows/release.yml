@@ -55,7 +55,7 @@ jobs:
         id: cache
         with:
           path: out
-          key: box64-${{ env.BOX64_VER }}-${{ env.BOX64_SRC_SHA256 }}-mmsg-jammy-arm64
+          key: box64-${{ env.BOX64_VER }}-${{ env.BOX64_SRC_SHA256 }}-mmsg2-jammy-arm64
       - name: Build box64 (pinned source)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -66,10 +66,11 @@ jobs:
           mkdir src && tar -xzf box64.tgz -C src --strip-components=1
           # Upstream box64 doesn't pass these x86-64 syscalls through, and the Premium core's ipx
           # loop needs them (ENOSYS on every packet otherwise): ppoll (271), recvmmsg (299),
-          # sendmmsg (307), pidfd_send_signal (424). Same args and structs on arm64.
+          # sendmmsg (307). Same args and structs on arm64. (Not pidfd_send_signal: once it works,
+          # Go's os/exec forks with clone(CLONE_PIDFD), and box64's clone wrapper smashes its stack.)
           sed -i -e '/\[270\] = {__NR_pselect6, 6},/a \    [271] = {__NR_ppoll, 5},' \
-            -e '/\[302\] = {__NR_prlimit64, 4},/a \    [299] = {__NR_recvmmsg, 5},\n    [307] = {__NR_sendmmsg, 4},\n    [424] = {__NR_pidfd_send_signal, 4},' src/src/emu/x64syscall.c
-          for n in 271 299 307 424; do grep -q "^ *\[$n\] = " src/src/emu/x64syscall.c; done
+            -e '/\[302\] = {__NR_prlimit64, 4},/a \    [299] = {__NR_recvmmsg, 5},\n    [307] = {__NR_sendmmsg, 4},' src/src/emu/x64syscall.c
+          for n in 271 299 307; do grep -q "^ *\[$n\] = " src/src/emu/x64syscall.c; done
           cmake -S src -B build -DARM_DYNAREC=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build -j"$(nproc)"
           mkdir -p out && cp build/box64 out/box64-arm64 && strip out/box64-arm64
