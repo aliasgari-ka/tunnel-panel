@@ -1065,7 +1065,8 @@ func hsEventText(t *Tunnel, good []HSPath, e string) (int64, string) {
 }
 
 // hsAcct counts users' traffic by the connections' original port (the same whichever path
-// carries it, DNAT or REDIRECT), in mangle so nothing else is affected.
+// carries it, DNAT or REDIRECT), in mangle so nothing else is affected. The jumps are put
+// back on every read (a firewall reload can drop them and keep the chains).
 func hsAcct(t *Tunnel) string {
 	in, out := "TPHA_"+t.ID, "TPHB_"+t.ID
 	var rules strings.Builder
@@ -1078,12 +1079,11 @@ func hsAcct(t *Tunnel) string {
 	}
 	return fmt.Sprintf(`if ! iptables -w -t mangle -nL %[1]s >/dev/null 2>&1; then
     iptables -w -t mangle -N %[1]s; iptables -w -t mangle -N %[2]s
-%[4]s    iptables -w -t mangle -I PREROUTING -j %[1]s; iptables -w -t mangle -I POSTROUTING -j %[2]s
-fi
-d=$(iptables -w -t mangle -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%d", s+0}')
-u=$(iptables -w -t mangle -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%d", s+0}')
+%[4]sfi
+%[5]s%[6]sd=$(iptables -w -t mangle -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
+u=$(iptables -w -t mangle -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
 echo "T %[3]s $d $u"
-`, in, out, t.ID, rules.String())
+`, in, out, t.ID, rules.String(), jumpOnce("iptables -t mangle", "PREROUTING", in), jumpOnce("iptables -t mangle", "POSTROUTING", out))
 }
 
 func hsAcctDown(t *Tunnel) string {

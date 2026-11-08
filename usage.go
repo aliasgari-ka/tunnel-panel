@@ -14,9 +14,11 @@ import (
 
 // Usage: how many bytes each tunnel and each server's NIC moved. Every usageTick the live
 // counters (traffic.go) are read once even when no one is looking, and the increase since
-// the last read goes into the current hour's bucket and the current (Tehran) day's. A
-// counter that went down was restarted (tunnel restart, reboot): its whole new value is the
-// increase. Hours are kept usageKeep (hour-by-hour tables), days usageKeepDays; all of it is
+// the last read goes into the hour and (Tehran) day buckets, split by time when the interval
+// since the last read crosses an hour. A counter that went down was restarted (tunnel
+// restart, reboot): its whole new value is the increase. A counter made of parts (cards,
+// iptables + ip6tables) is compared part by part, so one part restarting counts only that
+// part. Hours are kept usageKeep (hour-by-hour tables), days usageKeepDays; all of it is
 // saved to usage.json, so a panel restart loses at most one tick.
 //
 // What costs is what an Iran server receives (Iran's upload is free). Per tunnel that is its
@@ -57,7 +59,9 @@ type usageBucket struct {
 
 type usageLast struct {
 	D, U uint64
-	Src  string `json:"s,omitempty"` // a server's network cards ("eth0+eth1"); other set = new counter
+	Src  string      `json:"s,omitempty"` // a server's network cards ("eth0+eth1"); other set = new counter
+	P    [][2]uint64 `json:"p,omitempty"` // down/up of each part the totals add up
+	At   int64       `json:"a,omitempty"` // when it was read (unix)
 }
 
 type usageLog struct {
@@ -123,19 +127,79 @@ func (u *usageLog) addLocked(now time.Time, kind, id string, d, up uint64) {
 // addSrcLocked is addLocked for a counter made of parts (src names them): when the parts
 // change the read only sets a new baseline.
 func (u *usageLog) addSrcLocked(now time.Time, kind, id, src string, d, up uint64) {
+	u.addPartsLocked(now, kind, id, src, d, up, nil)
+}
+
+// usageUp is how much a counter grew from old to cur. A single counter that went down was
+// restarted: its whole new value is the increase.
+func usageUp(old, cur uint64) uint64 {
+	if cur < old {
+		return cur
+	}
+	return cur - old
+}
+
+// usageSumUp is usageUp for a sum whose parts are not known. A sum that went down may be one
+// part restarting while the others run on (one card, the ip6tables chain): its new value is
+// then nearly the others' whole lifetime, not an increase. Below half the old value it is
+// taken for a whole restart (all parts, or the one that carried most); otherwise only the
+// baseline moves and that interval is not counted: losing one tick of one part rather than
+// booking again terabytes that were counted already.
+func usageSumUp(old, cur uint64) uint64 {
+	if cur < old && cur >= old/2 {
+		return 0
+	}
+	return usageUp(old, cur)
+}
+
+// usageSplitMax: an interval longer than this (the panel was down) is spread over its last
+// usageSplitMax seconds only.
+const usageSplitMax = 24 * 3600
+
+// addPartsLocked is addSrcLocked with the counter's parts (nil: unknown). Parts are counted
+// one by one when the last read had as many; otherwise their sum is (usageSumUp).
+func (u *usageLog) addPartsLocked(now time.Time, kind, id, src string, d, up uint64, parts [][2]uint64) {
 	key := kind + ":" + id
 	l := u.Last[key]
-	u.Last[key] = &usageLast{D: d, U: up, Src: src}
+	u.Last[key] = &usageLast{D: d, U: up, Src: src, P: parts, At: now.Unix()}
 	if l == nil || l.Src != src {
 		return
 	}
-	dd, du := d-l.D, up-l.U
-	if d < l.D {
-		dd = d
+	var dd, du uint64
+	if len(parts) > 0 && len(parts) == len(l.P) {
+		for i, p := range parts {
+			dd += usageUp(l.P[i][0], p[0])
+			du += usageUp(l.P[i][1], p[1])
+		}
+	} else {
+		dd, du = usageSumUp(l.D, d), usageSumUp(l.U, up)
 	}
-	if up < l.U {
-		du = up
+	// spread over the hours since the last read by time; a restarted counter's bytes were
+	// made after the restart, so they all go to now
+	end, from := now.Unix(), l.At
+	if d < l.D || up < l.U || from <= 0 || from >= end || hourStart(time.Unix(from, 0)) == hourStart(now) {
+		u.bookLocked(now, kind, id, dd, du)
+		return
 	}
+	if end-from > usageSplitMax {
+		from = end - usageSplitMax
+	}
+	restD, restU := dd, du
+	for t := from; t < end; {
+		next := min(hourStart(time.Unix(t, 0))+3600, end)
+		pd, pu := restD, restU // the last piece takes what is left
+		if next < end {
+			f := float64(next-t) / float64(end-from)
+			pd, pu = min(uint64(float64(dd)*f), restD), min(uint64(float64(du)*f), restU)
+		}
+		restD, restU = restD-pd, restU-pu
+		u.bookLocked(time.Unix(t, 0), kind, id, pd, pu)
+		t = next
+	}
+}
+
+// bookLocked adds bytes to the hour and the day of now.
+func (u *usageLog) bookLocked(now time.Time, kind, id string, dd, du uint64) {
 	for _, b := range []*usageBucket{u.hourLocked(now), u.dayLocked(now)} {
 		m, bid := b.Tunnels, id
 		switch kind {
@@ -154,15 +218,25 @@ func (u *usageLog) addSrcLocked(now time.Time, kind, id, src string, d, up uint6
 	}
 }
 
+// bucketIn finds or makes the bucket at, keeping the list in time order (a read split over
+// two hours books the earlier one when the later may exist already).
 func bucketIn(list *[]*usageBucket, at int64, keep int) *usageBucket {
-	if n := len(*list); n > 0 && (*list)[n-1].Hour == at {
-		return (*list)[n-1]
+	l := *list
+	i := len(l)
+	for i > 0 && l[i-1].Hour > at {
+		i--
+	}
+	if i > 0 && l[i-1].Hour == at {
+		return l[i-1]
 	}
 	b := &usageBucket{Hour: at, Tunnels: map[string]*UsageBytes{}, Servers: map[string]*UsageBytes{}}
-	*list = append(*list, b)
-	if len(*list) > keep {
-		*list = (*list)[len(*list)-keep:]
+	l = append(l, nil)
+	copy(l[i+1:], l[i:])
+	l[i] = b
+	if len(l) > keep {
+		l = l[len(l)-keep:]
 	}
+	*list = l
 	return b
 }
 
@@ -195,17 +269,17 @@ func (a *App) usageRecord(start time.Time) {
 	fresh := start.Add(-time.Minute).Unix()
 	for id, s := range tm.tunnels {
 		if s.Error == "" && s.Updated >= fresh {
-			reads = append(reads, rd{"t", id, "", s.TotalDown, s.TotalUp})
+			reads = append(reads, rd{"t", id, "", s.TotalDown, s.TotalUp, s.parts})
 		}
 	}
 	for id, s := range tm.servers {
 		if s.Error == "" && s.Updated >= fresh {
-			reads = append(reads, rd{"s", id, s.Source, s.TotalDown, s.TotalUp})
+			reads = append(reads, rd{"s", id, s.Source, s.TotalDown, s.TotalUp, s.parts})
 		}
 	}
 	for id, s := range tm.peers {
 		if s.Error == "" && s.Updated >= fresh {
-			reads = append(reads, rd{"p", id, "", s.TotalDown, s.TotalUp})
+			reads = append(reads, rd{"p", id, "", s.TotalDown, s.TotalUp, s.parts})
 		}
 	}
 	tm.mu.Unlock()
@@ -232,6 +306,7 @@ func (a *App) usageRecord(start time.Time) {
 type usageRead struct {
 	kind, id, src string
 	d, u          uint64
+	parts         [][2]uint64 // the counters d/u add up (nil: unknown)
 }
 
 // recordLocked adds one round of reads. What comes from a foreign server is counted only
@@ -261,11 +336,11 @@ func (u *usageLog) recordLocked(now time.Time, reads []usageRead, pairOf map[str
 	for _, r := range reads {
 		if r.kind == "p" {
 			if i := strings.LastIndex(r.id, "|"); i > 0 && !ok[r.id[:i]] {
-				u.Last["p:"+r.id] = &usageLast{D: r.d, U: r.u} // a new baseline, nothing counted
+				u.Last["p:"+r.id] = &usageLast{D: r.d, U: r.u, P: r.parts, At: now.Unix()} // a new baseline, nothing counted
 				continue
 			}
 		}
-		u.addSrcLocked(now, r.kind, r.id, r.src, r.d, r.u)
+		u.addPartsLocked(now, r.kind, r.id, r.src, r.d, r.u, r.parts)
 	}
 }
 
@@ -370,12 +445,14 @@ func usagePaid(b *usageBucket, pairs map[string][2]string) (paid map[string]uint
 	for k := range b.Peers {
 		hasPeer[strings.SplitN(k, "|", 2)[0]] = true
 	}
+	// only the tunnels in this bucket share it: an idle hour split with tunnels that have no
+	// row here gave them shares nothing shows
 	pairDown, srvTot := map[string]uint64{}, map[string]uint64{}
 	pairN, srvN := map[string]int{}, map[string]int{}
 	for id, p := range pairs {
 		x := b.Tunnels[id]
 		if x == nil {
-			x = &UsageBytes{}
+			continue
 		}
 		pk := p[0] + "|" + p[1]
 		pairDown[pk] += x.Down
@@ -392,7 +469,7 @@ func usagePaid(b *usageBucket, pairs map[string][2]string) (paid map[string]uint
 	for id, p := range pairs {
 		x := b.Tunnels[id]
 		if x == nil {
-			x = &UsageBytes{}
+			continue
 		}
 		if hasPeer[p[0]] {
 			pk := p[0] + "|" + p[1]

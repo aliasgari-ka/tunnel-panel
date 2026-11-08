@@ -30,7 +30,7 @@ const (
 	// stop polling this long after the last viewer; long enough that a reload or a quick
 	// return finds the rates already there instead of waiting for two fresh samples
 	trafficIdle = 2 * time.Minute
-	trafficHist = 90               // points kept (3 min at 2 s)
+	trafficHist = 90 // points kept (3 min at 2 s)
 )
 
 // TrafficPoint is one rate sample in bits per second.
@@ -55,6 +55,7 @@ type TrafficStat struct {
 	lastT        time.Time
 	lastD, lastU uint64
 	haveLast     bool
+	parts        [][2]uint64 // down/up of each counter the totals add up (cards, iptables + ip6tables)
 }
 
 // TrafficSnapshot is what /api/traffic returns.
@@ -150,28 +151,37 @@ func trafficIface(t *Tunnel) string {
 	return fmt.Sprintf("tp%d", t.Index)
 }
 
-// nicRead prints "N <rx> <tx> <names>" summed over the server's real network cards (the
-// ones backed by a device: not lo, tunnels, bridges, veth or VLANs on top of a card), so a
-// server whose users arrive on a second card is counted whole; without any (a container's
-// venet0) it falls back to the default-route interface.
-const nicRead = `R=0; X=0; L=
+// nicRead prints "N <rx> <tx> <names> <rx/tx of each card>" summed over the server's real
+// network cards (the ones backed by a device: not lo, tunnels, bridges, veth or VLANs on top
+// of a card), so a server whose users arrive on a second card is counted whole; without any
+// (a container's venet0) it falls back to the default-route interface. Each card is listed
+// too: one card's counter restarting (driver reload) is then not taken for the whole sum's.
+const nicRead = `R=0; X=0; L=; P=
 for d in /sys/class/net/*; do
   [ -e "$d/device" ] || continue
   r=$(cat "$d/statistics/rx_bytes" 2>/dev/null) && x=$(cat "$d/statistics/tx_bytes" 2>/dev/null) || continue
-  R=$((R+r)); X=$((X+x)); L="$L${L:++}${d##*/}"
+  R=$((R+r)); X=$((X+x)); L="$L${L:++}${d##*/}"; P="$P${P:++}$r/$x"
 done
 if [ -z "$L" ]; then
   IF=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
   [ -n "$IF" ] || IF=$(awk -F'[: ]+' 'NR>2{sub(/^ +/,""); split($0,a,/[: ]+/); if (a[1]!="lo" && a[2]+0>=m) {m=a[2]+0; n=a[1]}} END{print n}' /proc/net/dev)
   [ -n "$IF" ] && R=$(cat /sys/class/net/$IF/statistics/rx_bytes 2>/dev/null || echo -) && X=$(cat /sys/class/net/$IF/statistics/tx_bytes 2>/dev/null || echo -) && L=$IF
 fi
-[ -n "$L" ] && echo "N $R $X $L"
+[ -n "$L" ] && echo "N $R $X $L $P"
 `
 
 // acctChains returns the counting-chain names for a port-forward tunnel.
 func acctChains(t *Tunnel) (in, out string) { return "TPAI_" + t.ID, "TPAO_" + t.ID }
 
-// acctScript ensures the counting chains exist and prints "T <id> <down> <up>".
+// jumpOnce makes sure hook jumps to chain exactly once (a firewall reload can drop the jump
+// and keep the chain, which froze the counters; two jumps would count twice).
+func jumpOnce(ipt, hook, chain string) string {
+	return fmt.Sprintf(`[ "$(%[1]s -w -S %[2]s 2>/dev/null | grep -c -- "^-A %[2]s -j %[3]s\$")" = 1 ] || { while %[1]s -w -D %[2]s -j %[3]s 2>/dev/null; do :; done; %[1]s -w -I %[2]s -j %[3]s 2>/dev/null; }
+`, ipt, hook, chain)
+}
+
+// acctScript ensures the counting chains and their jumps exist and prints
+// "T <id> <down> <up> ports <down/up of iptables>+<of ip6tables>".
 func acctScript(t *Tunnel) string {
 	in, out := acctChains(t)
 	var rules strings.Builder
@@ -191,7 +201,7 @@ func acctScript(t *Tunnel) string {
 			fmt.Fprintf(&rules, "  $ipt -w -A %s -p %s -m conntrack --ctdir ORIGINAL --ctorigdstport %s\n  $ipt -w -A %s -p %s -m conntrack --ctdir REPLY --ctorigdstport %s\n", in, proto, port, out, proto, port)
 		}
 	}
-	return fmt.Sprintf(`d=0; u=0
+	return fmt.Sprintf(`d=0; u=0; p=
 for ipt in iptables ip6tables; do
   command -v $ipt >/dev/null 2>&1 || continue
   # (chains from before the conntrack-based rules are rebuilt once)
@@ -199,13 +209,13 @@ for ipt in iptables ip6tables; do
     while $ipt -w -D INPUT -j %[1]s 2>/dev/null; do :; done; while $ipt -w -D OUTPUT -j %[2]s 2>/dev/null; do :; done
     $ipt -w -F %[1]s 2>/dev/null; $ipt -w -X %[1]s 2>/dev/null; $ipt -w -F %[2]s 2>/dev/null; $ipt -w -X %[2]s 2>/dev/null
     $ipt -w -N %[1]s 2>/dev/null; $ipt -w -N %[2]s 2>/dev/null
-%[4]s    $ipt -w -I INPUT -j %[1]s; $ipt -w -I OUTPUT -j %[2]s
-  fi
-  x=$($ipt -w -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%d", s+0}'); d=$((d+x))
-  x=$($ipt -w -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%d", s+0}'); u=$((u+x))
+%[4]s  fi
+  %[5]s  %[6]s  xd=$($ipt -w -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
+  xu=$($ipt -w -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
+  d=$((d+xd)); u=$((u+xu)); p="$p${p:++}$xd/$xu"
 done
-echo "T %[3]s $d $u"
-`, in, out, t.ID, rules.String())
+echo "T %[3]s $d $u ports $p"
+`, in, out, t.ID, rules.String(), jumpOnce("$ipt", "INPUT", in), jumpOnce("$ipt", "OUTPUT", out))
 }
 
 // acctDown removes a tunnel's counting chains (part of teardown).
@@ -230,19 +240,15 @@ func (a *App) trafficCollect() {
 		for _, t := range st.Tunnels {
 			if t.Active != "" {
 				byServer[t.ServerID] = append(byServer[t.ServerID], t)
-				ips := []string{st.Settings.LocalIPv4, st.Settings.LocalIPv6}
-				if f := a.store.serverLocked(st, t.ForeignID); t.ForeignID != "" && f != nil {
-					ips = []string{f.IPv4, f.IPv6}
-				} else if t.ForeignID != "" {
+				f := a.store.serverLocked(st, t.ForeignID)
+				if t.ForeignID != "" && f == nil {
 					continue
 				}
-				for _, ip := range ips {
-					if net.ParseIP(ip) != nil {
-						if peers[t.ServerID] == nil {
-							peers[t.ServerID] = map[string]string{}
-						}
-						peers[t.ServerID][net.ParseIP(ip).String()] = t.ForeignID
+				for _, ip := range peerIPs(t, f, st.Settings) {
+					if peers[t.ServerID] == nil {
+						peers[t.ServerID] = map[string]string{}
 					}
+					peers[t.ServerID][ip] = t.ForeignID
 				}
 			}
 		}
@@ -328,6 +334,26 @@ func (a *App) trafficCollect() {
 	}
 	tm.mu.Unlock()
 	wg.Wait()
+}
+
+// peerIPs are the addresses a running tunnel's Iran server receives its foreign side's
+// traffic from: the foreign server's (f nil: the panel host's), and for Spoof-Tunnel the
+// forged source the foreign side sends from — its packets never carry the real address.
+func peerIPs(t *Tunnel, f *Server, set Settings) []string {
+	ips := []string{set.LocalIPv4, set.LocalIPv6}
+	if f != nil {
+		ips = []string{f.IPv4, f.IPv6}
+	}
+	if t.Active == "spoof" {
+		ips = append(ips, t.Options["spoof"]["peer_spoof_ip"])
+	}
+	var out []string
+	for _, ip := range ips {
+		if x := net.ParseIP(strings.TrimSpace(ip)); x != nil {
+			out = append(out, x.String())
+		}
+	}
+	return out
 }
 
 // peerScript counts what an Iran server exchanges with each foreign address: mangle chains
@@ -472,7 +498,9 @@ func (a *App) trafficParse(serverID string, ts []*Tunnel, out string) {
 		switch {
 		case len(f) >= 4 && f[0] == "N":
 			// NIC: rx = into this server = download for an Iran box
-			tm.update(tm.stat(tm.servers, serverID), "nic "+f[3], f[1], f[2], now)
+			s := tm.stat(tm.servers, serverID)
+			tm.update(s, "nic "+f[3], f[1], f[2], now)
+			s.parts = partsOf(s, f, 4)
 		case len(f) >= 4 && f[0] == "T":
 			src := "ports"
 			s := tm.stat(tm.tunnels, f[1])
@@ -480,6 +508,11 @@ func (a *App) trafficParse(serverID string, ts []*Tunnel, out string) {
 				src = "iface"
 			}
 			tm.update(s, src, f[2], f[3], now)
+			if src == "ports" {
+				s.parts = partsOf(s, f, 5) // "T <id> <d> <u> ports <parts>"
+			} else {
+				s.parts = partsOf(s, nil, 0) // "T <id> <rx> <tx> iface <name>"
+			}
 			if src == "iface" && s.Error != "" && len(f) >= 6 {
 				s.Error = "tunnel interface " + f[5] + " not found — is the tunnel up on Iran?"
 			}
@@ -492,6 +525,28 @@ func (a *App) trafficParse(serverID string, ts []*Tunnel, out string) {
 			s.Error = "no counters returned"
 		}
 	}
+}
+
+// partsOf reads the "<d>/<u>+<d>/<u>" field f[i] of a counter line: the counters its totals
+// add up. Without it (an interface, one chain) the totals are one counter.
+func partsOf(s *TrafficStat, f []string, i int) [][2]uint64 {
+	if s.Error != "" {
+		return nil
+	}
+	if i < len(f) {
+		var out [][2]uint64
+		for _, p := range strings.Split(f[i], "+") {
+			a, b, _ := strings.Cut(p, "/")
+			d, err1 := strconv.ParseUint(a, 10, 64)
+			u, err2 := strconv.ParseUint(b, 10, 64)
+			if err1 != nil || err2 != nil {
+				return nil
+			}
+			out = append(out, [2]uint64{d, u})
+		}
+		return out
+	}
+	return [][2]uint64{{s.TotalDown, s.TotalUp}}
 }
 
 // update turns two cumulative byte counters into rates.
@@ -550,16 +605,39 @@ func withProbePort(m *Method, t *Tunnel) string {
 	if benchIsL3(m, t.Options[m.ID]) || m.ID == "spoof" {
 		return t.Ports
 	}
-	p := strconv.Itoa(probePortFor(t))
+	pn := probePortFor(t)
+	p := strconv.Itoa(pn)
 	for _, s := range splitPorts(t.Ports) {
-		if s.listen == p {
-			return t.Ports
+		if lo, hi, ok := listenRange(s.listen); ok && lo <= pn && pn <= hi {
+			return t.Ports // already forwarded (a range the user gave covers it)
 		}
 	}
 	if strings.TrimSpace(t.Ports) == "" {
 		return p
 	}
 	return t.Ports + "," + p
+}
+
+// listenRange is the port or range ("1000-2000") of a listen spec, without its bind address
+// ("1.2.3.4:443", "[::1]:443").
+func listenRange(listen string) (lo, hi int, ok bool) {
+	if i := strings.LastIndex(listen, "]:"); i >= 0 {
+		listen = listen[i+2:]
+	} else if i := strings.Index(listen, ":"); i >= 0 && strings.Contains(listen[:i], ".") {
+		listen = listen[i+1:]
+	}
+	a, b, isRange := strings.Cut(listen, "-")
+	lo, err := strconv.Atoi(strings.TrimSpace(a))
+	if err != nil {
+		return 0, 0, false
+	}
+	hi = lo
+	if isRange {
+		if hi, err = strconv.Atoi(strings.TrimSpace(b)); err != nil {
+			return 0, 0, false
+		}
+	}
+	return lo, hi, true
 }
 
 // SpeedTest measures the running tunnel end to end with the probe (RTT, download, upload).
