@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -76,6 +78,46 @@ func aiNoteAlert(msg string) {
 
 // ---- the snapshot
 
+// aiAbout: the text names one of others (as a whole word: "nl" is not in "online") and
+// none of own.
+func aiAbout(text string, others, own []string) bool {
+	has := func(name string) bool {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return false
+		}
+		for i := 0; ; {
+			j := strings.Index(text[i:], name)
+			if j < 0 {
+				return false
+			}
+			j += i
+			e := j + len(name)
+			if (j == 0 || !aiWordRune(lastRune(text[:j]))) && (e == len(text) || !aiWordRune(firstRune(text[e:]))) {
+				return true
+			}
+			i = j + 1
+		}
+	}
+	for _, n := range own {
+		if has(n) {
+			return false
+		}
+	}
+	for _, n := range others {
+		if has(n) {
+			return true
+		}
+	}
+	return false
+}
+
+func aiWordRune(r rune) bool {
+	return r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+func firstRune(s string) rune { r, _ := utf8.DecodeRuneInString(s); return r }
+func lastRune(s string) rune  { r, _ := utf8.DecodeLastRuneInString(s); return r }
+
 var aiIPRe = regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b|\b[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{0,4}){3,7}\b`)
 
 // aiRedact keeps addresses out of the text sent (names identify the servers well enough).
@@ -130,9 +172,27 @@ func (a *App) aiSnapshot() map[string]any {
 	var outs []Outage
 	var bench []map[string]any
 	names := map[string]string{}
+	// another person's servers and tunnels stay out, and so do their outages, benchmarks
+	// and alerts: a report about them without their data could only guess
+	others := map[string]bool{} // ids owned by someone else
+	var otherNames, ownNames []string
 	a.store.View(func(st *State) {
 		for _, s := range st.Servers {
 			names[s.ID] = s.Name
+			if s.Owner != "" {
+				others[s.ID] = true
+				otherNames = append(otherNames, s.Name)
+			} else {
+				ownNames = append(ownNames, s.Name)
+			}
+		}
+		for _, t := range st.Tunnels {
+			if t.Owner != "" {
+				others[t.ID] = true
+				otherNames = append(otherNames, t.Name)
+			} else {
+				ownNames = append(ownNames, t.Name)
+			}
 		}
 		for _, s := range st.Servers {
 			if s.Owner != "" {
@@ -197,7 +257,7 @@ func (a *App) aiSnapshot() map[string]any {
 			tuns = append(tuns, v)
 		}
 		for _, o := range st.Outages {
-			if o.Start >= since || o.End == 0 {
+			if (o.Start >= since || o.End == 0) && !others[o.Target] && !aiAbout(o.Name, otherNames, ownNames) {
 				o.Reason, o.Cause = aiRedact(o.Reason), aiRedact(clipTo(o.Cause, 300))
 				outs = append(outs, o)
 			}
@@ -207,7 +267,7 @@ func (a *App) aiSnapshot() map[string]any {
 		for i := len(st.BenchHistory) - 1; i >= 0 && len(bench) < 12; i-- {
 			b := st.BenchHistory[i]
 			k := b.IranID + "|" + b.ForeignID + "|" + b.Family
-			if seen[k] || b.At < since {
+			if seen[k] || b.At < since || others[b.IranID] || others[b.ForeignID] {
 				continue
 			}
 			seen[k] = true
@@ -234,7 +294,9 @@ func (a *App) aiSnapshot() map[string]any {
 	aiAlerts.Lock()
 	var alerts []aiAlert
 	for _, al := range aiAlerts.l {
-		alerts = append(alerts, aiAlert{al.At, aiRedact(al.Msg)})
+		if !aiAbout(al.Msg, otherNames, ownNames) {
+			alerts = append(alerts, aiAlert{al.At, aiRedact(al.Msg)})
+		}
 	}
 	aiAlerts.Unlock()
 	return map[string]any{

@@ -37,3 +37,24 @@ func TestAISnapshotNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestAIAbout(t *testing.T) {
+	others := []string{"nl", "iran2", "آلمان 1"}
+	own := []string{"netherlands-iran", "تانل ایران به هلند 1"}
+	for _, c := range []struct {
+		text string
+		want bool
+	}{
+		{"🔴 down: nl\ndown 5m", true},
+		{"🟢 agent online: xe108 iran", false}, // "nl" inside "online"
+		{"tunnel «آلمان 1» switched", true},
+		{"iran2: unreachable", true},
+		{"iran20 up", false},
+		{"netherlands-iran and nl both down", false}, // names an own one too
+		{"تانل ایران به هلند 1 down", false},
+	} {
+		if got := aiAbout(c.text, others, own); got != c.want {
+			t.Errorf("aiAbout(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
