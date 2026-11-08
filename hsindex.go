@@ -36,3 +36,12 @@ func hsFreeIndex(used map[int]bool) int {
 	}
 	return 0
 }
+
+// hsIndexHeld says whether a running job holds index n (lock order: the store lock, then
+// hsIdxMu — as hsFreeIndex is called under store.Update).
+func hsIndexHeld(n int) bool {
+	hsIdxMu.Lock()
+	defer hsIdxMu.Unlock()
+	until, ok := hsIdxHeld[n]
+	return ok && time.Now().Before(until)
+}
