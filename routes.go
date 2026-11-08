@@ -430,10 +430,26 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 	if len(good) == 0 {
 		return fmt.Errorf("no path would be left — put a method back on the route first")
 	}
-	if retry && up == 0 {
-		// still refused: the running paths and their switcher stay as they are
-		_ = a.store.Update(func(*State) error { t.Paths = append(left, added...); return nil })
-		j.log("DONE — still not possible on this route; tried again in %s", hsRetryEvery)
+	if up == 0 && (retry || !running) {
+		// nothing new came up and nothing that runs was taken out: the running paths and their
+		// switcher stay as they are (only the list in the panel changes)
+		_ = a.store.Update(func(*State) error {
+			t.Paths = append(left, added...)
+			for _, d := range drop {
+				if !retry && d.Method == t.Active && d.Family == t.Family {
+					t.Active, t.Family = good[0].Method, good[0].Family // as the switcher already has it
+				}
+			}
+			return nil
+		})
+		if retry {
+			j.log("DONE — still not possible on this route; tried again in %s", hsRetryEvery)
+			return nil
+		}
+		j.log("DONE — no new path came up; %d paths running, the switcher left as it was", len(good))
+		if len(added) > 0 {
+			a.pushTInfo(t, fmt.Sprintf("🔀 %s: paths updated to this route's choices — the added ones could not start (%d running)", t.Name, len(good)))
+		}
 		return nil
 	}
 	// the switcher moves to the new list first, then the left-out paths stop: users on one

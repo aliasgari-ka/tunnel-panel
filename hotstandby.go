@@ -849,8 +849,8 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 	}
 	j.log("stopping what ran before on both servers")
 	a.setApplying(t, m.ID)
-	_, _ = irHost.Run(ctx, hsTeardown(&old), func(l string) { j.log("[IR] %s", l) })
-	_, _ = khHost.Run(ctx, hsTeardown(&old), func(l string) { j.log("[KH] %s", l) })
+	a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, hsTeardown(&old))
+	a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, hsTeardown(&old))
 	a.setActive(t, "")
 
 	j.log("== probe server on the foreign side (port %d, reachable only through the tunnels) ==", hsProbePort(t))

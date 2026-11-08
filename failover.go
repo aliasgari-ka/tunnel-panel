@@ -22,6 +22,9 @@ const (
 	failoverJobKey = "failover:"
 )
 
+// failoverTimeout bounds one failover's search (shorter in tests).
+var failoverTimeout = 40 * time.Minute
+
 type pathChoice struct{ method, family string }
 
 func (p pathChoice) String() string { return methodTitle(p.method) + " (" + p.family + ")" }
@@ -86,14 +89,25 @@ func (a *App) failoverCandidates(t *Tunnel) []pathChoice {
 	return out
 }
 
-// applyAndWait runs Apply and waits for it to end.
+// applyPoll is how often applyAndWait looks at the apply (shorter in tests).
+var applyPoll = 2 * time.Second
+
+// applyAndWait runs Apply and waits for it to end. When ctx ends first (a deadline or a
+// cancel) it still waits for the apply, which ends by its own time limit, and returns
+// ctx.Err(): the caller must never change the family or start another apply under a
+// running one.
 func (a *App) applyAndWait(ctx context.Context, t *Tunnel, mid string) error {
 	j, err := a.Apply(t, mid)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		for j.snapshot().Status == "running" {
+			time.Sleep(applyPoll)
+		}
+	}()
 	for ctx.Err() == nil {
-		time.Sleep(2 * time.Second)
+		time.Sleep(applyPoll)
 		s := j.snapshot()
 		if s.Status == "running" {
 			continue
@@ -284,9 +298,6 @@ func (a *App) switchFamily(t *Tunnel, m *Method, fam string) error {
 	return nil
 }
 
-// ApplyRoute is a hand-picked Apply of method mid over family fam (empty = the tunnel's
-// current one): the user's choice wins over a running automatic failover, and the family
-// is put back if the apply cannot start.
 // rebuildMode re-applies t's running method after hot standby was switched on or off, so
 // the servers match the switch: on starts the paths and the switcher, off removes them.
 func (a *App) rebuildMode(t *Tunnel) (*Job, error) {
@@ -298,19 +309,27 @@ func (a *App) rebuildMode(t *Tunnel) (*Job, error) {
 	if id := a.jobs.running(failoverJobKey + t.ID); id != "" {
 		_, _ = a.jobs.cancel(id)
 	}
-	return a.Apply(t, mid)
+	return a.apply(t, mid, true) // the same method again: kept wanted if it fails
 }
 
+// ApplyRoute is a hand-picked Apply of method mid over family fam (empty = the tunnel's
+// current one): the user's choice wins over a running automatic failover, and the family
+// is put back if the apply cannot start.
 func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
+	return a.applyRoute(t, mid, fam, false)
+}
+
+// applyRoute is ApplyRoute; keep: an automatic one (a resume), see apply.
+func (a *App) applyRoute(t *Tunnel, mid, fam string, keep bool) (*Job, error) {
 	m := methodByID[mid]
 	if m == nil {
 		return nil, fmt.Errorf("unknown method")
 	}
 	// one consistent read: a Stop or apply running now changes these under the lock
-	var old, prev, pin string
+	var old, prev, pin, applying string
 	var hot, up, running bool
 	a.store.View(func(*State) {
-		old, prev, pin, hot = t.Family, t.Active, t.HSPin, t.HotStandby
+		old, prev, pin, hot, applying = t.Family, t.Active, t.HSPin, t.HotStandby, t.Applying
 		if fam == "" {
 			fam = t.Family
 		}
@@ -343,7 +362,12 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 	if id := a.jobs.running(failoverJobKey + t.ID); id != "" {
 		_, _ = a.jobs.cancel(id)
 	}
-	j, err := a.Apply(t, mid)
+	// a path chosen under another method or family would pin the users back to it once the
+	// new switcher starts; a rebuild of the same method (or a resume of it) keeps the choice
+	if cur := orStr(prev, applying); pin != "" && (mid != cur || fam != old) {
+		_ = a.store.Update(func(*State) error { t.HSPin = ""; return nil })
+	}
+	j, err := a.apply(t, mid, keep)
 	if err != nil {
 		if t.Family != old {
 			a.setFamily(t, old)
@@ -390,7 +414,7 @@ func (a *App) Failover(t *Tunnel, reason string) {
 		return
 	}
 	defer a.jobs.done(j)
-	ctx, cancel := j.context(40 * time.Minute)
+	ctx, cancel := j.context(failoverTimeout)
 	defer cancel()
 	orig := t.Failover
 	if orig == nil {
@@ -402,10 +426,24 @@ func (a *App) Failover(t *Tunnel, reason string) {
 	if len(tries) > failoverTries {
 		tries = tries[:failoverTries]
 	}
+	// a cancel is the user's (ApplyRoute, a rebuild): the tunnel is theirs now. The job's own
+	// deadline is not — that went down the "cancelled" way too, and the job stayed "running"
+	// for good, the original was never put back and nothing recorded what ran.
+	userCancel := func() bool {
+		if !j.cancelled() {
+			return false
+		}
+		j.log("cancelled — leaving the tunnel as the user set it")
+		j.finish("cancelled")
+		return true
+	}
 	for _, p := range tries {
 		if ctx.Err() != nil {
-			j.log("cancelled — leaving the tunnel as the user set it")
-			return
+			if userCancel() {
+				return
+			}
+			j.log("time is up (%s) — giving up the search", failoverTimeout)
+			break
 		}
 		j.log("trying %s", p)
 		if t.Family != p.family {
@@ -432,16 +470,26 @@ func (a *App) Failover(t *Tunnel, reason string) {
 			j.log("  ✕ %s", why)
 		}
 	}
-	if ctx.Err() != nil {
-		j.log("cancelled — leaving the tunnel as the user set it")
+	if ctx.Err() != nil && userCancel() {
 		return
+	}
+	rctx := ctx
+	if ctx.Err() != nil { // the deadline: the restore gets its own time
+		var rcancel context.CancelFunc
+		rctx, rcancel = context.WithTimeout(context.Background(), 25*time.Minute)
+		defer rcancel()
 	}
 	// nothing worked: put the original back so it resumes by itself when the path recovers
 	j.log("no working path found — restoring %s", pathChoice{orig.Method, orig.Family})
 	if t.Family != orig.Family {
 		a.setFamily(t, orig.Family)
 	}
-	if err := a.applyAndWait(ctx, t, orig.Method); err != nil {
+	err = a.applyAndWait(rctx, t, orig.Method)
+	if j.cancelled() {
+		j.finish("cancelled")
+		return // cancelled during the restore: the user's choice wins
+	}
+	if err != nil {
 		// keep it marked as running so the monitor keeps watching (and retrying) it
 		j.log("restoring failed too (%v) — the monitor keeps watching it", err)
 		_ = a.store.Update(func(*State) error { t.Active, t.Selected = orig.Method, orig.Method; return nil })
@@ -491,6 +539,12 @@ func (a *App) Failback(t *Tunnel) {
 		j.log("original %s still down — staying on %s", pathChoice{fo.Method, fo.Family}, pathChoice{t.Active, t.Family})
 		return
 	}
+	// the check above may have used most of its 15 minutes: the move back gets its own time
+	// (applyAndWait also waits for an apply its time ran out on, so the family is never
+	// changed under a running one)
+	cancel()
+	ctx, cancel = context.WithTimeout(context.Background(), 25*time.Minute)
+	defer cancel()
 	cur := pathChoice{t.Active, t.Family}
 	if t.Family != fo.Family {
 		a.setFamily(t, fo.Family)
@@ -506,7 +560,17 @@ func (a *App) Failback(t *Tunnel) {
 	if t.Family != cur.family {
 		a.setFamily(t, cur.family)
 	}
-	_ = a.applyAndWait(ctx, t, cur.method)
+	if err := a.applyAndWait(ctx, t, cur.method); err != nil {
+		// as Failover does: still marked as running, so the monitor keeps at it (with Active
+		// empty it looked like a Stop)
+		_ = a.store.Update(func(*State) error {
+			if t.Active == "" {
+				t.Active, t.Selected = cur.method, cur.method
+			}
+			return nil
+		})
+		a.pushT(t, fmt.Sprintf("❌ %s: moving back to %s failed and returning to %s failed too (%v) — the monitor keeps at it", t.Name, pathChoice{fo.Method, fo.Family}, cur, err))
+	}
 }
 
 // testPathOnBenchSlot deploys method/family on the throwaway benchmark tunnel and reports

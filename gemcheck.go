@@ -234,4 +234,3 @@ func (a *App) gemLoop() {
 		}
 	}
 }
-
