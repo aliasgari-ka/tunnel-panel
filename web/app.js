@@ -221,14 +221,33 @@ function renderView() {
 // always) and what of it costs: Iran's upload is free, so a tunnel pays what its Iran server
 // received for it — its users' upload plus what its foreign server sent (usage.go usagePaid).
 async function viewUsage(w) {
-  const days = [1, 7, 30].includes(+recall('tp-usage-d')) ? +recall('tp-usage-d') : 1;
+  const custom = recall('tp-usage-d') === 'c';
+  const days = custom ? 1 : [1, 7, 30].includes(+recall('tp-usage-d')) ? +recall('tp-usage-d') : 1;
+  // a chosen span, in Tehran time (UTC+3:30 all year) to the hour: the counters are kept hour by hour
+  const thrIn = (u) => new Date((u + 12600) * 1000).toISOString().slice(0, 14) + '00';
+  const thrOut = (v) => Math.floor(Date.parse(v.slice(0, 13) + ':00Z') / 1000) - 12600;
+  const nowU = Math.floor(Date.now() / 1000), today = nowU - (nowU + 12600) % 86400;
+  let rng = {}; try { rng = JSON.parse(recall('tp-usage-rng') || '{}') || {}; } catch (e) {}
+  if (!(rng.f > 0 && rng.t > rng.f)) rng = { f: today, t: nowU };
   w.innerHTML = topbar('Usage', 'Download, upload and what you pay for, per tunnel — hour by hour.',
-    `<div class="seg">${[[1, '24 hours'], [7, '7 days'], [30, '30 days']].map(x => `<button class="${x[0] === days ? 'on' : ''}" data-ud="${x[0]}">${x[1]}</button>`).join('')}</div>`);
+    `<div class="seg">${[[1, '24 hours'], [7, '7 days'], [30, '30 days'], ['c', '📅 Date & time']].map(x => `<button class="${(custom ? x[0] === 'c' : x[0] === days) ? 'on' : ''}" data-ud="${x[0]}">${x[1]}</button>`).join('')}</div>`);
   $$('[data-ud]', w).forEach(b => b.onclick = () => { remember('tp-usage-d', b.dataset.ud); renderView(); });
+  if (custom) {
+    const pick = h(`<div class="card pad urange">
+      <label>From<input type="datetime-local" step="3600" data-rf value="${thrIn(rng.f)}"></label>
+      <label>To<input type="datetime-local" step="3600" data-rt value="${thrIn(rng.t - 1)}"></label>
+      <button class="btn pri" data-rgo>Show</button>
+      <span class="ugo">${[['Today', today, nowU], ['Yesterday', today - 86400, today], ['Last 3 days', today - 2 * 86400, nowU], ['This week', today - 6 * 86400, nowU]].map(x => `<button class="btn sm ghost" data-rq="${x[1]}-${x[2]}">${x[0]}</button>`).join('')}</span>
+      <small class="faint">Tehran time, to the hour.</small></div>`);
+    w.appendChild(pick);
+    const go = (f, t) => { remember('tp-usage-rng', JSON.stringify({ f, t })); renderView(); };
+    $('[data-rgo]', pick).onclick = () => { const f = thrOut($('[data-rf]', pick).value), t = thrOut($('[data-rt]', pick).value) + 3600; if (f > 0 && t > f) go(f, Math.min(t, nowU)); };
+    $$('[data-rq]', pick).forEach(b => b.onclick = () => { const [f, t] = b.dataset.rq.split('-').map(Number); go(f, t); });
+  }
   const box = h('<div class="srvsplit usplit"><div class="card skel" style="height:320px"></div><div class="skel" style="height:320px"></div></div>');
   w.appendChild(box);
   let r;
-  try { r = await api('/usage?days=' + days); } catch (e) { box.outerHTML = `<div class="card pad errtxt">${esc(e.message)}</div>`; return; }
+  try { r = await api(custom ? `/usage?from=${rng.f}&to=${rng.t}` : '/usage?days=' + days); } catch (e) { box.outerHTML = `<div class="card pad errtxt">${esc(e.message)}</div>`; return; }
   const T = Object.fromEntries((r.tunnels || []).map(x => [x.id, x]));
   const S = Object.fromEntries((r.servers || []).map(x => [x.id, x]));
   const z = { down: 0, up: 0, paid: 0, series: [] };
@@ -293,11 +312,11 @@ async function viewUsage(w) {
   const tunTbl = (list) => `<div class="card pad"><h3 style="margin:0 0 6px">Per tunnel</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Tunnel</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Total</th><th>💰 Paid</th><th>Coefficient</th></tr></thead><tbody>${list.map(t => { const x = T[t.id] || z; return `<tr class="urow" data-pick="t:${t.id}"><td><b>${esc(t.name)}</b><div class="faint" style="font-size:11.5px">${nameOf(t.serverId)} → ${nameOf(t.foreignId)}</div></td><td>${fmtBytes(x.down)}</td><td>${fmtBytes(x.up)}</td><td><b>${fmtBytes(tot(x))}</b></td><td><b>${x.est ? '≈ ' : ''}${fmtBytes(x.paid || 0)}</b></td><td><b${coefCls(x.paid || 0, tot(x))}>${coef(x.paid || 0, tot(x))}</b></td></tr>`; }).join('')}</tbody></table></div></div>`;
 
   // hour by hour for the tunnels picked: the last 24 hours, or a past Tehran day
-  let date = 0, hr = days === 1 ? r : null;
+  let date = 0, hr = days === 1 || custom ? r : null;
   const dayOpts = () => { const o = ['<option value="0">Last 24 hours</option>']; for (let i = 0; i < 35; i++) { const d = new Date(Date.now() - i * 864e5); const ds = d.toLocaleDateString('fa-IR-u-nu-latn', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit' }); const en = d.toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', day: '2-digit', month: 'short' }); o.push(`<option value="${i + 1}"${date === i + 1 ? ' selected' : ''}>${i === 0 ? 'Today' : i === 1 ? 'Yesterday' : en} · ${ds}</option>`); } return o.join(''); };
   const drawHours = async (hb, ids) => {
-    hb.innerHTML = `<div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><h3 style="margin:0">Hour by hour</h3><select data-uhd>${dayOpts()}</select></div><div class="skel" style="height:120px"></div>`;
-    $('[data-uhd]', hb).onchange = (e) => { date = +e.target.value; hr = null; drawHours(hb, ids); };
+    hb.innerHTML = `<div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><h3 style="margin:0">${hr && hr.step === 86400 ? 'Day by day' : 'Hour by hour'}</h3>${custom ? '' : `<select data-uhd>${dayOpts()}</select>`}</div><div class="skel" style="height:120px"></div>`;
+    if (!custom) $('[data-uhd]', hb).onchange = (e) => { date = +e.target.value; hr = null; drawHours(hb, ids); };
     if (!hr) { try { hr = await api(date ? '/usage?date=' + Math.floor(Date.now() / 1000 - (date - 1) * 86400) : '/usage?days=1'); } catch (e) { hb.lastChild.outerHTML = `<div class="errtxt">${esc(e.message)}</div>`; return; } }
     if (!hb.isConnected) return;
     const pick = (hr.tunnels || []).filter(x => ids.includes(x.id));
@@ -307,13 +326,13 @@ async function viewUsage(w) {
       const s = { d: 0, u: 0, p: 0 }; pick.forEach(x => { const v = (x.series || [])[i]; if (v) { s.d += v.d || 0; s.u += v.u || 0; s.p += v.p || 0; } });
       mx = Math.max(mx, s.d + s.u); rows.push(s);
     }
-    const lbl = (i) => { const t = new Date((hr.from + i * hr.step) * 1000); const f = (x) => x.toLocaleTimeString('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }); return f(t) + '–' + f(new Date(t.getTime() + 3600e3)); };
+    const lbl = (i) => { const t = new Date((hr.from + i * hr.step) * 1000); const f = (x) => x.toLocaleTimeString('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }); if (hr.step === 86400) return t.toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', day: '2-digit', month: 'short' }) + ' · ' + t.toLocaleDateString('fa-IR-u-nu-latn', { timeZone: 'Asia/Tehran', month: '2-digit', day: '2-digit' }); const d = hr.n > 24 ? t.toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', day: '2-digit', month: 'short' }) + ' ' : ''; return d + f(t) + '–' + f(new Date(t.getTime() + 3600e3)); };
     const now = Date.now() / 1000;
     const body = rows.map((s, i) => hr.from + i * hr.step > now ? '' : `<tr><td class="mono">${lbl(i)}</td><td>${fmtBytes(s.d)}</td><td>${fmtBytes(s.u)}</td><td><b>${fmtBytes(s.d + s.u)}</b></td>
       <td><span class="ubar"><i style="width:${Math.round((s.d + s.u) / mx * 100)}%"></i></span></td><td>${fmtBytes(s.p)}</td><td><b${coefCls(s.p, s.d + s.u)}>${coef(s.p, s.d + s.u)}</b></td></tr>`).reverse().join('');
     const t = rows.reduce((a, s) => ({ d: a.d + s.d, u: a.u + s.u, p: a.p + s.p }), { d: 0, u: 0, p: 0 });
-    hb.lastChild.outerHTML = `<div class="uscroll uhours"><table class="tbl utbl"><thead><tr><th>Hour (Tehran)</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Total</th><th></th><th>💰 Paid</th><th>Coefficient</th></tr></thead><tbody>${body}</tbody>
-      <tfoot><tr><td><b>Day total</b></td><td>${fmtBytes(t.d)}</td><td>${fmtBytes(t.u)}</td><td><b>${fmtBytes(t.d + t.u)}</b></td><td></td><td><b>${fmtBytes(t.p)}</b></td><td><b${coefCls(t.p, t.d + t.u)}>${coef(t.p, t.d + t.u)}</b></td></tr></tfoot></table></div>`;
+    hb.lastChild.outerHTML = `<div class="uscroll uhours"><table class="tbl utbl"><thead><tr><th>${hr.step === 86400 ? 'Day (Tehran)' : 'Hour (Tehran)'}</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Total</th><th></th><th>💰 Paid</th><th>Coefficient</th></tr></thead><tbody>${body}</tbody>
+      <tfoot><tr><td><b>${custom ? 'Total' : 'Day total'}</b></td><td>${fmtBytes(t.d)}</td><td>${fmtBytes(t.u)}</td><td><b>${fmtBytes(t.d + t.u)}</b></td><td></td><td><b>${fmtBytes(t.p)}</b></td><td><b${coefCls(t.p, t.d + t.u)}>${coef(t.p, t.d + t.u)}</b></td></tr></tfoot></table></div>`;
   };
 
   const show = (id, scroll) => {
@@ -477,20 +496,28 @@ async function viewRoutes(w) {
   if (STATE.routeSel === undefined) { try { STATE.routeSel = localStorage.getItem('tp-routesel') || ''; } catch (e) { STATE.routeSel = ''; } }
   if (!valid(STATE.routeSel)) STATE.routeSel = '';
   const dot = (t) => !t.active ? '' : t.health ? '<i class="bad">●</i>' : t.health === '' ? '<i class="ok">●</i>' : '';
-  const tile = (it) => {
+  // like the Servers page: the routes listed by Iran server on the side, the picked one beside it
+  const row = (it) => {
     const t = it.tunnel, s = serverById(it.foreign);
-    return `<button type="button" class="rtile${STATE.routeSel === it.id ? ' on' : ''}" data-rsel="${it.id}" title="${esc(serverName(it.iran))} → ${esc(it.foreign ? serverName(it.foreign) : 'this panel host')}">
-      <span class="rt-fl">${s && s.country ? flag(s.country) : '🛰'}</span>
-      <span class="rt-tn"><b>${esc(t.name)}</b><small>${t.active ? esc(methodTitle(t.active)) : 'stopped'}</small></span>
-      <span class="rt-dots">${dot(t)}</span></button>`;
+    return `<button type="button" class="srow${STATE.routeSel === it.id ? ' on' : ''}" data-rsel="${it.id}" title="${esc(serverName(it.iran))} → ${esc(it.foreign ? serverName(it.foreign) : 'this panel host')}">
+      <span class="sflag">${s && s.country ? flag(s.country) : '🛰'}</span>
+      <span class="sinfo"><b>${esc(t.name)}</b><small>→ ${esc(it.foreign ? serverName(it.foreign) : 'panel host')} · ${t.active ? esc(methodTitle(t.active)) : 'stopped'}</small></span>
+      <span class="smeta rt-dots">${dot(t)}</span></button>`;
   };
-  const picker = h(`<div class="rpick"><button type="button" class="rtile${STATE.routeSel === '' ? ' on' : ''}" data-rsel=""><span class="rt-fl">🌐</span><span class="rt-tn"><b>All tunnels</b><small>${items.length} tunnel${items.length === 1 ? '' : 's'}</small></span></button>
-    ${items.map(tile).join('')}${others.length ? `<button type="button" class="rtile${STATE.routeSel === 'other' ? ' on' : ''}" data-rsel="other"><span class="rt-fl">📊</span><span class="rt-tn"><b>Other routes</b><small>measured, no tunnel</small></span></button>` : ''}</div>`);
-  box.before(picker);
+  const rgroups = [];
+  items.forEach(it => { let g = rgroups.find(x => x.id === it.iran); if (!g) rgroups.push(g = { id: it.iran, items: [] }); g.items.push(it); });
+  rgroups.sort((x, y) => serverName(x.id).localeCompare(serverName(y.id)));
+  const picker = h(`<aside class="card srvlist">
+    <button type="button" class="srow${STATE.routeSel === '' ? ' on' : ''}" data-rsel=""><span class="sflag">🌐</span><span class="sinfo"><b>All tunnels</b><small>${items.length} tunnel${items.length === 1 ? '' : 's'}</small></span></button>
+    ${rgroups.map(g => { const s = serverById(g.id); return `<div class="sgrp"><div class="sgh"><span>${s && s.country ? flag(s.country) : '🇮🇷'} ${esc(serverName(g.id))} <span class="count">${g.items.length}</span></span></div>${g.items.map(row).join('')}</div>`; }).join('')}
+    ${others.length ? `<button type="button" class="srow${STATE.routeSel === 'other' ? ' on' : ''}" data-rsel="other"><span class="sflag">📊</span><span class="sinfo"><b>Other routes</b><small>measured, no tunnel</small></span></button>` : ''}</aside>`);
+  const split = h('<div class="srvsplit usplit"><div class="srvdetail"></div></div>');
+  box.replaceWith(split);
+  split.prepend(picker);
+  $('.srvdetail', split).appendChild(box);
   const paint = () => {
     $$('[data-rsel]', picker).forEach(b => b.classList.toggle('on', b.dataset.rsel === STATE.routeSel));
     // on a phone the tiles are one row: keep the chosen one in sight
-    const on = $('.rtile.on', picker); if (on && picker.scrollWidth > picker.clientWidth) picker.scrollLeft = on.offsetLeft - picker.offsetLeft - 8;
     box.innerHTML = '';
     const shown = STATE.routeSel === '' ? items : STATE.routeSel === 'other' ? others : items.filter(x => x.id === STATE.routeSel);
     shown.forEach(p => {
@@ -499,7 +526,7 @@ async function viewRoutes(w) {
       catch (e) { box.appendChild(h(`<div class="card rt-card"><h3>${esc(serverName(p.iran))} → ${esc(p.foreign ? serverName(p.foreign) : 'this panel host')}</h3><div class="faint">${p.tunnels.map(t => esc(t.name)).join(' · ')} — this route couldn't be drawn (${esc(e.message)})</div></div>`)); console.error(e); }
     });
   };
-  $$('[data-rsel]', picker).forEach(b => b.onclick = () => { STATE.routeSel = b.dataset.rsel; try { localStorage.setItem('tp-routesel', STATE.routeSel); } catch (e) {} paint(); });
+  $$('[data-rsel]', picker).forEach(b => b.onclick = () => { STATE.routeSel = b.dataset.rsel; try { localStorage.setItem('tp-routesel', STATE.routeSel); } catch (e) {} paint(); if (window.innerWidth <= 860) box.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   repaint = paint;
   paint();
   // health, the users' path and new benchmark results come in while the page is open (it
@@ -568,6 +595,7 @@ async function trafficTick() {
   const sd = $('[data-sum-dn]'), su = $('[data-sum-up]');
   if (sd) sd.textContent = fmtRate(sum[0]);
   if (su) su.textContent = fmtRate(sum[1]);
+  $$('[data-lr]').forEach(el => { const x = tun[el.dataset.lr]; el.textContent = x && !x.error && (x.down || x.up) ? `↓${fmtRate(x.down)}` : ''; });
   $$('[data-traf]').forEach(el => {
     const id = el.dataset.traf, s = tun[id], sp = speed[id];
     const rd = $('[data-rd]', el), ru = $('[data-ru]', el), src = $('[data-src]', el), tot = $('[data-tot]', el);
@@ -1264,46 +1292,57 @@ function viewTunnels(w) {
   if (!mine.length) {
     w.appendChild(h(`<div class="card empty"><div class="big">🛰</div>${iranServers().length ? 'No tunnels yet — press <b>+ New tunnel</b>.' : 'Start on the <b>Servers</b> page: add an Iran server, then create a tunnel here.'}</div>`));
   }
-  // one dense grid; filter chips per Iran server instead of separate sections
+  // like the Servers page: the tunnels listed by Iran server on the side, the picked one's card
+  // beside it. Every card is built (hidden but the picked one) so the status checks, the live
+  // traffic and the down count keep covering all of them.
   if (mine.length) {
-    const counts = {};
-    mine.forEach(t => counts[t.serverId] = (counts[t.serverId] || 0) + 1);
-    const ids = Object.keys(counts).sort((x, y) => serverName(x).localeCompare(serverName(y)));
-    if (STATE.tunFilter && !counts[STATE.tunFilter]) STATE.tunFilter = '';
-    const bar = h(`<div class="filters">
-      <input class="inp search" type="search" data-q placeholder="🔍 Search name, server, port, method…" value="${esc(STATE.tunSearch || '')}">
-      <button class="fchip${STATE.tunRunning ? ' on' : ''}" data-run title="show only running tunnels">● Running <b>${run}</b></button>
-      ${ids.length > 1 ? `<button class="fchip${!STATE.tunFilter ? ' on' : ''}" data-f="">All <b>${mine.length}</b></button>${ids.map(id => {
-        const sv = serverById(id);
-        return `<button class="fchip${STATE.tunFilter === id ? ' on' : ''}" data-f="${id}">${sv && sv.country ? flag(sv.country) : '🇮🇷'} ${esc(serverName(id))} <b>${counts[id]}</b></button>`;
-      }).join('')}` : ''}</div>`);
-    // the chips filter in place like the search: a full redraw replayed the animations and
-    // sent every card's status request again
-    $$('[data-f]', bar).forEach(b => b.onclick = () => { STATE.tunFilter = b.dataset.f; $$('[data-f]', bar).forEach(x => x.classList.toggle('on', x === b)); applySearch(); });
-    $('[data-run]', bar).onclick = (e) => { STATE.tunRunning = !STATE.tunRunning; e.currentTarget.classList.toggle('on', STATE.tunRunning); applySearch(); };
-    w.appendChild(bar);
-    const grid = h(`<div class="grid tgrid"></div>`);
-    // the search filters the cards in place (no redraw: the live traffic keeps running)
+    const list = mine.slice().sort(tunnelOrder);
+    const groups = [];
+    list.forEach(t => { let g = groups.find(x => x.id === t.serverId); if (!g) groups.push(g = { id: t.serverId, tunnels: [] }); g.tunnels.push(t); });
+    groups.sort((x, y) => serverName(x.id).localeCompare(serverName(y.id)));
+    let cur = STATE.tunSel && list.some(t => t.id === STATE.tunSel) ? STATE.tunSel : recall('tp-tun');
+    if (!list.some(t => t.id === cur)) cur = list[0].id;
+    const fl = (id, d) => { const s = id ? serverById(id) : null; return s && s.country ? flag(s.country) : d; };
+    const row = (t) => `<button class="srow" data-pick="${t.id}">
+      <span class="sflag">${fl(t.foreignId, t.foreignId ? '🌍' : '🖥')}</span>
+      <span class="sinfo"><b>${esc(t.name)}</b><small>→ ${esc(t.foreignId ? serverName(t.foreignId) : 'panel host')} · ${esc(methodTitle(t.active || t.selected) || '—')}</small></span>
+      <span class="smeta"><span class="led ${t.active ? (t._down || t.health ? 'bad' : 'on') : 'off'}" data-tled="${t.id}" title="${t.active ? 'running' : 'stopped'}"></span><small class="faint mono" data-lr="${t.id}"></small></span></button>`;
+    const split = h(`<div class="srvsplit usplit">
+      <aside class="card srvlist">
+        <input class="sq" type="search" data-q placeholder="🔍 Search name, server, port, method…" value="${esc(STATE.tunSearch || '')}">
+        <button class="fchip${STATE.tunRunning ? ' on' : ''}" data-run title="show only running tunnels">● Running <b>${run}</b></button>
+        ${groups.map(g => `<div class="sgrp" data-g="${g.id}"><div class="sgh"><span>${fl(g.id, '🇮🇷')} ${esc(serverName(g.id))} <span class="count">${g.tunnels.length}</span></span></div>${g.tunnels.map(row).join('')}</div>`).join('')}
+        <div class="faint sempty nomatch" hidden>No tunnel matches this search.</div>
+      </aside>
+      <div class="srvdetail tdet" data-detail></div>
+    </div>`);
+    const det = $('[data-detail]', split);
+    list.forEach(t => det.appendChild(tunnelCard(t)));
+    w.appendChild(split);
+    const show = (id, scroll) => {
+      cur = id; STATE.tunSel = id; remember('tp-tun', id);
+      $$('.srow', split).forEach(r => r.classList.toggle('on', r.dataset.pick === id));
+      $$('.tc', det).forEach(c => c.classList.toggle('sel', c.dataset.id === id));
+      if (scroll && window.innerWidth <= 860) det.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    // the search and Running filter the list in place (no redraw: the live traffic keeps running)
     const hay = (t) => [t.name, t.ports, serverName(t.serverId), serverName(t.foreignId), methodTitle(t.active || t.selected), groupOf(STATE.methods.find(x => x.id === (t.active || t.selected))), famName(t.family)].join(' ').toLowerCase();
     const applySearch = () => {
       const q = (STATE.tunSearch || '').trim().toLowerCase();
       let shown = 0;
-      $$('.tc', grid).forEach(c => {
-        const t = STATE.tunnels.find(x => x.id === c.dataset.id);
-        const ok = !!t && (!q || hay(t).includes(q)) && (!STATE.tunFilter || t.serverId === STATE.tunFilter) && (!STATE.tunRunning || t.active);
-        const was = c.hidden; c.hidden = !ok; if (ok) shown++;
-        if (was && ok && t.active) refreshStatus(t, c); // hidden cards weren't polled
+      $$('.srow', split).forEach(r => {
+        const t = STATE.tunnels.find(x => x.id === r.dataset.pick);
+        const ok = !!t && (!q || hay(t).includes(q)) && (!STATE.tunRunning || t.active);
+        r.hidden = !ok; if (ok) shown++;
       });
-      let none = $('.nomatch', w);
-      if (!shown && !none) { none = h('<div class="card empty small nomatch">No tunnel matches this search.</div>'); grid.after(none); }
-      if (shown && none) none.remove();
+      $$('.sgrp', split).forEach(g => g.hidden = !$$('.srow', g).some(r => !r.hidden));
+      $('.nomatch', split).hidden = !!shown;
     };
-    $('[data-q]', bar).oninput = (e) => { STATE.tunSearch = e.target.value; applySearch(); };
-    STATE.tunnels.filter(t => shownOwner(t.owner))
-      .sort(tunnelOrder)
-      .forEach(t => grid.appendChild(tunnelCard(t)));
-    w.appendChild(grid);
+    $$('.srow', split).forEach(r => r.onclick = () => show(r.dataset.pick, true));
+    $('[data-q]', split).oninput = (e) => { STATE.tunSearch = e.target.value; applySearch(); };
+    $('[data-run]', split).onclick = (e) => { STATE.tunRunning = !STATE.tunRunning; e.currentTarget.classList.toggle('on', STATE.tunRunning); applySearch(); };
     applySearch();
+    show(cur, false);
   }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
   if ($('#aiTun')) $('#aiTun').onclick = () => aiModal();
@@ -1561,6 +1600,7 @@ function paintDown(t, card, why) {
     if (bar) { if (why) bar.innerHTML = `⚠ ${esc(why)} <a href="#" data-dg>Diagnose</a>`; else bar.remove(); }
     const dg = $('[data-dg]', card); if (dg) dg.onclick = (e) => { e.preventDefault(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); };
     t._down = !!why;
+    const led = $(`[data-tled="${t.id}"]`); if (led) led.className = 'led ' + (why ? 'bad' : 'on');
     const n = STATE.tunnels.filter(x => x._down && shownOwner(x.owner)).length, el = $('[data-sum-down]');
     if (el) { el.textContent = n ? `· ${n} down` : ''; }
 }

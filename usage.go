@@ -379,6 +379,9 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 		days = 1
 	}
 	date, _ := strconv.ParseInt(q.Get("date"), 10, 64)
+	// from / to (unix seconds): any span — hour by hour while the hours are kept, else day by day
+	rf, _ := strconv.ParseInt(q.Get("from"), 10, 64)
+	rt, _ := strconv.ParseInt(q.Get("to"), 10, 64)
 	user, admin := s.who(r)
 	u := s.app.usage
 	if u == nil {
@@ -388,6 +391,18 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	n, step, from := 24, int64(3600), hourStart(now)-23*3600
 	switch {
+	case rf > 0 && rt > rf:
+		if rt > now.Unix() {
+			rt = now.Unix()
+		}
+		if h := hourStart(time.Unix(rf, 0)); h >= hourStart(now)-int64(usageKeep-1)*3600 {
+			from, n = h, min(int((rt-h+3599)/3600), usageKeep)
+		} else {
+			step, from = 86400, dayStart(time.Unix(rf, 0))
+			n = min(int((rt-from+86399)/86400), usageKeepDays)
+		}
+		n = max(1, n)
+		days = max(1, int(int64(n)*step/86400))
 	case date > 0:
 		from = dayStart(time.Unix(date, 0))
 		days = 1

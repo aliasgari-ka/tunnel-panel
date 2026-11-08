@@ -1,5 +1,17 @@
 // generated: the Persian texts of the panel (English -> Persian); the translator is below
 window.TP_FA = {
+"📅 Date & time": "📅 تاریخ و ساعت",
+"To": "تا",
+"Show": "نمایش",
+"Last 3 days": "۳ روز اخیر",
+"This week": "این هفته",
+"Tehran time, to the hour.": "به وقت تهران، با دقت ساعت.",
+"Day by day": "روزبه‌روز",
+"Day (Tehran)": "روز (تهران)",
+"Total": "جمع",
+"running": "روشن",
+"stopped": "خاموش",
+
 "🌍 Foreign · exit": "🌍 خارج · خروجی",
 "🧠 AI analysis": "🧠 تحلیل هوش مصنوعی",
 "🧠 AI analysis (Claude)": "🧠 تحلیل هوش مصنوعی (Claude)",
