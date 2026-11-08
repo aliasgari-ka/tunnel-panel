@@ -40,29 +40,67 @@ type gemFwdT struct {
 
 var gemFwd = &gemFwdT{up: gemHome, conns: map[net.Conn]struct{}{}}
 
-// switchTo sets the exit and closes every connection through the old one.
-func (f *gemFwdT) switchTo(up, token string, until time.Time) {
-	f.mu.Lock()
+// setLocked sets the exit and hands back the connections through the old one, to be closed
+// once the lock is let go. The caller holds f.mu.
+func (f *gemFwdT) setLocked(up, token string, until time.Time) map[net.Conn]struct{} {
 	f.up, f.token, f.until = up, token, until
 	cs := f.conns
 	f.conns = map[net.Conn]struct{}{}
-	f.mu.Unlock()
+	return cs
+}
+
+// expireLocked: a hold past its time goes home (a probe that never released it). The caller
+// holds f.mu.
+func (f *gemFwdT) expireLocked() map[net.Conn]struct{} {
+	if f.token != "" && time.Now().After(f.until) {
+		return f.setLocked(gemHome, "", time.Time{})
+	}
+	return nil
+}
+
+func closeAll(cs map[net.Conn]struct{}) {
 	for c := range cs {
 		c.Close()
 	}
 }
 
-// current is the exit for a new connection (an expired hold goes home first).
+// switchTo sets the exit and closes every connection through the old one.
+func (f *gemFwdT) switchTo(up, token string, until time.Time) {
+	f.mu.Lock()
+	cs := f.setLocked(up, token, until)
+	f.mu.Unlock()
+	closeAll(cs)
+}
+
+// current is the exit for a new connection (an expired hold goes home first, in the same
+// locked step, so it can never undo a hold taken meanwhile).
 func (f *gemFwdT) current() string {
 	f.mu.Lock()
-	expired := f.token != "" && time.Now().After(f.until)
+	cs := f.expireLocked()
+	up := f.up
 	f.mu.Unlock()
-	if expired {
-		f.switchTo(gemHome, "", time.Time{})
-	}
+	closeAll(cs)
+	return up
+}
+
+// hold takes the exit for a probe: "" when another probe holds it. Checking and taking are one
+// locked step, so two probes can never both get it.
+func (f *gemFwdT) hold(to string) string {
+	t := make([]byte, 8)
+	rand.Read(t)
+	tok := hex.EncodeToString(t)
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.up
+	cs := f.expireLocked()
+	if f.token != "" {
+		f.mu.Unlock()
+		closeAll(cs)
+		return ""
+	}
+	old := f.setLocked(to, tok, time.Now().Add(gemHoldMax))
+	f.mu.Unlock()
+	closeAll(cs)
+	closeAll(old)
+	return tok
 }
 
 // track keeps cs for the next switch; false when the exit changed since up was read.
@@ -177,27 +215,21 @@ func (f *gemFwdT) control() {
 			http.Error(w, "POST /hold?to=ip:port", 400)
 			return
 		}
-		f.current() // lets an expired hold go
-		f.mu.Lock()
-		busy := f.token != ""
-		f.mu.Unlock()
-		if busy {
+		tok := f.hold(to)
+		if tok == "" {
 			http.Error(w, "another probe holds the browser", 409)
 			return
 		}
-		t := make([]byte, 8)
-		rand.Read(t)
-		tok := hex.EncodeToString(t)
-		f.switchTo(to, tok, time.Now().Add(gemHoldMax))
 		io.WriteString(w, tok)
 	})
 	mux.HandleFunc("/release", func(w http.ResponseWriter, r *http.Request) {
+		var cs map[net.Conn]struct{}
 		f.mu.Lock()
-		mine := r.Method == http.MethodPost && f.token != "" && r.URL.Query().Get("t") == f.token
-		f.mu.Unlock()
-		if mine {
-			f.switchTo(gemHome, "", time.Time{})
+		if r.Method == http.MethodPost && f.token != "" && r.URL.Query().Get("t") == f.token {
+			cs = f.setLocked(gemHome, "", time.Time{})
 		}
+		f.mu.Unlock()
+		closeAll(cs)
 	})
 	if err := http.ListenAndServe(gemCtlAddr, mux); err != nil {
 		fmt.Println("Google test browser proxy control:", err)

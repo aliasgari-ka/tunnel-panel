@@ -227,8 +227,12 @@ async function viewUsage(w) {
   const thrIn = (u) => new Date((u + 12600) * 1000).toISOString().slice(0, 14) + '00';
   const thrOut = (v) => Math.floor(Date.parse(v.slice(0, 13) + ':00Z') / 1000) - 12600;
   const nowU = Math.floor(Date.now() / 1000), today = nowU - (nowU + 12600) % 86400;
+  // a quick range ("today") and a span that ends now are kept as such, so they move with the clock
+  const quick = { today: [today, nowU], yesterday: [today - 86400, today], d3: [today - 2 * 86400, nowU], week: [today - 6 * 86400, nowU] };
   let rng = {}; try { rng = JSON.parse(recall('tp-usage-rng') || '{}') || {}; } catch (e) {}
-  if (!(rng.f > 0 && rng.t > rng.f)) rng = { f: today, t: nowU };
+  if (quick[rng.q]) rng = { q: rng.q, f: quick[rng.q][0], t: quick[rng.q][1] };
+  else if (rng.live && rng.f > 0) rng.t = nowU;
+  if (!(rng.f > 0 && rng.t > rng.f)) rng = { q: 'today', f: today, t: nowU };
   w.innerHTML = topbar('Usage', 'Download, upload and what you pay for, per tunnel — hour by hour.',
     `<div class="seg">${[[1, '24 hours'], [7, '7 days'], [30, '30 days'], ['c', '📅 Date & time']].map(x => `<button class="${(custom ? x[0] === 'c' : x[0] === days) ? 'on' : ''}" data-ud="${x[0]}">${x[1]}</button>`).join('')}</div>`);
   $$('[data-ud]', w).forEach(b => b.onclick = () => { remember('tp-usage-d', b.dataset.ud); renderView(); });
@@ -237,12 +241,19 @@ async function viewUsage(w) {
       <label>From<input type="datetime-local" step="3600" data-rf value="${thrIn(rng.f)}"></label>
       <label>To<input type="datetime-local" step="3600" data-rt value="${thrIn(rng.t - 1)}"></label>
       <button class="btn pri" data-rgo>Show</button>
-      <span class="ugo">${[['Today', today, nowU], ['Yesterday', today - 86400, today], ['Last 3 days', today - 2 * 86400, nowU], ['This week', today - 6 * 86400, nowU]].map(x => `<button class="btn sm ghost" data-rq="${x[1]}-${x[2]}">${x[0]}</button>`).join('')}</span>
+      <span class="ugo">${[['Today', 'today'], ['Yesterday', 'yesterday'], ['Last 3 days', 'd3'], ['This week', 'week']].map(x => `<button class="btn sm ${rng.q === x[1] ? 'pri' : 'ghost'}" data-rq="${x[1]}">${x[0]}</button>`).join('')}</span>
       <small class="faint">Tehran time, to the hour.</small></div>`);
     w.appendChild(pick);
-    const go = (f, t) => { remember('tp-usage-rng', JSON.stringify({ f, t })); renderView(); };
-    $('[data-rgo]', pick).onclick = () => { const f = thrOut($('[data-rf]', pick).value), t = thrOut($('[data-rt]', pick).value) + 3600; if (f > 0 && t > f) go(f, Math.min(t, nowU)); };
-    $$('[data-rq]', pick).forEach(b => b.onclick = () => { const [f, t] = b.dataset.rq.split('-').map(Number); go(f, t); });
+    const go = (v) => { remember('tp-usage-rng', JSON.stringify(v)); renderView(); };
+    $('[data-rgo]', pick).onclick = () => {
+      const fv = $('[data-rf]', pick).value, tv = $('[data-rt]', pick).value;
+      const f = thrOut(fv), t = thrOut(tv) + 3600;   // (Chrome reads an empty field as the year 2000)
+      if (!fv || !tv || !(f > 0 && t > 0)) return toast('Fill in both From and To');
+      if (t <= f) return toast('"To" must be after "From"');
+      if (f >= nowU) return toast('"From" is in the future');
+      go(t >= nowU ? { f, t: nowU, live: true } : { f, t });
+    };
+    $$('[data-rq]', pick).forEach(b => b.onclick = () => go({ q: b.dataset.rq }));
   }
   const box = h('<div class="srvsplit usplit"><div class="card skel" style="height:320px"></div><div class="skel" style="height:320px"></div></div>');
   w.appendChild(box);

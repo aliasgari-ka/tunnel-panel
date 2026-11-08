@@ -95,6 +95,28 @@ func TestAccountsSeparate(t *testing.T) {
 	if w := call(ali, s.guard("tunnel", ok), "GET", "/x?id=t1", ""); w.Code != 404 {
 		t.Errorf("?id of another account's tunnel: %d", w.Code)
 	}
+	// the guard checks what the handler reads: a GET's query, the rest's body — an id of one's
+	// own on the other side doesn't pass for another account's object
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/x?id=t1", `{"ID":"t2"}`},  // GET handlers read ?id
+		{"POST", "/x?id=t2", `{"ID":"t1"}`}, // POST handlers read the body
+		{"GET", "/x?iran=s1&foreign=s3", `{"iranId":"s2","foreignId":"s3"}`},
+	} {
+		kind := "tunnel"
+		if strings.Contains(c.path, "iran") {
+			kind = "pair"
+		}
+		if w := call(ali, s.guard(kind, ok), c.method, c.path, c.body); w.Code != 404 {
+			t.Errorf("%s %s body %s: %d, want 404", c.method, c.path, c.body, w.Code)
+		}
+	}
+	// Prepare with an empty body means the panel host: never for a user, whatever ?id says
+	if w := call(ali, s.guard("server", s.serverPrepare), "POST", "/api/servers/prepare?id=s2", `{}`); w.Code != 404 {
+		t.Errorf("user's Prepare of the panel host: %d", w.Code)
+	}
+	if w := call(ali, s.serverPrepare, "POST", "/api/servers/prepare", `{}`); w.Code != 403 {
+		t.Errorf("user's Prepare of the panel host past the guard: %d", w.Code)
+	}
 
 	// a user's new tunnel: on their own servers, never the panel host; owned by them
 	if w := call(ali, s.tunnelSave, "POST", "/api/tunnels/save", `{"name":"x","serverId":"s1","foreignId":"s3","ports":"9000"}`); w.Code != 400 {

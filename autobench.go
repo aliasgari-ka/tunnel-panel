@@ -3,6 +3,7 @@ package main
 import (
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -124,6 +125,14 @@ func (a *App) dueRoutes(every time.Duration) []dueRoute {
 	return out
 }
 
+// autoBenchTried: when each due route was last started here. A run that measures nothing (every
+// method skipped) or cannot start writes no history, so without this the route would be due
+// again every round — a probe installed and removed over SSH every 10 minutes.
+var autoBenchTried = struct {
+	sync.Mutex
+	at map[dueRoute]time.Time
+}{at: map[dueRoute]time.Time{}}
+
 func (a *App) autoBenchRound() {
 	every := autoBenchEvery(a.settings())
 	if every == 0 {
@@ -135,6 +144,15 @@ func (a *App) autoBenchRound() {
 		}
 		if !a.serverReachable(r.iran) || (r.foreign != "" && !a.serverReachable(r.foreign)) {
 			continue // a server is down: nothing useful to measure now
+		}
+		autoBenchTried.Lock()
+		recent := time.Since(autoBenchTried.at[r]) < every
+		if !recent {
+			autoBenchTried.at[r] = time.Now()
+		}
+		autoBenchTried.Unlock()
+		if recent {
+			continue // started within the interval and still due: it measured nothing
 		}
 		j, err := a.Bench(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Running: !r.full, Seconds: 3, MaxMB: autoBenchMB})
 		if err != nil {
