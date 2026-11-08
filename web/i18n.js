@@ -451,6 +451,7 @@ window.TP_FA = {
 "Saved — the panel restarts in a few seconds. Open it at": "ذخیره شد — پنل تا چند ثانیه دیگر ری‌استارت می‌شود. آن را در این آدرس باز کنید:",
 "Search name or IP…": "جستجوی نام یا IP…",
 "Send the daily backup to the admin chat too": "پشتیبان روزانه به چت ادمین هم فرستاده شود",
+"The daily run only reports — it doesn't apply its suggested changes (moving users to a working path, the switcher's auto/manual mode)": "اجرای روزانه فقط گزارش بدهد — تغییرهای پیشنهادی را خودش انجام ندهد (بردن کاربران به مسیر سالم، حالت خودکار/دستی سوییچر)",
 "Server": "سرور",
 "Server saved": "سرور ذخیره شد",
 "Server · its tunnels": "سرور · تانل‌هایش",

@@ -451,8 +451,41 @@ func (a *App) aiAnalyze() {
 	aiRun.running, aiRun.notify = false, false
 	aiRun.Unlock()
 	if notify {
-		a.push(aiMessage(rep))
+		var done []string
+		if rep.Error == "" && strings.TrimSpace(a.settings().AIAuto) != "off" {
+			done = a.aiApplyAll(rep)
+		}
+		msg := aiMessage(rep)
+		if len(done) > 0 {
+			msg += "\n\nApplied:\n" + strings.Join(done, "\n")
+		}
+		a.push(msg)
 	}
+}
+
+// aiApplyAll carries out every action of the daily report (nobody is there to press the
+// buttons), each checked again by aiApply, and says what came of each.
+func (a *App) aiApplyAll(rep *AIReport) []string {
+	var done []string
+	for i, x := range rep.Actions {
+		name := x.Tunnel
+		if t := a.store.Tunnel(x.Tunnel); t != nil {
+			name = t.Name
+		}
+		what := "users → " + x.Path
+		if x.Kind == "hs_mode" {
+			what = "switcher → manual"
+			if x.Auto {
+				what = "switcher → auto"
+			}
+		}
+		if res, err := a.aiApply(i); err != nil {
+			done = append(done, fmt.Sprintf("✕ %s: %s — %v", name, what, err))
+		} else {
+			done = append(done, fmt.Sprintf("✓ %s: %s — %s", name, what, res))
+		}
+	}
+	return done
 }
 
 // aiDailyLoop runs the analysis on the server once a day (Settings.AIDaily), so it goes on
