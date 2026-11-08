@@ -162,3 +162,28 @@ func TestUsageWatchCheck(t *testing.T) {
 		t.Fatalf("a quiet hour: %+v", is)
 	}
 }
+
+func TestUsageRecordGap(t *testing.T) {
+	u := &usageLog{Last: map[string]*usageLast{}}
+	now := time.Now()
+	pairs := map[string]string{"tun": "ir|de"}
+	round := func(td, pd uint64, pairOf map[string]string, withTun bool) {
+		rs := []usageRead{{kind: "p", id: "ir|de|1.2.3.4", d: pd}}
+		if withTun {
+			rs = append(rs, usageRead{kind: "t", id: "tun", d: td})
+		}
+		u.recordLocked(now, rs, pairOf)
+	}
+	round(100, 1000, pairs, true)              // baselines
+	round(200, 1110, pairs, true)              // +100 users, +110 from foreign
+	round(0, 9000, map[string]string{}, false) // tunnel down / being applied: not read
+	round(50, 20000, pairs, true)              // back, its counters restarted: rebase only
+	round(150, 20105, pairs, true)             // +100 users, +105 from foreign
+	got := u.Days[0].Peers["ir|de"]
+	if got == nil || got.Down != 215 {
+		t.Fatalf("from foreign %+v, want 215 (the outage not counted)", got)
+	}
+	if x := u.Days[0].Tunnels["tun"]; x.Down != 250 { // 100 + 50 after the restart + 100
+		t.Fatalf("tunnel %+v", x)
+	}
+}
