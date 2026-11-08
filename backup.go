@@ -219,8 +219,8 @@ func checkBackup(st *State) error {
 		if t.Family != "v4" && t.Family != "v6" {
 			return fmt.Errorf("tunnel %s family", t.ID)
 		}
-		if t.Index < 1 || t.Index > 250 {
-			return fmt.Errorf("tunnel %s index", t.ID)
+		if t.Index < 1 || t.Index > 249 { // 250 is the speed test's own tunnel (bench.go), torn down on every run
+			return fmt.Errorf("tunnel %s index %d: must be 1-249 (250 is reserved for the speed test)", t.ID, t.Index)
 		}
 		if err := validatePorts(t.Ports, nil); t.Ports != "" && err != nil {
 			return fmt.Errorf("tunnel %s ports: %v", t.ID, err)
