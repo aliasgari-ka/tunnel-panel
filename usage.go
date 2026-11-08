@@ -245,6 +245,77 @@ type UsageSum struct {
 	Series []UsageStep `json:"series"`
 }
 
+// dayPaidLocked prices one day bucket. A day the hours still cover is priced hour by hour
+// (a day the peer counters started in has measured hours and estimated ones, not one or
+// the other); the hours' paid / used is applied to the day's own bytes, as early hours
+// were not cut at the same boundaries as the days.
+func (u *usageLog) dayPaidLocked(b *usageBucket, pairs map[string][2]string, coef map[string]float64) (map[string]uint64, map[string]bool) {
+	paid, est := usagePaidEst(b, pairs, coef)
+	if len(u.Buckets) == 0 || u.Buckets[0].Hour > b.Hour {
+		return paid, est
+	}
+	hp, hu, he := map[string]uint64{}, map[string]uint64{}, map[string]bool{}
+	for _, h := range u.Buckets {
+		if h.Hour >= b.Hour && h.Hour < b.Hour+86400 {
+			p, e := usagePaidEst(h, pairs, coef)
+			for id, v := range p {
+				if x := h.Tunnels[id]; x != nil {
+					hp[id] += v
+					hu[id] += x.Down + x.Up
+					he[id] = he[id] || e[id]
+				}
+			}
+		}
+	}
+	for id, x := range b.Tunnels {
+		if hu[id] > 0 {
+			paid[id] = uint64(float64(x.Down+x.Up) * float64(hp[id]) / float64(hu[id]))
+			est[id] = he[id]
+		}
+	}
+	return paid, est
+}
+
+// usageCoef is each tunnel's measured paid / (download + upload) over the hours that have
+// the peer counters — what an estimated hour is priced at.
+func usageCoef(hours []*usageBucket, pairs map[string][2]string) map[string]float64 {
+	paid, used := map[string]float64{}, map[string]float64{}
+	for _, b := range hours {
+		p, est := usagePaid(b, pairs)
+		for id, v := range p {
+			if x := b.Tunnels[id]; x != nil && !est[id] {
+				paid[id] += float64(v)
+				used[id] += float64(x.Down + x.Up)
+			}
+		}
+	}
+	coef := map[string]float64{}
+	for id, n := range used {
+		if n >= 1e9 { // at least a GB measured
+			coef[id] = paid[id] / n
+		}
+	}
+	return coef
+}
+
+// usagePaidEst is usagePaid with an estimated tunnel priced at its measured coefficient
+// when it has one: the server's card also carries traffic that is not the tunnels' (another
+// panel's tunnels, the server's own), and before 2026-11-06 only one of two cards was read.
+func usagePaidEst(b *usageBucket, pairs map[string][2]string, coef map[string]float64) (map[string]uint64, map[string]bool) {
+	paid, est := usagePaid(b, pairs)
+	for id := range pairs {
+		x := b.Tunnels[id]
+		if x == nil || x.Down+x.Up == 0 || (!est[id] && paid[id] > 0) {
+			continue
+		}
+		if c := coef[id]; c > 0 {
+			paid[id] = uint64(c * float64(x.Down+x.Up))
+			est[id] = true
+		}
+	}
+	return paid, est
+}
+
 // usagePaid splits one bucket's paid bytes between the tunnels on it. pairs: tunnel id ->
 // [iran id, foreign id] of the tunnels the asker sees and the ones that share their servers.
 // With peer counters for the Iran server, a tunnel pays its users' upload plus its share
@@ -343,6 +414,7 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 	}
 	u.mu.Lock()
 	started := u.Started
+	coef := usageCoef(u.Buckets, pairs)
 	list := u.Buckets
 	if step == 86400 {
 		list = u.Days
@@ -355,7 +427,10 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 		if i >= n {
 			continue
 		}
-		paid, est := usagePaid(b, pairs)
+		paid, est := usagePaidEst(b, pairs, coef)
+		if step == 86400 {
+			paid, est = u.dayPaidLocked(b, pairs, coef)
+		}
 		for id, x := range b.Tunnels {
 			if !s.tunnelVisible(user, admin, id) {
 				continue
