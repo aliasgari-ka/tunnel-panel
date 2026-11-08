@@ -185,38 +185,47 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 }
 
 // ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and only box64
-// (not qemu-user) can open ipx's packet socket. Get box64 if the distro has it, else stop
-// with what to do — a unit that is "active" but carries nothing helps nobody. (The core
-// runs with Go's async preemption off: its SIGURG preemption signals are what crashed it at
-// random under box64 — seen live on an aarch64 server.)
+// (not qemu-user) can open ipx's packet socket. On aarch64 it installs the panel release's
+// box64 (and replaces any other one): upstream box64 has no x86-64 ppoll, which the core's
+// ipx receive loop calls, so a distro or older box64 gets ENOSYS on every packet. A distro
+// package is the fallback when the download fails. With no box64 at all it stops with what
+// to do — a unit that is "active" but carries nothing helps nobody. (The core runs with Go's
+// async preemption off: its SIGURG preemption signals crashed it at random under box64.)
 // box64Release is where the release workflow publishes box64 for arm64 (built from pinned
-// upstream source on Ubuntu 22.04), for distros that don't package it.
+// upstream source plus ppoll on Ubuntu 22.04).
 const box64Release = "https://github.com/aliasgari-ka/tunnel-panel/releases/latest/download/box64-arm64"
 
 func ipxEmuCheck(mode, ghPrefix string) string {
 	if mode != "ipx" {
 		return ""
 	}
-	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ] && ! command -v box64 >/dev/null 2>&1; then
-  echo "ipx on $(uname -m) needs box64 — trying the distro's package"
-  # (setup runs with set -e: every try must be allowed to fail, the check below decides)
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get install -y -qq box64 >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq box64 >/dev/null 2>&1; } || true
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y box64 >/dev/null 2>&1 || true
-  fi
-  if ! command -v box64 >/dev/null 2>&1 && [ "$(uname -m)" = aarch64 ]; then
-    echo "no box64 package — installing the panel release's box64 build"
+	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ]; then
+  # (setup runs with set -e: every try must be allowed to fail, the checks below decide)
+  if [ "$(uname -m)" = aarch64 ]; then
     T=$(mktemp -d)
-    if curl -fsSL --retry 2 --max-time 300 -o "$T/box64" ` + shq(ghPrefix+box64Release) + ` &&
-       curl -fsSL --retry 2 --max-time 30 -o "$T/box64.sha256" ` + shq(ghPrefix+box64Release+".sha256") + ` &&
-       (cd "$T" && sed 's#  *[^ ]*$#  box64#' box64.sha256 | sha256sum -c - >/dev/null 2>&1) &&
-       chmod 0755 "$T/box64" && "$T/box64" --version >/dev/null 2>&1; then
-      install -m0755 "$T/box64" /usr/local/bin/box64 && echo "box64 installed: $(box64 --version 2>/dev/null | head -1)"
+    if curl -fsSL --retry 2 --max-time 30 -o "$T/box64.sha256" ` + shq(ghPrefix+box64Release+".sha256") + `; then
+      W=$(awk '{print $1; exit}' "$T/box64.sha256")
+      if [ -n "$W" ] && [ "$(sha256sum /usr/local/bin/box64 2>/dev/null | awk '{print $1}')" = "$W" ]; then
+        echo "box64: the panel's build is installed"
+      elif curl -fsSL --retry 2 --max-time 300 -o "$T/box64" ` + shq(ghPrefix+box64Release) + ` &&
+           [ "$(sha256sum "$T/box64" | awk '{print $1}')" = "$W" ] &&
+           chmod 0755 "$T/box64" && "$T/box64" --version >/dev/null 2>&1; then
+        install -m0755 "$T/box64" /usr/local/bin/box64 && echo "box64 installed (the panel's build, with ppoll): $(/usr/local/bin/box64 --version 2>/dev/null | head -1)"
+      else
+        echo "could not download/verify box64 from the panel's GitHub release"
+      fi
     else
-      echo "could not download/verify box64 from the panel's GitHub release"
+      echo "could not reach the panel's GitHub release for box64"
     fi
     rm -rf "$T"
+  fi
+  if ! command -v box64 >/dev/null 2>&1; then
+    echo "trying the distro's box64 package (it may lack ppoll: then ipx passes nothing)"
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get install -y -qq box64 >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq box64 >/dev/null 2>&1; } || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y box64 >/dev/null 2>&1 || true
+    fi
   fi
   if ! command -v box64 >/dev/null 2>&1; then
     echo "Premium ipx can't run on this $(uname -m) server: there is no arm64 v2 core, the amd64 core needs box64 for ipx's packet socket (qemu-user can't open it), and box64 could not be installed ($(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}"))."

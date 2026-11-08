@@ -16,6 +16,10 @@ func TestIPXEmuCheckScript(t *testing.T) {
 	if !strings.Contains(s, "'https://ghproxy.example/"+box64Release+"'") || !strings.Contains(s, ".sha256'") {
 		t.Errorf("box64 download URL not in the script:\n%s", s)
 	}
+	// an installed box64 (distro, or a build without ppoll) is checked against the release, not kept as is
+	if !strings.Contains(s, "sha256sum /usr/local/bin/box64") || strings.Index(s, "box64.sha256") > strings.Index(s, "distro's box64") {
+		t.Errorf("the panel's box64 build isn't tried before keeping/installing another one:\n%s", s)
+	}
 	cmd := exec.Command("bash", "-n")
 	cmd.Stdin = strings.NewReader("set -e\n" + s)
 	if out, err := cmd.CombinedOutput(); err != nil {
