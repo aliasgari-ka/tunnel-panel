@@ -86,7 +86,7 @@ label.f input,label.f select,label.f textarea,.inp{background:var(--bg);border:1
 label.f input:focus,label.f select:focus,label.f textarea:focus,.inp:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:var(--accent)}
 label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:auto}
 .ff{display:grid;gap:13px}.ff .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.grid{display:grid;gap:14px}
+.grid{display:grid;gap:14px;grid-template-columns:minmax(0,1fr)}
 .grid.cards{grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
 .tgrid{grid-template-columns:repeat(auto-fill,minmax(280px,1fr));align-items:start;gap:12px}
 .filters{display:flex;gap:6px;flex-wrap:wrap;margin:-8px 0 14px}
@@ -344,6 +344,9 @@ details.more .pop{position:absolute;inset-inline-end:0;top:calc(100% + 4px);z-in
 .uspark.w i{width:2px}
 .urow{cursor:pointer}.urow:hover td{background:var(--hover,rgba(127,127,127,.08))}.utbl tfoot td{border-top:2px solid var(--line)}.ucoef{color:var(--good)}.ucoef.warn{color:var(--warn)}.ucoef.bad{color:var(--crit)}.ukpi .paid{border-color:var(--accent)}
 .ubar{display:inline-block;width:110px;height:8px;border-radius:4px;background:var(--line);overflow:hidden;vertical-align:middle}.ubar i{display:block;height:100%;background:var(--accent)}.uhours{max-height:560px;overflow-y:auto}
+.usub{display:flex;flex-direction:column;gap:2px;margin-inline-start:14px;padding-inline-start:8px;border-inline-start:2px solid var(--line)}.sgh2{margin-top:6px}.sgh2 .sinfo b{font-size:14px}
+.srow .smeta .ucoef{color:var(--good)}.srow .smeta .ucoef.warn{color:var(--warn)}.srow .smeta .ucoef.bad{color:var(--crit)}
+.uhead h2{margin:0 0 4px;font-size:20px}.srow .smeta small{direction:ltr;unicode-bidi:isolate}.srvdetail .ukpi{grid-template-columns:repeat(auto-fit,minmax(125px,1fr))}.srvdetail{display:flex;flex-direction:column;gap:14px;min-width:0}
 .uspark{display:inline-flex;align-items:flex-end;gap:1px;height:22px}.uspark i{display:block;width:3px;background:var(--accent);border-radius:1px;opacity:.75}
 .tbl th{text-align:start;color:var(--faint);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px;border-bottom:1px solid var(--line)}
 .tbl td{padding:7px 8px;border-bottom:1px solid var(--line)}
@@ -450,6 +453,7 @@ optgroup option{color:var(--fg);font-weight:500}
   .filters{flex-wrap:nowrap;overflow-x:auto;margin-inline:-4px;padding:0 4px 4px}.filters>*{flex:none}.inp.search{flex:0 0 200px}
   .tgrid,.grid.cards{grid-template-columns:1fr}
   .srvsplit{grid-template-columns:1fr}.srvlist{position:static;max-height:none}
+  .usplit .srvlist{max-height:46vh}
   .modal.conm{padding:0}.modal.conm .card{height:100vh;max-height:none;border-radius:0}
   /* phones: no blur behind cards (it is what trapped the ⋯ menu under the next card, and it is slow
      over the animated background); the ⋯ menu opens as a bottom sheet with big touch targets */
