@@ -224,7 +224,9 @@ func (a *App) checkServer(m *serverMon, s *Server, addr string, pause time.Durat
 		}
 		// one family down while the other works: worth knowing (and logging) on its own —
 		// judged only once both were looked at this round
-		if (up || probe4) && (up6 || probe6) {
+		// — and only while one of them answers: with both gone it is the server that is down,
+		// and "IPv6 back" came next to "Server unreachable" (then flapped when it returned)
+		if (up || probe4) && (up6 || probe6) && (up || up6) {
 			a.transition(m, s.ID+"/v4", "ssh-v4", s.Name+" (IPv4)", !up && up6, first, "SSH over IPv4 ("+addr+") doesn't answer — IPv6 ("+addr6+") works; the panel manages it over IPv6 meanwhile")
 			a.transition(m, s.ID+"/v6", "ssh-v6", s.Name+" (IPv6)", up && !up6, time.Now(), "SSH over IPv6 ("+addr6+") doesn't answer — IPv4 works")
 		}

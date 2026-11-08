@@ -58,13 +58,13 @@ func (a *App) hsRebuild(t *Tunnel, reason string, down time.Duration) {
 }
 
 type tunnelHealth struct {
-	outageID        string
-	fails           int
-	alerted         bool
-	downSince       time.Time
-	reason          string
-	lastOutage      time.Duration
-	failoverAt      time.Time // the last failover / rebuild of this outage (zero: none yet)
+	outageID   string
+	fails      int
+	alerted    bool
+	downSince  time.Time
+	reason     string
+	lastOutage time.Duration
+	failoverAt time.Time // the last failover / rebuild of this outage (zero: none yet)
 }
 
 // step records one check ("" = healthy) and returns "down" or "up" when an alert is due.

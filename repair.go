@@ -311,7 +311,7 @@ func (a *App) resumeInterrupted() {
 			continue // started or stopped from the panel meanwhile
 		}
 		a.pushTInfo(x.t, fmt.Sprintf("🔄 %s was left down by a panel restart in the middle of applying %s — bringing it back", x.t.Name, methodTitle(x.mid)))
-		j, err := a.ApplyRoute(x.t, x.mid, x.fam)
+		j, err := a.applyRoute(x.t, x.mid, x.fam, true) // still wanted if it fails again
 		if err != nil {
 			a.pushT(x.t, fmt.Sprintf("❌ %s: could not resume %s — %v", x.t.Name, methodTitle(x.mid), err))
 			continue

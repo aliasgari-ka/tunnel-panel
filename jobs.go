@@ -58,6 +58,13 @@ func (j *Job) finish(status string) {
 	j.mu.Unlock()
 }
 
+// cancelled: the user cancelled the job (Jobs.cancel), as opposed to its own deadline.
+func (j *Job) cancelled() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.Status == "cancelled"
+}
+
 func (j *Job) snapshot() *Job {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -305,18 +312,37 @@ if [ "$st" != active ]; then jl; exit 1; fi
 }
 
 // Apply starts or switches a tunnel to method mid.
-func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
+func (a *App) Apply(t *Tunnel, mid string) (*Job, error) { return a.apply(t, mid, false) }
+
+// apply is Apply; keep marks an automatic re-apply of a tunnel that should run (Repair, a
+// hot-standby rebuild, a resume after a restart): when it fails after taking the tunnel
+// down, the tunnel stays marked as running (as Failover and Failback do) so the monitor, Repair
+// and the next resume keep at it — with Active and Applying both empty it looked exactly
+// like a Stop, and everything left it down for good.
+func (a *App) apply(t *Tunnel, mid string, keep bool) (*Job, error) {
 	j, err := a.jobs.start(t.ID, "apply:"+mid)
 	if err != nil {
 		return nil, err
 	}
 	a.clearHealth(t.ID)
+	_ = a.store.Update(func(*State) error {
+		if t.HSPin != "" && t.Active != "" && mid != t.Active {
+			t.HSPin = "" // a path chosen under the old method: the new one starts on its own
+		}
+		return nil
+	})
 	go func() {
 		defer a.jobs.done(j)
 		ctx, cancel := j.context(20 * time.Minute)
 		defer cancel()
 		fail := func(f string, x ...any) {
-			a.setApplying(t, "") // ended (with an error): nothing to resume after a restart
+			_ = a.store.Update(func(*State) error {
+				t.Applying = "" // ended (with an error): nothing to resume after a restart
+				if keep && t.Active == "" && !j.cancelled() {
+					t.Active, t.Selected = mid, mid // still wanted (not when the user cancelled it)
+				}
+				return nil
+			})
 			j.log("ERROR: "+f, x...)
 			j.finish("error")
 			a.pushT(t, fmt.Sprintf("❌ %s: %s failed — %s", t.Name, mid, fmt.Sprintf(f, x...)))
@@ -395,8 +421,8 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 			j.log("stopping current method (%s) on both servers", t.Active)
 		}
 		a.setApplying(t, mid)
-		_, _ = irHost.Run(ctx, teardownScript(t), func(l string) { j.log("[IR] %s", l) })
-		_, _ = khHost.Run(ctx, teardownScript(t), func(l string) { j.log("[KH] %s", l) })
+		a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, teardownScript(t))
+		a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, teardownScript(t))
 		j.tornDown.Store(t.Active != "")
 		a.setActive(t, "")
 
@@ -496,7 +522,11 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 		return nil, err
 	}
 	a.clearHealth(t.ID)
-	a.setApplying(t, "") // stopped on purpose: nothing to resume
+	_ = a.store.Update(func(*State) error {
+		t.Applying = "" // stopped on purpose: nothing to resume
+		t.HSPin = ""    // nor a path chosen while it ran: the next Start may be another method
+		return nil
+	})
 	go func() {
 		defer a.jobs.done(j)
 		// Stop must run even right after a cancelled job, so it never inherits one

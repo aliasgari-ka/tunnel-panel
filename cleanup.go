@@ -48,6 +48,20 @@ func (a *App) teardownOn(ctx context.Context, h Host, id string, t *Tunnel, log 
 	return false
 }
 
+// applyTeardown runs an apply's own teardown of t on server id; once it ran to its end, a
+// cleanup a Stop left there for t has been done too and is dropped — run later, it would
+// take the new deploy down.
+func (a *App) applyTeardown(ctx context.Context, j *Job, side string, h Host, id string, t *Tunnel, script string) {
+	out, _ := h.Run(ctx, script+"\necho TP-TEARDOWN-DONE\n", func(l string) {
+		if l != "TP-TEARDOWN-DONE" {
+			j.log("[%s] %s", side, l)
+		}
+	})
+	if strings.Contains(out, "TP-TEARDOWN-DONE") {
+		a.dropCleanup(id, t.ID)
+	}
+}
+
 // deferCleanup remembers that server id still has t's leftovers.
 func (a *App) deferCleanup(id string, t *Tunnel) {
 	if id == "" {
@@ -121,8 +135,17 @@ func (a *App) runCleanups(id string) {
 	}
 	for _, c := range todo {
 		// a tunnel that runs again (re-applied meanwhile) has its own units in place: skip
-		if t := a.store.Tunnel(c.TunnelID); t != nil && t.Active != "" {
+		var active, applying string
+		if t := a.store.Tunnel(c.TunnelID); t != nil {
+			a.store.View(func(*State) { active, applying = t.Active, t.Applying })
+		}
+		if active != "" {
 			a.dropCleanup(id, c.TunnelID)
+			continue
+		}
+		// being applied right now (Active is empty mid-deploy): the teardown would take the new
+		// deploy down — left for the apply, which drops it after its own teardown
+		if applying != "" || a.jobs.running(c.TunnelID) != "" {
 			continue
 		}
 		if out, _ := h.Run(ctx, c.Script+"\necho TP-TEARDOWN-DONE\n", nil); !strings.Contains(out, "TP-TEARDOWN-DONE") {
