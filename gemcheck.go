@@ -197,7 +197,7 @@ func (a *App) gemLoop() {
 	moved := map[string]time.Time{}
 	var signedOutSent time.Time
 	time.Sleep(3 * time.Minute)
-	relays := map[string]string{} // server id -> the allow-list it last took
+	relays := newRelayState()
 	for ; ; time.Sleep(gemTick) {
 		var list []*Server
 		a.store.View(func(s *State) {
@@ -207,7 +207,7 @@ func (a *App) gemLoop() {
 				}
 			}
 		})
-		a.gemRelaySync(list, relays)
+		a.relaySync(list, relays)
 		// one move per round at most: few signed-in visits
 		for _, s := range list {
 			want := gemWantDom(s)

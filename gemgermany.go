@@ -140,6 +140,13 @@ func igProxyName(inf map[string]string, route string, byIP func(string) *Server)
 	return fmt.Sprintf("%s (internal: %s WARP %d)", route, name, p-12371)
 }
 
+const (
+	gemFixVisits = 3               // signed-in checks per gemFix at most
+	gemSettle    = 5 * time.Second // after a route change, before the users' route is checked
+)
+
+var gemRouteRe = regexp.MustCompile(`^(proxy[0-9]*|warp6?|ipv6|direct)$`)
+
 // gemFix moves a server's Google to an exit in its own country that the signed-in check
 // passes: its own IP, else one of its WARPs, else the own IP of another of our servers there
 // (an internal relay proxy, added when missing; spread by id so each server keeps its choice).
@@ -147,6 +154,9 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 	want := gemWantDom(srv)
 	if want == "" {
 		return "the server's country is unknown — set it on the Servers page"
+	}
+	if !gemRouteRe.MatchString(inf["google"]) { // nothing known to put it back to
+		return "Google's current route is unknown (agent too old?) — not moved"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -189,7 +199,13 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		}
 		return ""
 	}
+	prev := inf["google"]
+	signedIn, usersFail := 0, 0
 	for _, c := range cands {
+		if signedIn >= gemFixVisits { // the test account is signed out when seen too often
+			break
+		}
+		signedIn++
 		pc, pcancel := context.WithTimeout(ctx, 2*time.Minute)
 		v, _, _ := gemProbe(pc, "socks5://"+c.ip+":"+c.port)
 		pcancel()
@@ -199,131 +215,56 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		if v != "ok" {
 			continue
 		}
-		via, what := "direct", c.what
+		via, what, added := "direct", c.what, false
 		if !c.own {
 			if via = find(inf, c.ip, c.port); via == "" { // not in its list yet: add it (the agent tests it first)
 				if rc, out := a.igRun(ctx, srv, []string{"proxy", "add", "-"}, "socks5 "+c.ip+" "+c.port+" - -", 120, nil); rc != 0 {
-					log.Printf("gemini fix %s: adding %s: %s", srv.Name, c.what, lastLineOf(out))
+					log.Printf("gemini fix %s: adding %s: %s", srv.Name, c.what, agentLine(srv, out))
 					continue
 				}
 				a.igForget(srv.ID)
 				if via = find(a.igInfo(ctx, srv), c.ip, c.port); via == "" {
 					continue
 				}
+				added = true
 			}
 			what = via + " (internal: " + c.what + ")"
 		}
 		if rc, out := a.igRun(ctx, srv, []string{"route", "GOOGLE", via}, "", 180, nil); rc != 0 {
-			return "could not move Google to " + what + ": " + clipTo(lastLineOf(out), 100)
+			return "could not move Google to " + what + ": " + clipTo(agentLine(srv, out), 100)
 		}
 		a.igForget(srv.ID)
 		// the exit passed in the test browser, but the users' route must reach it too (a server's
-		// own WARP relayed through its own IP did not): check the users' relay, else put Google back
-		time.Sleep(5 * time.Second)
-		if d := gemDom(ctx, srv.IPv4+":12370"); d != want {
-			if prev := inf["google"]; prev != "" && prev != "-" {
-				a.igRun(ctx, srv, []string{"route", "GOOGLE", prev}, "", 180, nil)
-				a.igForget(srv.ID)
-			}
-			log.Printf("gemini fix %s: %s works in the test browser, but the users' route gets %q there -> put back to %s", srv.Name, what, d, inf["google"])
-			continue
+		// own WARP relayed through its own IP did not): check the users' relay a few times
+		d := ""
+		for i := 0; i < 3 && d != want; i++ {
+			time.Sleep(gemSettle)
+			d = gemDom(ctx, srv.IPv4+":"+strconv.Itoa(gemRelayPort))
 		}
-		return "Google moved to " + what + " — ." + want + ", signed-in Gemini works there"
+		if d == want {
+			return "Google moved to " + what + " — ." + want + ", signed-in Gemini works there"
+		}
+		usersFail++
+		// put it back, with a context of its own: the round's may be spent by now
+		bc, bcancel := context.WithTimeout(context.Background(), 4*time.Minute)
+		rc, out := a.igRun(bc, srv, []string{"route", "GOOGLE", prev}, "", 180, nil)
+		if rc == 0 && added { // the relay proxy added for this try goes too
+			if n := strings.TrimPrefix(find(a.igInfo(bc, srv), c.ip, c.port), "proxy"); n != "" {
+				a.igRun(bc, srv, []string{"proxy", "del", n}, "", 120, nil)
+			}
+		}
+		bcancel()
+		a.igForget(srv.ID)
+		if rc != 0 {
+			return fmt.Sprintf("moved Google to %s, but the users' route gets %q there, and putting it back to %s failed: %s — check it by hand", what, d, prev, clipTo(agentLine(srv, out), 100))
+		}
+		log.Printf("gemini fix %s: %s works in the test browser, but the users' route gets %q there -> put back to %s", srv.Name, what, d, prev)
 	}
 	if len(cands) == 0 {
 		return "no exit that Google places in ." + want + " — move it by hand"
 	}
-	return fmt.Sprintf("no .%s exit opens Gemini signed in (%d tried) — left as is", want, len(cands))
-}
-
-// relayAllowLists: the relay allow-list for each agent machine (server id -> sorted IPv4s): only
-// the servers of the machine's own person, so one person's internal proxies are never open to
-// another person's servers. A machine added by two people (same IP) is the admin's when the
-// admin has it; it gets one list, sent through the admin's entry.
-func relayAllowLists(list []*Server) map[string]string {
-	owner := map[string]string{} // ip -> the person the machine belongs to
-	via := map[string]*Server{}  // ip -> the entry the list is sent through
-	for _, s := range list {
-		if o, ok := owner[s.IPv4]; !ok || (o != "" && s.Owner == "") {
-			owner[s.IPv4], via[s.IPv4] = s.Owner, s
-		}
+	if usersFail > 0 {
+		return fmt.Sprintf("%d exit(s) opened Gemini signed in, but the users' route did not reach them — left on %s", usersFail, prev)
 	}
-	ips := map[string][]string{} // person -> machines
-	for ip, o := range owner {
-		ips[o] = append(ips[o], ip)
-	}
-	out := map[string]string{}
-	for ip, s := range via {
-		l := ips[owner[ip]]
-		sort.Strings(l)
-		out[s.ID] = strings.Join(l, "\n")
-	}
-	return out
-}
-
-// foreignRelays: the numbers (highest first, so each delete leaves the rest in place) of the
-// proxies in prelay ("n:ip:port,…") that are internal relays of a machine not in own.
-func foreignRelays(prelay string, own map[string]bool) []int {
-	var out []int
-	for _, x := range strings.Split(prelay, ",") {
-		f := strings.Split(x, ":")
-		if len(f) != 3 || own[f[1]] {
-			continue
-		}
-		if n, err := strconv.Atoi(f[0]); err == nil && n > 0 {
-			out = append(out, n)
-		}
-	}
-	sort.Sort(sort.Reverse(sort.IntSlice(out)))
-	return out
-}
-
-// gemRelaySync gives every agent the IPv4 list of the same person's agent servers: they may use
-// each other's relays, so a new server works with the others without a new agent script. A relay
-// of another person's machine in a server's proxy list is removed (it would no longer let it in).
-func (a *App) gemRelaySync(list []*Server, sent map[string]string) {
-	lists := relayAllowLists(list)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	for _, s := range list {
-		want, ok := lists[s.ID]
-		if !ok {
-			continue
-		}
-		mu.Lock()
-		done := sent[s.ID] == want
-		mu.Unlock()
-		wg.Add(1)
-		go func(s *Server, want string, done bool) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			defer cancel()
-			if !done {
-				if rc, out := a.igRun(ctx, s, []string{"relay-allow", "-"}, want+"\n", 60, nil); rc != 0 {
-					log.Printf("relay allow-list %s: %s", s.Name, lastLineOf(out)) // an older agent: next round again
-				} else {
-					mu.Lock()
-					sent[s.ID] = want
-					mu.Unlock()
-				}
-			}
-			own := map[string]bool{}
-			for _, ip := range strings.Split(want, "\n") {
-				own[ip] = true
-			}
-			inf := a.igInfo(ctx, s)
-			del := foreignRelays(inf["prelay"], own)
-			for _, n := range del {
-				if rc, out := a.igRun(ctx, s, []string{"proxy", "del", strconv.Itoa(n)}, "", 120, nil); rc != 0 {
-					log.Printf("relay cleanup %s: proxy %d: %s", s.Name, n, lastLineOf(out))
-					break
-				}
-				log.Printf("relay cleanup %s: removed proxy %d (another person's server)", s.Name, n)
-			}
-			if len(del) > 0 {
-				a.igForget(s.ID)
-			}
-		}(s, want, done)
-	}
-	wg.Wait()
+	return fmt.Sprintf("no .%s exit opens Gemini signed in (%d tried) — left as is", want, signedIn)
 }
