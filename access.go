@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -134,44 +133,71 @@ func (s *Server2) guard(kind string, h http.HandlerFunc) http.HandlerFunc {
 			httpErr(w, 403, "only the panel admin can do this")
 			return
 		}
-		var body []byte
-		if r.Body != nil {
-			body, _ = io.ReadAll(io.LimitReader(r.Body, 1<<20))
-			r.Body = io.NopCloser(bytes.NewReader(body))
-		}
-		// check exactly what the handler will use: a GET reads its ids from the query, the rest
-		// from the body (a body id with another ?id, or the reverse, let one object be checked
-		// and another be read or acted on)
+
+		// The guard and the handler must see the same names. A GET handler reads only the
+		// query, so a GET carries no body past here; a POST handler decodes the body once
+		// with readJSON, so the body must be exactly one JSON value, decoded the same way —
+		// with junk after it Unmarshal failed while the handler's Decoder took the first value.
 		var f struct {
 			ID, IranID, ForeignID, Iran, Foreign string
 		}
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			r.Body = http.NoBody
+		} else if r.Body != nil {
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if len(bytes.TrimSpace(body)) > 0 {
+				dec := json.NewDecoder(bytes.NewReader(body))
+				if err := dec.Decode(&f); err != nil {
+					httpErr(w, 400, "bad request")
+					return
+				}
+				if _, err := dec.Token(); err != io.EOF {
+					httpErr(w, 400, "bad request")
+					return
+				}
+			}
+		}
+		// the name the handler acts on (the query for a GET, the body otherwise) must be this
+		// account's — an empty one means the hub — and so must every other name the request carries
 		q := r.URL.Query()
-		if r.Method != http.MethodGet && len(body) > 0 {
-			_ = json.Unmarshal(body, &f)
+		main, other := f.ID, q.Get("id")
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			main, other = other, main
 		}
-		if r.Method != http.MethodGet {
-			q = url.Values{}
+		ids := []string{main}
+		if other != "" {
+			ids = append(ids, other)
 		}
-		id := f.ID
-		if id == "" {
-			id = q.Get("id")
-		}
-		ok := false
-		switch kind {
-		case "server":
-			ok = s.serverVisible(user, admin, id)
-		case "tunnel":
-			ok = s.tunnelVisible(user, admin, id)
-		case "job":
-			if j := s.app.jobs.get(id); j != nil {
-				ok = (j.Tunnel != "" && s.tunnelVisible(user, admin, j.Tunnel)) || (j.Owner != "" && j.Owner == user)
+		one := func(id string) bool {
+			switch kind {
+			case "server":
+				return s.serverVisible(user, admin, id)
+			case "tunnel":
+				return s.tunnelVisible(user, admin, id)
+			case "job":
+				if j := s.app.jobs.get(id); j != nil {
+					return (j.Tunnel != "" && s.tunnelVisible(user, admin, j.Tunnel)) || (j.Owner != "" && j.Owner == user)
+				}
 			}
-		case "pair":
+			return false
+		}
+		ok := main != ""
+		for _, id := range ids {
+			ok = ok && one(id)
+		}
+		if kind == "pair" {
 			iran, foreign := orStr(f.IranID, f.Iran), orStr(f.ForeignID, f.Foreign)
-			if iran == "" && foreign == "" {
-				iran, foreign = q.Get("iran"), q.Get("foreign")
+			qi, qf := q.Get("iran"), q.Get("foreign")
+			body := iran != "" || foreign != ""
+			query := qi != "" || qf != ""
+			ok = body || query
+			if body {
+				ok = ok && s.pairVisible(user, admin, iran, foreign)
 			}
-			ok = s.pairVisible(user, admin, iran, foreign)
+			if query {
+				ok = ok && s.pairVisible(user, admin, qi, qf)
+			}
 		}
 		if !ok {
 			httpErr(w, 404, "not found")
