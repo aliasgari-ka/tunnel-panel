@@ -143,6 +143,7 @@ func main() {
 	go app.gemLoop()
 	app.usage = loadUsage()
 	go app.usageLoop()
+	go app.usageWatchLoop()
 
 	fmt.Printf("Tunnel Panel %s (agent %s, data %s, %d methods)\n", version, *agentAddr, *dir, len(methods))
 	store.View(func(st *State) {
