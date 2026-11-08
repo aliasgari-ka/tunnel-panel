@@ -1,5 +1,31 @@
 // generated: the Persian texts of the panel (English -> Persian); the translator is below
 window.TP_FA = {
+"Enable shaping on the Iran egress (CAKE/HTB/… qdisc)": "شکل‌دهی روی خروجی سرور ایران روشن شود (qdisc از نوع CAKE/HTB/…)",
+"MSS clamp": "محدود کردن MSS",
+"Add timing jitter (netem)": "افزودن لرزش زمانی (netem)",
+"Also shape the foreign egress": "خروجی سرور خارج هم شکل‌دهی شود",
+"Only IPv4 is available on this route — IPv6 needs a public address on both servers (add it on the Servers page, or run Test connection to detect it).": "روی این مسیر فقط IPv4 هست — برای IPv6 هر دو سرور آدرس عمومی لازم دارند (در صفحه سرورها اضافه‌اش کنید، یا «تست اتصال» را بزنید تا پیدا شود).",
+"Only IPv6 is available on this route — IPv4 needs a public address on both servers (add it on the Servers page, or run Test connection to detect it).": "روی این مسیر فقط IPv6 هست — برای IPv4 هر دو سرور آدرس عمومی لازم دارند (در صفحه سرورها اضافه‌اش کنید، یا «تست اتصال» را بزنید تا پیدا شود).",
+"(switcher order; the users' path is checked every 2 s on the Iran server)": "(به ترتیب سوییچر؛ مسیر کاربران هر ۲ ثانیه روی سرور ایران بررسی می‌شود)",
+"✋ Manual": "✋ دستی",
+"🤖 Auto · best path": "🤖 خودکار · بهترین مسیر",
+"On: backup paths stay running and users move to a working one within seconds when theirs fails — or to a clearly faster one.": "روشن: مسیرهای پشتیبان روشن می‌مانند و وقتی مسیر کاربران از کار بیفتد ظرف چند ثانیه به مسیر سالم منتقل می‌شوند — یا به مسیری که به‌وضوح سریع‌تر است.",
+"Saving rebuilds the running tunnel now — its users drop for about a minute.": "ذخیره، تانل روشن را همین حالا دوباره می‌سازد — کاربرانش حدود یک دقیقه قطع می‌شوند.",
+"Users hit the Iran server on these ports; traffic is forwarded to the foreign server over the tunnel.": "کاربران به این پورت‌های سرور ایران وصل می‌شوند؛ ترافیک از راه تانل به سرور خارج فرستاده می‌شود.",
+"IPv4 underlay": "زیرساخت IPv4",
+"IPv6 underlay": "زیرساخت IPv6",
+"If it fails": "اگر قطع شود",
+"Hot standby": "آماده‌به‌کار",
+"auto switching": "سوییچ خودکار",
+"manual switching": "سوییچ دستی",
+"Failover after 5 min down": "سوییچ بعد از ۵ دقیقه قطعی",
+"on a backup path": "روی مسیر پشتیبان",
+"original:": "اصلی:",
+"users on": "کاربران روی",
+"use": "استفاده",
+"hot standby": "آماده‌به‌کار",
+"Note": "یادداشت",
+"e.g.": "مثلاً",
 "📅 Date & time": "📅 تاریخ و ساعت",
 "To": "تا",
 "Show": "نمایش",
@@ -142,7 +168,7 @@ window.TP_FA = {
 "Add proxy": "افزودن پراکسی",
 "Add server —": "افزودن سرور —",
 "Add site": "افزودن سایت",
-"Address family": "نوع آدرس (Address family)",
+"Address family": "نوع آدرس (IPv4 / IPv6)",
 "Adult": "بزرگسالان",
 "Advanced reach options": "گزینه‌های پیشرفته دسترسی",
 "Agent": "ایجنت",
@@ -935,11 +961,18 @@ window.TP_FA = {
     [/^(.+) unreachable \(panel restarted — end time approximate\)$/, '$1 در دسترس نبود (پنل ری‌استارت شد — زمان پایان تقریبی است)'],
     [/^(.+) unreachable$/, '$1 در دسترس نیست'],
     [/^· (\d+) down$/, '· $1 قطع'],
+    [/^of (\d+)$/, 'از $1'],
+    [/^(\d+) min ago$/, '$1 دقیقه پیش'],
+    [/^(\d+) h ago$/, '$1 ساعت پیش'],
+    [/^(\d+) d ago$/, '$1 روز پیش'],
   ];
   const cache = new Map();
+  // texts this translator wrote: never translated again (a Persian text that keeps an English
+  // phrase of the map inside it grew on every repaint — "Address family" in the tunnel window)
+  const made = new Set();
   const tr = (s) => {
     const t = s.trim();
-    if (!t || !/[A-Za-z]/.test(t)) return s;
+    if (!t || !/[A-Za-z]/.test(t) || made.has(t)) return s;
     let out = cache.get(t);
     if (out === undefined) {
       out = T[t];
@@ -950,8 +983,9 @@ window.TP_FA = {
         if (out !== t && STOP.test(out)) out = t;
       }
       if (out === undefined) out = t;
-      if (cache.size > 20000) cache.clear();
+      if (cache.size > 20000) { cache.clear(); made.clear(); }
       cache.set(t, out);
+      if (out !== t) made.add(out);
     }
     if (out === t) return s;
     const lead = s.match(/^\s*/)[0], trail = s.match(/\s*$/)[0];

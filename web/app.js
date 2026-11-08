@@ -605,11 +605,11 @@ async function trafficTick() {
     else {
       src.style.color = ''; rd.textContent = fmtRate(s.down); ru.textContent = fmtRate(s.up);
       src.textContent = s.source === 'iface' ? 'tunnel interface' : 'forwarded ports';
-      tot.textContent = `total ↓ ${fmtBytes(s.totalDown)} · ↑ ${fmtBytes(s.totalUp)}`;
+      tot.innerHTML = `<span>total ↓</span> <bdi>${fmtBytes(s.totalDown)}</bdi> · ↑ <bdi>${fmtBytes(s.totalUp)}</bdi>`;
       drawSpark($('svg', el), s.hist || []);
     }
     const se = $('[data-speed]', el);
-    if (sp) se.innerHTML = sp.ok ? `speed test ${ago(sp.at)}: <b style="color:var(--accent)">↓ ${sp.downMbps.toFixed(1)}</b> / <b style="color:var(--good)">↑ ${sp.upMbps.toFixed(1)}</b> Mbps · ${sp.rttMs.toFixed(0)} ms` : `<span style="color:var(--crit)" title="${esc(sp.error || '')}">speed test failed ${ago(sp.at)}</span>`;
+    if (sp) se.innerHTML = sp.ok ? `<span>speed test</span> <span>${ago(sp.at)}</span>: <bdi><b style="color:var(--accent)">↓ ${sp.downMbps.toFixed(1)}</b> / <b style="color:var(--good)">↑ ${sp.upMbps.toFixed(1)}</b> Mbps · ${sp.rttMs.toFixed(0)} ms</bdi>` : `<span style="color:var(--crit)" title="${esc(sp.error || '')}">speed test failed ${ago(sp.at)}</span>`;
   });
   $$('[data-nic]').forEach(el => {
     const s = srv[el.dataset.nic];
@@ -1283,7 +1283,7 @@ function viewTunnels(w) {
   const run = mine.filter(t => t.active).length;
   const hostShown = isAdmin() && (!STATE.ownerFilter || STATE.ownerFilter === '-'); // the panel host is the admin's
   w.appendChild(h(`<div class="summary">
-    <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="cu" data-cu="${run}">0</span><span> / ${mine.length}</span> <span class="downtxt" data-sum-down></span></b></div>
+    <div class="stat"><i class="si">🛰</i><small>Running tunnels</small><b><span class="ltr"><span class="cu" data-cu="${run}">0</span><span> / ${mine.length}</span></span> <span class="downtxt" data-sum-down></span></b></div>
     <div class="stat"><i class="si">⬇</i><small>Live download</small><b class="dn" data-sum-dn>—</b></div>
     <div class="stat"><i class="si">⬆</i><small>Live upload</small><b class="up" data-sum-up>—</b></div>
     <div class="stat"><i class="si">🖥</i><small>Servers</small><b>${iranServers().filter(s => shownOwner(s.owner)).length}<span> Iran · </span>${foreignServers().filter(s => shownOwner(s.owner)).length + (hostShown ? 1 : 0)}<span> foreign</span></b></div>
@@ -1306,7 +1306,7 @@ function viewTunnels(w) {
     const row = (t) => `<button class="srow" data-pick="${t.id}">
       <span class="sflag">${fl(t.foreignId, t.foreignId ? '🌍' : '🖥')}</span>
       <span class="sinfo"><b>${esc(t.name)}</b><small>→ ${esc(t.foreignId ? serverName(t.foreignId) : 'panel host')} · ${esc(methodTitle(t.active || t.selected) || '—')}</small></span>
-      <span class="smeta"><span class="led ${t.active ? (t._down || t.health ? 'bad' : 'on') : 'off'}" data-tled="${t.id}" title="${t.active ? 'running' : 'stopped'}"></span><small class="faint mono" data-lr="${t.id}"></small></span></button>`;
+      <span class="smeta"><span class="sbadges">${t.hotStandby ? '<span class="sbadge hs" title="hot standby">⚡</span>' : ''}<span class="sbadge fo" data-tfo="${t.id}" title="on a backup path"${t.failover ? '' : ' hidden'}>🔁</span><span class="led ${t.active ? (t._down || t.health ? 'bad' : 'on') : 'off'}" data-tled="${t.id}" title="${t.active ? 'running' : 'stopped'}"></span></span><small class="faint mono" data-lr="${t.id}"></small></span></button>`;
     const split = h(`<div class="srvsplit usplit">
       <aside class="card srvlist">
         <input class="sq" type="search" data-q placeholder="🔍 Search name, server, port, method…" value="${esc(STATE.tunSearch || '')}">
@@ -1367,20 +1367,30 @@ function tunnelCard(t) {
   const onKey = t.hotStandby && t.active && t.hs && t.hs.keys ? (t.hs.keys[t.hs.active] || '') : '';
   const onM = onKey && onKey !== t.active + '|' + t.family ? STATE.methods.find(m => m.id === onKey.split('|')[0]) : null;
   const shownM = onM || active || selM, shownFam = onM ? onKey.split('|')[1] : t.family;
+  // what happens when the users' path fails: hot standby, the plain failover, or nothing
+  const keep = t.hotStandby ? `<span class="tc-keep hs">⚡ <span>Hot standby</span> · <span>${t.hsAuto ? 'auto switching' : 'manual switching'}</span></span>`
+    : t.noFailover ? '<span class="tc-keep off">Off: nothing switches.</span>' : '<span class="tc-keep">🔁 <span>Failover after 5 min down</span></span>';
   const card = h(`<div class="card tc${t.active ? ' live' : ''}" data-id="${t.id}">
-    <div class="tc-h"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${ownerChip(t.owner)}${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
+    <div class="tc-h"><div class="tc-t"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${ownerChip(t.owner)}</div>${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     <div class="tc-r" title="${esc(serverName(t.serverId))} → ${esc(fg ? fg.name : 'this panel host')}">
-      <span class="sd" data-ir></span><span class="nm">${fl(ir, '🇮🇷')} ${esc(serverName(t.serverId))}</span>
+      <span class="tc-end"><span class="ef">${fl(ir, '🇮🇷')}</span><span class="en"><small>Iran server</small><b class="nm">${esc(serverName(t.serverId))}</b></span><span class="sd" data-ir></span></span>
       <span class="ln${t.active ? ' on' : ''}"></span>
-      <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
+      <span class="tc-end r"><span class="sd" data-fg></span><span class="en"><small>Foreign server</small><b class="nm">${esc(fg ? fg.name : 'panel host')}</b></span><span class="ef">${fl(fg, fg ? '🌍' : '🖥')}</span></span>
     </div>
-    <div class="tc-i" title="${esc(groupOf(shownM) + ' · ' + (shownM?.title || ''))}">${shownM ? groupIcon(shownM) + ' ' : ''}<b>${esc(shownM?.title || '—')}</b><span>${famName(shownFam)}</span><span class="mono">:${esc(t.ports)}</span></div>
+    <dl class="tc-kv">
+      <div><dt>Method</dt><dd title="${esc(groupOf(shownM) + ' · ' + (shownM?.title || ''))}">${shownM ? groupIcon(shownM) + ' ' : ''}<b>${esc(shownM?.title || '—')}</b></dd></div>
+      <div><dt>IP</dt><dd>${famName(shownFam)}</dd></div>
+      <div><dt>Ports</dt><dd><span class="mono">${esc(t.ports)}</span></dd></div>
+      <div><dt>If it fails</dt><dd>${keep}</dd></div>
+      ${t.note ? `<div class="wide"><dt>Note</dt><dd>${esc(t.note)}</dd></div>` : ''}
+    </dl>
     <div class="tc-m">${tcChips(t, mainFail, miss)}</div>
-    ${t.active ? `<div class="traf mini" data-traf="${t.id}">
+    ${t.active ? `<div class="traf" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
       <div class="meta"><span data-tot></span><span data-src></span></div><div class="meta" data-speed></div></div>`
       : `<div class="tc-idle">Not running${selM ? ` · selected: <b>${esc(selM.title)}</b>` : ''}</div>`}
+    ${t.hotStandby && t.active ? `<div class="tc-hs"><div class="lbl">⚡ Hot standby paths</div><div data-hsl>${hsRows(t) || '<div class="faint">paths — reading which one the users are on…</div>'}</div></div>` : ''}
     <div class="tc-f">
       <button class="btn sm pri" data-manage>⚙ Manage</button>
       ${t.active ? `<button class="btn sm ghost" data-stop>■ Stop</button>` : `<button class="btn sm" data-start>▶ Start</button>`}
@@ -1404,6 +1414,7 @@ function tunnelCard(t) {
   on('[data-trace]', () => tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'));
   on('[data-edit]', () => tunnelModal(t));
   on('[data-own]', () => ownerModal('tunnel', t.id));
+  hsWire(t, card);
   on('[data-del]', async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { const r = await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); if (r.warning) alertModal('Deleted — with a warning', r.warning); } catch (er) { alertModal('Error', er.message); } });
   // the monitor's last verdict at once: a broken tunnel no longer shows green until its check returns
   if (t.active && t.health) paintDown(t, card, t.health);
@@ -1451,14 +1462,15 @@ async function tunnelJob(t, path, label) {
 }
 // the card's status chips: repainted by healthWatch when the users' path or a failover changes
 function tcChips(t, mainFail, miss) {
-  return `${mainFail ? `<span class="chip warn" title="${esc(mainFail.failed)} — tried again every hour">⚠ ${esc(methodTitle(t.active))} didn't start here</span>` : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}${t.failover.since ? ' · ' + ago(t.failover.since) : ''}</span>` : ''}${t.hotStandby ? hsChip(t) : ''}`;
+  // each piece of a chip is its own text, so the Persian page translates it whole
+  return `${mainFail ? `<span class="chip warn" title="${esc(mainFail.failed)} — tried again every hour">⚠ <b>${esc(methodTitle(t.active))}</b> <span>didn't start here</span></span>` : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 <span>on a backup path</span> · <span>original:</span> <b>${esc(methodTitle(t.failover.method))} ${famName(t.failover.family)}</b>${t.failover.since ? ` · <span>${ago(t.failover.since)}</span>` : ''}</span>` : ''}${t.hotStandby ? hsChip(t) : ''}`;
 }
 // hot standby: which path carries the users now, and how many work
 function hsChip(t) {
   const v = t.hs;
-  if (!v || !v.paths || !v.paths.length) return '<span class="chip" title="hot standby — starts on the next Start/Re-apply">⚡ standby</span>';
+  if (!v || !v.paths || !v.paths.length) return '<span class="chip hs" title="hot standby — starts on the next Start/Re-apply">⚡ standby</span>';
   const n = v.ok.filter(Boolean).length, cur = v.paths[v.active] || '—';
-  return `<span class="chip${n ? '' : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '')).join('\n'))}">⚡ ${n}/${v.paths.length} paths · on ${esc(cur)}${v.since ? " · " + ago(v.since) : ""}</span>`;
+  return `<span class="chip hs${n ? (n < v.paths.length ? ' part' : '') : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '')).join('\n'))}">⚡ <b class="ltr">${n}/${v.paths.length}</b> <span>paths working</span> · <span>users on</span> <b>${esc(cur)}</b>${v.since ? ` · <span>${ago(v.since)}</span>` : ''}</span>`;
 }
 function hsBox(t) {
   const v = t.hs;
@@ -1467,16 +1479,23 @@ function hsBox(t) {
   const seg = `<div class="seg" data-hsmode><button type="button" data-auto="0" class="${auto ? '' : 'on'}" title="${esc('Manual: ' + 'users stay on the chosen path and move only when it is down (3 failed checks). They come back after 60 s of stability — longer for a path that keeps dropping (doubled per drop in 30 min, up to 30 min). At most 3 planned moves an hour.')}">✋ Manual</button><button type="button" data-auto="1" class="${auto ? 'on' : ''}" title="${esc('Auto: ' + "Latency and loss are watched all the time, the speed of the users' path every 2 hours (2 MB). When it gets slow or lossy the best few paths are measured and users move to a clearly better one. No ping-pong: 10 min wait after a move, at most 3 planned moves an hour. Light on traffic: standby paths are checked every 10 s.")}">🤖 Auto · best path</button></div>
     <div class="faint" style="font-size:12px;margin:-4px 0 6px">${auto ? 'Moves users to a clearly better path when theirs gets slow or lossy.' : 'Users stay on the chosen path; they move only when it is down.'} <span title="${esc(auto ? "Latency and loss are watched all the time, the speed of the users' path every 2 hours (2 MB). When it gets slow or lossy the best few paths are measured and users move to a clearly better one. No ping-pong: 10 min wait after a move, at most 3 planned moves an hour. Light on traffic: standby paths are checked every 10 s." : 'users stay on the chosen path and move only when it is down (3 failed checks). They come back after 60 s of stability — longer for a path that keeps dropping (doubled per drop in 30 min, up to 30 min). At most 3 planned moves an hour.')}" style="cursor:help">ⓘ</span></div>`;
   if (!v || !v.paths) return `<div class="lbl">⚡ Hot standby</div>${seg}<div class="faint" style="font-size:12px">every compatible path starts on the next Start/Re-apply.</div>`;
+  return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; the users' path is checked every 2 s on the Iran server)</span></div>${seg}${hsRows(t)}
+    <div class="faint" style="font-size:11.5px;margin-top:4px" title="New connections take the new path; open ones finish on the old one (it keeps running). Only a path that died has its connections reset, so clients reconnect at once.">Switching is seamless — nobody is cut. ⓘ</div>`;
+}
+// the hot-standby paths, switcher order: works or not, quality, the users' one and a "use" button
+function hsRows(t) {
+  const v = t.hs;
+  if (!v || !v.paths || !v.paths.length) return '';
+  const ok = v.ok || []; // a switcher state read only in part has no ok list
   const q = (i) => {
     const out = [];
     if (v.rtt && v.rtt[i] >= 0) out.push(v.rtt[i] + ' ms');
     if (v.loss && v.loss[i] >= 0) out.push(v.loss[i].toFixed(1) + '% loss');
     if (v.kbps && v.kbps[i] > 0) out.push((v.kbps[i] / 1000).toFixed(1) + ' Mbps');
-    return out.length ? ` <span class="faint">${out.join(' · ')}</span>` : '';
+    return out.length ? `<span class="hq mono">${out.join(' · ')}</span>` : '';
   };
-  return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; the users' path is checked every 2 s on the Iran server)</span></div>${seg}<div class="hsl">${v.paths.map((p, i) =>
-    `<div class="${v.ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}">${v.ok[i] ? '✓' : '✕'} ${esc(p)}${q(i)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}${i === v.active ? ' <b>← users</b>' : (v.ok[i] && v.keys ? ` <button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}</div>`).join('')}</div>
-    <div class="faint" style="font-size:11.5px;margin-top:4px" title="New connections take the new path; open ones finish on the old one (it keeps running). Only a path that died has its connections reset, so clients reconnect at once.">Switching is seamless — nobody is cut. ⓘ</div>`;
+  return `<div class="hsl">${v.paths.map((p, i) =>
+    `<div class="${ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}"><span class="hi">${ok[i] ? '✓' : '✕'}</span><span class="hm"><span class="hn">${esc(p)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}</span>${q(i)}</span>${i === v.active ? '<b class="hu">← users</b>' : (ok[i] && v.keys ? `<button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}</div>`).join('')}</div>`;
 }
 function hsWire(t, m) {
   $$('[data-hspin]', m).forEach(b => b.onclick = async () => {
@@ -1625,6 +1644,9 @@ function healthWatch() {
           const html = tcChips(t, mainFail, methodMissing(STATE.methods.find(x => x.id === t.active), t));
           if (m.innerHTML !== html) m.innerHTML = html;
         }
+        const hl = $('[data-hsl]', card), rows = hl && hsRows(t);
+        if (rows && hl.dataset.was !== rows) { hl.dataset.was = rows; hl.innerHTML = rows; hsWire(t, hl); }
+        const fo = $(`[data-tfo="${n.id}"]`); if (fo) fo.hidden = !t.failover;
       });
     }).catch(() => {});
   }, 15000);
@@ -1662,23 +1684,30 @@ function tunnelModal(t) {
   const sh = t.shape || {};
   const foreignOpts = panelHostOpt() + sharedOpts('foreign', t.foreignId) + foreignServers().map(s => `<option value="${s.id}"${t.foreignId === s.id ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('');
   const m = modal(`<h2>${t.id ? 'Edit tunnel' : 'New tunnel'}</h2>
-    <form class="ff" id="tf">
-      <label class="f">Name<input name="name" value="${esc(t.name || '')}" required></label>
+    <form class="ff tform" id="tf">
       <div class="two">
-        <label class="f">Iran server<select name="serverId" required>${sharedOpts('iran', t.serverId)}${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('')}</select></label>
-        <label class="f">Foreign server<select name="foreignId">${foreignOpts}</select></label>
+        <label class="f">Name<input name="name" value="${esc(t.name || '')}" required></label>
+        <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
       </div>
-      <div class="two">
-        <label class="f">Address family<select name="family"><option value="v4"${t.family === 'v6' ? '' : ' selected'}>IPv4 underlay</option><option value="v6"${t.family === 'v6' ? ' selected' : ''}>IPv6 underlay</option></select></label>
-        <label class="f">Ports <span class="faint">443,8080=80,2000-2010</span><input name="ports" class="mono" value="${esc(t.ports || '443')}"></label>
-      </div>
-      <label class="f">Note<input name="note" value="${esc(t.note || '')}"></label>
       ${isAdmin() && !t.id && (STATE.users || []).length > 1 ? `<label class="f">Account <span class="faint">(who sees and runs it — use that account's servers)</span><select name="owner"><option value="">me (admin)</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}"${STATE.ownerFilter === u.username ? ' selected' : ''}>${esc(u.username)}</option>`).join('')}</select></label>` : ''}
+      <div class="tsec">
+        <div class="lbl">Route</div>
+        <div class="troute">
+          <label class="f">Iran server<select name="serverId" required>${sharedOpts('iran', t.serverId)}${iranServers().map(s => `<option value="${s.id}"${s.id === t.serverId ? ' selected' : ''}>${esc(serverLabel(s))}</option>`).join('')}</select></label>
+          <span class="tarrow" aria-hidden="true">→</span>
+          <label class="f">Foreign server<select name="foreignId">${foreignOpts}</select></label>
+        </div>
+        <div class="two">
+          <label class="f">Address family<select name="family"><option value="v4"${t.family === 'v6' ? '' : ' selected'}>IPv4 underlay</option><option value="v6"${t.family === 'v6' ? ' selected' : ''}>IPv6 underlay</option></select></label>
+          <label class="f">Ports<input name="ports" class="mono" value="${esc(t.ports || '443')}" placeholder="443,8080=80,2000-2010"><small class="fhelp">e.g. <bdi class="mono">443,8080=80,2000-2010</bdi></small></label>
+        </div>
+        <div class="faint tnote">Users hit the Iran server on these ports; traffic is forwarded to the foreign server over the tunnel.</div>
+      </div>
       <div class="set1"><div><b>⚡ Keep users connected</b><small class="fhelp" id="tModeHelp"></small></div>
         <label class="sw1"><input type="checkbox" id="tAuto"${t.hotStandby ? ' checked' : ''}><i></i></label></div>
       <div id="tPaths" class="tpaths"></div>
-      <details${sh.enabled ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Traffic shaping / link tuning</summary>
-        <div class="ff" style="margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px">
+      <details class="tshape"${sh.enabled ? ' open' : ''}><summary>Traffic shaping / link tuning</summary>
+        <div class="ff">
           <label class="row f"><input type="checkbox" id="shEnabled"${sh.enabled ? ' checked' : ''}> Enable shaping on the Iran egress (CAKE/HTB/… qdisc)</label>
           <div class="two">
             <label class="f">Queue discipline<select id="shQdisc">${['cake', 'htb', 'tbf', 'fq_codel'].map(q => `<option${sh.qdisc === q ? ' selected' : ''}>${q}</option>`).join('')}</select></label>
@@ -1689,8 +1718,7 @@ function tunnelModal(t) {
           <label class="row f"><input type="checkbox" id="shBoth"${sh.onBoth ? ' checked' : ''}> Also shape the foreign egress</label>
           <div class="faint" style="font-size:12px">Applied as a separate systemd unit after the tunnel starts. Change takes effect on the next Start/Switch.</div>
         </div></details>
-      <div class="muted" style="font-size:12px">Users hit the Iran server on these ports; traffic is forwarded to the foreign server over the tunnel.</div>
-      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" id="cancel">Cancel</button><button class="btn pri">Save</button></div>
+      <div class="actions tfoot"><button type="button" class="btn ghost" id="cancel">Cancel</button><button class="btn pri">Save</button></div>
     </form>`, true);
   $('#cancel', m).onclick = () => m.remove();
   // which methods hot standby keeps running on this pair of servers: the Routes page's switches
@@ -1720,11 +1748,12 @@ function tunnelModal(t) {
   api('/routes/skip').then(r => { skipAll = r || {}; paintPaths(); }).catch(() => {});
   // one switch: on = hot standby (every path running, users moved within seconds; new tunnels also
   // move to a clearly faster path), off = the plain failover after 5 min down
-  const paintMode = () => { $('#tModeHelp', m).textContent = ($('#tAuto', m).checked
+  // two texts (the Persian page translates each whole)
+  const paintMode = () => { $('#tModeHelp', m).innerHTML = '<span>' + ($('#tAuto', m).checked
     ? 'On: backup paths stay running and users move to a working one within seconds when theirs fails — or to a clearly faster one.'
-    : (t.noFailover ? 'Off: nothing switches.' : 'Off: after 5 min down the tunnel switches to a working method, and goes back when the original works.'))
+    : (t.noFailover ? 'Off: nothing switches.' : 'Off: after 5 min down the tunnel switches to a working method, and goes back when the original works.')) + '</span>'
     // a running tunnel is rebuilt on Save when the switch no longer matches what runs on the servers
-    + (t.active && $('#tAuto', m).checked !== ((t.paths || []).length > 0) ? ' Saving rebuilds the running tunnel now — its users drop for about a minute.' : '');
+    + (t.active && $('#tAuto', m).checked !== ((t.paths || []).length > 0) ? ' <span class="twarn">Saving rebuilds the running tunnel now — its users drop for about a minute.</span>' : '');
     paintPaths(); };
   $('#tAuto', m).onchange = paintMode;
   paintMode();

@@ -526,6 +526,77 @@ optgroup option{color:var(--fg);font-weight:500}
 [dir=rtl] .rt-sw,[dir=rtl] .sw1,[dir=rtl] .sw2,[dir=rtl] .mono,[dir=rtl] pre,[dir=rtl] code,[dir=rtl] input,[dir=rtl] .uspark{direction:ltr}
 [dir=rtl] input{text-align:right}
 [dir=rtl] .utbl td,[dir=rtl] .ukpi b{unicode-bidi:plaintext}
+/* ---- tunnels: the picked tunnel's card, its chips and the tunnel window ---- */
+.ltr{direction:ltr;unicode-bidi:isolate;display:inline-block}
+.srow .sbadges{display:inline-flex;align-items:center;gap:4px}
+.srow .sbadge{font-size:11px;line-height:1}.srow .sbadge[hidden]{display:none}
+.tdet .tc{padding:18px 20px;gap:14px}
+.tc-h{align-items:flex-start}
+.tc-t{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.tdet .tc-h h3{font-size:18px;font-weight:700}
+.tc-h .pill{flex:none;margin-top:2px}
+.tc-r{gap:10px;font-size:13px}
+.tc-end{display:flex;align-items:center;gap:9px;min-width:0;flex:0 1 auto;max-width:44%;padding:8px 11px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.tc-end.r{justify-content:flex-end;text-align:end}
+.tc-end .ef{font-size:20px;line-height:1;flex:none}
+.tc-end .en{display:flex;flex-direction:column;min-width:0}
+.tc-end .en small{font-size:10.5px;font-weight:650;color:var(--faint);text-transform:uppercase;letter-spacing:.04em}
+.tc-end .nm{max-width:none;font-size:13.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+[dir=rtl] .tc-end .nm{direction:ltr;text-align:end}
+.tc-r .ln{min-width:24px}
+.tc-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:0}
+.tc-kv>div{background:var(--panel-2);border-radius:10px;padding:8px 11px;min-width:0}
+.tc-kv>div.wide{grid-column:1/-1}
+.tc-kv dt{font-size:11px;font-weight:650;color:var(--faint);margin-bottom:2px}
+.tc-kv dd{margin:0;font-size:13px;color:var(--fg);overflow-wrap:anywhere}.tc-kv dd b{font-weight:650}
+.tc-keep{color:var(--muted)}.tc-keep.hs{color:var(--good);font-weight:650}.tc-keep.off{color:var(--faint)}
+.tc-m{gap:6px}
+.tc-m .chip{font-size:12px;padding:3px 10px;display:inline-flex;align-items:center;gap:4px;border:1px solid transparent;max-width:100%;flex-wrap:wrap}
+.tc-m .chip b{font-weight:650;color:inherit}
+.chip.hs{color:var(--good);background:var(--good-soft);border-color:color-mix(in srgb,var(--good) 25%,transparent)}
+.chip.hs.part{color:var(--warn);background:color-mix(in srgb,var(--warn) 13%,transparent);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.chip.hs.bad,.tc-m .chip.bad{color:var(--crit);background:var(--crit-soft);border-color:color-mix(in srgb,var(--crit) 35%,transparent)}
+.tc-m .chip.fo{border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+.tc-m .chip.warn{border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.tdet .traf .spark{height:46px}
+.tdet .traf [data-speed]{display:block}.tdet .traf [data-speed]:empty{display:none}
+.tdet .tc-idle{min-height:0;padding:12px;font-size:12.5px;border:1px dashed var(--line);background:transparent}
+.tc-hs{display:flex;flex-direction:column;gap:6px}
+.hsl>div{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:9px;border:1px solid transparent}
+.hsl .hi{font-weight:700;color:var(--good);flex:none}.hsl .bad .hi{color:var(--crit)}
+.hsl .hm{display:flex;flex-direction:column;flex:1;min-width:0}.hsl .hn{font-weight:600}.hsl .hq{font-size:11.5px;color:var(--faint);align-self:flex-start}
+[dir=rtl] .traf .rates b{direction:ltr;unicode-bidi:isolate;display:inline-block}
+.hsl .cur{outline:0;border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:var(--accent-soft)}
+.hsl .hu{color:var(--accent);font-size:12px;white-space:nowrap}
+.hsl .btn.sm{padding:2px 10px;font-size:12px}
+.tdet .tc-f{padding-top:12px;border-top:1px solid var(--line);gap:8px;flex-wrap:wrap}
+/* the tunnel window */
+.tform{gap:14px}
+.tsec{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px}
+.troute{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:end}
+.tarrow{padding-bottom:9px;color:var(--faint);font-weight:700}
+[dir=rtl] .tarrow{transform:scaleX(-1)}
+.tnote{font-size:12px}.twarn{color:var(--warn);font-weight:600}
+.tform .set1{border:1px solid var(--line)}
+.tpaths summary{font-size:13px}
+.tpaths label.row{padding:4px 6px;border-radius:7px;cursor:pointer;align-items:center}
+.tpaths label.row:hover{background:var(--panel)}
+.tpaths label.row:has(input:checked){color:var(--fg)}
+.tpaths label.row:has(input:not(:checked)){color:var(--faint)}
+details.tshape>summary{cursor:pointer;font-size:13px;color:var(--muted);font-weight:600}
+details.tshape>.ff{margin-top:10px;padding:12px;background:var(--panel-2);border-radius:10px}
+.tfoot{justify-content:flex-end;position:sticky;bottom:-22px;margin:0 -22px -22px;padding:12px 22px;background:var(--panel);border-top:1px solid var(--line);border-radius:0 0 16px 16px;z-index:2}
+@media(max-width:860px){
+  .tdet .tc{padding:14px}
+  .tc-r{flex-direction:column;align-items:stretch;gap:0}
+  .tc-end,.tc-end.r{max-width:none;flex-direction:row;justify-content:flex-start;text-align:start}
+  .tc-end.r .sd{order:3}.tc-end.r .ef{order:0}.tc-end.r .en{order:1;flex:1}.tc-end .en{flex:1}
+  .tc-r .ln{min-height:14px;min-width:0;flex:none;border-top:0!important;border-inline-start:2px dashed var(--line);margin-inline-start:21px;width:0}
+  .tc-r .ln.on{border-inline-start:2px solid var(--good)}.tc.down .tc-r .ln.on{border-inline-start:2px dashed var(--crit)}
+  .tc-kv{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .troute{grid-template-columns:1fr}.tarrow{display:none}
+  .tdet .tc-f .btn{flex:1 1 auto;justify-content:center}.tdet .tc-f .grow{display:none}
+}
 </style>
 </head>
 <body></body>
