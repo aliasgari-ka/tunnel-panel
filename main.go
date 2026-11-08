@@ -141,6 +141,7 @@ func main() {
 	go app.igImport()
 	go app.igAlertLoop()
 	go app.aiDailyLoop()
+	go gemFwd.serve()
 	go app.gemLoop()
 	app.usage = loadUsage()
 	go app.usageLoop()

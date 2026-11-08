@@ -3,9 +3,10 @@ package main
 // The signed-in Gemini check. Google can refuse Gemini to a signed-in account ("not supported
 // in your country") on an exit that every keyless check passes; only a signed-in browser sees
 // it. The Google test browser (gbrowser.go) holds the test account; its DevTools port reaches
-// the panel host over the same SSH tunnel (gemCDPAddr). For a server, the page is opened in a
-// fresh browser context whose proxy is that server's "users' route" relay (the agent's socks
-// port RELAY_BASE-1, open to our servers only): Google sees exactly the exit the users get.
+// the panel host over the same SSH tunnel (gemCDPAddr). For a server, the browser's own proxy
+// (gemjar.go) is switched to that server's "users' route" relay (the agent's socks port
+// RELAY_BASE-1, open to our servers only) for the probe: Google sees exactly the exit the users
+// get, and the account keeps one cookie jar (a copied jar rotating apart got it signed out).
 
 import (
 	"context"
@@ -64,52 +65,6 @@ func gemVerdict(p gemPage) string {
 	return ""
 }
 
-type cdpCookie struct {
-	Name         string  `json:"name"`
-	Value        string  `json:"value"`
-	Domain       string  `json:"domain"`
-	Path         string  `json:"path"`
-	Expires      float64 `json:"expires"`
-	HTTPOnly     bool    `json:"httpOnly"`
-	Secure       bool    `json:"secure"`
-	Session      bool    `json:"session"`
-	SameSite     string  `json:"sameSite,omitempty"`
-	Priority     string  `json:"priority,omitempty"`
-	SourceScheme string  `json:"sourceScheme,omitempty"`
-	SourcePort   int     `json:"sourcePort,omitempty"`
-	PartitionKey any     `json:"partitionKey,omitempty"`
-}
-
-func gemGoogleCookie(c cdpCookie) bool {
-	d := strings.TrimPrefix(c.Domain, ".")
-	return c.PartitionKey == nil && (d == "google.com" || strings.HasSuffix(d, ".google.com"))
-}
-
-// cookieParams turns read cookies into what Storage.setCookies takes.
-func cookieParams(cs []cdpCookie, keep func(cdpCookie) bool) []map[string]any {
-	var out []map[string]any
-	for _, c := range cs {
-		if !keep(c) {
-			continue
-		}
-		p := map[string]any{"name": c.Name, "value": c.Value, "domain": c.Domain, "path": c.Path,
-			"secure": c.Secure, "httpOnly": c.HTTPOnly}
-		if !c.Session && c.Expires > 0 {
-			p["expires"] = c.Expires
-		}
-		for k, v := range map[string]string{"sameSite": c.SameSite, "priority": c.Priority, "sourceScheme": c.SourceScheme} {
-			if v != "" {
-				p[k] = v
-			}
-		}
-		if c.SourcePort > 0 {
-			p["sourcePort"] = c.SourcePort
-		}
-		out = append(out, p)
-	}
-	return out
-}
-
 // gemProbe opens Gemini signed in, through proxy ("socks5://ip:port"; "" = the browser's own
 // exit) and returns the verdict and what the page showed.
 func gemProbe(ctx context.Context, proxy string) (string, gemPage, error) {
@@ -119,50 +74,14 @@ func gemProbe(ctx context.Context, proxy string) (string, gemPage, error) {
 		return "", page, fmt.Errorf("Google test browser: %w", err)
 	}
 	defer w.Close()
-	bctx := ""
 	if proxy != "" {
-		var r struct {
-			ID string `json:"browserContextId"`
-		}
-		if err := w.call(ctx, "", "Target.createBrowserContext", map[string]any{"proxyServer": proxy, "disposeOnDetach": true}, &r); err != nil {
+		release, err := gemHold(ctx, strings.TrimPrefix(proxy, "socks5://"))
+		if err != nil {
 			return "", page, err
 		}
-		bctx = r.ID
-		defer func() {
-			// Google rotates the session cookies now and then: the new ones go back to the main
-			// profile, or it would carry outdated ones (and be signed out).
-			c2, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			var got struct {
-				Cookies []cdpCookie `json:"cookies"`
-			}
-			if w.call(c2, "", "Storage.getCookies", map[string]any{"browserContextId": bctx}, &got) == nil {
-				if ps := cookieParams(got.Cookies, func(c cdpCookie) bool {
-					return gemGoogleCookie(c) && (strings.Contains(c.Name, "PSIDTS") || strings.Contains(c.Name, "SIDCC"))
-				}); len(ps) > 0 {
-					_ = w.call(c2, "", "Storage.setCookies", map[string]any{"cookies": ps}, nil)
-				}
-			}
-			_ = w.call(c2, "", "Target.disposeBrowserContext", map[string]any{"browserContextId": bctx}, nil)
-		}()
-		var main struct {
-			Cookies []cdpCookie `json:"cookies"`
-		}
-		if err := w.call(ctx, "", "Storage.getCookies", nil, &main); err != nil {
-			return "", page, err
-		}
-		ps := cookieParams(main.Cookies, gemGoogleCookie)
-		if len(ps) == 0 {
-			return "signedout", page, nil
-		}
-		if err := w.call(ctx, "", "Storage.setCookies", map[string]any{"cookies": ps, "browserContextId": bctx}, nil); err != nil {
-			return "", page, err
-		}
+		defer release()
 	}
 	tp := map[string]any{"url": "about:blank", "background": true}
-	if bctx != "" {
-		tp["browserContextId"] = bctx
-	}
 	var t struct {
 		ID string `json:"targetId"`
 	}
