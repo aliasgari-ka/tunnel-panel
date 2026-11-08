@@ -36,6 +36,10 @@ type Settings struct {
 	TelegramChannel string `json:"telegramChannel,omitempty"`
 	// ClaudeKey: Anthropic API key for the AI analysis (ai.go); "" = off
 	ClaudeKey string `json:"claudeKey,omitempty"`
+	// AIEvery: hours between the analyses the panel runs by itself ("" = 6, "0" = only by
+	// hand); AIAuto "off": a scheduled analysis only reports, it applies no action
+	AIEvery string `json:"aiEvery,omitempty"`
+	AIAuto  string `json:"aiAuto,omitempty"`
 }
 
 // Server is a remote Iran server reached over SSH.

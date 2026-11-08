@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // What goes to Claude names the servers but carries no address, password, key or token.
@@ -56,5 +57,19 @@ func TestAIAbout(t *testing.T) {
 		if got := aiAbout(c.text, others, own); got != c.want {
 			t.Errorf("aiAbout(%q) = %v, want %v", c.text, got, c.want)
 		}
+	}
+}
+
+func TestAIScheduleHelpers(t *testing.T) {
+	if aiEvery(Settings{}) != 6*time.Hour || aiEvery(Settings{AIEvery: "0"}) != 0 || aiEvery(Settings{AIEvery: "12"}) != 12*time.Hour {
+		t.Fatal("aiEvery: blank = 6h, 0 = off, n = n hours")
+	}
+	quiet := AIReport{Summary: "ok", Findings: []AIFinding{{Severity: "medium", Title: "x"}}}
+	if m := aiMessage(quiet, nil); m != "" {
+		t.Fatalf("nothing serious, nothing done: no message, got %q", m)
+	}
+	loud := AIReport{Summary: "s", Findings: []AIFinding{{Severity: "high", Title: "slow path", Detail: "d", Fix: "f"}}}
+	if m := aiMessage(loud, []string{"✓ t: users → gre|v4 — moved"}); !strings.Contains(m, "slow path") || !strings.Contains(m, "gre|v4") {
+		t.Fatalf("message misses the finding or the action: %q", m)
 	}
 }

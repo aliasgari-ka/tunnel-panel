@@ -518,6 +518,12 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.FRPVersion, in.GitHubProxy = strings.TrimSpace(in.FRPVersion), strings.TrimSpace(in.GitHubProxy)
+	if in.AIEvery = strings.TrimSpace(in.AIEvery); in.AIEvery != "" {
+		if n, e := strconv.Atoi(in.AIEvery); e != nil || n < 0 || n > 720 {
+			httpErr(w, 400, "AI analysis: hours must be 0 (only by hand) to 720")
+			return
+		}
+	}
 	if v := strings.TrimSpace(in.AutoBench); v != "" {
 		if n, e := strconv.Atoi(v); e != nil || n < 0 || n > 720 {
 			httpErr(w, 400, "Automatic benchmark: hours must be 0 (off) to 720")

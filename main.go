@@ -133,6 +133,7 @@ func main() {
 	go app.healthMonitor()
 	go app.serverMonitor()
 	go app.autoBench()
+	go app.aiLoop()
 	go app.autoBackup()
 	go app.resWatch()
 	go app.resumeInterrupted()

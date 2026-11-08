@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -521,6 +522,123 @@ func (a *App) aiApply(i int) (string, error) {
 		return nil
 	})
 	return res, nil
+}
+
+// ---- on its own
+
+// aiLoop runs the analysis every Settings.AIEvery hours on the panel itself (it needs no
+// browser), applies its actions — only the ones that cannot cut anyone off, see aiCheck —
+// unless AIAuto is "off", and tells the admin on Telegram when it found something serious,
+// changed something or failed.
+func (a *App) aiLoop() {
+	time.Sleep(10 * time.Minute) // let the switcher and the monitors gather a picture first
+	for {
+		a.aiScheduled()
+		time.Sleep(10 * time.Minute)
+	}
+}
+
+func aiEvery(set Settings) time.Duration {
+	v := strings.TrimSpace(set.AIEvery)
+	if v == "" {
+		return 6 * time.Hour
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Hour
+}
+
+func (a *App) aiScheduled() {
+	set := a.settings()
+	every := aiEvery(set)
+	if every == 0 || strings.TrimSpace(set.ClaudeKey) == "" {
+		return
+	}
+	var last int64
+	var lastErr bool
+	a.store.View(func(st *State) {
+		if st.AIReport != nil {
+			last, lastErr = st.AIReport.At, st.AIReport.Error != ""
+		}
+	})
+	if time.Since(time.Unix(last, 0)) < every {
+		return
+	}
+	aiRun.Lock()
+	if aiRun.running {
+		aiRun.Unlock()
+		return
+	}
+	aiRun.running = true
+	aiRun.Unlock()
+	a.aiAnalyze() // clears running when done
+	var rep AIReport
+	a.store.View(func(st *State) {
+		if st.AIReport != nil {
+			rep = *st.AIReport
+			rep.Actions = append([]AIAction(nil), st.AIReport.Actions...)
+		}
+	})
+	if rep.Error != "" {
+		if !lastErr { // once, not every round while the key or the account is broken
+			a.push("🧠 AI analysis failed: " + clipTo(rep.Error, 300))
+		}
+		return
+	}
+	var done []string
+	if strings.TrimSpace(set.AIAuto) != "off" {
+		for i, x := range rep.Actions {
+			name := x.Tunnel
+			if t := a.store.Tunnel(x.Tunnel); t != nil {
+				name = t.Name
+			}
+			res, err := a.aiApply(i)
+			if err != nil {
+				done = append(done, fmt.Sprintf("✕ %s: %s — %v", name, aiActionText(x), err))
+			} else {
+				done = append(done, fmt.Sprintf("✓ %s: %s — %s", name, aiActionText(x), res))
+			}
+		}
+	}
+	if msg := aiMessage(rep, done); msg != "" {
+		a.push(msg)
+	}
+}
+
+func aiActionText(x AIAction) string {
+	if x.Kind == "hs_mode" {
+		if x.Auto {
+			return "switcher → auto"
+		}
+		return "switcher → manual"
+	}
+	return "users → " + x.Path
+}
+
+// aiMessage is the Telegram note of a scheduled analysis: "" when it found nothing serious
+// and changed nothing (the report is on the Tunnels page either way).
+func aiMessage(rep AIReport, done []string) string {
+	var high []AIFinding
+	for _, f := range rep.Findings {
+		if f.Severity == "high" {
+			high = append(high, f)
+		}
+	}
+	if len(high) == 0 && len(done) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("🧠 تحلیل خودکار\n\n")
+	b.WriteString(clipTo(rep.Summary, 1200))
+	for _, f := range high {
+		fmt.Fprintf(&b, "\n\n🔴 %s\n%s\nراه‌حل: %s", f.Title, clipTo(f.Detail, 500), clipTo(f.Fix, 400))
+	}
+	if len(done) > 0 {
+		b.WriteString("\n\nانجام شد:\n" + strings.Join(done, "\n"))
+	}
+	return clipTo(b.String(), 3900)
 }
 
 // ---- HTTP
