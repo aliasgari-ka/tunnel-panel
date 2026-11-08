@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,5 +40,33 @@ func TestAutoBenchDue(t *testing.T) {
 		if !got[r] {
 			t.Errorf("missing %v (got %v)", r, got)
 		}
+	}
+}
+
+// The benchmark measures only what runs: hot-standby paths that came up, a plain tunnel's method.
+func TestRunningMethods(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{{ID: "ir", IPv4: "192.0.2.1"}}
+		s.Tunnels = []*Tunnel{
+			{ID: "a", ServerID: "ir", ForeignID: "k1", Family: "v4", Active: "gre"},
+			{ID: "b", ServerID: "ir", ForeignID: "k1", Family: "v4", Active: "wg", Paths: []HSPath{
+				{Method: "wg", Family: "v4"}, {Method: "espsk", Family: "v4"}, {Method: "ipsec", Family: "v4", Failed: "no"}, {Method: "gre", Family: "v6"}}},
+			{ID: "c", ServerID: "ir", ForeignID: "k1", Family: "v4", Selected: "icmp"}, // stopped
+			{ID: "d", ServerID: "ir", ForeignID: "k2", Family: "v4", Active: "icmp"},   // other route
+		}
+		return nil
+	})
+	a := &App{store: st}
+	if got := strings.Join(a.runningMethods("ir", "k1", "v4"), ","); got != "gre,wg,espsk" {
+		t.Errorf("v4: %s", got)
+	}
+	if got := strings.Join(a.runningMethods("ir", "k1", "v6"), ","); got != "gre" {
+		t.Errorf("v6: %s", got)
+	}
+	// nothing runs over v6 on k2: nothing is built just to be measured
+	if _, err := a.Bench(BenchRequest{IranID: "ir", ForeignID: "k2", Family: "v6", Running: true}); err == nil || !strings.Contains(err.Error(), "nothing to measure") {
+		t.Errorf("want 'nothing to measure', got %v", err)
 	}
 }

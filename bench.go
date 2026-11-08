@@ -17,8 +17,11 @@ type BenchRequest struct {
 	ForeignID string   `json:"foreignId"` // "" = this panel host
 	Family    string   `json:"family"`
 	Methods   []string `json:"methods"` // empty = all that fit the family
-	Seconds   int      `json:"seconds"` // throughput probe length per method (default 5)
-	MaxMB     int      `json:"maxMB"`   // and at most this much per direction (0 = no cap)
+	// Running: only the methods the route's tunnels run on the servers now (Methods is
+	// filled from them) — the automatic benchmark and the pages' default
+	Running bool `json:"running,omitempty"`
+	Seconds int  `json:"seconds"` // throughput probe length per method (default 5)
+	MaxMB   int  `json:"maxMB"`   // and at most this much per direction (0 = no cap)
 }
 
 // BenchResult is one method's measured quality on the route.
@@ -154,6 +157,12 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	if req.MaxMB <= 0 || req.MaxMB > benchMaxMB {
 		req.MaxMB = benchMaxMB
 	}
+	if req.Running {
+		req.Methods = a.runningMethods(req.IranID, req.ForeignID, req.Family)
+		if len(req.Methods) == 0 {
+			return nil, fmt.Errorf("no tunnel runs over %s on this route — nothing to measure (pick All methods to test every one)", famName(req.Family))
+		}
+	}
 	var cands []*Method
 	for _, m := range methods {
 		if !supportsFamily(m, req.Family) {
@@ -234,6 +243,15 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				j.log("   skipped: excluded on this route (Routes page)")
 				out = append(out, r)
 				continue
+			}
+			if m.ID == "golden" && keepEarlier {
+				var o string
+				a.store.View(func(st *State) { o = goldenConflict(st, bt) })
+				if o != "" {
+					// a copy would take the live tunnel's DNS packets: its earlier result stays
+					j.log("   not measured: tunnel %q runs Golden-GRE on this route", o)
+					continue
+				}
 			}
 			if m.ID == "spoof" {
 				r.Skipped = true

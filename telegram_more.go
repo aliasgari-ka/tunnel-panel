@@ -205,14 +205,14 @@ func lastLines(s string, n int) string {
 	return strings.Join(ls, "\n")
 }
 
-// startRouteBench measures every method between the tunnel's two servers over its family
+// startRouteBench measures the methods running between the tunnel's two servers over its family
 // (on the spare slot: running tunnels aren't touched) and reports the ranking in msg, the
 // confirm message, so its button can't start a second run.
 func (b *Bot) startRouteBench(chat string, msg int64, t *Tunnel) {
 	var iran, foreign, fam, name string
 	b.app.store.View(func(*State) { iran, foreign, fam, name = t.ServerID, t.ForeignID, t.Family, t.Name })
 	back := b.keyboard([][]ikey{{{Text: "« " + name, Data: "t:" + t.ID}}})
-	j, err := b.app.Bench(BenchRequest{IranID: iran, ForeignID: foreign, Family: fam, Seconds: 3, MaxMB: 8})
+	j, err := b.app.Bench(BenchRequest{IranID: iran, ForeignID: foreign, Family: fam, Running: true, Seconds: 3, MaxMB: 8})
 	if err != nil {
 		b.edit(chat, msg, "⚠ "+esc(err.Error()), back)
 		return
