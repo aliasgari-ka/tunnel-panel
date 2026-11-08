@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestGemVerdict(t *testing.T) {
 	for _, c := range []struct {
@@ -55,5 +58,16 @@ func TestRelayAllowLists(t *testing.T) {
 		if got[id] != w {
 			t.Errorf("%s: got %q, want %q", id, got[id], w)
 		}
+	}
+}
+
+func TestForeignRelays(t *testing.T) {
+	own := map[string]bool{"198.51.100.1": true, "198.51.100.2": true}
+	got := foreignRelays("2:198.51.100.2:12371,3:203.0.113.5:12376,5:203.0.113.6:12371", own)
+	if fmt.Sprint(got) != "[5 3]" {
+		t.Fatalf("got %v, want [5 3]", got)
+	}
+	if got := foreignRelays("", own); len(got) != 0 {
+		t.Fatalf("empty prelay: got %v", got)
 	}
 }
