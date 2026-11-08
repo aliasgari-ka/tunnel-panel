@@ -230,7 +230,7 @@ func (a *App) repairOne(ctx context.Context, j *Job, t *Tunnel) (string, string)
 	}
 
 	j.log("· %s: %s — applying %s (%s) again", name, why, methodTitle(active), famName(fam))
-	rj, err := a.ApplyRoute(t, active, fam)
+	rj, err := a.rebuildMode(t) // not ApplyRoute: on hot standby that can be only a switch to a dead path
 	if err != nil {
 		j.log("  ✕ %v", err)
 		return "failed", err.Error()

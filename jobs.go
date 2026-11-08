@@ -564,6 +564,7 @@ func (a *App) push(msg string) {
 // pushCh sends a tunnel or server alert to the alert channel (Settings.TelegramChannel), or
 // to the admin chat when there is none or the channel refuses it.
 func (a *App) pushCh(msg string) {
+	aiNoteAlert(msg)
 	ch := strings.TrimSpace(a.settings().TelegramChannel)
 	a.botMu.Lock()
 	b := a.bot
@@ -609,38 +610,59 @@ func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	var mid string
 	a.store.View(func(*State) { mid = t.Active })
 	ir, kh, link = a.healthLive(ctx, t)
-	if ctx.Err() == nil { // a cut-off check says nothing about the tunnel
+	switch ctx.Err() {
+	case nil:
 		a.keepHealth(t.ID, mid, ir, kh, link)
-	}
+	case context.DeadlineExceeded:
+		// a server that never answers: kept too, or every page load of its card waited the
+		// full timeout (25 s) for the same non-answer; the background refresh retries it
+		if ir == "" {
+			ir = "unreachable"
+		}
+		if kh == "" {
+			kh = "unreachable"
+		}
+		a.keepHealth(t.ID, mid, ir, kh, link)
+	} // canceled (the page went away): says nothing about the tunnel
 	return ir, kh, link
 }
 
 func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	cmd := "systemctl is-active " + unitName(t) + " 2>/dev/null || true"
-	if kHost, _, err := a.foreignHost(ctx, t, nil); err == nil {
-		out, _ := kHost.Run(ctx, cmd, nil)
-		kh = lastLine(out)
-	} else {
-		kh = "unreachable"
-	}
-	srv := a.store.Server(t.ServerID)
-	if srv == nil {
-		return "no server", kh, ""
-	}
-	h, _, err := a.reach(ctx, srv, nil)
-	if err != nil {
-		return "unreachable", kh, ""
-	}
 	var hot bool
 	var seen int64
 	a.store.View(func(*State) { hot, seen = t.HotStandby && len(t.Paths) > 0, t.HSSeen })
+	// the foreign side's service, alongside the Iran side's check (hot standby doesn't need
+	// it: the switcher's verdict covers both ends — it was an SSH call a minute for nothing)
+	khDone, khv := make(chan struct{}), ""
+	go func() {
+		defer close(khDone)
+		if hot {
+			return
+		}
+		if kHost, _, err := a.foreignHost(ctx, t, nil); err == nil {
+			out, _ := kHost.Run(ctx, cmd, nil)
+			khv = lastLine(out)
+		} else {
+			khv = "unreachable"
+		}
+	}()
+	foreign := func() string { <-khDone; return khv }
+	srv := a.store.Server(t.ServerID)
+	if srv == nil {
+		return "no server", foreign(), ""
+	}
+	h, _, err := a.reach(ctx, srv, nil)
+	if err != nil {
+		return "unreachable", foreign(), ""
+	}
 	if hot {
 		// the switcher's own verdict: the path it keeps the users on works
 		v, events, err := a.hsRead(ctx, h, t, seen)
 		a.hsReport(t, v, events)
 		switch {
 		case err != nil:
-			return err.Error(), kh, ""
+			return err.Error(), foreign(), ""
 		case v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active]:
 			return "active", "active", "up"
 		}
@@ -664,7 +686,7 @@ func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	if link == "down" && a.trafficFlowing(t.ID) {
 		link = "up"
 	}
-	return ir, kh, link
+	return ir, foreign(), link
 }
 
 // linkCheck is the shell that prints "LINK up|down" on the Iran side.

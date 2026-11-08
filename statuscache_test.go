@@ -31,6 +31,21 @@ func TestRecentHealth(t *testing.T) {
 	if ir, _, _ := a.recentHealth(ctx, tn); ir == "active" {
 		t.Errorf("stale result used")
 	}
+	// a check cut off by its timeout is kept as unreachable (the next load answers at once);
+	// one cut off because the page went away is not
+	a.clearHealth("t1")
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	a.Health(cctx, tn)
+	if a.healthLast["t1"] != nil {
+		t.Errorf("a canceled check was kept")
+	}
+	dctx, dcancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer dcancel()
+	a.Health(dctx, tn)
+	if a.healthLast["t1"] == nil {
+		t.Errorf("a timed-out check was not kept")
+	}
 	// Stop/apply forgets it
 	a.keepHealth("t1", "gre", "active", "active", "up")
 	a.clearHealth("t1")

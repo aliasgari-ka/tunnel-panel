@@ -907,7 +907,7 @@ window.TP_FA = {
     const lead = s.match(/^\s*/)[0], trail = s.match(/\s*$/)[0];
     return lead + out + trail;
   };
-  const SKIP = 'script,style,textarea,pre,code,.mono,.log,.logs,[data-notr],[contenteditable]';
+  const SKIP = 'script,style,textarea,pre,code,.mono,.log,.logs,.logbox,[data-notr],[contenteditable]';
   const skip = (el) => !el || (el.closest && el.closest(SKIP));
   const doText = (n) => { if (skip(n.parentElement)) return; const v = tr(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; };
   const ATTRS = ['title', 'placeholder', 'aria-label'];

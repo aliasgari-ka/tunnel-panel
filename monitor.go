@@ -44,13 +44,15 @@ func (a *App) hsRebuild(t *Tunnel, reason string, down time.Duration) {
 	}
 	hsRebuildLast[t.ID] = time.Now()
 	hsRebuildMu.Unlock()
-	var name, mid, fam string
-	a.store.View(func(*State) { name, mid, fam = t.Name, t.Active, t.Family })
+	var name, mid string
+	a.store.View(func(*State) { name, mid = t.Name, t.Active })
 	if mid == "" {
 		return // stopped meanwhile
 	}
 	a.pushT(t, fmt.Sprintf("🔄 %s: down for %s with both servers answering (%s) — applying it again", name, shortDur(down), reason))
-	if _, err := a.ApplyRoute(t, mid, fam); err != nil {
+	// a real re-apply: ApplyRoute turns into a mere pin/switch when the switcher has the users
+	// on another path — a dead one here, so the tunnel stayed down
+	if _, err := a.rebuildMode(t); err != nil {
 		a.pushT(t, fmt.Sprintf("❌ %s: could not apply it again — %v", name, err))
 	}
 }
@@ -62,7 +64,7 @@ type tunnelHealth struct {
 	downSince       time.Time
 	reason          string
 	lastOutage      time.Duration
-	failoverStarted bool
+	failoverAt      time.Time // the last failover / rebuild of this outage (zero: none yet)
 }
 
 // step records one check ("" = healthy) and returns "down" or "up" when an alert is due.
@@ -83,7 +85,7 @@ func (h *tunnelHealth) step(reason string, now time.Time) string {
 	if h.fails > 0 {
 		h.lastOutage = now.Sub(h.downSince)
 	}
-	h.fails, h.alerted, h.reason, h.failoverStarted = 0, false, "", false
+	h.fails, h.alerted, h.reason, h.failoverAt = 0, false, "", time.Time{}
 	if was {
 		return "up"
 	}
@@ -153,12 +155,12 @@ func (a *App) healthMonitor() {
 					a.pushT(t, fmt.Sprintf("🟢 Tunnel back up: %s\ndown %s\n%s → %s (Tehran)", t.Name, shortDur(h.lastOutage), clock(now.Add(-h.lastOutage)), clock(now)))
 				}
 				switch {
-				case t.HotStandby && reason != "" && hsRebuildable(reason) && !h.failoverStarted && time.Since(h.downSince) >= hsRebuildAfter &&
+				case t.HotStandby && reason != "" && hsRebuildable(reason) && time.Since(h.failoverAt) >= hsRebuildEvery && time.Since(h.downSince) >= hsRebuildAfter &&
 					a.serverReachable(t.ServerID) && (t.ForeignID == "" || a.serverReachable(t.ForeignID)) && !a.trafficFlowing(t.ID):
 					// every path dead and the switcher can't help: build it again — unless users'
 					// traffic is flowing both ways, which proves the switcher's checks wrong and a
 					// re-apply would only cut them
-					h.failoverStarted = true
+					h.failoverAt = time.Now()
 					go a.hsRebuild(t, reason, time.Since(h.downSince))
 				case t.HotStandby && reason == "" && len(a.hsRetryDue(t, time.Now())) > 0:
 					// a healthy tunnel with a path that could not start: that one path is
@@ -166,8 +168,14 @@ func (a *App) healthMonitor() {
 					go a.hsRetryFailed(t)
 				case t.HotStandby:
 					// the switcher on the Iran server moves the users itself
-				case reason != "" && !t.NoFailover && !h.failoverStarted && time.Since(h.downSince) >= failoverAfter && time.Now().After(a.failoverNotBefore(t.ID)):
-					h.failoverStarted = true
+				case reason != "" && !t.NoFailover && !strings.Contains(reason, "unreachable") && time.Since(h.failoverAt) >= failoverRetry &&
+					time.Since(h.downSince) >= failoverAfter && time.Now().After(a.failoverNotBefore(t.ID)) &&
+					a.serverReachable(t.ServerID) && (t.ForeignID == "" || a.serverReachable(t.ForeignID)):
+					// tried again every failoverRetry while the outage lasts (it ran once only,
+					// so "tries failover again in 30m" was not true) — but not when only the
+					// panel's own SSH to a server fails: the users' tunnel may be fine there,
+					// and a failover would tear it down
+					h.failoverAt = time.Now()
 					go a.Failover(t, reason)
 				case reason == "" && t.Failover != nil && time.Since(time.Unix(t.Failover.LastCheck, 0)) >= failbackEvery:
 					go a.Failback(t)

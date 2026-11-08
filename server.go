@@ -67,7 +67,7 @@ func (a *App) routes() http.Handler {
 		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
 		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
 		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
-		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true,
+		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true}
 	g := func(path, kind string, h http.HandlerFunc) {
 		if !reads[path] {
@@ -112,6 +112,9 @@ func (a *App) routes() http.Handler {
 	g("/api/bench/history", "self", s.benchHistory)
 	g("/api/routes/skip", "self", s.routeSkip)
 	g("/api/repair", "admin", s.repair)
+	g("/api/ai", "admin", s.aiGet)
+	g("/api/ai/run", "admin", s.aiRunH)
+	g("/api/ai/apply", "admin", s.aiApplyH)
 	g("/api/outages", "admin", s.outages)
 	g("/api/backup", "admin", s.backup)
 	g("/api/helpers", "self", s.helpers) // read-only list
@@ -495,6 +498,7 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		set := s.app.settings()
 		set.TelegramTok = maskStr(set.TelegramTok)
+		set.ClaudeKey = maskStr(set.ClaudeKey)
 		writeJSON(w, map[string]any{"settings": set, "agentPin": s.app.agents.pin, "agentPort": s.app.agentPort, "hostArch": runtime.GOARCH})
 		return
 	}
@@ -544,6 +548,9 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.TelegramTok == "********" { // unchanged; an empty field clears the token
 			in.TelegramTok = st.Settings.TelegramTok
+		}
+		if in.ClaudeKey == "********" {
+			in.ClaudeKey = st.Settings.ClaudeKey
 		}
 		st.Settings = in
 		return nil

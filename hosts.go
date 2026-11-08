@@ -222,8 +222,16 @@ func (h *SSHHost) client() (*ssh.Client, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.cli != nil {
-		if _, _, err := h.cli.SendRequest("keepalive@tunnel-panel", true, nil); err == nil {
-			return h.cli, nil
+		// with a time limit: on a half-dead connection (packets silently dropped) the
+		// keepalive could hang for minutes, holding h.mu and every caller behind it
+		cli, done := h.cli, make(chan error, 1)
+		go func() { _, _, err := cli.SendRequest("keepalive@tunnel-panel", true, nil); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil {
+				return h.cli, nil
+			}
+		case <-time.After(10 * time.Second):
 		}
 		h.cli.Close()
 		h.cli = nil

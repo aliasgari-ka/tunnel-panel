@@ -553,8 +553,11 @@ while true; do
     hold=$((now + HOLD)); rm -f cmp.run cmp.done
   elif [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ] && [ $((now - ${since[$active]:-$now})) -ge ${GRACE:-0} ]; then
     # down for GRACE s (a blip shorter than that moves nobody): to the steadiest, cleanest path
-    best=$(pick)
+    best=$(pick); was=$active
     [ $best -ge 0 ] && use $best "path $active down for $((now - ${since[$active]:-$now}))s — took path $best: loss $(pc ${ql[$best]})%, rtt ${qr[$best]:-?} ms, up $((now - ${since[$best]:-$now}))s"
+    # it has been down GRACE s already, past any traffic burst: its stuck connections are
+    # cleared now, not FLUSHAFTER s after it died (apps hung ~15 s longer on the dead path)
+    [ $best -ge 0 ] && [ ${GRACE:-0} -ge 15 ] && [ "${flushed[$was]}" != 1 ] && flush $was
   elif [ "${ok[$active]}" = 1 ] && [ "$M" != auto ]; then
     # manual: back to the chosen path (the pinned one, else the first) once it is stable and clean
     if [ $active != $P0 ] && stable $P0 && clean $P0 && budget; then planned $P0 "$(backmsg $P0)"

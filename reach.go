@@ -33,6 +33,16 @@ func dropHost(serverID string) {
 	reachCache.Unlock()
 }
 
+// dropKey closes and forgets one cached connection (one path to one server).
+func dropKey(key string) {
+	reachCache.Lock()
+	if c, ok := reachCache.m[key].(interface{ Close() }); ok {
+		c.Close()
+	}
+	delete(reachCache.m, key)
+	reachCache.Unlock()
+}
+
 // pooledSSH asks the SSH connections the panel keeps open to a server whether they still
 // answer: v4/v6 for a direct connection over that family, any for one over whatever path
 // (a proxy, a jump host). Nothing is connected: a server without one yields false, false, false.
@@ -94,6 +104,11 @@ func (a *App) reach(ctx context.Context, srv *Server, j *Job) (Host, string, err
 }
 
 func (a *App) recordPath(srv *Server, path string) {
+	var same bool
+	a.store.View(func(*State) { same = srv.LastPath == path })
+	if same { // no rewrite of the whole state file on every reach (twice a tunnel a minute)
+		return
+	}
 	_ = a.store.Update(func(*State) error { srv.LastPath = path; return nil })
 }
 
@@ -130,6 +145,20 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		}
 	}
 
+	// a connection already open on any path first: dialling the earlier ones anew (a
+	// filtered direct address: 15-35 s each) before reaching it made checks time out
+	for _, c := range cands {
+		key := srv.ID + "|" + c.path
+		reachCache.Lock()
+		cached := reachCache.m[key]
+		reachCache.Unlock()
+		if sh, ok := cached.(*SSHHost); ok {
+			if _, err := sh.client(); err == nil {
+				return sh, c.path, nil
+			}
+			dropKey(key)
+		}
+	}
 	var lastErr, firstErr error
 	tried := 0
 	for _, c := range cands {
@@ -140,15 +169,6 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 			return nil, "", err
 		}
 		key := srv.ID + "|" + c.path
-		reachCache.Lock()
-		cached := reachCache.m[key]
-		reachCache.Unlock()
-		if sh, ok := cached.(*SSHHost); ok {
-			if _, err := sh.client(); err == nil {
-				return sh, c.path, nil
-			}
-			dropHost(srv.ID)
-		}
 		logf("trying %s", c.path)
 		sh := newSSHHost(a.store, srv, c.dial)
 		sh.v6 = c.v6

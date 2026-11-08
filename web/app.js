@@ -720,6 +720,8 @@ function viewSettings(w) {
       <div class="faint" style="font-size:12px">Message your bot <b>/start</b>; it replies with your chat id if you're not yet an admin. The bot can start, stop and switch every tunnel.</div>
       <label class="f">📣 Alert channel <span class="faint">(tunnel &amp; server up/down alerts go here instead of the admin chat — add the bot to your channel as an admin and it fills this in by itself; -100… id or @name, blank = admin chat. WARP / Instagram / Gemini alerts stay in the admin chat: only the important ones, one short summary every 10 min)</span><input name="telegramChannel" class="mono" placeholder="-1001234567890" value="${esc(s.telegramChannel || '')}"></label>
       <label class="row f"><input type="checkbox" name="telegramBackup" value="on" ${s.telegramBackup === 'on' ? 'checked' : ''}> Send the daily backup to the admin chat too</label>
+      <h3 style="margin-top:6px">🧠 AI analysis (Claude)</h3>
+      <label class="f">Claude API key <span class="faint">(from console.anthropic.com — the Tunnels page's 🧠 AI analysis sends the tunnels' state to Claude: names, paths, measurements, outages and alerts; no server addresses, passwords or keys. Blank = off)</span><input name="claudeKey" class="mono" type="password" autocomplete="off" value="${esc(s.claudeKey || '')}" placeholder="sk-ant-..."></label>
       <label class="f">☀️ Daily report at <span class="faint">(HH:MM, Tehran time — tunnels, their paths and the last day's outages; blank = off)</span><input name="telegramReport" class="mono" placeholder="09:00" maxlength="5" value="${esc(s.telegramReport || '')}"></label>
       <div><button class="btn pri">Save settings</button></div>
     </form>
@@ -1018,7 +1020,13 @@ function moreMenu(items) {
 }
 document.addEventListener('click', (e) => { $$('details.more[open]').forEach(d => { if (!d.contains(e.target)) d.removeAttribute('open'); }); });
 // the phone menu button (no inline handlers: the page runs under a CSP without 'unsafe-inline' scripts)
-document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.menu-toggle')) $('#side').classList.toggle('open'); });
+// phone menu: the toggle opens it, a tap outside closes it (before, only picking a page did)
+document.addEventListener('click', (e) => {
+  const side = $('#side');
+  if (!side || !e.target.closest) return;
+  if (e.target.closest('.menu-toggle')) side.classList.toggle('open');
+  else if (side.classList.contains('open') && !e.target.closest('.side')) side.classList.remove('open');
+});
 // keep an open ⋯ menu above the next card (browsers without :has()), and close it once an item is picked
 document.addEventListener('toggle', (e) => {
   const d = e.target; if (!d.matches || !d.matches('details.more')) return;
@@ -1196,7 +1204,7 @@ function serverModal(s) {
 // Summary strip, then tunnels grouped by their Iran server.
 function viewTunnels(w) {
   w.innerHTML = topbar('Tunnels', 'Each tunnel links one Iran server to one foreign server. Pick a connection method and switch any time.',
-    `${isAdmin() ? '' : '<!--'}<button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button>${isAdmin() ? '' : '-->'}<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
+    `${isAdmin() ? '' : '<!--'}<button class="btn" id="aiTun" title="Claude reviews the tunnels, their paths, outages and the servers' load, and says what to improve">🧠 AI analysis</button><button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button>${isAdmin() ? '' : '-->'}<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
   // everything on this page follows the View selector (an admin looking at one account sees
   // that account's numbers and chips, not the whole panel's)
   const mine = STATE.tunnels.filter(t => shownOwner(t.owner));
@@ -1225,8 +1233,10 @@ function viewTunnels(w) {
         const sv = serverById(id);
         return `<button class="fchip${STATE.tunFilter === id ? ' on' : ''}" data-f="${id}">${sv && sv.country ? flag(sv.country) : '🇮🇷'} ${esc(serverName(id))} <b>${counts[id]}</b></button>`;
       }).join('')}` : ''}</div>`);
-    $$('[data-f]', bar).forEach(b => b.onclick = () => { STATE.tunFilter = b.dataset.f; renderView(); });
-    $('[data-run]', bar).onclick = () => { STATE.tunRunning = !STATE.tunRunning; renderView(); };
+    // the chips filter in place like the search: a full redraw replayed the animations and
+    // sent every card's status request again
+    $$('[data-f]', bar).forEach(b => b.onclick = () => { STATE.tunFilter = b.dataset.f; $$('[data-f]', bar).forEach(x => x.classList.toggle('on', x === b)); applySearch(); });
+    $('[data-run]', bar).onclick = (e) => { STATE.tunRunning = !STATE.tunRunning; e.currentTarget.classList.toggle('on', STATE.tunRunning); applySearch(); };
     w.appendChild(bar);
     const grid = h(`<div class="grid tgrid"></div>`);
     // the search filters the cards in place (no redraw: the live traffic keeps running)
@@ -1234,19 +1244,25 @@ function viewTunnels(w) {
     const applySearch = () => {
       const q = (STATE.tunSearch || '').trim().toLowerCase();
       let shown = 0;
-      $$('.tc', grid).forEach(c => { const t = STATE.tunnels.find(x => x.id === c.dataset.id); const ok = !q || (t && hay(t).includes(q)); c.hidden = !ok; if (ok) shown++; });
+      $$('.tc', grid).forEach(c => {
+        const t = STATE.tunnels.find(x => x.id === c.dataset.id);
+        const ok = !!t && (!q || hay(t).includes(q)) && (!STATE.tunFilter || t.serverId === STATE.tunFilter) && (!STATE.tunRunning || t.active);
+        const was = c.hidden; c.hidden = !ok; if (ok) shown++;
+        if (was && ok && t.active) refreshStatus(t, c); // hidden cards weren't polled
+      });
       let none = $('.nomatch', w);
       if (!shown && !none) { none = h('<div class="card empty small nomatch">No tunnel matches this search.</div>'); grid.after(none); }
       if (shown && none) none.remove();
     };
     $('[data-q]', bar).oninput = (e) => { STATE.tunSearch = e.target.value; applySearch(); };
-    STATE.tunnels.filter(t => shownOwner(t.owner) && (!STATE.tunFilter || t.serverId === STATE.tunFilter) && (!STATE.tunRunning || t.active))
-      .sort((x, y) => (!!y.active - !!x.active) || x.name.localeCompare(y.name))
+    STATE.tunnels.filter(t => shownOwner(t.owner))
+      .sort((x, y) => (!!y.active - !!x.active) || (!!(y.active && y.health) - !!(x.active && x.health)) || x.name.localeCompare(y.name))
       .forEach(t => grid.appendChild(tunnelCard(t)));
     w.appendChild(grid);
     applySearch();
   }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
+  if ($('#aiTun')) $('#aiTun').onclick = () => aiModal();
   if ($('#repairTun')) $('#repairTun').onclick = async () => {
     try { const r = await api('/repair', {}); openLog({ id: 'repair', name: 'Repair' }, r.job); } catch (e) { alertModal('Repair', e.message); }
   };
@@ -1276,7 +1292,7 @@ function tunnelCard(t) {
       <span class="nm r">${fl(fg, fg ? '🌍' : '🖥')} ${esc(fg ? fg.name : 'panel host')}</span><span class="sd" data-fg></span>
     </div>
     <div class="tc-i" title="${esc(groupOf(shownM) + ' · ' + (shownM?.title || ''))}">${shownM ? groupIcon(shownM) + ' ' : ''}<b>${esc(shownM?.title || '—')}</b><span>${famName(shownFam)}</span><span class="mono">:${esc(t.ports)}</span></div>
-    <div class="tc-m">${mainFail ? `<span class="chip warn" title="${esc(mainFail.failed)} — tried again every hour">⚠ ${esc(methodTitle(t.active))} didn't start here</span>` : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}</span>` : ''}${t.hotStandby ? hsChip(t) : ''}</div>
+    <div class="tc-m">${tcChips(t, mainFail, miss)}</div>
     ${t.active ? `<div class="traf mini" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
@@ -1306,8 +1322,42 @@ function tunnelCard(t) {
   on('[data-edit]', () => tunnelModal(t));
   on('[data-own]', () => ownerModal('tunnel', t.id));
   on('[data-del]', async (e) => { if (!confirmInline(e.target, 'Click again to delete')) return; try { const r = await api('/tunnels/delete', { ID: t.id }); await loadAll(); renderView(); if (r.warning) alertModal('Deleted — with a warning', r.warning); } catch (er) { alertModal('Error', er.message); } });
+  // the monitor's last verdict at once: a broken tunnel no longer shows green until its check returns
+  if (t.active && t.health) paintDown(t, card, t.health);
   refreshStatus(t, card);
   return card;
+}
+// AI analysis: the last report, a button for a new one (1-3 min), and the safe actions it suggests
+async function aiModal() {
+  const m = modal(`<h2>🧠 AI analysis</h2><div data-ai><div class="muted">Loading…</div></div>`, true);
+  const box = $('[data-ai]', m);
+  const sev = { high: 'bad', medium: 'warn', low: '' };
+  const paint = (r) => {
+    if (!box.isConnected) return;
+    const rep = r.report;
+    const tname = (id) => (STATE.tunnels.find(t => t.id === id) || {}).name || id;
+    const head = !r.hasKey ? `<div class="muted">Set the Claude API key in Settings first.</div>`
+      : `<div class="actions" style="margin-bottom:10px"><button class="btn pri" data-airun${r.running ? ' disabled' : ''}>${r.running ? '⏳ Analysing… (1-3 min)' : rep ? '↻ Analyse again' : '▶ Analyse now'}</button>${rep ? `<span class="faint" style="font-size:12px">last: ${ago(rep.at)}</span>` : ''}</div>`;
+    let body = '';
+    if (rep && rep.error) body = `<div class="downbar">⚠ ${esc(rep.error)}</div>`;
+    else if (rep) {
+      body = `<div data-notr dir="rtl" style="text-align:right;line-height:1.7">
+        <p style="margin:0 0 10px">${esc(rep.summary)}</p>
+        ${(rep.actions || []).length ? `<h3 style="margin:12px 0 6px">پیشنهادهای قابل اعمال</h3>${rep.actions.map((a, i) => `<div class="card pad" style="margin-bottom:8px"><b>${esc(tname(a.tunnel))}</b> — ${a.kind === 'switch_path' ? 'رفتن کاربرها به مسیر <span class="mono">' + esc(a.path) + '</span>' : 'حالت سوییچر: ' + (a.auto ? 'خودکار' : 'دستی')}<div class="faint" style="font-size:13px">${esc(a.why)}</div><div style="margin-top:6px">${a.applied ? `<span class="chip">✓ ${esc(a.result || 'done')}</span>` : `<button class="btn sm pri" data-aiapply="${i}">اعمال</button>`}</div></div>`).join('')}` : ''}
+        ${(rep.findings || []).map(f => `<div class="card pad" style="margin-bottom:8px"><div><span class="chip ${sev[f.severity] || ''}">${f.severity === 'high' ? 'مهم' : f.severity === 'medium' ? 'متوسط' : 'کم'}</span> <b>${esc(f.title)}</b></div><div style="font-size:13.5px;margin-top:4px">${esc(f.detail)}</div>${f.fix ? `<div style="font-size:13.5px;margin-top:4px">🔧 ${esc(f.fix)}</div>` : ''}</div>`).join('')}
+      </div>`;
+    }
+    box.innerHTML = head + body;
+    const run = $('[data-airun]', box);
+    if (run) run.onclick = async () => { try { await api('/ai/run', {}); load(); } catch (e) { alertModal('AI analysis', e.message); } };
+    $$('[data-aiapply]', box).forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { const x = await api('/ai/apply', { I: +b.dataset.aiapply }); toast(x.result || 'Applied'); load(); } catch (e) { b.disabled = false; alertModal('Could not apply', e.message); }
+    });
+    if (r.running) setTimeout(load, 4000);
+  };
+  const load = () => api('/ai').then(paint).catch(e => { box.innerHTML = `<div class="downbar">⚠ ${esc(e.message)}</div>`; });
+  load();
 }
 async function applyMethod(t, mid, fam) {
   try { const r = await api('/tunnels/apply', { ID: t.id, Method: mid, Family: fam || t.family }); openLog(t, r.job); return true; }
@@ -1316,12 +1366,16 @@ async function applyMethod(t, mid, fam) {
 async function tunnelJob(t, path, label) {
   try { const r = await api(path, { ID: t.id }); openLog({ id: t.id, name: label + ' · ' + t.name }, r.job); } catch (e) { busyOrError(t, e); }
 }
+// the card's status chips: repainted by healthWatch when the users' path or a failover changes
+function tcChips(t, mainFail, miss) {
+  return `${mainFail ? `<span class="chip warn" title="${esc(mainFail.failed)} — tried again every hour">⚠ ${esc(methodTitle(t.active))} didn't start here</span>` : ''}${miss ? `<span class="chip warn" title="needs ${esc(miss)}">⚠ needs upload</span>` : ''}${t.clash ? `<span class="chip bad" title="${esc(t.clash)}">⚠ port clash</span>` : ''}${t.failover ? `<span class="chip fo" title="original ${esc(methodTitle(t.failover.method))} (${t.failover.family}) failed: ${esc(t.failover.reason || '')} — re-checked every hour">🔁 backup path · original ${esc(methodTitle(t.failover.method))} ${t.failover.family}${t.failover.since ? ' · ' + ago(t.failover.since) : ''}</span>` : ''}${t.hotStandby ? hsChip(t) : ''}`;
+}
 // hot standby: which path carries the users now, and how many work
 function hsChip(t) {
   const v = t.hs;
   if (!v || !v.paths || !v.paths.length) return '<span class="chip" title="hot standby — starts on the next Start/Re-apply">⚡ standby</span>';
   const n = v.ok.filter(Boolean).length, cur = v.paths[v.active] || '—';
-  return `<span class="chip${n ? '' : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '')).join('\n'))}">⚡ ${n}/${v.paths.length} paths · on ${esc(cur)}</span>`;
+  return `<span class="chip${n ? '' : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '')).join('\n'))}">⚡ ${n}/${v.paths.length} paths · on ${esc(cur)}${v.since ? " · " + ago(v.since) : ""}</span>`;
 }
 function hsBox(t) {
   const v = t.hs;
@@ -1450,6 +1504,11 @@ async function refreshStatus(t, card) {
     const r = await api('/tunnels/status?id=' + t.id);
     paint($('[data-ir]', card), r.iran); paint($('[data-fg]', card), r.foreign);
     const why = r.iran !== 'active' ? `Iran service: ${r.iran}` : r.foreign !== 'active' ? `foreign service: ${r.foreign}` : r.link === 'down' ? 'tunnel link is down — no traffic between the servers' : '';
+    paintDown(t, card, why);
+  } catch (e) {} finally { card._busy = false; }
+}
+// a running tunnel's down pill and bar (why = "" → running)
+function paintDown(t, card, why) {
     card.classList.toggle('down', !!why);
     const pill = $('.tc-h .pill', card);
     if (pill) pill.outerHTML = why ? `<span class="pill bad" title="${esc(why)}"><span class="led"></span>down</span>` : `<span class="pill on"><span class="led"></span>running</span>`;
@@ -1460,7 +1519,6 @@ async function refreshStatus(t, card) {
     t._down = !!why;
     const n = STATE.tunnels.filter(x => x._down && shownOwner(x.owner)).length, el = $('[data-sum-down]');
     if (el) { el.textContent = n ? `· ${n} down` : ''; }
-  } catch (e) {} finally { card._busy = false; }
 }
 let healthTimer = null;
 function healthWatch() {
@@ -1470,7 +1528,21 @@ function healthWatch() {
   healthTimer = setInterval(() => {
     if (STATE.view !== 'tunnels') { clearInterval(healthTimer); healthTimer = null; return; }
     if (document.hidden) return;
-    $$('.tc.live').forEach(card => { const t = STATE.tunnels.find(x => x.id === card.dataset.id); if (t) refreshStatus(t, card); });
+    $$('.tc.live').forEach(card => { if (card.hidden) return; const t = STATE.tunnels.find(x => x.id === card.dataset.id); if (t) refreshStatus(t, card); });
+    // which path the users are on and any failover: one list call repaints every card's chips
+    api('/tunnels').then(list => {
+      (Array.isArray(list) ? list : []).forEach(n => {
+        const t = STATE.tunnels.find(x => x.id === n.id), card = t && $(`.tc[data-id="${n.id}"]`);
+        if (!t || !card) return;
+        Object.assign(t, { hs: n.hs, failover: n.failover, health: n.health, clash: n.clash });
+        const m = $('.tc-m', card);
+        if (m) {
+          const mainFail = t.hotStandby && t.active ? (t.paths || []).find(p => p.method === t.active && p.family === t.family && p.failed) : null;
+          const html = tcChips(t, mainFail, methodMissing(STATE.methods.find(x => x.id === t.active), t));
+          if (m.innerHTML !== html) m.innerHTML = html;
+        }
+      });
+    }).catch(() => {});
   }, 15000);
 }
 // The save endpoint replaces the editable fields, so every save sends all of them
@@ -1756,8 +1828,12 @@ async function pollJob(jobId, tunnelId) {
     try {
       const j = await api(url);
       if (!box.isConnected || finished) return;
-      box.innerHTML = j.lines.map(l => { let c = /ERROR|failed| ✕ |WARNING|CANCELLED/.test(l) ? 'err' : /DONE|is active|unit .*active| ✓ /.test(l) ? 'ok' : /\[IR\]/.test(l) ? 'ir' : ''; return `<div class="ln ${c}">${esc(l)}</div>`; }).join('');
-      box.scrollTop = box.scrollHeight;
+      // only the new lines, and the view follows them only when it was at the bottom: you can
+      // scroll up to read an error while the job keeps running
+      const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      if (j.lines.length < box.childElementCount || !box.querySelector(".ln")) box.innerHTML = "";
+      box.insertAdjacentHTML('beforeend', j.lines.slice(box.childElementCount).map(l => { let c = /ERROR|failed| ✕ |WARNING|CANCELLED/.test(l) ? 'err' : /DONE|is active|unit .*active| ✓ /.test(l) ? 'ok' : /\[IR\]/.test(l) ? 'ir' : ''; return `<div class="ln ${c}">${esc(l)}</div>`; }).join(''));
+      if (stick) box.scrollTop = box.scrollHeight;
       if (stat) stat.textContent = j.status === 'running' ? 'running…' : (j.status === 'ok' ? 'completed' : j.status === 'cancelled' ? 'cancelled' : 'error');
       const cb = $('#cancelJob');
       if (cb) { cb.hidden = j.status !== 'running'; cb.onclick = async () => { cb.disabled = true; try { await api('/jobs/cancel', { ID: j.id }); toast('Job cancelled'); } catch (e) { alertModal('Cancel', e.message); } cb.disabled = false; }; }
