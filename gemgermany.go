@@ -258,33 +258,69 @@ func relayAllowLists(list []*Server) map[string]string {
 	return out
 }
 
+// foreignRelays: the numbers (highest first, so each delete leaves the rest in place) of the
+// proxies in prelay ("n:ip:port,…") that are internal relays of a machine not in own.
+func foreignRelays(prelay string, own map[string]bool) []int {
+	var out []int
+	for _, x := range strings.Split(prelay, ",") {
+		f := strings.Split(x, ":")
+		if len(f) != 3 || own[f[1]] {
+			continue
+		}
+		if n, err := strconv.Atoi(f[0]); err == nil && n > 0 {
+			out = append(out, n)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(out)))
+	return out
+}
+
 // gemRelaySync gives every agent the IPv4 list of the same person's agent servers: they may use
-// each other's relays, so a new server works with the others without a new agent script.
+// each other's relays, so a new server works with the others without a new agent script. A relay
+// of another person's machine in a server's proxy list is removed (it would no longer let it in).
 func (a *App) gemRelaySync(list []*Server, sent map[string]string) {
 	lists := relayAllowLists(list)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	for _, s := range list {
 		want, ok := lists[s.ID]
-		mu.Lock()
-		done := !ok || sent[s.ID] == want
-		mu.Unlock()
-		if done {
+		if !ok {
 			continue
 		}
+		mu.Lock()
+		done := sent[s.ID] == want
+		mu.Unlock()
 		wg.Add(1)
-		go func(s *Server, want string) {
+		go func(s *Server, want string, done bool) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			if rc, out := a.igRun(ctx, s, []string{"relay-allow", "-"}, want+"\n", 60, nil); rc != 0 {
-				log.Printf("relay allow-list %s: %s", s.Name, lastLineOf(out)) // an older agent: next round again
-				return
+			if !done {
+				if rc, out := a.igRun(ctx, s, []string{"relay-allow", "-"}, want+"\n", 60, nil); rc != 0 {
+					log.Printf("relay allow-list %s: %s", s.Name, lastLineOf(out)) // an older agent: next round again
+				} else {
+					mu.Lock()
+					sent[s.ID] = want
+					mu.Unlock()
+				}
 			}
-			mu.Lock()
-			sent[s.ID] = want
-			mu.Unlock()
-		}(s, want)
+			own := map[string]bool{}
+			for _, ip := range strings.Split(want, "\n") {
+				own[ip] = true
+			}
+			inf := a.igInfo(ctx, s)
+			del := foreignRelays(inf["prelay"], own)
+			for _, n := range del {
+				if rc, out := a.igRun(ctx, s, []string{"proxy", "del", strconv.Itoa(n)}, "", 120, nil); rc != 0 {
+					log.Printf("relay cleanup %s: proxy %d: %s", s.Name, n, lastLineOf(out))
+					break
+				}
+				log.Printf("relay cleanup %s: removed proxy %d (another person's server)", s.Name, n)
+			}
+			if len(del) > 0 {
+				a.igForget(s.ID)
+			}
+		}(s, want, done)
 	}
 	wg.Wait()
 }
