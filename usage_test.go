@@ -138,3 +138,27 @@ func TestUsagePaidEst(t *testing.T) {
 		t.Fatalf("b: %v %v", paid["b"], est["b"])
 	}
 }
+
+func TestUsageWatchCheck(t *testing.T) {
+	pairs := map[string][2]string{"a": {"ir", "nl"}, "b": {"ir2", "us"}}
+	names := map[string]string{"ir": "netherlands-iran", "a": "NL", "b": "US"}
+	ok := &usageBucket{Tunnels: map[string]*UsageBytes{"a": {Down: 10e9, Up: 1e9}},
+		Servers: map[string]*UsageBytes{"ir": {Down: 11.5e9}},
+		Peers:   map[string]*UsageBytes{"ir|nl": {Down: 10.3e9}}}
+	if is := usageWatchCheck(ok, pairs, names); len(is) != 0 {
+		t.Fatalf("a normal hour: %+v", is)
+	}
+	double := &usageBucket{Tunnels: map[string]*UsageBytes{"a": {Down: 10e9, Up: 1e9}},
+		Servers: map[string]*UsageBytes{"ir": {Down: 11.5e9}},
+		Peers:   map[string]*UsageBytes{"ir|nl": {Down: 20.6e9}}}
+	is := usageWatchCheck(double, pairs, names)
+	if len(is) != 2 || is[0].key != "srv|ir" || is[1].key != "tun|a" {
+		t.Fatalf("a doubled hour: %+v", is)
+	}
+	// no card data, or too little traffic: not judged
+	small := &usageBucket{Tunnels: map[string]*UsageBytes{"a": {Down: 1e8}},
+		Servers: map[string]*UsageBytes{}, Peers: map[string]*UsageBytes{"ir|nl": {Down: 9e8}}}
+	if is := usageWatchCheck(small, pairs, names); len(is) != 0 {
+		t.Fatalf("a quiet hour: %+v", is)
+	}
+}
