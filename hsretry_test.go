@@ -1,6 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,6 +78,75 @@ func TestHSRetryDue(t *testing.T) {
 	st.View(func(*State) {
 		if tun.Active != "gre" || len(tun.Paths) != 4 || tun.Paths[0].Method != "gre" {
 			t.Fatalf("a failed retry changed the tunnel: active %s, paths %v", tun.Active, tun.Paths)
+		}
+	})
+}
+
+// swHost plays a server that answers nothing and notes every file written to it.
+type swHost struct {
+	mu    sync.Mutex
+	wrote []string
+}
+
+func (h *swHost) Label() string { return "sw" }
+func (h *swHost) Run(context.Context, string, func(string)) (string, error) {
+	return "", errors.New("unreachable (test)")
+}
+func (h *swHost) WriteFile(path string, _ []byte, _ os.FileMode) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.wrote = append(h.wrote, path)
+	return nil
+}
+
+// The hourly retry of a failed path must not restart the switcher (it cuts the users) before
+// the path is even up, and a switcher deploy that fails must not lose the paths it left out:
+// before, the retried path was gone from t.Paths for good and never tried again.
+func TestHSRetryLeavesSwitcherAndPaths(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	now := time.Now()
+	tn := &Tunnel{ID: "aaaaaaaaaaaa", Name: "uk", ServerID: "ir1", ForeignID: "kh1", Family: "v4", Ports: "443", Index: 1,
+		Active: "gre", HotStandby: true, Paths: []HSPath{
+			{Method: "gre", Family: "v4", Index: 1},
+			{Method: "paqet", Family: "v4", Index: 2},
+			{Method: "bp_reverse", Family: "v4", Index: 3, Failed: "refused", FailedAt: now.Add(-2 * time.Hour).Unix()},
+		}}
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{
+			{ID: "ir1", Name: "ir", IPv4: "192.0.2.1"},
+			{ID: "kh1", Name: "uk", IPv4: "198.51.100.1", Role: "foreign"},
+		}
+		s.Tunnels = []*Tunnel{tn}
+		return nil
+	})
+	h := &swHost{}
+	a := &App{store: st, jobs: newJobs(), hsViews: map[string]*hsView{}, hostFor: func(*Server) Host { return h }}
+	j := &Job{}
+	old := []HSPath{tn.Paths[2]}
+	if err := a.hsUpdatePathsRun(context.Background(), j, tn, old, []HSPath{{Method: "bp_reverse", Family: "v4"}}, true); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	for _, w := range h.wrote {
+		if strings.Contains(w, hsDir(tn)) || strings.Contains(w, unitName(hsUnitTunnel(tn))) {
+			t.Fatalf("a retry that brought nothing up touched the switcher: wrote %s", w)
+		}
+	}
+	st.View(func(*State) {
+		if len(tn.Paths) != 3 || tn.Active != "gre" {
+			t.Fatalf("retry changed the tunnel: active %s, paths %v", tn.Active, tn.Paths)
+		}
+	})
+
+	// dropping a running path while adding one: the switcher deploy fails, so all paths stay
+	h.wrote = nil
+	err := a.hsUpdatePathsRun(context.Background(), &Job{}, tn, []HSPath{tn.Paths[1]}, []HSPath{{Method: "direct6", Family: "v6"}}, false)
+	if err == nil {
+		t.Fatalf("switcher deploy on a dead server: no error")
+	}
+	st.View(func(*State) {
+		if len(tn.Paths) != 3 || tn.Active != "gre" {
+			t.Fatalf("a failed switcher deploy changed the paths: active %s, paths %v", tn.Active, tn.Paths)
 		}
 	})
 }

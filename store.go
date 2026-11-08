@@ -434,7 +434,7 @@ func (s *Store) nextIndexLocked(st *State) int {
 		}
 	}
 	for i := 1; i < 250; i++ {
-		if !used[i] {
+		if !used[i] && !hsIndexHeld(i) { // a running job's new path may hold it, not yet saved
 			return i
 		}
 	}

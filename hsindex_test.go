@@ -24,3 +24,31 @@ func TestHSFreeIndexHeldAcrossJobs(t *testing.T) {
 		t.Fatalf("one job: %d %d (used %v)", x, y, u)
 	}
 }
+
+// A new tunnel must not take an index a running paths job chose for a new path but has not
+// saved yet (same tpN interface, subnet and ports).
+func TestNextIndexSkipsHeld(t *testing.T) {
+	hsIdxMu.Lock()
+	hsIdxHeld = map[int]time.Time{}
+	hsIdxMu.Unlock()
+	defer func() {
+		hsIdxMu.Lock()
+		hsIdxHeld = map[int]time.Time{}
+		hsIdxMu.Unlock()
+	}()
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Tunnels = []*Tunnel{{ID: "a", Index: 1, Paths: []HSPath{{Method: "gre", Family: "v4", Index: 1}}}}
+		return nil
+	})
+	var held, idx int
+	_ = st.Update(func(s *State) error { // as hsUpdatePathsRun picks it
+		held = hsFreeIndex(map[int]bool{1: true})
+		return nil
+	})
+	_ = st.Update(func(s *State) error { idx = st.nextIndexLocked(s); return nil })
+	if held != 2 || idx == held {
+		t.Fatalf("held %d, new tunnel got %d", held, idx)
+	}
+}

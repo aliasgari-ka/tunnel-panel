@@ -24,8 +24,12 @@ var methodSpoofTunnel = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		port := firstPort(c.T.Ports) // single forwarded port
-		remotePort := d.BasePort     // local.remote_port == remote.listen_port
-		recvPort := d.BasePort + 1   // remote.client_port == local.recv_port
+		dst := port                  // the foreign service's port ("8443=443" forwards to 443)
+		if ps := firstPorts(c.T.Ports, 1); len(ps) > 0 && ps[0].dst != "" {
+			dst = ps[0].dst
+		}
+		remotePort := d.BasePort   // local.remote_port == remote.listen_port
+		recvPort := d.BasePort + 1 // remote.client_port == local.recv_port
 		spoofA := c.Opt("spoof_ip")
 		spoofB := c.Opt("peer_spoof_ip")
 		send, recv := c.Opt("send_transport"), c.Opt("recv_transport")
@@ -53,7 +57,7 @@ var methodSpoofTunnel = &Method{
 }
 `, port, d.KHPub, remotePort, recvPort, spoofA, port, spoofB, send, recv, xdpField)
 
-		// Foreign = remote: delivers to the local service on the same port, mirrored transports.
+		// Foreign = remote: delivers to the local service on the mapped port, mirrored transports.
 		khCfg := fmt.Sprintf(`{
   "mode": "remote",
   "listen_port": %d,
@@ -66,7 +70,7 @@ var methodSpoofTunnel = &Method{
   "send_transport": %q,
   "recv_transport": %q%s
 }
-`, remotePort, port, d.IRPub, recvPort, spoofB, remotePort, spoofA, recv, send, xdpField)
+`, remotePort, dst, d.IRPub, recvPort, spoofB, remotePort, spoofA, recv, send, xdpField)
 
 		bin := "/opt/spoof-tunnel/spoof"
 		dir := tunnelDir(c.T)

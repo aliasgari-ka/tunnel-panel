@@ -264,11 +264,13 @@ func (a *App) hsUpdatePaths(t *Tunnel) (*Job, error) {
 
 // hsDropPaths takes the left-out paths drop out of a running hot-standby tunnel: the
 // switcher moves to stay (the running paths that remain; left is the new t.Paths), then
-// the dropped paths stop. Returns the names of the paths that were running.
+// the dropped paths stop. Returns the names of the paths that were running. t.Paths is
+// shortened only once the switcher is up: a failed deploy keeps them all (and their retry).
 func (a *App) hsDropPaths(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, before, left, stay, drop []HSPath) ([]string, error) {
 	var names []string
+	var pin, act, fam string
 	_ = a.store.Update(func(*State) error {
-		t.Paths = append([]HSPath(nil), left...)
+		pin, act, fam = t.HSPin, t.Active, t.Family
 		pinned := false
 		for _, p := range stay {
 			pinned = pinned || p.Method+"|"+p.Family == t.HSPin
@@ -290,8 +292,10 @@ func (a *App) hsDropPaths(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, b
 	sw := a.hsSwitcherPlan(t, stay)
 	sw.Setup = hsActiveRemap(hsDir(t), before, stay) + sw.Setup
 	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), sw); err != nil {
+		_ = a.store.Update(func(*State) error { t.HSPin, t.Active, t.Family = pin, act, fam; return nil })
 		return nil, fmt.Errorf("switcher: %w", err)
 	}
+	_ = a.store.Update(func(*State) error { t.Paths = append([]HSPath(nil), left...); return nil })
 	for _, d := range drop {
 		if d.Failed != "" {
 			continue
@@ -335,9 +339,14 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		}
 	})
 	// left-out paths stop first, before anything new is installed (that can take minutes): the
-	// switcher moves to the paths that stay, then the dropped ones are torn down
+	// switcher moves to the paths that stay, then the dropped ones are torn down. A retry
+	// (or a drop of paths that never ran) has nothing running to stop: the switcher stays
+	running := false
+	for _, d := range drop {
+		running = running || d.Failed == ""
+	}
 	var early []string // paths already removed by the step below
-	if len(drop) > 0 && len(add) > 0 {
+	if !retry && running && len(add) > 0 {
 		var stay []HSPath
 		for _, p := range left {
 			if p.Failed == "" {

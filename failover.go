@@ -416,12 +416,14 @@ func (a *App) Failover(t *Tunnel, reason string) {
 			continue
 		}
 		if ok, why := a.verifyPath(ctx, t); ok {
-			now := time.Now().Unix()
-			_ = a.store.Update(func(*State) error {
-				orig.Since, orig.LastCheck = now, now
-				t.Failover = orig
-				return nil
-			})
+			since := orig.Since
+			if a.failoverLanded(t, orig, p) {
+				// the backup died and the original works again: nothing left to fail back to
+				j.log("  ✓ %s — back on the original path %s", why, p)
+				j.finish("ok")
+				a.pushT(t, fmt.Sprintf("↩ %s is back on its original path %s (backup %s ran for %s, then went down: %s)\n✓ %s", t.Name, p, from, time.Since(time.Unix(since, 0)).Round(time.Minute), reason, why))
+				return
+			}
 			j.log("  ✓ %s — staying on %s", why, p)
 			j.finish("ok")
 			a.pushT(t, fmt.Sprintf("🔁 Failover: %s\n%s was down (%s) → now on %s\n✓ %s\nThe original path is re-checked every hour.", t.Name, from, reason, p, why))
@@ -448,6 +450,24 @@ func (a *App) Failover(t *Tunnel, reason string) {
 	a.setFailoverNotBefore(t.ID, time.Now().Add(failoverRetry))
 	j.finish("error")
 	a.pushT(t, fmt.Sprintf("❌ Failover for %s found no working path (tried %d). It stays on %s, alerts you when it recovers and tries failover again in %s.", t.Name, len(tries), pathChoice{orig.Method, orig.Family}, failoverRetry))
+}
+
+// failoverLanded saves where a working failover ended: on a backup, t.Failover keeps the
+// original for Failback; on the original path itself (home) there is nothing to fail back
+// to, so t.Failover is cleared — Failback would rebuild the running path and cut the users.
+func (a *App) failoverLanded(t *Tunnel, orig *FailoverState, p pathChoice) (home bool) {
+	home = p.method == orig.Method && p.family == orig.Family
+	now := time.Now().Unix()
+	_ = a.store.Update(func(*State) error {
+		if home {
+			t.Failover = nil
+			return nil
+		}
+		orig.Since, orig.LastCheck = now, now
+		t.Failover = orig
+		return nil
+	})
+	return home
 }
 
 // Failback re-tests the original path on the benchmark slot (the live tunnel keeps running)
