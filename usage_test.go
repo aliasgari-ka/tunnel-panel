@@ -117,3 +117,24 @@ func TestUsageNicSetChange(t *testing.T) {
 		t.Fatalf("got %+v, want 1200/200", x)
 	}
 }
+
+func TestUsagePaidEst(t *testing.T) {
+	pairs := map[string][2]string{"a": {"ir", "us"}, "b": {"ir2", "nl"}}
+	measured := &usageBucket{Tunnels: map[string]*UsageBytes{"a": {Down: 1e9, Up: 1e8}},
+		Servers: map[string]*UsageBytes{"ir": {Down: 2e9}},
+		Peers:   map[string]*UsageBytes{"ir|us": {Down: 1.05e9}}}
+	coef := usageCoef([]*usageBucket{measured}, pairs)
+	if c := coef["a"]; c < 1.04 || c > 1.06 { // (0.1 + 1.05) / 1.1
+		t.Fatalf("coef %v", c)
+	}
+	// an hour before the peer counters, on a server whose card carries 10x other traffic
+	old := &usageBucket{Tunnels: map[string]*UsageBytes{"a": {Down: 2e9, Up: 2e8}, "b": {Down: 1e9}},
+		Servers: map[string]*UsageBytes{"ir": {Down: 25e9}, "ir2": {Down: 3e9}}}
+	paid, est := usagePaidEst(old, pairs, coef)
+	if !est["a"] || paid["a"] < 2.29e9 || paid["a"] > 2.31e9 {
+		t.Fatalf("a: %v %v, want ~2.3e9 estimated at its coefficient", paid["a"], est["a"])
+	}
+	if !est["b"] || paid["b"] != 3e9 { // no coefficient measured: the card's share, as before
+		t.Fatalf("b: %v %v", paid["b"], est["b"])
+	}
+}
