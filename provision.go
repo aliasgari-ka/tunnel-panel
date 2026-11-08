@@ -43,6 +43,13 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 			j.log("[%s] %s already installed (amd64 core under emulation, up to date)", label, art.Dest)
 			continue
 		}
+		if err != nil && art.Asset == "tpk-agent" && arch != "amd64" {
+			// TP's core exists for amd64 only: run it under qemu-x86_64 on this CPU
+			if eerr := staticAmd64Emulated(ctx, j, label, h, art); eerr != nil {
+				return fmt.Errorf("TP on this %s server: %v", arch, eerr)
+			}
+			continue
+		}
 		if err != nil && art.Asset == "backhaul_premium_v1" && arch != "arm64" {
 			// the v1 core exists for arm64 only: run that static binary under qemu-aarch64
 			if eerr := premiumV1Emulated(ctx, j, label, h, art); eerr != nil {
@@ -366,6 +373,39 @@ exec "$Q" %[1]s.arm64 "$@"
 		return err
 	}
 	j.log("[%s] Backhaul Premium v1 runs under qemu-aarch64 on this server (expect more CPU use than native)", label)
+	return nil
+}
+
+// staticAmd64Emulated installs a static amd64 helper (no libc: TP's Go core) on another
+// CPU behind a wrapper that runs it under qemu-x86_64.
+func staticAmd64Emulated(ctx context.Context, j *Job, label string, h Host, art Artifact) error {
+	core, err := helperBytes(art.Asset, "amd64")
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(core)
+	out, _ := h.Run(ctx, fmt.Sprintf("sha256sum %s.amd64 2>/dev/null; grep -q qemu-x86_64 %s 2>/dev/null && echo wrapper-ok", shq(art.Dest), shq(art.Dest)), nil)
+	if strings.Contains(out, hex.EncodeToString(sum[:])) && strings.Contains(out, "wrapper-ok") {
+		j.log("[%s] %s already installed (amd64 core under qemu-x86_64, up to date)", label, art.Dest)
+		return nil
+	}
+	out, err = h.Run(ctx, `if ! command -v qemu-x86_64-static >/dev/null 2>&1 && ! command -v qemu-x86_64 >/dev/null 2>&1; then
+  (apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq qemu-user-static >/dev/null 2>&1) || apt-get install -y -qq qemu-user >/dev/null 2>&1 || dnf install -y qemu-user-static >/dev/null 2>&1 || true
+fi
+command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev/null 2>&1 || { echo "could not install qemu-user-static (qemu-x86_64)"; exit 1; }`, nil)
+	if err != nil {
+		return fmt.Errorf("%s", lastLine(out))
+	}
+	wrapper := fmt.Sprintf(`#!/bin/sh
+# %[2]s exists for amd64 only: run it under qemu-x86_64 on this CPU.
+Q=$(command -v qemu-x86_64-static || command -v qemu-x86_64)
+[ -n "$Q" ] || { echo "no x86-64 emulator: apt install qemu-user-static"; exit 1; }
+exec "$Q" %[1]s.amd64 "$@"
+`, shq(art.Dest), art.Asset)
+	if err := pushBlobs(ctx, j, label, h, []blob{{art.Dest + ".amd64", core, 0o755}, {art.Dest, []byte(wrapper), 0o755}}); err != nil {
+		return err
+	}
+	j.log("[%s] %s runs under qemu-x86_64 on this server (expect more CPU use than native)", label, art.Asset)
 	return nil
 }
 

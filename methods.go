@@ -148,15 +148,18 @@ type Field struct {
 
 // Method is one tunnelling technique.
 type Method struct {
-	ID       string                                         `json:"id"`
-	Title    string                                         `json:"title"`
-	Desc     string                                         `json:"desc"`
-	Families []string                                       `json:"families"` // v4, v6
-	Encrypt  string                                         `json:"encrypt"`  // short note shown as a badge
-	Group    string                                         `json:"group"`    // family the UI lists it under (see methodGroups)
-	Fields   []Field                                        `json:"fields"`
-	Helper   string                                         `json:"helper,omitempty"` // embedded/uploaded binary "<helper>-<arch>" both hosts need
-	Build    func(c *buildCtx) (ir, kh SidePlan, err error) `json:"-"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Desc     string   `json:"desc"`
+	Families []string `json:"families"` // v4, v6
+	Encrypt  string   `json:"encrypt"`  // short note shown as a badge
+	Group    string   `json:"group"`    // family the UI lists it under (see methodGroups)
+	Fields   []Field  `json:"fields"`
+	Helper   string   `json:"helper,omitempty"` // embedded/uploaded binary "<helper>-<arch>" both hosts need
+	// HelperArch: the helper exists for this arch only and other CPUs run it under emulation,
+	// so that one build is all the panel needs
+	HelperArch string                                         `json:"helperArch,omitempty"`
+	Build      func(c *buildCtx) (ir, kh SidePlan, err error) `json:"-"`
 	// Alts are other option sets (carriers) to try, in order, when the defaults pass no
 	// traffic on a route — Iran's IPv4 filtering often drops UDP or hand-made packets that a
 	// different carrier gets through. The benchmark finds the one that works; apply and hot
