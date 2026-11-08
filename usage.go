@@ -188,10 +188,7 @@ func (a *App) usageLoop() {
 // usageRecord takes the totals read since start (a counter that wasn't read — host
 // unreachable, tunnel down — keeps its baseline and is counted on its next good read).
 func (a *App) usageRecord(start time.Time) {
-	type rd struct {
-		kind, id, src string
-		d, u          uint64
-	}
+	type rd = usageRead
 	var reads []rd
 	tm := a.traffic
 	tm.mu.Lock()
@@ -212,6 +209,14 @@ func (a *App) usageRecord(start time.Time) {
 		}
 	}
 	tm.mu.Unlock()
+	pairOf := map[string]string{} // running tunnel -> "<iran>|<foreign>"
+	a.store.View(func(st *State) {
+		for _, t := range st.Tunnels {
+			if t.Active != "" {
+				pairOf[t.ID] = t.ServerID + "|" + t.ForeignID
+			}
+		}
+	})
 
 	u := a.usage
 	u.mu.Lock()
@@ -219,11 +224,49 @@ func (a *App) usageRecord(start time.Time) {
 	if u.Started == 0 {
 		u.Started = time.Now().Unix()
 	}
-	now := time.Now()
+	u.recordLocked(time.Now(), reads, pairOf)
+	u.saveLocked()
+}
+
+// usageRead is one counter read: kind "t" tunnel, "s" server NIC, "p" peer address.
+type usageRead struct {
+	kind, id, src string
+	d, u          uint64
+}
+
+// recordLocked adds one round of reads. What comes from a foreign server is counted only
+// over an interval its route's running tunnels were all counted in too: a tunnel being
+// applied or down is not read, and one re-applied starts its counters again, while the
+// address counter runs on — without this the bytes of a whole outage landed in one hour
+// against none of the users' (x4.2 on Arshad's route to Germany 1, Nov 8).
+func (u *usageLog) recordLocked(now time.Time, reads []usageRead, pairOf map[string]string) {
+	ok := map[string]bool{}
+	for _, pair := range pairOf {
+		ok[pair] = true
+	}
+	read := map[string]bool{}
 	for _, r := range reads {
+		if r.kind == "t" {
+			read[r.id] = true
+			if l := u.Last["t:"+r.id]; l == nil || r.d < l.D || r.u < l.U {
+				ok[pairOf[r.id]] = false
+			}
+		}
+	}
+	for id, pair := range pairOf {
+		if !read[id] {
+			ok[pair] = false
+		}
+	}
+	for _, r := range reads {
+		if r.kind == "p" {
+			if i := strings.LastIndex(r.id, "|"); i > 0 && !ok[r.id[:i]] {
+				u.Last["p:"+r.id] = &usageLast{D: r.d, U: r.u} // a new baseline, nothing counted
+				continue
+			}
+		}
 		u.addSrcLocked(now, r.kind, r.id, r.src, r.d, r.u)
 	}
-	u.saveLocked()
 }
 
 // UsageStep is one hour's (or day's) bytes: users' download / upload, and Paid = what the
