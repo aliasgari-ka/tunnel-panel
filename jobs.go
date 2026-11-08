@@ -628,30 +628,40 @@ func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 
 func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	cmd := "systemctl is-active " + unitName(t) + " 2>/dev/null || true"
-	if kHost, _, err := a.foreignHost(ctx, t, nil); err == nil {
-		out, _ := kHost.Run(ctx, cmd, nil)
-		kh = lastLine(out)
-	} else {
-		kh = "unreachable"
-	}
-	srv := a.store.Server(t.ServerID)
-	if srv == nil {
-		return "no server", kh, ""
-	}
-	h, _, err := a.reach(ctx, srv, nil)
-	if err != nil {
-		return "unreachable", kh, ""
-	}
 	var hot bool
 	var seen int64
 	a.store.View(func(*State) { hot, seen = t.HotStandby && len(t.Paths) > 0, t.HSSeen })
+	// the foreign side's service, alongside the Iran side's check (hot standby doesn't need
+	// it: the switcher's verdict covers both ends — it was an SSH call a minute for nothing)
+	khDone, khv := make(chan struct{}), ""
+	go func() {
+		defer close(khDone)
+		if hot {
+			return
+		}
+		if kHost, _, err := a.foreignHost(ctx, t, nil); err == nil {
+			out, _ := kHost.Run(ctx, cmd, nil)
+			khv = lastLine(out)
+		} else {
+			khv = "unreachable"
+		}
+	}()
+	foreign := func() string { <-khDone; return khv }
+	srv := a.store.Server(t.ServerID)
+	if srv == nil {
+		return "no server", foreign(), ""
+	}
+	h, _, err := a.reach(ctx, srv, nil)
+	if err != nil {
+		return "unreachable", foreign(), ""
+	}
 	if hot {
 		// the switcher's own verdict: the path it keeps the users on works
 		v, events, err := a.hsRead(ctx, h, t, seen)
 		a.hsReport(t, v, events)
 		switch {
 		case err != nil:
-			return err.Error(), kh, ""
+			return err.Error(), foreign(), ""
 		case v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active]:
 			return "active", "active", "up"
 		}
@@ -675,7 +685,7 @@ func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	if link == "down" && a.trafficFlowing(t.ID) {
 		link = "up"
 	}
-	return ir, kh, link
+	return ir, foreign(), link
 }
 
 // linkCheck is the shell that prints "LINK up|down" on the Iran side.
