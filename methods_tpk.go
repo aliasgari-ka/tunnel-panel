@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -161,6 +162,7 @@ func buildTPK(c *buildCtx) (ir, kh SidePlan, err error) {
 	for k, v := range common {
 		srv[k], cli[k] = v, v
 	}
+	tpkNoCCIfEmulated(c, srv, cli)
 	ir = tpkPlan(c, "TP Tunnel", "tunnel", map[string]FileSpec{
 		dir + "/server.crt":  {Content: []byte(sec.Cert), Mode: 0o600},
 		dir + "/server.key":  {Content: []byte(sec.Key), Mode: 0o600},
@@ -302,6 +304,7 @@ func buildTPKReverse(c *buildCtx) (ir, kh SidePlan, err error) {
 		workers = 128
 	}
 	cli["mode"], cli["remote"], cli["workers"] = "client", bracket(d.IRPub)+":"+port, workers
+	tpkNoCCIfEmulated(c, srv, cli)
 	if len(fwd) == 1 {
 		srv["forward"], cli["target"] = fwd[0], tgt[0]
 	} else {
@@ -386,4 +389,27 @@ func tpkRevLeaf(ca tpkRevCA, server bool, name string) (cert, key string, err er
 	}
 	key, err = tpkKeyPEM(k)
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), key, err
+}
+
+// tpkNoCCIfEmulated leaves "cc" out on a side whose server runs the amd64 core under
+// qemu-x86_64 (an ARM server): qemu-user rejects the TCP_CONGESTION socket option with
+// EINVAL, and TP Reverse then never connects ("reverse reconnect: invalid argument", seen
+// live on usa-kharej). The kernel's default congestion control applies there instead.
+func tpkNoCCIfEmulated(c *buildCtx, srv, cli map[string]any) {
+	if emulatedAmd64(c.Srv) {
+		delete(srv, "cc")
+	}
+	if emulatedAmd64(c.FSrv) {
+		delete(cli, "cc")
+	}
+}
+
+// emulatedAmd64 reports whether an amd64-only core runs emulated on s (nil = this panel
+// host). An arch not detected yet counts as native.
+func emulatedAmd64(s *Server) bool {
+	arch := runtime.GOARCH
+	if s != nil {
+		arch = goArch(s.Arch)
+	}
+	return arch != "" && arch != "amd64"
 }

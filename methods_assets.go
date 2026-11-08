@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
+	"runtime"
 	"strconv"
 )
 
@@ -184,43 +185,34 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 	return mk(d.IRPub, d.KHPub, d.IRv4, true), mk(d.KHPub, d.IRPub, d.KHv4, false), nil
 }
 
-// ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and only box64
-// (not qemu-user) can open ipx's packet socket. Get box64 if the distro has it, else stop
-// with what to do — a unit that is "active" but carries nothing helps nobody.
-// box64Release is where the release workflow publishes box64 for arm64 (built from pinned
-// upstream source on Ubuntu 22.04), for distros that don't package it.
-const box64Release = "https://github.com/aliasgari-ka/tunnel-panel/releases/latest/download/box64-arm64"
+// ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and ipx can't
+// run there: qemu-user can't open its packet socket, and box64 crashes the Go core at random
+// (seen live on an aarch64 server, with every dynarec setting). Stop with what to do — a unit
+// that is "active" but carries nothing helps nobody. (Build already refuses when it knows the
+// arch; this catches a server whose arch wasn't detected yet.)
 
-func ipxEmuCheck(mode, ghPrefix string) string {
+// premiumCoreEmulated reports whether s (nil = this panel host) would run the amd64 Premium
+// core under emulation: a non-amd64 CPU with no v2 core of its own uploaded.
+func premiumCoreEmulated(s *Server) (arch string, emulated bool) {
+	if !emulatedAmd64(s) {
+		return "", false
+	}
+	arch = runtime.GOARCH
+	if s != nil {
+		arch = goArch(s.Arch)
+	}
+	_, err := helperBytes("backhaul_premium", arch)
+	return arch, err != nil
+}
+
+func ipxEmuCheck(mode string) string {
 	if mode != "ipx" {
 		return ""
 	}
-	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ] && ! command -v box64 >/dev/null 2>&1; then
-  echo "ipx on $(uname -m) needs box64 — trying the distro's package"
-  # (setup runs with set -e: every try must be allowed to fail, the check below decides)
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get install -y -qq box64 >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq box64 >/dev/null 2>&1; } || true
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y box64 >/dev/null 2>&1 || true
-  fi
-  if ! command -v box64 >/dev/null 2>&1 && [ "$(uname -m)" = aarch64 ]; then
-    echo "no box64 package — installing the panel release's box64 build"
-    T=$(mktemp -d)
-    if curl -fsSL --retry 2 --max-time 300 -o "$T/box64" ` + shq(ghPrefix+box64Release) + ` &&
-       curl -fsSL --retry 2 --max-time 30 -o "$T/box64.sha256" ` + shq(ghPrefix+box64Release+".sha256") + ` &&
-       (cd "$T" && sed 's#  *[^ ]*$#  box64#' box64.sha256 | sha256sum -c - >/dev/null 2>&1) &&
-       chmod 0755 "$T/box64" && "$T/box64" --version >/dev/null 2>&1; then
-      install -m0755 "$T/box64" /usr/local/bin/box64 && echo "box64 installed: $(box64 --version 2>/dev/null | head -1)"
-    else
-      echo "could not download/verify box64 from the panel's GitHub release"
-    fi
-    rm -rf "$T"
-  fi
-  if ! command -v box64 >/dev/null 2>&1; then
-    echo "Premium ipx can't run on this $(uname -m) server: there is no arm64 v2 core, the amd64 core runs under qemu-user (which can't open ipx's packet socket), and this distro has no box64 package ($(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}"))."
-    echo "→ in Options set Mode to tcpmux, wssmux or anytls and Apply again (they work under emulation), or use Backhaul Premium v1 (native arm64), or install box64 by hand"
-    exit 1
-  fi
+	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ]; then
+  echo "→ in Options set Mode to tcpmux or anytls and Apply again (they run under emulation), or use Backhaul Premium v1 (native arm64)"
+  echo "Premium ipx can't run on this $(uname -m) server: there is no $(uname -m) v2 core, and the emulated amd64 core can't open ipx's packet socket under qemu and crashes at random under box64"
+  exit 1
 fi
 `
 }
@@ -286,7 +278,7 @@ exit 0
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
-	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. Upload the amd64 core; ARM servers run it under emulation (box64, else qemu).",
+	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. Upload the amd64 core; ARM servers run it under emulation (qemu) in the tcpmux/wssmux/anytls/tcp modes; ipx needs an amd64 server.",
 	Families: []string{"v4"},
 	Encrypt:  "AEAD (ipx) / TLS",
 	Helper:   "backhaul_premium",
@@ -320,6 +312,13 @@ var methodPremium = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		mode := c.Opt("mode")
+		if mode == "ipx" {
+			for _, s := range []*Server{c.Srv, c.FSrv} {
+				if arch, emu := premiumCoreEmulated(s); emu {
+					return ir, kh, fmt.Errorf("Backhaul Premium ipx can't run on this %s server: there is no %s v2 core, and the emulated amd64 core can't open ipx's packet socket under qemu and crashes at random under box64 — set Mode to tcpmux or anytls, which run under emulation", arch, arch)
+				}
+			}
+		}
 		hbi, _ := strconv.Atoi(c.Opt("heartbeat_interval"))
 		hbt, _ := strconv.Atoi(c.Opt("heartbeat_timeout"))
 		if hbi < 1 || hbt <= hbi {
@@ -453,7 +452,7 @@ sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
 			sp := SidePlan{
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
-				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode, c.Set.GitHubProxy),
+				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode),
 				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg, RestartSec: premiumRestartSec},
 				Check:     premiumLicenseCheck,
 			}

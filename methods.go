@@ -181,6 +181,7 @@ func altLabel(alt map[string]string) string {
 type buildCtx struct {
 	T    *Tunnel
 	Srv  *Server
+	FSrv *Server // the foreign server (nil = this panel host)
 	Set  Settings
 	Opt  func(key string) string // resolved option (with defaults)
 	OptB func(key string) bool
@@ -338,7 +339,7 @@ func buildPlansRedirect(m *Method, t *Tunnel, srv, fsrv *Server, set Settings, r
 		}
 		tc.Ports = strings.Join(specs, ",")
 	}
-	c := &buildCtx{T: &tc, Srv: srv, Set: set, Opt: get, OptB: getB, D: d}
+	c := &buildCtx{T: &tc, Srv: srv, FSrv: fsrv, Set: set, Opt: get, OptB: getB, D: d}
 	ir, kh, err := m.Build(c)
 	// secret() replaces the copy's map (copy-on-write), so the keys it made are handed back
 	// to t here; without this none were ever saved and every apply made new ones
