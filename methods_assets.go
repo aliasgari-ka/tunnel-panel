@@ -286,10 +286,13 @@ exit 0
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
-	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. amd64 and arm64: upload the core for each architecture you use.",
+	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. Upload the amd64 core; ARM servers run it under emulation (box64, else qemu).",
 	Families: []string{"v4"},
 	Encrypt:  "AEAD (ipx) / TLS",
 	Helper:   "backhaul_premium",
+	// an arm64 server runs the amd64 v2 core under box64/qemu (premiumEmulated), and the
+	// vendor's arm64 download is v1 anyway: the amd64 core is the one the panel needs
+	HelperArch: "amd64",
 	Fields: []Field{
 		{Key: "mode", Label: "Mode", Type: "select", Default: "ipx", Options: []string{"ipx", "anytls", "tcpmux", "wssmux", "tcp"}},
 		{Key: "profile", Label: "IPX carrier", Type: "select", Default: "tcp", Options: []string{"tcp", "bip", "gre", "ipip", "udp", "icmp"}},
