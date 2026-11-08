@@ -172,5 +172,8 @@ func TestTPKNoCCOnEmulatedSide(t *testing.T) {
 		if tpkConf(t, ir)["cc"] != "bbr" {
 			t.Errorf("%s: native Iran side lost cc", m.ID)
 		}
+		if !strings.Contains(kh.Setup, "net.ipv4.tcp_congestion_control=bbr") || ir.Setup != "" {
+			t.Errorf("%s: bbr should become the default on the emulated side only:\nkh %q\nir %q", m.ID, kh.Setup, ir.Setup)
+		}
 	}
 }

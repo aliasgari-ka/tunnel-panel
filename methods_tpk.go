@@ -162,7 +162,7 @@ func buildTPK(c *buildCtx) (ir, kh SidePlan, err error) {
 	for k, v := range common {
 		srv[k], cli[k] = v, v
 	}
-	tpkNoCCIfEmulated(c, srv, cli)
+	irCC, khCC := tpkNoCCIfEmulated(c, srv, cli)
 	ir = tpkPlan(c, "TP Tunnel", "tunnel", map[string]FileSpec{
 		dir + "/server.crt":  {Content: []byte(sec.Cert), Mode: 0o600},
 		dir + "/server.key":  {Content: []byte(sec.Key), Mode: 0o600},
@@ -171,6 +171,7 @@ func buildTPK(c *buildCtx) (ir, kh SidePlan, err error) {
 	kh = tpkPlan(c, "TP Tunnel", "tunnel", map[string]FileSpec{
 		dir + "/config.json": {Content: tpkJSON(cli), Mode: 0o600},
 	})
+	ir.Setup, kh.Setup = defaultCCSetup(irCC), defaultCCSetup(khCC)
 	return ir, kh, nil
 }
 
@@ -304,7 +305,7 @@ func buildTPKReverse(c *buildCtx) (ir, kh SidePlan, err error) {
 		workers = 128
 	}
 	cli["mode"], cli["remote"], cli["workers"] = "client", bracket(d.IRPub)+":"+port, workers
-	tpkNoCCIfEmulated(c, srv, cli)
+	irCC, khCC := tpkNoCCIfEmulated(c, srv, cli)
 	if len(fwd) == 1 {
 		srv["forward"], cli["target"] = fwd[0], tgt[0]
 	} else {
@@ -322,6 +323,7 @@ func buildTPKReverse(c *buildCtx) (ir, kh SidePlan, err error) {
 		dir + "/identity-key.pem": {Content: []byte(ca.CliKey), Mode: 0o600},
 		dir + "/config.json":      {Content: tpkJSON(cli), Mode: 0o600},
 	})
+	ir.Setup, kh.Setup = defaultCCSetup(irCC), defaultCCSetup(khCC)
 	return ir, kh, nil
 }
 
@@ -394,14 +396,35 @@ func tpkRevLeaf(ca tpkRevCA, server bool, name string) (cert, key string, err er
 // tpkNoCCIfEmulated leaves "cc" out on a side whose server runs the amd64 core under
 // qemu-x86_64 (an ARM server): qemu-user rejects the TCP_CONGESTION socket option with
 // EINVAL, and TP Reverse then never connects ("reverse reconnect: invalid argument", seen
-// live on usa-kharej). The kernel's default congestion control applies there instead.
-func tpkNoCCIfEmulated(c *buildCtx, srv, cli map[string]any) {
+// live on usa-kharej). It returns the congestion control each side dropped ("" = none), which
+// defaultCCSetup then makes that server's default, so the agent's sockets get it anyway.
+func tpkNoCCIfEmulated(c *buildCtx, srv, cli map[string]any) (srvCC, cliCC string) {
 	if emulatedAmd64(c.Srv) {
+		srvCC, _ = srv["cc"].(string)
 		delete(srv, "cc")
 	}
 	if emulatedAmd64(c.FSrv) {
+		cliCC, _ = cli["cc"].(string)
 		delete(cli, "cc")
 	}
+	return srvCC, cliCC
+}
+
+// defaultCCSetup makes cc the server's default TCP congestion control (when its kernel has
+// it), for an agent that can't set it per socket. Without it the emulated foreign side of
+// usa-kharej sent with cubic and TP's download over the 190 ms path fell to 0.2 Mbps; with
+// bbr as the default it was 2-6 Mbps. Only this one setting: the server's buffer sizes and
+// qdisc stay as they are.
+func defaultCCSetup(cc string) string {
+	if cc == "" || strings.Trim(cc, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+		return "" // (a select option, but it lands in a shell script)
+	}
+	return fmt.Sprintf(`modprobe tcp_%[1]s 2>/dev/null || true
+if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw %[1]s; then
+  echo net.ipv4.tcp_congestion_control=%[1]s >/etc/sysctl.d/99-tunnel-panel-cc.conf
+  sysctl -q -w net.ipv4.tcp_congestion_control=%[1]s || true
+fi
+`, cc)
 }
 
 // emulatedAmd64 reports whether an amd64-only core runs emulated on s (nil = this panel
