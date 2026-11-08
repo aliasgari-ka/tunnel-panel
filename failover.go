@@ -371,7 +371,7 @@ func (a *App) restoreOnFail(j *Job, t *Tunnel, prev, prevFam, tried string) {
 	for i := 0; i < 30 && a.jobs.running(t.ID) != ""; i++ {
 		time.Sleep(time.Second)
 	}
-	a.pushT(t, fmt.Sprintf("↩ %s: %s failed — bringing back %s (%s), which ran before", t.Name, methodTitle(tried), methodTitle(prev), famName(prevFam)))
+	a.pushTInfo(t, fmt.Sprintf("↩ %s: %s failed — bringing back %s (%s), which ran before", t.Name, methodTitle(tried), methodTitle(prev), famName(prevFam)))
 	a.setFamily(t, prevFam)
 	if _, err := a.Apply(t, prev); err != nil {
 		a.pushT(t, fmt.Sprintf("❌ %s: could not bring back %s: %v", t.Name, methodTitle(prev), err))
@@ -478,7 +478,7 @@ func (a *App) Failback(t *Tunnel) {
 	if err := a.applyAndWait(ctx, t, fo.Method); err == nil {
 		if ok2, _ := a.verifyPath(ctx, t); ok2 {
 			_ = a.store.Update(func(*State) error { t.Failover = nil; return nil })
-			a.pushT(t, fmt.Sprintf("↩ %s is back on its original path %s (backup %s ran for %s)", t.Name, pathChoice{fo.Method, fo.Family}, cur, time.Since(time.Unix(fo.Since, 0)).Round(time.Minute)))
+			a.pushTInfo(t, fmt.Sprintf("↩ %s is back on its original path %s (backup %s ran for %s)", t.Name, pathChoice{fo.Method, fo.Family}, cur, time.Since(time.Unix(fo.Since, 0)).Round(time.Minute)))
 			return
 		}
 	}

@@ -42,6 +42,8 @@ type Settings struct {
 	// AIAuto "off": the daily run only reports; otherwise it also applies the actions it
 	// returns (only what aiCheck allows: users to a working path, the switcher's mode)
 	AIAuto string `json:"aiAuto,omitempty"`
+	// BotAll "on": Telegram gets every event; "" = only the important ones (App.botAll)
+	BotAll string `json:"botAll,omitempty"`
 }
 
 // Server is a remote Iran server reached over SSH.

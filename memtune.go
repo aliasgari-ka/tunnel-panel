@@ -144,7 +144,7 @@ func (a *App) memNightly() {
 			}
 		}
 		if len(restarted) > 0 {
-			a.push("🌙 Night restart for the new memory settings (less CPU on the tunnel cores):\n" + strings.Join(restarted, "\n"))
+			a.pushInfo("🌙 Night restart for the new memory settings (less CPU on the tunnel cores):\n" + strings.Join(restarted, "\n"))
 		}
 	}
 }

@@ -451,7 +451,7 @@ func (a *App) Apply(t *Tunnel, mid string) (*Job, error) {
 		a.setActive(t, mid)
 		j.log("DONE — %s is active on both servers", m.Title)
 		j.finish("ok")
-		a.pushT(t, fmt.Sprintf("✅ %s now runs %s", t.Name, m.Title))
+		a.pushTInfo(t, fmt.Sprintf("✅ %s now runs %s", t.Name, m.Title))
 		// a first verdict for the card now, not at the monitor's next round (reverse links
 		// need a few seconds to dial in)
 		go func() {
@@ -532,7 +532,7 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 		a.setActive(t, "")
 		j.log("stopped")
 		j.finish("ok")
-		a.pushT(t, "⏹ "+t.Name+" stopped")
+		a.pushTInfo(t, "⏹ "+t.Name+" stopped")
 	}()
 	return j, nil
 }
@@ -558,6 +558,38 @@ func (a *App) setActive(t *Tunnel, mid string) {
 func (a *App) push(msg string) {
 	if a.notify != nil {
 		go a.notify(msg)
+	}
+}
+
+// botAll: Telegram gets every event; otherwise (the default) only outages, failures and
+// warnings, and the AI analysis — the routine ones (a hot-standby switch, a finished
+// benchmark, "now runs …") still feed the analysis and the page.
+func (a *App) botAll() bool { return a.settings().BotAll == "on" }
+
+// pushInfo is push for a routine event (see botAll).
+func (a *App) pushInfo(msg string) {
+	if a.botAll() {
+		a.push(msg)
+	} else {
+		aiNoteAlert(msg)
+	}
+}
+
+// pushChInfo is pushCh for a routine event (see botAll).
+func (a *App) pushChInfo(msg string) {
+	if a.botAll() {
+		a.pushCh(msg)
+	} else {
+		aiNoteAlert(msg)
+	}
+}
+
+// pushTInfo is pushT for a routine event (see botAll).
+func (a *App) pushTInfo(t *Tunnel, msg string) {
+	if a.botAll() {
+		a.pushT(t, msg)
+	} else {
+		aiNoteAlert(msg)
 	}
 }
 
