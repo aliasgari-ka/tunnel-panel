@@ -125,6 +125,11 @@ func (s *Store) replace(st State) error {
 			t.Secrets = map[string]string{}
 		}
 	}
+	if len(st.Users) == 0 && st.SetupCode == "" {
+		// no account: the first one is made again with a setup code (`tunnel-panel setup-code`),
+		// or nobody could sign in until a restart made one
+		st.SetupCode = newSetupCode()
+	}
 	s.S = st
 	return s.saveLocked()
 }
