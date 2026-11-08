@@ -277,11 +277,11 @@ func (a *App) Prepare(srv *Server) (*Job, error) {
 }
 
 // premiumEmulated installs the amd64 Backhaul Premium core on a non-amd64 host behind a
-// wrapper at art.Dest that runs it under box64 (preferred: syscalls go straight to the
-// kernel) or qemu-user (installed if needed). The core is dynamically linked against x86-64
+// wrapper at art.Dest that runs it under qemu-user (installed if needed), else box64
+// (box64 crashes the Go core at random, seen live on aarch64). The core is dynamically linked against x86-64
 // glibc, so the panel's own x86-64 loader and libc go along as a small sysroot.
-// qemu-user can't set packet-socket options, so Premium's ipx raw mode needs box64; the
-// tcp/tcpmux/wssmux/anytls modes work under either.
+// qemu-user can't set packet-socket options, so Premium's ipx raw mode can't run here; the
+// tcp/tcpmux/wssmux/anytls modes do.
 func premiumEmulated(ctx context.Context, j *Job, label string, h Host, art Artifact) error {
 	core, err := helperBytes("backhaul_premium", "amd64")
 	if err != nil {
@@ -302,21 +302,20 @@ func premiumEmulated(ctx context.Context, j *Job, label string, h Host, art Arti
 		}
 	}
 	wrapper := fmt.Sprintf(`#!/bin/sh
-# No native core for this CPU: run the amd64 Backhaul Premium core under emulation.
+# No native core for this CPU: run the amd64 Backhaul Premium core under emulation (qemu first).
 D=%[1]s
+Q=$(command -v qemu-x86_64-static || command -v qemu-x86_64)
+[ -n "$Q" ] && exec "$Q" -L $D/x86root $D/%[2]s.amd64 "$@"
 if command -v box64 >/dev/null 2>&1; then
   BOX64_LD_LIBRARY_PATH=$D/x86root/lib/x86_64-linux-gnu BOX64_LOG=0 exec box64 $D/%[2]s.amd64 "$@"
 fi
-Q=$(command -v qemu-x86_64-static || command -v qemu-x86_64)
-[ -n "$Q" ] || { echo "no x86-64 emulator: apt install qemu-user-static (or box64)"; exit 1; }
-exec "$Q" -L $D/x86root $D/%[2]s.amd64 "$@"
+echo "no x86-64 emulator: apt install qemu-user-static"; exit 1
 `, shq(dir), filepath.Base(art.Dest))
 	blobs = append(blobs, blob{art.Dest, []byte(wrapper), 0o755})
-	out, err := h.Run(ctx, `if command -v box64 >/dev/null 2>&1; then echo "emulator: box64"; exit 0; fi
-if ! command -v qemu-x86_64-static >/dev/null 2>&1 && ! command -v qemu-x86_64 >/dev/null 2>&1; then
+	out, err := h.Run(ctx, `if ! command -v qemu-x86_64-static >/dev/null 2>&1 && ! command -v qemu-x86_64 >/dev/null 2>&1; then
   (apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq qemu-user-static >/dev/null 2>&1) || apt-get install -y -qq qemu-user >/dev/null 2>&1 || dnf install -y qemu-user-static >/dev/null 2>&1 || true
 fi
-if command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev/null 2>&1; then echo "emulator: qemu-user"; else echo "could not install qemu-user-static"; exit 1; fi`, nil)
+if command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev/null 2>&1; then echo "emulator: qemu-user"; elif command -v box64 >/dev/null 2>&1; then echo "emulator: box64"; else echo "could not install qemu-user-static"; exit 1; fi`, nil)
 	if err != nil {
 		return fmt.Errorf("%s", lastLine(out))
 	}
@@ -325,8 +324,8 @@ if command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev
 		return err
 	}
 	j.log("[%s] Backhaul Premium runs under %s on this %s server (expect more CPU use than native)", label, emu, "non-amd64")
-	if emu == "qemu-user" {
-		j.log("[%s] WARNING: under qemu-user Premium's ipx raw mode can't open its packet-socket ring — use mode tcpmux/wssmux/anytls, or install box64 for ipx", label)
+	if emu == "box64" {
+		j.log("[%s] WARNING: box64 crashes the Premium core at random — install qemu-user-static", label)
 	}
 	return nil
 }
@@ -339,7 +338,7 @@ func premiumEmulatedInPlace(ctx context.Context, h Host, art Artifact) bool {
 		return false
 	}
 	sum := sha256.Sum256(core)
-	out, _ := h.Run(ctx, fmt.Sprintf("sha256sum %s.amd64 2>/dev/null; grep -q 'under emulation' %s 2>/dev/null && echo wrapper-ok", shq(art.Dest), shq(art.Dest)), nil)
+	out, _ := h.Run(ctx, fmt.Sprintf("sha256sum %s.amd64 2>/dev/null; grep -q 'under emulation (qemu first)' %s 2>/dev/null && echo wrapper-ok", shq(art.Dest), shq(art.Dest)), nil)
 	return strings.Contains(out, hex.EncodeToString(sum[:])) && strings.Contains(out, "wrapper-ok")
 }
 

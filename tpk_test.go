@@ -154,3 +154,23 @@ func toStrings(v any) []string {
 	}
 	return out
 }
+
+// On an ARM server the core runs under qemu-x86_64, which rejects TCP_CONGESTION: that
+// side's config leaves "cc" out, the native side keeps it.
+func TestTPKNoCCOnEmulatedSide(t *testing.T) {
+	srv := &Server{ID: "ir", IPv4: "81.12.35.113", Arch: "x86_64"}
+	fsrv := &Server{ID: "kh", IPv4: "159.195.238.75", Role: "foreign", Arch: "aarch64"}
+	for _, m := range []*Method{methodTPK, methodTPKReverse} {
+		tn := &Tunnel{ID: "t" + m.ID, Name: "us", ServerID: "ir", ForeignID: "kh", Family: "v4", Ports: "443", Index: 5}
+		ir, kh, err := buildPlans(m, tn, srv, fsrv, Settings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := tpkConf(t, kh)["cc"]; ok {
+			t.Errorf("%s: emulated foreign side still sets cc", m.ID)
+		}
+		if tpkConf(t, ir)["cc"] != "bbr" {
+			t.Errorf("%s: native Iran side lost cc", m.ID)
+		}
+	}
+}
