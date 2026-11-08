@@ -17,8 +17,11 @@ type BenchRequest struct {
 	ForeignID string   `json:"foreignId"` // "" = this panel host
 	Family    string   `json:"family"`
 	Methods   []string `json:"methods"` // empty = all that fit the family
-	Seconds   int      `json:"seconds"` // throughput probe length per method (default 5)
-	MaxMB     int      `json:"maxMB"`   // and at most this much per direction (0 = no cap)
+	// Running: only the methods the route's tunnels run on the servers now (Methods is
+	// filled from them) — the automatic benchmark and the pages' default
+	Running bool `json:"running,omitempty"`
+	Seconds int  `json:"seconds"` // throughput probe length per method (default 5)
+	MaxMB   int  `json:"maxMB"`   // and at most this much per direction (0 = no cap)
 }
 
 // BenchResult is one method's measured quality on the route.
@@ -80,9 +83,9 @@ const benchHistoryMax = 60
 
 // recordBench saves a finished run: which Iran server was tested against which foreign
 // server, when, and the ranked results.
-func (a *App) recordBench(req BenchRequest, rs []BenchResult) {
+func (a *App) recordBench(req BenchRequest, rs []BenchResult, full bool) {
 	rec := BenchRecord{ID: newID(), At: time.Now().Unix(), IranID: req.IranID, ForeignID: req.ForeignID,
-		Family: req.Family, Results: rs, IranName: serverName(a, req.IranID), ForeignName: "this panel host"}
+		Family: req.Family, Results: rs, Full: full, IranName: serverName(a, req.IranID), ForeignName: "this panel host"}
 	if req.ForeignID != "" {
 		rec.ForeignName = serverName(a, req.ForeignID)
 	}
@@ -120,6 +123,36 @@ func (a *App) activeBench() *benchActive {
 	return &cp
 }
 
+// runningToMeasure picks what a Running benchmark measures: the route's running methods,
+// less a Golden-GRE that a copy can't run beside (it would take the live tunnel's DNS
+// packets). With nothing running there it measures every method (no methods, and a note for
+// the log); when Golden-GRE is all that runs, there is nothing it can measure (an error).
+func (a *App) runningToMeasure(iran, foreign, fam string) ([]string, string, error) {
+	run := a.runningMethods(iran, foreign, fam)
+	if len(run) == 0 {
+		return nil, fmt.Sprintf("no tunnel runs over %s on this route — measuring every method", famName(fam)), nil
+	}
+	var out []string
+	golden := false
+	for _, m := range run {
+		if m == "golden" {
+			probe := &Tunnel{ID: "bench", ServerID: iran, ForeignID: foreign, Family: fam}
+			a.store.View(func(st *State) { golden = goldenConflict(st, probe) != "" })
+			if golden {
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return nil, "", fmt.Errorf("only Golden-GRE runs over %s on this route, and a test copy can't run beside it (it would take the live tunnel's DNS packets) — nothing to measure now", famName(fam))
+	}
+	if golden {
+		return out, "Golden-GRE not measured: a tunnel runs it on this route and a test copy would take its DNS packets (its earlier result stays)", nil
+	}
+	return out, "", nil
+}
+
 // benchIsL3 reports whether a method gives a routed link (peer reachable at its tunnel
 // IP); the others are port forwarders and are measured through a forwarded port.
 func benchIsL3(m *Method, opts map[string]string) bool {
@@ -153,6 +186,13 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	// on a fast path moved 20-30 MB each way per method, on traffic someone pays for)
 	if req.MaxMB <= 0 || req.MaxMB > benchMaxMB {
 		req.MaxMB = benchMaxMB
+	}
+	var note string
+	if req.Running {
+		var err error
+		if req.Methods, note, err = a.runningToMeasure(req.IranID, req.ForeignID, req.Family); err != nil {
+			return nil, err
+		}
 	}
 	var cands []*Method
 	for _, m := range methods {
@@ -195,6 +235,9 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			j.finish("error")
 			return
 		}
+		if note != "" {
+			j.log("%s", note)
+		}
 		j.log("benchmarking %s ⇄ %s (%s), %d methods", ipath, kpath, req.Family, len(cands))
 		j.log("firewall — Iran: %s; foreign: %s (each tunnel opens what it needs)", firewallInfo(ctx, irHost), firewallInfo(ctx, khHost))
 
@@ -220,6 +263,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		// replaced the whole route's, and hot standby / failover then had 5 methods of 20)
 		earlier := a.benchResults(req.IranID, req.ForeignID, req.Family)
 		keepEarlier := len(req.Methods) > 0
+		measured := 0 // methods actually deployed and measured in this run
 		for i, m := range cands {
 			if ctx.Err() != nil {
 				break // cancelled
@@ -242,6 +286,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				out = append(out, r)
 				continue
 			}
+			measured++
 			err := a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &r)
 			if err != nil && probeWhy != "" && strings.HasPrefix(err.Error(), "probe unavailable") {
 				err = fmt.Errorf("%v (%s)", err, probeWhy)
@@ -305,9 +350,16 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		if keepEarlier || ctx.Err() != nil {
 			out = withEarlier(out, earlier)
 		}
+		if measured == 0 {
+			// nothing new (all skipped or cancelled at once): the route's results and history
+			// stay as they were, so it doesn't look freshly measured
+			j.log("DONE — nothing was measured")
+			j.finish("ok")
+			return
+		}
 		rankBench(out)
 		a.setBench(req.IranID, req.ForeignID, req.Family, out)
-		a.recordBench(req, out)
+		a.recordBench(req, out, len(req.Methods) == 0 && ctx.Err() == nil)
 		if best := firstOK(out); best != nil {
 			j.log("DONE — best: %s (score %.0f, ↓%.0f/↑%.0f Mbps, %.1f ms)",
 				best.Title, best.Score, best.DownMbps, best.UpMbps, best.RTTms)

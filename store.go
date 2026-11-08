@@ -264,6 +264,8 @@ type BenchRecord struct {
 	ForeignName string        `json:"foreignName"`
 	Family      string        `json:"family"`
 	Results     []BenchResult `json:"results"`
+	// Full: every method was measured (not only the running ones, nor a run cut short)
+	Full bool `json:"full,omitempty"`
 }
 
 type Store struct {
