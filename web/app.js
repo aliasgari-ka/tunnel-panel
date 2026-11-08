@@ -225,10 +225,10 @@ async function viewUsage(w) {
   w.innerHTML = topbar('Usage', 'Download, upload and what you pay for, per tunnel — hour by hour.',
     `<div class="seg">${[[1, '24 hours'], [7, '7 days'], [30, '30 days']].map(x => `<button class="${x[0] === days ? 'on' : ''}" data-ud="${x[0]}">${x[1]}</button>`).join('')}</div>`);
   $$('[data-ud]', w).forEach(b => b.onclick = () => { remember('tp-usage-d', b.dataset.ud); renderView(); });
-  const box = h('<div class="grid" style="gap:18px;grid-template-columns:minmax(0,1fr)"><div class="skel" style="height:160px"></div></div>');
+  const box = h('<div class="srvsplit usplit"><div class="card skel" style="height:320px"></div><div class="skel" style="height:320px"></div></div>');
   w.appendChild(box);
   let r;
-  try { r = await api('/usage?days=' + days); } catch (e) { box.innerHTML = `<div class="card pad errtxt">${esc(e.message)}</div>`; return; }
+  try { r = await api('/usage?days=' + days); } catch (e) { box.outerHTML = `<div class="card pad errtxt">${esc(e.message)}</div>`; return; }
   const T = Object.fromEntries((r.tunnels || []).map(x => [x.id, x]));
   const S = Object.fromEntries((r.servers || []).map(x => [x.id, x]));
   const z = { down: 0, up: 0, paid: 0, series: [] };
@@ -242,62 +242,65 @@ async function viewUsage(w) {
     const u = S[id] || (s ? all.filter(o => (o.ipv4 || o.ipv6) === ip).map(o => S[o.id]).find(Boolean) : null) || z;
     return { key: ip, u };
   };
-  const nameOf = (id) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : '🏠 panel host'; };
+  const srvOf = (id) => id ? serverById(id) : null;
+  const flagOf = (id) => { const s = srvOf(id); return s ? (s.country ? flag(s.country) : '🌍') : '🏠'; };
+  const nameOf = (id) => { const s = srvOf(id); return s ? `${s.country ? flag(s.country) : ''} ${esc(s.name)}` : '🏠 panel host'; };
   const coef = (paid, used) => used > 1 << 20 && paid > 0 ? '×' + (paid / used).toFixed(2) : '—';
   const coefCls = (paid, used) => used > 1 << 20 ? (paid / used > 1.3 ? ' class="ucoef bad"' : paid / used > 1.1 ? ' class="ucoef warn"' : ' class="ucoef"') : '';
   const since = r.started ? Math.floor((Date.now() / 1000 - r.started) / 3600) : 0;
+  const sum = (list) => list.reduce((a, t) => { const x = T[t.id] || z; return { down: a.down + x.down, up: a.up + x.up, paid: a.paid + (x.paid || 0), est: a.est || !!x.est }; }, { down: 0, up: 0, paid: 0, est: false });
 
-  let uD = 0, uU = 0, paid = 0, est = false;
-  tunnels.forEach(t => { const x = T[t.id] || z; uD += x.down; uU += x.up; paid += x.paid || 0; est = est || !!x.est; });
-  const kpi = `<div class="ukpi">
-    <div class="card pad"><small>⬇ Download</small><b>${fmtBytes(uD)}</b><span class="faint">users received</span></div>
-    <div class="card pad"><small>⬆ Upload</small><b>${fmtBytes(uU)}</b><span class="faint">users sent</span></div>
-    <div class="card pad"><small>Σ Total traffic</small><b>${fmtBytes(uD + uU)}</b><span class="faint">download + upload</span></div>
-    <div class="card pad paid"><small>💰 You pay for</small><b>${fmtBytes(paid)}</b><span>coefficient <b${coefCls(paid, uD + uU)} style="font-size:14px">${coef(paid, uD + uU)}</b></span></div></div>`;
+  // the list: everything, then each Iran server (its whole bill) with its tunnels under it
+  const groups = [];
+  const seen = new Map();
+  tunnels.forEach(t => {
+    const k = nicOf(t.serverId).key;
+    if (!seen.has(k)) { const g = { id: t.serverId, key: k, tunnels: [] }; seen.set(k, g); groups.push(g); }
+    seen.get(k).tunnels.push(t);
+  });
+  const total = sum(tunnels);
+  const meta = (x) => `<span class="smeta"><small><b>${fmtBytes(tot(x))}</b></small><small${coefCls(x.paid, tot(x))}>💰 ${x.est ? '≈' : ''}${fmtBytes(x.paid)} · ${coef(x.paid, tot(x))}</small></span>`;
+  const tRow = (t) => { const x = T[t.id] || z; return `<button class="srow" data-pick="t:${t.id}">
+      <span class="sflag">${flagOf(t.foreignId)}</span>
+      <span class="sinfo"><b>${esc(t.name)}${t.active ? '' : ' <span class="faint">(stopped)</span>'}</b><small>→ ${nameOf(t.foreignId)}</small></span>
+      ${meta({ down: x.down, up: x.up, paid: x.paid || 0, est: !!x.est })}</button>`; };
+  let cur = recall('tp-usage-sel') || '';
+  if (cur === '' || (cur.startsWith('t:') && !tunnels.some(t => 't:' + t.id === cur)) || (cur.startsWith('s:') && !groups.some(g => 's:' + g.id === cur))) cur = 'all';
+  box.innerHTML = `<aside class="card srvlist">
+      ${tunnels.length > 6 ? '<input class="sq" type="search" placeholder="Filter by name…" data-sq>' : ''}
+      <button class="srow" data-pick="all"><span class="sflag">Σ</span><span class="sinfo"><b>All tunnels</b><small>${tunnels.length} tunnels · ${groups.length} Iran servers</small></span>${meta(total)}</button>
+      ${groups.map(g => { const x = sum(g.tunnels); return `<div class="sgrp"><button class="srow sgh2" data-pick="s:${g.id}"><span class="sflag">${flagOf(g.id)}</span><span class="sinfo"><b>${esc((srvOf(g.id) || {}).name || 'panel host')}</b><small>Iran server · ${g.tunnels.length} tunnel${g.tunnels.length > 1 ? 's' : ''}</small></span>${meta(x)}</button>
+        <div class="usub">${g.tunnels.map(tRow).join('')}</div></div>`; }).join('') || '<div class="faint sempty">No tunnels yet.</div>'}
+    </aside>
+    <div class="srvdetail" data-detail></div>`;
+  const det = $('[data-detail]', box);
 
+  const kpi = (x) => `<div class="ukpi">
+    <div class="card pad"><small>⬇ Download</small><b>${fmtBytes(x.down)}</b><span class="faint">users received</span></div>
+    <div class="card pad"><small>⬆ Upload</small><b>${fmtBytes(x.up)}</b><span class="faint">users sent</span></div>
+    <div class="card pad"><small>Σ Total traffic</small><b>${fmtBytes(x.down + x.up)}</b><span class="faint">download + upload</span></div>
+    <div class="card pad paid"><small>💰 You pay for</small><b>${x.est ? '≈ ' : ''}${fmtBytes(x.paid)}</b><span>coefficient <b${coefCls(x.paid, x.down + x.up)} style="font-size:14px">${coef(x.paid, x.down + x.up)}</b></span></div></div>`;
   const legend = `<div class="card pad ulegend">
     <div><b>💰 You pay for</b> = what the Iran server <b>received</b> for the tunnel: the users' upload + what the foreign server sent it. Sending from Iran is free.</div>
     <div><b>Coefficient</b> = paid ÷ total traffic. ×1.00 means you pay exactly what the users used; ×1.15 means 15 % more (tunnel headers, health checks, tests).</div>
-    <div class="faint">Each Iran server's intake is counted separately per foreign server, so an Iran server with two foreign servers is split between them.${est ? ' Hours before this was counted (marked ≈) are estimated from the whole Iran server.' : ''}${since < days * 24 ? ` Counting started ${since < 1 ? 'less than an hour' : since < 48 ? since + ' h' : Math.floor(since / 24) + ' days'} ago.` : ''}</div></div>`;
+    <div class="faint">Each Iran server's intake is counted separately per foreign server, so an Iran server with two foreign servers is split between them.${total.est ? ' Hours before this was counted (marked ≈) are estimated from the whole Iran server.' : ''}${since < days * 24 ? ` Counting started ${since < 1 ? 'less than an hour' : since < 48 ? since + ' h' : Math.floor(since / 24) + ' days'} ago.` : ''}</div></div>`;
+  // one Iran server's bill: what its cards received, how much the tunnels explain, the rest
+  const bill = (g) => {
+    const n = nicOf(g.id), x = sum(g.tunnels), used = tot(x);
+    return `<tr><td><b>${nameOf(g.id)}</b></td><td>${fmtBytes(used)}</td><td>${fmtBytes(x.paid)}</td><td>${fmtBytes(Math.max(0, n.u.down - x.paid))}</td><td><b>${fmtBytes(n.u.down)}</b></td><td><b${coefCls(n.u.down, used)}>${coef(n.u.down, used)}</b></td></tr>`;
+  };
+  const billTbl = (gs) => `<div class="card pad"><h3 style="margin:0 0 6px">${gs.length > 1 ? 'Iran servers — the whole bill' : 'The whole bill of this server'}</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Iran server</th><th>Σ Tunnels' traffic</th><th>💰 Tunnels' paid</th><th>Other (updates, tests…)</th><th>💰 Server received (bill)</th><th>Coefficient</th></tr></thead><tbody>${gs.map(bill).join('')}</tbody></table></div></div>`;
+  const tunTbl = (list) => `<div class="card pad"><h3 style="margin:0 0 6px">Per tunnel</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Tunnel</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Total</th><th>💰 Paid</th><th>Coefficient</th></tr></thead><tbody>${list.map(t => { const x = T[t.id] || z; return `<tr class="urow" data-pick="t:${t.id}"><td><b>${esc(t.name)}</b><div class="faint" style="font-size:11.5px">${nameOf(t.serverId)} → ${nameOf(t.foreignId)}</div></td><td>${fmtBytes(x.down)}</td><td>${fmtBytes(x.up)}</td><td><b>${fmtBytes(tot(x))}</b></td><td><b>${x.est ? '≈ ' : ''}${fmtBytes(x.paid || 0)}</b></td><td><b${coefCls(x.paid || 0, tot(x))}>${coef(x.paid || 0, tot(x))}</b></td></tr>`; }).join('')}</tbody></table></div></div>`;
 
-  const tRows = tunnels.map(t => {
-    const x = T[t.id] || z;
-    return `<tr class="urow" data-ut="${t.id}"><td><b>${esc(t.name)}</b>${t.active ? '' : ' <span class="faint">(stopped)</span>'}<div class="faint" style="font-size:11.5px">${nameOf(t.serverId)} → ${nameOf(t.foreignId)}</div></td>
-      <td>${fmtBytes(x.down)}</td><td>${fmtBytes(x.up)}</td><td><b>${fmtBytes(tot(x))}</b></td>
-      <td><b>${x.est ? '≈ ' : ''}${fmtBytes(x.paid || 0)}</b></td><td><b${coefCls(x.paid || 0, tot(x))}>${coef(x.paid || 0, tot(x))}</b></td></tr>`;
-  }).join('');
-  const tTbl = `<div class="card pad"><h3 style="margin:0 0 6px">Per tunnel</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Tunnel</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Total</th><th>💰 Paid</th><th>Coefficient</th></tr></thead>
-    <tbody>${tRows || '<tr><td colspan="6" class="faint">no tunnels</td></tr>'}</tbody>
-    <tfoot><tr><td><b>All tunnels</b></td><td>${fmtBytes(uD)}</td><td>${fmtBytes(uU)}</td><td><b>${fmtBytes(uD + uU)}</b></td><td><b>${fmtBytes(paid)}</b></td><td><b${coefCls(paid, uD + uU)}>${coef(paid, uD + uU)}</b></td></tr></tfoot></table></div>
-    <div class="faint" style="font-size:12px;margin-top:6px">Click a tunnel to see it hour by hour below.</div></div>`;
-
-  // Iran servers: what each card received, how much of it the tunnels explain, the rest
-  const sDone = new Set();
-  const sRows = [...new Set(tunnels.map(t => t.serverId))].map(id => {
-    const n = nicOf(id); if (sDone.has(n.key)) return ''; sDone.add(n.key);
-    const mine = tunnels.filter(t => nicOf(t.serverId).key === n.key);
-    const used = mine.reduce((a, t) => a + tot(T[t.id] || z), 0), tp = mine.reduce((a, t) => a + ((T[t.id] || z).paid || 0), 0);
-    const other = Math.max(0, n.u.down - tp);
-    return `<tr><td><b>${nameOf(id)}</b><div class="faint" style="font-size:11.5px">${mine.map(t => esc(t.name) + ' → ' + nameOf(t.foreignId)).join(' · ')}</div></td>
-      <td>${fmtBytes(used)}</td><td>${fmtBytes(tp)}</td><td>${fmtBytes(other)}</td><td><b>${fmtBytes(n.u.down)}</b></td><td><b${coefCls(n.u.down, used)}>${coef(n.u.down, used)}</b></td></tr>`;
-  }).join('');
-  const sTbl = `<div class="card pad"><h3 style="margin:0 0 6px">Iran servers — the whole bill</h3><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Iran server · its tunnels</th><th>Σ Tunnels' traffic</th><th>💰 Tunnels' paid</th><th>Other (updates, tests…)</th><th>💰 Server received (bill)</th><th>Coefficient</th></tr></thead><tbody>${sRows}</tbody></table></div></div>`;
-
-  box.innerHTML = kpi + tTbl + `<div class="card pad" id="uhours"></div>` + sTbl + legend;
-
-  // hour by hour: one tunnel (or all) on one day — the last 24 hours, or a past Tehran day
-  const hb = $('#uhours', box);
-  let sel = tunnels.some(t => t.id === recall('tp-usage-t')) ? recall('tp-usage-t') : '', date = 0, hr = days === 1 ? r : null;
-  // date: 0 = the last 24 hours, n = the Tehran day n-1 days ago (1 = today)
+  // hour by hour for the tunnels picked: the last 24 hours, or a past Tehran day
+  let date = 0, hr = days === 1 ? r : null;
   const dayOpts = () => { const o = ['<option value="0">Last 24 hours</option>']; for (let i = 0; i < 35; i++) { const d = new Date(Date.now() - i * 864e5); const ds = d.toLocaleDateString('fa-IR-u-nu-latn', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit' }); const en = d.toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', day: '2-digit', month: 'short' }); o.push(`<option value="${i + 1}"${date === i + 1 ? ' selected' : ''}>${i === 0 ? 'Today' : i === 1 ? 'Yesterday' : en} · ${ds}</option>`); } return o.join(''); };
-  const drawHours = async () => {
-    hb.innerHTML = `<div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><h3 style="margin:0">Hour by hour</h3>
-      <select id="uh-t"><option value="">All tunnels</option>${tunnels.map(t => `<option value="${t.id}"${t.id === sel ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
-      <select id="uh-d">${dayOpts()}</select></div><div class="skel" style="height:120px"></div>`;
-    $('#uh-t', hb).onchange = (e) => { sel = e.target.value; remember('tp-usage-t', sel); drawHours(); };
-    $('#uh-d', hb).onchange = (e) => { date = +e.target.value; hr = null; drawHours(); };
+  const drawHours = async (hb, ids) => {
+    hb.innerHTML = `<div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><h3 style="margin:0">Hour by hour</h3><select data-uhd>${dayOpts()}</select></div><div class="skel" style="height:120px"></div>`;
+    $('[data-uhd]', hb).onchange = (e) => { date = +e.target.value; hr = null; drawHours(hb, ids); };
     if (!hr) { try { hr = await api(date ? '/usage?date=' + Math.floor(Date.now() / 1000 - (date - 1) * 86400) : '/usage?days=1'); } catch (e) { hb.lastChild.outerHTML = `<div class="errtxt">${esc(e.message)}</div>`; return; } }
-    const pick = (hr.tunnels || []).filter(x => sel ? x.id === sel : tunnels.some(t => t.id === x.id));
+    if (!hb.isConnected) return;
+    const pick = (hr.tunnels || []).filter(x => ids.includes(x.id));
     const rows = [];
     let mx = 1;
     for (let i = 0; i < (hr.n || 24); i++) {
@@ -308,12 +311,34 @@ async function viewUsage(w) {
     const now = Date.now() / 1000;
     const body = rows.map((s, i) => hr.from + i * hr.step > now ? '' : `<tr><td class="mono">${lbl(i)}</td><td>${fmtBytes(s.d)}</td><td>${fmtBytes(s.u)}</td><td><b>${fmtBytes(s.d + s.u)}</b></td>
       <td><span class="ubar"><i style="width:${Math.round((s.d + s.u) / mx * 100)}%"></i></span></td><td>${fmtBytes(s.p)}</td><td><b${coefCls(s.p, s.d + s.u)}>${coef(s.p, s.d + s.u)}</b></td></tr>`).reverse().join('');
-    const sum = rows.reduce((a, s) => ({ d: a.d + s.d, u: a.u + s.u, p: a.p + s.p }), { d: 0, u: 0, p: 0 });
+    const t = rows.reduce((a, s) => ({ d: a.d + s.d, u: a.u + s.u, p: a.p + s.p }), { d: 0, u: 0, p: 0 });
     hb.lastChild.outerHTML = `<div class="uscroll uhours"><table class="tbl utbl"><thead><tr><th>Hour (Tehran)</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Total</th><th></th><th>💰 Paid</th><th>Coefficient</th></tr></thead><tbody>${body}</tbody>
-      <tfoot><tr><td><b>Day total</b></td><td>${fmtBytes(sum.d)}</td><td>${fmtBytes(sum.u)}</td><td><b>${fmtBytes(sum.d + sum.u)}</b></td><td></td><td><b>${fmtBytes(sum.p)}</b></td><td><b${coefCls(sum.p, sum.d + sum.u)}>${coef(sum.p, sum.d + sum.u)}</b></td></tr></tfoot></table></div>`;
+      <tfoot><tr><td><b>Day total</b></td><td>${fmtBytes(t.d)}</td><td>${fmtBytes(t.u)}</td><td><b>${fmtBytes(t.d + t.u)}</b></td><td></td><td><b>${fmtBytes(t.p)}</b></td><td><b${coefCls(t.p, t.d + t.u)}>${coef(t.p, t.d + t.u)}</b></td></tr></tfoot></table></div>`;
   };
-  $$('[data-ut]', box).forEach(tr => tr.onclick = () => { sel = tr.dataset.ut; remember('tp-usage-t', sel); drawHours(); hb.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
-  drawHours();
+
+  const show = (id, scroll) => {
+    cur = id; remember('tp-usage-sel', id);
+    $$('.srow', box).forEach(b => b.classList.toggle('on', b.dataset.pick === id));
+    let head, list, gs;
+    if (id.startsWith('t:')) {
+      const t = tunnels.find(x => 't:' + x.id === id); list = [t];
+      head = `<div class="card pad uhead"><h2>${esc(t.name)}${t.active ? '' : ' <span class="faint">(stopped)</span>'}</h2><div class="muted">${nameOf(t.serverId)} → ${nameOf(t.foreignId)}${t.active ? ` · <span class="mono">${esc(t.active)}</span>` : ''}</div></div>`;
+    } else if (id.startsWith('s:')) {
+      const g = groups.find(x => 's:' + x.id === id); list = g.tunnels; gs = [g];
+      head = `<div class="card pad uhead"><h2>${nameOf(g.id)}</h2><div class="muted">Iran server · ${g.tunnels.map(t => esc(t.name) + ' → ' + nameOf(t.foreignId)).join(' · ')}</div></div>`;
+    } else {
+      list = tunnels; gs = groups;
+      head = `<div class="card pad uhead"><h2>All tunnels</h2><div class="muted">${tunnels.length} tunnels on ${groups.length} Iran servers</div></div>`;
+    }
+    det.innerHTML = head + kpi(sum(list)) + '<div class="card pad" data-uh></div>' + (list.length > 1 ? tunTbl(list) : '') + (gs ? billTbl(gs) : '') + legend;
+    $$('.urow', det).forEach(tr => tr.onclick = () => show(tr.dataset.pick, true));
+    drawHours($('[data-uh]', det), list.map(t => t.id));
+    if (scroll && window.innerWidth <= 860) det.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  $$('.srvlist [data-pick]', box).forEach(b => b.onclick = () => show(b.dataset.pick, true));
+  const q = $('[data-sq]', box);
+  if (q) q.oninput = () => { const v = q.value.trim().toLowerCase(); $$('.usub .srow', box).forEach(b => b.hidden = !!v && !b.textContent.toLowerCase().includes(v)); };
+  show(cur, false);
 }
 
 /* ---------------- routes ---------------- */
