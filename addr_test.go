@@ -67,7 +67,7 @@ func TestAcctScriptAndRates(t *testing.T) {
 	sc := acctScript(tn)
 	// counted by the connection's original (Iran-facing) port, both directions
 	for _, want := range []string{"--ctdir ORIGINAL --ctorigdstport 443", "--ctdir REPLY --ctorigdstport 443", "--ctorigdstport 2000:2010",
-		"--ctorigdstport 8443", "--ctorigdstport 8080", "grep -q ctorigdstport", `echo "T abc123 $d $u"`} {
+		"--ctorigdstport 8443", "--ctorigdstport 8080", "grep -q ctorigdstport", `echo "T abc123 $d $u ports $p"`} {
 		if !strings.Contains(sc, want) {
 			t.Errorf("script lacks %q:\n%s", want, sc)
 		}
