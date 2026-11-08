@@ -1,5 +1,6 @@
 // generated: the Persian texts of the panel (English -> Persian); the translator is below
 window.TP_FA = {
+"· since boot": "· از زمان بوت",
 "Enable shaping on the Iran egress (CAKE/HTB/… qdisc)": "شکل‌دهی روی خروجی سرور ایران روشن شود (qdisc از نوع CAKE/HTB/…)",
 "MSS clamp": "محدود کردن MSS",
 "Add timing jitter (netem)": "افزودن لرزش زمانی (netem)",

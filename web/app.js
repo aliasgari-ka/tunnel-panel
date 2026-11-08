@@ -615,7 +615,7 @@ async function trafficTick() {
     const s = srv[el.dataset.nic];
     if (!s) { el.innerHTML = el.dataset.nic === '' ? 'live traffic…' : ''; return; }
     if (s.error) { el.innerHTML = `<span class="faint">traffic: ${esc(s.error)}</span>`; return; }
-    el.innerHTML = `<span class="faint">${esc((s.source || '').replace('nic ', 'NIC '))}</span> <span class="dn">↓ ${fmtRate(s.down)}</span> <span class="up">↑ ${fmtRate(s.up)}</span> <span class="faint">· since boot ↓ ${fmtBytes(s.totalDown)} ↑ ${fmtBytes(s.totalUp)}</span>`;
+    el.innerHTML = `<span class="faint">${esc((s.source || '').replace('nic ', 'NIC '))}</span> <span class="dn">↓ <bdi>${fmtRate(s.down)}</bdi></span> <span class="up">↑ <bdi>${fmtRate(s.up)}</bdi></span> <span class="faint"><span>· since boot</span> ↓ <bdi>${fmtBytes(s.totalDown)}</bdi> ↑ <bdi>${fmtBytes(s.totalUp)}</bdi></span>`;
   });
 }
 // a server's live CPU / RAM / disk, load, sockets and busiest programs
@@ -1040,10 +1040,10 @@ function panelHostCard() {
   const st = STATE.settings, n = STATE.tunnels.filter(t => !t.foreignId).length;
   return h(`<div class="card scard host">
     <div class="sh"><div class="sname"><span class="sflag">🖥</span><div><h3>This panel host</h3><small>the machine running this panel</small></div></div><span class="pill on"><span class="led"></span>local</span></div>
-    <dl class="kv">
-      <dt>IPv4</dt><dd class="mono">${esc(st.localIPv4 || 'auto-detecting…')}</dd>
-      ${st.localIPv6 ? `<dt>IPv6</dt><dd class="mono">${esc(st.localIPv6)}</dd>` : ''}
-      <dt>Tunnels</dt><dd>${n}</dd>
+    <dl class="kvt">
+      <div><dt>IPv4</dt><dd><span class="mono">${esc(st.localIPv4 || 'auto-detecting…')}</span></dd></div>
+      ${st.localIPv6 ? `<div><dt>IPv6</dt><dd><span class="mono">${esc(st.localIPv6)}</span></dd></div>` : ''}
+      <div><dt>Tunnels</dt><dd>${n}</dd></div>
     </dl>
     <div class="nic" data-nic=""></div>
     <div class="res" data-res=""></div>
@@ -1115,7 +1115,7 @@ function serverCard(s) {
   const tl = STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id);
   const sub = [s.city, s.os && s.arch ? `${s.os} ${s.arch}` : ''].filter(Boolean).join(' · ');
   return h(`<div class="card scard ${isIran ? 'ir' : 'fg'}">
-    <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${esc(s.name || '(unnamed)')} ${ownerChip(s.owner)}</h3><small>${esc(sub || (isIran ? 'Iran · entry' : 'foreign · exit'))}</small></div></div>${status}</div>
+    <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${esc(s.name || '(unnamed)')} ${ownerChip(s.owner)}</h3><small><span class="srole">${isIran ? 'Iran · entry' : 'foreign · exit'}</span>${sub ? ' ' + esc(sub) : ''}</small></div></div>${status}</div>
     <div class="sfoot">
       <button class="btn sm pri" data-con="${s.id}" title="A shell on this server in the browser, over the panel's own path to it">&gt;_ Console</button>
       <button class="btn sm" data-test="${s.id}">Test connection</button>
@@ -1131,14 +1131,14 @@ function serverCard(s) {
       ])}
     </div>
     <div data-paths="${s.id}"></div>
-    <dl class="kv">
-      <dt>IPv4</dt><dd class="mono">${esc(s.ipv4 || '—')}</dd>
-      <dt>IPv6</dt><dd class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</dd>
-      <dt>SSH</dt><dd class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</dd>
-      ${s.lastPath ? `<dt>Reached via</dt><dd>${esc(s.lastPath)}</dd>` : ''}
-      ${s.proxy ? `<dt>Proxy</dt><dd class="mono">${esc(s.proxy)}</dd>` : ''}
-      <dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not installed yet</span>'}</dd>
-      <dt>Tunnels</dt><dd>${tl.length ? tl.map(t => `<span class="tchip${t.active ? '' : ' off'}">${esc(t.name || t.id)}</span>`).join(' ') : '<span class="faint">none</span>'}</dd>
+    <dl class="kvt">
+      <div><dt>IPv4</dt><dd><span class="mono">${esc(s.ipv4 || '—')}</span></dd></div>
+      <div><dt>IPv6</dt><dd><span class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</span></dd></div>
+      <div><dt>SSH</dt><dd><span class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</span></dd></div>
+      <div><dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not installed yet</span>'}</dd></div>
+      ${s.lastPath ? `<div><dt>Reached via</dt><dd>${esc(s.lastPath)}</dd></div>` : ''}
+      ${s.proxy ? `<div><dt>Proxy</dt><dd><span class="mono">${esc(s.proxy)}</span></dd></div>` : ''}
+      <div class="wide"><dt>Tunnels</dt><dd>${tl.length ? tl.map(t => `<span class="tchip${t.active ? '' : ' off'}">${esc(t.name || t.id)}</span>`).join(' ') : '<span class="faint">none</span>'}</dd></div>
     </dl>
     <div class="nic" data-nic="${s.id}"></div>
     <div class="res" data-res="${s.id}"></div></div>`);
@@ -1371,13 +1371,13 @@ function tunnelCard(t) {
   const keep = t.hotStandby ? `<span class="tc-keep hs">⚡ <span>Hot standby</span> · <span>${t.hsAuto ? 'auto switching' : 'manual switching'}</span></span>`
     : t.noFailover ? '<span class="tc-keep off">Off: nothing switches.</span>' : '<span class="tc-keep">🔁 <span>Failover after 5 min down</span></span>';
   const card = h(`<div class="card tc${t.active ? ' live' : ''}" data-id="${t.id}">
-    <div class="tc-h"><div class="tc-t"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${ownerChip(t.owner)}</div>${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
+    <div class="tc-h"><div class="tc-t"><span class="sflag" aria-hidden="true">🛰</span><div class="tc-tn"><h3 title="${esc(t.name)}">${esc(t.name)}</h3>${ownerChip(t.owner)}</div></div>${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     <div class="tc-r" title="${esc(serverName(t.serverId))} → ${esc(fg ? fg.name : 'this panel host')}">
       <span class="tc-end"><span class="ef">${fl(ir, '🇮🇷')}</span><span class="en"><small>Iran server</small><b class="nm">${esc(serverName(t.serverId))}</b></span><span class="sd" data-ir></span></span>
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="tc-end r"><span class="sd" data-fg></span><span class="en"><small>Foreign server</small><b class="nm">${esc(fg ? fg.name : 'panel host')}</b></span><span class="ef">${fl(fg, fg ? '🌍' : '🖥')}</span></span>
     </div>
-    <dl class="tc-kv">
+    <dl class="kvt">
       <div><dt>Method</dt><dd title="${esc(groupOf(shownM) + ' · ' + (shownM?.title || ''))}">${shownM ? groupIcon(shownM) + ' ' : ''}<b>${esc(shownM?.title || '—')}</b></dd></div>
       <div><dt>IP</dt><dd>${famName(shownFam)}</dd></div>
       <div><dt>Ports</dt><dd><span class="mono">${esc(t.ports)}</span></dd></div>
@@ -1718,7 +1718,7 @@ function tunnelModal(t) {
           <label class="row f"><input type="checkbox" id="shBoth"${sh.onBoth ? ' checked' : ''}> Also shape the foreign egress</label>
           <div class="faint" style="font-size:12px">Applied as a separate systemd unit after the tunnel starts. Change takes effect on the next Start/Switch.</div>
         </div></details>
-      <div class="actions tfoot"><button type="button" class="btn ghost" id="cancel">Cancel</button><button class="btn pri">Save</button></div>
+      <div class="actions tmfoot"><button type="button" class="btn ghost" id="cancel">Cancel</button><button class="btn pri">Save</button></div>
     </form>`, true);
   $('#cancel', m).onclick = () => m.remove();
   // which methods hot standby keeps running on this pair of servers: the Routes page's switches
