@@ -178,7 +178,19 @@ func (t *Tunnel) secret(key string) string {
 	if v, ok := t.Secrets[key]; ok && v != "" {
 		return v
 	}
-	v := randHex(24)
+	return t.setSecret(key, randHex(24))
+}
+
+// secretGen is secret() for values that aren't random hex (keys, certificates): gen makes
+// them once and they are kept like any other secret.
+func (t *Tunnel) secretGen(key string, gen func() string) string {
+	if v, ok := t.Secrets[key]; ok && v != "" {
+		return v
+	}
+	return t.setSecret(key, gen())
+}
+
+func (t *Tunnel) setSecret(key, v string) string {
 	// copy-on-write: other goroutines may be reading the current map
 	ns := make(map[string]string, len(t.Secrets)+1)
 	for k, x := range t.Secrets {
