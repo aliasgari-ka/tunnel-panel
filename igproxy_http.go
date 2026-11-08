@@ -247,6 +247,10 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "server not found")
 		return
 	}
+	if in.On && x.Role == "iran" { // the page never offers one; the API took it
+		httpErr(w, 400, "IG Routing runs on foreign servers only")
+		return
+	}
 	if in.On && x.Owner != "" && s.app.isPanelHost(x) {
 		httpErr(w, 400, "this address is the panel server itself")
 		return
@@ -439,6 +443,9 @@ func (s *Server2) igRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	if !admin {
 		in.Owner = user // a user restores only its own backups
+	} else if in.Owner != "" && !validUsername(in.Owner) {
+		httpErr(w, 400, "no such backup")
+		return
 	}
 	name := filepath.Base(in.File)
 	b, err := os.ReadFile(filepath.Join(igBackupDir(in.Owner), name))

@@ -45,7 +45,7 @@ var (
 
 type igAlertState struct {
 	mu      sync.Mutex
-	since   map[string]int64     // server id -> unix time read up to
+	since   map[string]int64     // server id -> time read up to (unix microseconds)
 	sent    map[string]time.Time // server id + key -> last sent
 	pathBad map[string]bool      // server id + path: a failure was reported, not its recovery
 }
@@ -110,16 +110,24 @@ func clipTo(s string, n int) string {
 	return s
 }
 
-// igLogSince reads the agent's log lines after since (unix): their times and texts.
+// igLogSince reads the agent's log lines after since (unix microseconds): their times and texts.
 func (a *App) igLogSince(ctx context.Context, srv *Server, since int64) ([]int64, []string, error) {
 	h, err := a.igHost(ctx, srv)
 	if err != nil {
 		return nil, nil, err
 	}
-	out, err := h.Run(ctx, fmt.Sprintf("journalctl -t igproxy --since @%d -o short-unix --no-pager -q 2>/dev/null | tail -n 400", since+1), nil)
+	// from the start of since's second: a line later in that second was lost when the next
+	// read began at the second after it
+	out, err := h.Run(ctx, fmt.Sprintf("journalctl -t igproxy --since @%d -o short-unix --no-pager -q 2>/dev/null | tail -n 400", since/1e6), nil)
 	if err != nil {
 		return nil, nil, err
 	}
+	ts, ms := igLogParse(out, since)
+	return ts, ms, nil
+}
+
+// igLogParse: the lines of journalctl -o short-unix after since (unix microseconds).
+func igLogParse(out string, since int64) ([]int64, []string) {
 	var ts []int64
 	var ms []string
 	for _, l := range strings.Split(out, "\n") {
@@ -128,21 +136,25 @@ func (a *App) igLogSince(ctx context.Context, srv *Server, since int64) ([]int64
 		if len(f) < 3 {
 			continue
 		}
-		sec, _, _ := strings.Cut(f[0], ".")
+		sec, frac, _ := strings.Cut(f[0], ".")
 		t, e := strconv.ParseInt(sec, 10, 64)
 		_, msg, ok := strings.Cut(f[2], ": ")
 		if e != nil || !ok {
 			continue
 		}
+		us, _ := strconv.ParseInt((frac + "000000")[:6], 10, 64)
+		if t = t*1e6 + us; t <= since {
+			continue
+		}
 		ts = append(ts, t)
 		ms = append(ms, strings.TrimSpace(msg))
 	}
-	return ts, ms, nil
+	return ts, ms
 }
 
 func (a *App) igAlertLoop() {
 	st := &igAlertState{since: map[string]int64{}, sent: map[string]time.Time{}, pathBad: map[string]bool{}}
-	start := time.Now().Add(-igAlertEvery).Unix() // after a panel restart: not the whole old log
+	start := time.Now().Add(-igAlertEvery).UnixMicro() // after a panel restart: not the whole old log
 	for {
 		time.Sleep(igAlertEvery)
 		var list []*Server

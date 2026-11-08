@@ -202,7 +202,7 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.Username = strings.TrimSpace(in.Username)
-		if !usernameRe.MatchString(in.Username) {
+		if !validUsername(in.Username) {
 			httpErr(w, 400, "A username is 1–32 characters: letters, digits and . _ @ -")
 			return
 		}
@@ -236,7 +236,8 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			if hash == "" {
 				return fmt.Errorf("a new account needs a password")
 			}
-			st.Users = append(st.Users, User{Username: in.Username, Hash: hash, Role: in.Role})
+			st.Users = append(st.Users, User{Username: in.Username, Hash: hash, Role: in.Role, Gen: newGen()})
+			igBackupRetire(in.Username) // a name used before: its old backups are not this account's
 			return nil
 		})
 		if err != nil {
@@ -303,6 +304,7 @@ func (s *Server2) userDelete(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("no such account")
 		}
 		st.Users = keep
+		igBackupRetire(in.Username)
 		return nil
 	})
 	if err != nil {

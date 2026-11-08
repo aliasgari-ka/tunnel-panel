@@ -328,6 +328,12 @@ func (a *App) igInfos(list []*Server, fresh bool) map[string]map[string]string {
 				a.ig.mu.Lock()
 				inf := a.ig.m[s.ID].info
 				a.ig.mu.Unlock()
+				if inf == nil { // forgotten (an action finished) between the read and here
+					inf = map[string]string{"state": "CHECKING"}
+					if had {
+						inf = old.info
+					}
+				}
 				mu.Lock()
 				res[s.ID] = inf
 				mu.Unlock()
@@ -614,10 +620,37 @@ func (a *App) igDeploy(ctx context.Context, srv *Server, out func(string)) bool 
 // ---- backups (one folder per account; 10 per server; WARP accounts are never in them)
 
 func igBackupDir(owner string) string {
+	root := filepath.Join(dataDir, "igproxy-backup")
 	if owner == "" {
-		owner = "_admin"
+		// "#" is in no username: "_admin" was, and an account renamed to it got the admin's backups
+		owner = "#admin"
+		if _, err := os.Stat(filepath.Join(root, owner)); err != nil {
+			_ = os.Rename(filepath.Join(root, "_admin"), filepath.Join(root, owner))
+		}
 	}
-	return filepath.Join(dataDir, "igproxy-backup", owner)
+	return filepath.Join(root, owner)
+}
+
+// igBackupRetire moves an account's backup folder out of the way (as "#gone-<name>-<time>"),
+// so a later account of that name does not get them; nothing is deleted.
+func igBackupRetire(owner string) {
+	if owner == "" {
+		return
+	}
+	d := igBackupDir(owner)
+	if _, err := os.Stat(d); err == nil {
+		_ = os.Rename(d, filepath.Join(filepath.Dir(d), fmt.Sprintf("#gone-%s-%d", owner, time.Now().UnixNano())))
+	}
+}
+
+// igBackupMove: an account renamed itself, its backups follow the new name.
+func igBackupMove(from, to string) {
+	src := igBackupDir(from)
+	if _, err := os.Stat(src); err != nil {
+		return
+	}
+	igBackupRetire(to)
+	_ = os.Rename(src, igBackupDir(to))
 }
 
 type igBackupFile struct {

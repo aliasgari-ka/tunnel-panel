@@ -6,10 +6,12 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"debug/elf"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -325,6 +327,32 @@ func (s *Server2) tooManyFailures(ip string, add bool) bool {
 	return len(keep) >= 5
 }
 
+// attempt counts a sign-in try before its password is checked (false = over the limit):
+// counted only after bcrypt, a burst of parallel tries all passed the check.
+// attemptOK takes a try back when it was not a wrong guess.
+func (s *Server2) attempt(ip string) bool {
+	if s.tooManyFailures(ip, false) {
+		return false
+	}
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	if len(s.failures[ip]) >= 5 {
+		return false
+	}
+	s.failures[ip] = append(s.failures[ip], time.Now())
+	return true
+}
+
+func (s *Server2) attemptOK(ip string) {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	if l := s.failures[ip]; len(l) > 1 {
+		s.failures[ip] = l[:len(l)-1]
+	} else {
+		delete(s.failures, ip)
+	}
+}
+
 // ---- auth endpoints ----
 
 func (s *Server2) setupState(w http.ResponseWriter, r *http.Request) {
@@ -337,13 +365,18 @@ func (s *Server2) setupState(w http.ResponseWriter, r *http.Request) {
 // the log, or `tunnel-panel setup-code` on the server).
 func (s *Server2) register(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if s.tooManyFailures(ip, false) {
+	if !s.attempt(ip) {
 		httpErr(w, 429, "Too many failed attempts. Wait 5 minutes and try again.")
 		return
 	}
 	var in struct{ Username, Password, Code string }
-	if err := readJSON(r, &in); err != nil || strings.TrimSpace(in.Username) == "" || len(in.Password) < 8 {
+	if err := readJSON(r, &in); err != nil || len(in.Password) < 8 {
 		httpErr(w, 400, "Username and a password of at least 8 characters are required.")
+		return
+	}
+	in.Username = strings.TrimSpace(in.Username)
+	if !validUsername(in.Username) {
+		httpErr(w, 400, "A username is 1–32 characters: letters, digits and . _ @ -")
 		return
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
@@ -357,31 +390,34 @@ func (s *Server2) register(w http.ResponseWriter, r *http.Request) {
 			badCode = true
 			return fmt.Errorf("wrong setup code — it was printed by the installer; on the server run:  tunnel-panel setup-code")
 		}
-		st.Users = append(st.Users, User{Username: in.Username, Hash: string(hash)})
+		st.Users = append(st.Users, User{Username: in.Username, Hash: string(hash), Gen: newGen()})
+		igBackupRetire(in.Username) // a name used before: its old backups are not this account's
 		st.SetupCode = ""
 		return nil
 	})
 	if err != nil {
 		if badCode {
-			s.tooManyFailures(ip, true)
 			httpErr(w, 403, err.Error())
 			return
 		}
+		s.attemptOK(ip)
 		httpErr(w, 409, err.Error())
 		return
 	}
+	s.attemptOK(ip)
 	s.setCookie(w, r, in.Username)
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 
 func (s *Server2) login(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if s.tooManyFailures(ip, false) {
+	if !s.attempt(ip) {
 		httpErr(w, 429, "Too many failed attempts. Wait 5 minutes and try again.")
 		return
 	}
 	var in struct{ Username, Password string }
 	if err := readJSON(r, &in); err != nil {
+		s.attemptOK(ip)
 		httpErr(w, 400, "bad request")
 		return
 	}
@@ -394,10 +430,10 @@ func (s *Server2) login(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if hash == "" || bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil {
-		s.tooManyFailures(ip, true)
 		httpErr(w, 401, "Wrong username or password.")
 		return
 	}
+	s.attemptOK(ip)
 	s.setCookie(w, r, in.Username)
 	writeJSON(w, map[string]string{"ok": "1"})
 }
@@ -423,6 +459,20 @@ func (s *Server2) me(w http.ResponseWriter, r *http.Request) {
 
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,32}$`)
 
+// validUsername: usernameRe, and not a name that is a path step ("." / ".."): an account's
+// name is its IG backup folder.
+func validUsername(u string) bool {
+	return usernameRe.MatchString(u) && strings.Trim(u, ".") != ""
+}
+
+// newGen is the session generation a new account starts with: random, so the cookies of a
+// deleted account (or of all accounts, after reset-password) never fit a new one of that name.
+func newGen() int {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return int(binary.BigEndian.Uint32(b[:]) >> 1)
+}
+
 // password changes the signed-in account's password and/or username (NewUser); both need
 // the current password, and every other session of the account ends.
 func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
@@ -440,7 +490,7 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "The new password must be at least 8 characters.")
 		return
 	}
-	if in.NewUser != "" && !usernameRe.MatchString(in.NewUser) {
+	if in.NewUser != "" && !validUsername(in.NewUser) {
 		httpErr(w, 400, "A username is 1–32 characters: letters, digits and . _ @ -")
 		return
 	}
@@ -461,6 +511,7 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 					st.Users[i].Username, name = in.NewUser, in.NewUser
 					// what the account owns follows the new name (ownership is by username)
 					renameOwnerLocked(st, user, in.NewUser)
+					igBackupMove(user, in.NewUser)
 				}
 				if in.New != "" {
 					h, _ := bcrypt.GenerateFromPassword([]byte(in.New), bcrypt.DefaultCost)
@@ -1360,6 +1411,12 @@ func (s *Server2) benchStart(w http.ResponseWriter, r *http.Request) {
 	var in BenchRequest
 	if err := readJSON(r, &in); err != nil {
 		httpErr(w, 400, "bad request")
+		return
+	}
+	// the pair this handler runs, checked as it is: the guard also takes "iran"/"foreign", and
+	// those with an empty foreignId (= the panel host) let a user's benchmark onto the panel host
+	if user, admin := s.who(r); !s.pairVisible(user, admin, in.IranID, in.ForeignID) {
+		httpErr(w, 404, "not found")
 		return
 	}
 	j, err := s.app.Bench(in)
