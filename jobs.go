@@ -609,9 +609,20 @@ func (a *App) Health(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 	var mid string
 	a.store.View(func(*State) { mid = t.Active })
 	ir, kh, link = a.healthLive(ctx, t)
-	if ctx.Err() == nil { // a cut-off check says nothing about the tunnel
+	switch ctx.Err() {
+	case nil:
 		a.keepHealth(t.ID, mid, ir, kh, link)
-	}
+	case context.DeadlineExceeded:
+		// a server that never answers: kept too, or every page load of its card waited the
+		// full timeout (25 s) for the same non-answer; the background refresh retries it
+		if ir == "" {
+			ir = "unreachable"
+		}
+		if kh == "" {
+			kh = "unreachable"
+		}
+		a.keepHealth(t.ID, mid, ir, kh, link)
+	} // canceled (the page went away): says nothing about the tunnel
 	return ir, kh, link
 }
 
