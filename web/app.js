@@ -738,6 +738,7 @@ function viewSettings(w) {
       <label class="row f"><input type="checkbox" name="telegramBackup" value="on" ${s.telegramBackup === 'on' ? 'checked' : ''}> Send the daily backup to the admin chat too</label>
       <h3 style="margin-top:6px">🧠 AI analysis (Claude)</h3>
       <label class="f">Claude API key <span class="faint">(from console.anthropic.com — the Tunnels page's 🧠 AI analysis sends the tunnels' state to Claude: names, paths, measurements, outages and alerts; no server addresses, passwords or keys. Blank = off)</span><input name="claudeKey" class="mono" type="password" autocomplete="off" value="${esc(s.claudeKey || '')}" placeholder="sk-ant-..."></label>
+      <label class="f">🧠 Daily AI analysis at <span class="faint">(HH:MM, Tehran time — the panel runs the analysis by itself, even with no page open, and sends the summary to the admin chat; blank = 09:30 while a key is set, off = never)</span><input name="aiDaily" class="mono" placeholder="09:30" maxlength="5" value="${esc(s.aiDaily || '')}"></label>
       <label class="f">☀️ Daily report at <span class="faint">(HH:MM, Tehran time — tunnels, their paths and the last day's outages; blank = off)</span><input name="telegramReport" class="mono" placeholder="09:00" maxlength="5" value="${esc(s.telegramReport || '')}"></label>
       <div><button class="btn pri">Save settings</button></div>
     </form>

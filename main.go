@@ -140,6 +140,7 @@ func main() {
 	go app.memNightly()
 	go app.igImport()
 	go app.igAlertLoop()
+	go app.aiDailyLoop()
 	go app.gemLoop()
 	app.usage = loadUsage()
 	go app.usageLoop()

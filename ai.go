@@ -423,6 +423,7 @@ var aiSchema = json.RawMessage(`{
 var aiRun = struct {
 	sync.Mutex
 	running bool
+	notify  bool // send the report to the admin chat when it is done (the daily run)
 }{}
 
 // aiStart starts one analysis in the background (false: one is running already). It is
@@ -440,12 +441,66 @@ func (a *App) aiStart() bool {
 
 // aiAnalyze runs one analysis and keeps its report (also when it fails, with the error).
 func (a *App) aiAnalyze() {
-	defer func() { aiRun.Lock(); aiRun.running = false; aiRun.Unlock() }()
 	rep := &AIReport{At: time.Now().Unix()}
 	if err := a.aiCall(rep); err != nil {
 		rep.Error = err.Error()
 	}
 	_ = a.store.Update(func(st *State) error { st.AIReport = rep; return nil })
+	aiRun.Lock()
+	notify := aiRun.notify
+	aiRun.running, aiRun.notify = false, false
+	aiRun.Unlock()
+	if notify {
+		a.push(aiMessage(rep))
+	}
+}
+
+// aiDailyLoop runs the analysis on the server once a day (Settings.AIDaily), so it goes on
+// whether or not anyone has the panel open, and sends the summary to the admin chat.
+func (a *App) aiDailyLoop() {
+	tehran, err := time.LoadLocation("Asia/Tehran")
+	if err != nil {
+		tehran = time.FixedZone("IRST", 3*3600+1800)
+	}
+	done := ""
+	for range time.Tick(30 * time.Second) {
+		s := a.settings()
+		at := strings.TrimSpace(s.AIDaily)
+		if at == "" {
+			at = "09:30"
+		}
+		if at == "off" || strings.TrimSpace(s.ClaudeKey) == "" {
+			continue
+		}
+		now := time.Now().In(tehran)
+		if now.Format("15:04") != at || done == now.Format("2006-01-02") {
+			continue
+		}
+		done = now.Format("2006-01-02")
+		aiRun.Lock()
+		if !aiRun.running {
+			aiRun.running, aiRun.notify = true, true
+			go a.aiAnalyze()
+		}
+		aiRun.Unlock()
+	}
+}
+
+// aiMessage: the report as a short Telegram message (the details stay on the Tunnels page).
+func aiMessage(rep *AIReport) string {
+	if rep.Error != "" {
+		return "🧠 Daily AI analysis failed: " + rep.Error
+	}
+	var b strings.Builder
+	b.WriteString("🧠 Daily AI analysis\n\n" + rep.Summary)
+	icon := map[string]string{"high": "🔴", "medium": "🟠", "low": "🟡"}
+	for _, f := range rep.Findings {
+		b.WriteString("\n" + icon[f.Severity] + " " + f.Title)
+	}
+	if n := len(rep.Actions); n > 0 {
+		fmt.Fprintf(&b, "\n\n%d suggested change(s): Tunnels page → 🧠 AI analysis", n)
+	}
+	return b.String()
 }
 
 func (a *App) aiCall(rep *AIReport) error {

@@ -54,3 +54,16 @@ func TestAISummaries(t *testing.T) {
 		t.Errorf("alerts: %+v", al)
 	}
 }
+
+// The daily run's Telegram message: the summary, one line per finding, and a pointer to the actions.
+func TestAIMessage(t *testing.T) {
+	m := aiMessage(&AIReport{Summary: "ok", Findings: []AIFinding{{Severity: "high", Title: "t1 flaps"}}, Actions: []AIAction{{}}})
+	for _, want := range []string{"ok", "🔴 t1 flaps", "1 suggested"} {
+		if !strings.Contains(m, want) {
+			t.Errorf("message lacks %q: %s", want, m)
+		}
+	}
+	if m := aiMessage(&AIReport{Error: "no credit"}); !strings.Contains(m, "no credit") {
+		t.Errorf("error not sent: %s", m)
+	}
+}
