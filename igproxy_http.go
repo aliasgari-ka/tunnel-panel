@@ -164,7 +164,7 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				if onlyOld {
-					if st := s.app.igInfo(ctx, x)["state"]; st != "UPDATE" && st != "NOAGENT" {
+					if inf := s.app.igInfo(ctx, x); inf["state"] != "UPDATE" && inf["state"] != "NOAGENT" && inf["outdated"] != "1" {
 						continue
 					}
 				}
@@ -271,7 +271,7 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 				return false
 			}
 			out(fmt.Sprintf("%s reached (state %s)", x.Name, inf["state"]))
-			if st := inf["state"]; st == "NOAGENT" || st == "UPDATE" || in.Deploy {
+			if st := inf["state"]; st == "NOAGENT" || st == "UPDATE" || inf["outdated"] == "1" || in.Deploy {
 				return s.app.igDeploy(ctx, x, out)
 			}
 			return true

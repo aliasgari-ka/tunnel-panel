@@ -30,6 +30,8 @@ func TestIgParseInfo(t *testing.T) {
 		{0, strings.Replace(ok, "panel=OK", "panel=BLOCK", 1), "", "PANEL"},
 		{0, strings.Replace(ok, "gem=OK", "gem=FAIL", 1), "", "GEMFAIL"},
 		{0, ok + " paused=YES", "", "PAUSED"},
+		{0, strings.Replace(ok, "router=active", "router=failed", 1), "fff00000", "DOWN"}, // old and down: down shows
+		{0, ok + " guard=DOWN", "", "GUARD"},
 		{3, "igproxy is not installed here", "", "NOAGENT"},
 		{1, "usage: igproxy", "", "UPDATE"},
 		{255, "dial tcp: i/o timeout", "", "OFFLINE"},

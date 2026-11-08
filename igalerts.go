@@ -63,9 +63,11 @@ func (st *igAlertState) igAlertLines(id string, msgs []string, now time.Time) []
 		}
 		if f := igPathOKRe.FindStringSubmatch(m); f != nil {
 			for _, p := range strings.Fields(f[1]) {
-				if _, ok := fail[p]; ok {
-					delete(fail, p) // broken and back within the round: not worth a message
-				} else if st.pathBad[id+p] {
+				// broken and back within the round: not worth a message — unless a failure was
+				// reported in an earlier round: then its recovery is (left unsent, the path stayed
+				// "bad" and every later failure of it went unreported)
+				delete(fail, p)
+				if st.pathBad[id+p] {
 					delete(st.pathBad, id+p)
 					out = append(out, "✅ "+p+" works again for the users")
 				}

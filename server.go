@@ -530,6 +530,12 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if in.AIDaily = strings.ToLower(strings.TrimSpace(in.AIDaily)); in.AIDaily != "" && in.AIDaily != "off" {
+		if _, e := time.Parse("15:04", in.AIDaily); e != nil || len(in.AIDaily) != 5 {
+			httpErr(w, 400, "Daily AI analysis: HH:MM in Tehran time, e.g. 09:30 (blank = 09:30, off = never)")
+			return
+		}
+	}
 	if in.TelegramChannel = strings.TrimSpace(in.TelegramChannel); in.TelegramChannel != "" && !tgChanRe.MatchString(in.TelegramChannel) {
 		httpErr(w, 400, "Alert channel: a chat id like -1001234567890 or @channelname (blank = the admin chat)")
 		return
@@ -1408,6 +1414,10 @@ func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
 		_ = readJSON(r, &in)
 		if in.Clear {
 			_ = s.app.store.Update(func(st *State) error { st.BenchHistory = nil; return nil })
+			// and the results in memory: failover and hot standby kept ranking by them
+			s.app.benchMu.Lock()
+			s.app.benchRes = nil
+			s.app.benchMu.Unlock()
 		}
 	}
 	out := []BenchRecord{}

@@ -55,10 +55,13 @@ func (a *App) failoverCandidates(t *Tunnel) []pathChoice {
 		s float64
 	}
 	var sc []scored
+	failed := map[pathChoice]bool{} // measured on this route and did not work
 	for _, fam := range []string{"v4", "v6"} {
 		for _, r := range a.benchResults(t.ServerID, t.ForeignID, fam) {
 			if r.OK {
 				sc = append(sc, scored{pathChoice{r.Method, fam}, r.Score})
+			} else if r.Error != "" && !r.Skipped {
+				failed[pathChoice{r.Method, fam}] = true
 			}
 		}
 	}
@@ -73,7 +76,11 @@ func (a *App) failoverCandidates(t *Tunnel) []pathChoice {
 	}
 	for _, fam := range fams {
 		for _, mid := range []string{"bp_l3", "gre", "direct6", "golden", "icmp", "backhaul", "bp_reverse", "frp", "paqet", "ipsec6", "espsk", "wg"} {
-			add(mid, fam)
+			// not one the benchmark saw fail here: each try is a full apply and minutes of
+			// downtime for the users
+			if !failed[pathChoice{mid, fam}] {
+				add(mid, fam)
+			}
 		}
 	}
 	return out
