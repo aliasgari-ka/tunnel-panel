@@ -209,14 +209,31 @@ func joinInts(v []int) string {
 // to judge it by ("" = the running one, else the selected one).
 func iranPorts(t *Tunnel, mid string) map[int]string {
 	out := map[int]string{}
+	for _, sp := range iranPortSpans(t, mid) {
+		for x := sp.lo; x > 0 && x <= sp.hi && x-sp.lo < 4096; x++ {
+			out[x] = sp.what
+		}
+	}
+	return out
+}
+
+// portSpan is an inclusive range of Iran ports a tunnel uses, and what for.
+type portSpan struct {
+	lo, hi int
+	what   string
+}
+
+// iranPortSpans is iranPorts as ranges, uncapped: portClash compares these by overlap,
+// since enumerating a range stops after 4096 ports (1000-9000 vs 8000 went unseen).
+func iranPortSpans(t *Tunnel, mid string) []portSpan {
+	var out []portSpan
 	for _, p := range splitPorts(t.Ports) {
 		l := p.listen
 		if i := strings.LastIndex(l, ":"); i >= 0 && !strings.Contains(l, "-") {
 			l = l[i+1:]
 		}
-		lo, hi := portRange(l)
-		for x := lo; x > 0 && x <= hi && x-lo < 4096; x++ {
-			out[x] = "forwarded port"
+		if lo, hi := portRange(l); lo > 0 && hi >= lo {
+			out = append(out, portSpan{lo, hi, "forwarded port"})
 		}
 	}
 	if mid == "" {
@@ -229,7 +246,7 @@ func iranPorts(t *Tunnel, mid string) map[int]string {
 		if key, ok := reverseTCPPort(m, t); ok {
 			get, _ := resolveOptions(m, t.Options[m.ID])
 			if p, err := strconv.Atoi(portOr(get(key), 40000+t.Index*4)); err == nil {
-				out[p] = m.Title + " tunnel port"
+				out = append(out, portSpan{p, p, m.Title + " tunnel port"})
 			}
 		}
 	}
@@ -239,7 +256,7 @@ func iranPorts(t *Tunnel, mid string) map[int]string {
 // portClash finds another tunnel on the same Iran server that holds one of the ports t
 // would use: two DNAT rules or listeners on one port means only one tunnel gets the traffic.
 func portClash(st *State, t *Tunnel, mid string) error {
-	mine := iranPorts(t, mid)
+	mine := iranPortSpans(t, mid)
 	for _, o := range st.Tunnels {
 		// a hot-standby path (ID "<tunnel>x<index>") of o is o itself: its first path takes
 		// o's own tunnel port, which used to be refused as a clash with o — and so the
@@ -247,8 +264,12 @@ func portClash(st *State, t *Tunnel, mid string) error {
 		if o.ID == t.ID || o.ServerID != t.ServerID || strings.HasPrefix(t.ID, o.ID+"x") {
 			continue
 		}
-		for p, what := range iranPorts(o, "") {
-			if mw, ok := mine[p]; ok {
+		for _, op := range iranPortSpans(o, "") {
+			for _, ms := range mine {
+				if op.hi < ms.lo || ms.hi < op.lo {
+					continue
+				}
+				p, mw, what := max(op.lo, ms.lo), ms.what, op.what // first shared port
 				hint := "give this tunnel another Iran port and map it to the service, e.g. " + strconv.Itoa(p+1) + "=" + strconv.Itoa(p) + " (users connect to Iran " + strconv.Itoa(p+1) + ", it reaches port " + strconv.Itoa(p) + " on the foreign server)"
 				if strings.Contains(mw, "tunnel port") || strings.Contains(what, "tunnel port") {
 					hint = "clear the tunnel-port option of one of them (the panel then picks a free one) or set a different one"

@@ -328,10 +328,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 				}
 			}
 			if err != nil {
-				r.Error = err.Error()
-				if m.ID == "ipsec" && strings.Contains(r.Error, "no traffic passes") {
-					r.Error += " — IPsec needs UDP 500/4500 (IKE) between the servers; if the UDP-based methods fail on this route too, the network drops UDP"
-				}
+				r.Error = benchFailHint(m.ID, err.Error())
 				j.log("   FAILED: %v", r.Error)
 			} else {
 				j.log("   ok: ↓%.1f ↑%.1f Mbps, RTT %.1f ms, jitter %.1f ms", r.DownMbps, r.UpMbps, r.RTTms, r.Jitterms)
@@ -735,4 +732,12 @@ func (a *App) routeOpts(t *Tunnel, mid, fam string) map[string]string {
 		return out
 	}
 	return nil
+}
+
+// benchFailHint adds what a method's "no traffic" failure usually means on a route.
+func benchFailHint(methodID, e string) string {
+	if methodID == "ipsec6" && strings.Contains(e, "no traffic passes") { // (the IKE IPsec method)
+		e += " — IPsec needs UDP 500/4500 (IKE) between the servers; if the UDP-based methods fail on this route too, the network drops UDP"
+	}
+	return e
 }

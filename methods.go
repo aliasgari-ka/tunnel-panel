@@ -64,6 +64,7 @@ func renderUnit(u Unit) string {
 		}
 		return r
 	}, u.Desc)
+	desc = strings.ReplaceAll(desc, "%", "%%") // systemd expands %-specifiers in Description=
 	fmt.Fprintf(&b, "[Unit]\nDescription=%s\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=%s\n", desc, typ)
 	if u.RemainAfterExit {
 		b.WriteString("RemainAfterExit=yes\n")
@@ -440,6 +441,7 @@ func inboundRules(t *Tunnel, peer, ports, iface string) (up, down string) {
 		peerIpt, fam = "ip6tables", "ipv6"
 	}
 	var b, fw strings.Builder
+	rich := "" // the firewalld rich rule for the peer, shared by every tunnel between these servers
 	// the chain exists in both families: the peer arrives over the underlay family, but
 	// users reach the forwarded ports over IPv4 or IPv6 regardless of the underlay
 	for _, ipt := range []string{"iptables", "ip6tables"} {
@@ -465,7 +467,8 @@ func inboundRules(t *Tunnel, peer, ports, iface string) (up, down string) {
 		fmt.Fprintf(&b, "%[1]s -w -C INPUT -j %[2]s 2>/dev/null || %[1]s -w -I INPUT -j %[2]s\nfi\n", ipt, ch)
 	}
 	if peer != "" {
-		fmt.Fprintf(&fw, "firewall-cmd -q --add-rich-rule='rule family=%s source address=%s accept' 2>/dev/null\n", fam, peer)
+		rich = fmt.Sprintf("rule family=%s source address=%s accept", fam, peer)
+		fmt.Fprintf(&fw, "firewall-cmd -q --add-rich-rule='%s' 2>/dev/null\n", rich)
 	}
 	if iface != "" {
 		// the inner traffic is IPv4 (10.10.N.x) and fd42:N::/64, whatever the outer family is
@@ -486,7 +489,22 @@ func inboundRules(t *Tunnel, peer, ports, iface string) (up, down string) {
 		}
 	}
 	if fw.Len() > 0 {
-		d.WriteString("if firewall-cmd --state >/dev/null 2>&1; then\n" + strings.ReplaceAll(fw.String(), "--add-", "--remove-") + "fi\n")
+		down := strings.ReplaceAll(fw.String(), "--add-", "--remove-")
+		if rich != "" {
+			// the peer's rich rule is one firewalld rule for every tunnel between these two
+			// servers: keep it while another tunnel here that adds it is still running
+			rm := fmt.Sprintf("firewall-cmd -q --remove-rich-rule='%s' 2>/dev/null\n", rich)
+			keep := fmt.Sprintf(`keep=
+for f in /etc/tunnel-panel/t/*/fw-in-up.sh; do
+  id=${f%%/fw-in-up.sh}; id=${id##*/}
+  [ "$id" = %q ] && continue
+  grep -qF %q "$f" 2>/dev/null || continue
+  case "$(systemctl is-active "tp-$id.service" 2>/dev/null)" in active|activating|reloading) keep=1; break;; esac
+done
+[ -n "$keep" ] || `, t.ID, "'"+rich+"'")
+			down = strings.Replace(down, rm, keep+rm, 1)
+		}
+		d.WriteString("if firewall-cmd --state >/dev/null 2>&1; then\n" + down + "fi\n")
 	}
 	d.WriteString("exit 0\n")
 	return b.String(), d.String()

@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 func init() { register(methodSpoofTunnel) }
 
@@ -23,10 +27,11 @@ var methodSpoofTunnel = &Method{
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
-		port := firstPort(c.T.Ports) // single forwarded port
-		dst := port                  // the foreign service's port ("8443=443" forwards to 443)
-		if ps := firstPorts(c.T.Ports, 1); len(ps) > 0 && ps[0].dst != "" {
-			dst = ps[0].dst
+		// a single forwarded port: users connect to its listen side on Iran, the foreign
+		// side delivers to its destination ("8080=80" → 127.0.0.1:80, not :8080)
+		port, dst, err := spoofPorts(c.T.Ports)
+		if err != nil {
+			return SidePlan{}, SidePlan{}, err
 		}
 		remotePort := d.BasePort   // local.remote_port == remote.listen_port
 		recvPort := d.BasePort + 1 // remote.client_port == local.recv_port
@@ -90,4 +95,30 @@ curl -fL --retry 3 -o "$OUT" "%shttps://github.com/ParsaKSH/spoof-tunnel/release
 		}
 		return mk(irCfg, irPath, "Iran"), mk(khCfg, khPath, "foreign"), nil
 	},
+}
+
+// spoofPorts returns the one listen and destination port of a Spoof-Tunnel tunnel (443
+// when none is set). The pipe forwards exactly one port, so a list or a range is an error
+// instead of silently using only its first port.
+func spoofPorts(ports string) (listen, dst string, err error) {
+	ps := splitPorts(ports)
+	if len(ps) == 0 {
+		return "443", "443", nil
+	}
+	if len(ps) > 1 || strings.Contains(ps[0].listen, "-") || strings.Contains(ps[0].dst, "-") {
+		return "", "", fmt.Errorf("Spoof-Tunnel forwards a single port — set one port (or one mapping like 8080=80), not %q; use another tunnel for more ports", ports)
+	}
+	listen, dst = ps[0].listen, ps[0].dst
+	if i := strings.LastIndex(listen, ":"); i >= 0 {
+		listen = listen[i+1:] // "0.0.0.0:443" style binds: spoof listens on all addresses
+	}
+	if i := strings.LastIndex(dst, ":"); i >= 0 {
+		dst = dst[i+1:]
+	}
+	for _, v := range []string{listen, dst} {
+		if n, e := strconv.Atoi(v); e != nil || n < 1 || n > 65535 {
+			return "", "", fmt.Errorf("Spoof-Tunnel port %q is not a port number", v)
+		}
+	}
+	return listen, dst, nil
 }
