@@ -37,3 +37,20 @@ func TestAISnapshotNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+// Outages come one line per tunnel; a flapping alert once, with how many times.
+func TestAISummaries(t *testing.T) {
+	now := int64(1_000_000)
+	outs := aiOutages([]Outage{
+		{Kind: "tunnel", Target: "t1", Name: "a", Start: now - 3600, End: now - 3000},
+		{Kind: "tunnel", Target: "t1", Name: "a", Start: now - 600, End: 0},
+		{Kind: "tunnel", Target: "t2", Name: "b", Start: now - 1_000_000, End: now - 999_000}, // too old
+	}, now-7*86400, now)
+	if len(outs) != 1 || outs[0].Count != 2 || outs[0].DownMin != 20 || outs[0].Longest != 10 || !outs[0].Ongoing {
+		t.Errorf("outages: %+v", outs)
+	}
+	al := aiAlertSummary([]aiAlert{{now - 50, "path 1 down for 31s"}, {now - 40, "path 1 down for 45s"}, {now - 30, "other"}}, now-100)
+	if len(al) != 2 || al[1]["times"] != 2 || al[0]["msg"] != "other" {
+		t.Errorf("alerts: %+v", al)
+	}
+}

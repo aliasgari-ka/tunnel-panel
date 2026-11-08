@@ -216,10 +216,10 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		var out []BenchResult
 		// a run of only some methods keeps the route's earlier results for the others: the
 		// Routes page, failover and hot standby read the latest run as the whole picture
-		var earlier []BenchResult
-		if len(req.Methods) > 0 {
-			earlier = a.benchResults(req.IranID, req.ForeignID, req.Family)
-		}
+		// (and so does a full run cut short — cancelled or out of time: its few new results
+		// replaced the whole route's, and hot standby / failover then had 5 methods of 20)
+		earlier := a.benchResults(req.IranID, req.ForeignID, req.Family)
+		keepEarlier := len(req.Methods) > 0
 		for i, m := range cands {
 			if ctx.Err() != nil {
 				break // cancelled
@@ -302,7 +302,9 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			rankBench(partial)
 			a.setBench(req.IranID, req.ForeignID, req.Family, partial)
 		}
-		out = withEarlier(out, earlier)
+		if keepEarlier || ctx.Err() != nil {
+			out = withEarlier(out, earlier)
+		}
 		rankBench(out)
 		a.setBench(req.IranID, req.ForeignID, req.Family, out)
 		a.recordBench(req, out)

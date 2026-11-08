@@ -86,6 +86,9 @@ func gemOwnDomOf(ctx context.Context, srv *Server) string {
 		return c.dom
 	}
 	d := gemDom(ctx, srv.IPv4+":12371")
+	if d == "" {
+		return d // a failed check is not kept for hours
+	}
 	gemOwnDom.Lock()
 	gemOwnDom.m[srv.ID] = gemDomAt{d, time.Now()}
 	gemOwnDom.Unlock()

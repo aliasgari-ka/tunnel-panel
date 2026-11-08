@@ -1408,6 +1408,10 @@ func (s *Server2) benchHistory(w http.ResponseWriter, r *http.Request) {
 		_ = readJSON(r, &in)
 		if in.Clear {
 			_ = s.app.store.Update(func(st *State) error { st.BenchHistory = nil; return nil })
+			// and the results in memory: failover and hot standby kept ranking by them
+			s.app.benchMu.Lock()
+			s.app.benchRes = nil
+			s.app.benchMu.Unlock()
 		}
 	}
 	out := []BenchRecord{}

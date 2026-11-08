@@ -447,8 +447,7 @@ async function viewRoutes(w) {
     if (!p.tunnels.length) { others.push({ ...p, id: 'p:' + key(p.iran, p.foreign) }); return; }
     p.tunnels.forEach(t => items.push({ ...p, tunnels: [t], tunnel: t, id: t.id, shared: p.tunnels.filter(x => x !== t).map(x => x.name) }));
   });
-  const order = new Map(STATE.tunnels.map((t, i) => [t.id, i]));
-  items.sort((a, b) => order.get(a.id) - order.get(b.id));
+  items.sort((a, b) => tunnelOrder(a.tunnel, b.tunnel));
   const valid = (id) => id === '' || id === 'other' || items.some(x => x.id === id);
   if (STATE.routeSel === undefined) { try { STATE.routeSel = localStorage.getItem('tp-routesel') || ''; } catch (e) { STATE.routeSel = ''; } }
   if (!valid(STATE.routeSel)) STATE.routeSel = '';
@@ -478,11 +477,28 @@ async function viewRoutes(w) {
   $$('[data-rsel]', picker).forEach(b => b.onclick = () => { STATE.routeSel = b.dataset.rsel; try { localStorage.setItem('tp-routesel', STATE.routeSel); } catch (e) {} paint(); });
   repaint = paint;
   paint();
+  // health, the users' path and new benchmark results come in while the page is open (it
+  // showed what was true when it was opened); not while a field or switch is being used
+  if (routesTimer) clearInterval(routesTimer);
+  routesTimer = setInterval(async () => {
+    if (STATE.view !== 'routes' || !box.isConnected) { clearInterval(routesTimer); routesTimer = null; return; }
+    if (document.hidden || (document.activeElement && box.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) return;
+    try {
+      const [list, h2] = await Promise.all([api('/tunnels'), api('/bench/history')]);
+      (Array.isArray(list) ? list : []).forEach(n => { const t = STATE.tunnels.find(x => x.id === n.id); if (t) Object.assign(t, { hs: n.hs, failover: n.failover, health: n.health, active: n.active }); });
+      hist = h2 || hist;
+      const y = window.scrollY; paint(); window.scrollTo(0, y);
+    } catch (e) {}
+  }, 30000);
 }
+let routesTimer = null;
+// the Tunnels page's order (running first, then the ones with a problem, then by name), the
+// Routes page uses it too
+function tunnelOrder(x, y) { return (!!y.active - !!x.active) || (!!(y.active && y.health) - !!(x.active && x.health)) || x.name.localeCompare(y.name); }
 // the gist of a benchmark error, for a table cell
 function shortErr(e) {
   e = e || 'failed';
-  if (/excluded on this route/.test(e)) return 'left out';
+  if (/excluded on this route/.test(e)) return 'left out (not measured)';
   if (/no traffic passes/.test(e)) return /also tried/.test(e) ? 'no traffic (other carriers too)' : 'no traffic passes';
   if (/no bulk data passes/.test(e)) return 'pings pass, data stalls (MTU?)';
   if (/not tested: tunnel/.test(e)) return 'busy: a live tunnel uses it';
@@ -1256,7 +1272,7 @@ function viewTunnels(w) {
     };
     $('[data-q]', bar).oninput = (e) => { STATE.tunSearch = e.target.value; applySearch(); };
     STATE.tunnels.filter(t => shownOwner(t.owner))
-      .sort((x, y) => (!!y.active - !!x.active) || (!!(y.active && y.health) - !!(x.active && x.health)) || x.name.localeCompare(y.name))
+      .sort(tunnelOrder)
       .forEach(t => grid.appendChild(tunnelCard(t)));
     w.appendChild(grid);
     applySearch();
@@ -1337,7 +1353,7 @@ async function aiModal() {
     const rep = r.report;
     const tname = (id) => (STATE.tunnels.find(t => t.id === id) || {}).name || id;
     const head = !r.hasKey ? `<div class="muted">Set the Claude API key in Settings first.</div>`
-      : `<div class="actions" style="margin-bottom:10px"><button class="btn pri" data-airun${r.running ? ' disabled' : ''}>${r.running ? '⏳ Analysing… (1-3 min)' : rep ? '↻ Analyse again' : '▶ Analyse now'}</button>${rep ? `<span class="faint" style="font-size:12px">last: ${ago(rep.at)}</span>` : ''}</div>`;
+      : `<div class="actions" style="margin-bottom:10px"><button class="btn pri" data-airun${r.running ? ' disabled' : ''}>${r.running ? '⏳ Analysing… (1-3 min)' : rep ? '↻ Analyse again' : '▶ Analyse now'}</button>${rep ? `<span class="faint" style="font-size:12px">last: ${ago(rep.at)}${rep.inTokens ? ` · ${rep.inTokens + rep.outTokens} tokens` : ""}</span>` : ''}</div>`;
     let body = '';
     if (rep && rep.error) body = `<div class="downbar">⚠ ${esc(rep.error)}</div>`;
     else if (rep) {
@@ -1855,7 +1871,7 @@ async function pollJob(jobId, tunnelId) {
 const IG = { data: null, cur: null, tab: 'routes', sub: recall('tp-igsub') || 'servers', filter: 'all', q: '' };
 const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', CUSTOM: 'My sites' };
 const IGWIDE = ['ADULT', 'SPOTIFY', 'SCLOUD', 'CUSTOM'];
-const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'],
+const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'], GUARD: ['WARP guard not running', 'bad'],
   CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
 const igBad = (s) => (IGST[s] || ['', 'bad'])[1] === 'bad';
 // a proxy that is one of our servers (the agent's relay: own IP = port 12371, WARP n = 12371+n) -> "internal · name"
@@ -1978,7 +1994,7 @@ function igServers(box) {
   const d = IG.data;
   if (!d) { box.innerHTML = '<div class="grid cards">' + '<div class="skel" style="height:150px"></div>'.repeat(4) + '</div>'; return; }
   const L = igList(), ok = L.filter(s => s.info.state === 'OK').length, conn = L.reduce((a, s) => a + (+s.info.caught || 0), 0);
-  const bad = L.filter(s => s.info.state !== 'OK' && s.info.state !== 'CHECKING').length, old = L.filter(s => ['UPDATE', 'NOAGENT'].includes(s.info.state)).length;
+  const bad = L.filter(s => s.info.state !== 'OK' && s.info.state !== 'CHECKING').length, old = L.filter(s => ['UPDATE', 'NOAGENT'].includes(s.info.state) || s.info.outdated === '1').length;
   box.insertAdjacentHTML('beforeend', `<div class="summary">
     <div class="stat"><small>Servers</small><b>${L.length}</b></div><div class="stat"><small>Healthy</small><b>${ok}</b></div>
     <div class="stat"><small>Connections routed</small><b>${conn}</b></div><div class="stat"><small>Need attention</small><b>${bad}</b></div></div>`);
@@ -2086,7 +2102,7 @@ function igDetail(w) {
     : `<span>${esc(i.err || '')}</span>`}</div>
     ${i.wide === 'ON' ? '<div class="mdesc">Wide catch is on: all web traffic of this server passes the igproxy router and is routed by domain.</div>' : ''}
     ${i.state === 'PANEL' ? '<div class="mcrit" style="margin:10px 0 0">The x-ui panel on this server blocks or diverts Google before igproxy sees it → Tests & diagnosis → Fix panel.</div>' : ''}
-    ${['UPDATE', 'NOAGENT'].includes(i.state) ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → Server → Install / update.</div>' : ''}
+    ${['UPDATE', 'NOAGENT'].includes(i.state) || i.outdated === '1' ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → Server → Install / update.</div>' : ''}
     ${igAccBroken(i) ? `<div class="mwarn" style="margin:10px 0 0">Instagram logged the test account out (${esc(igAccWhy(i))}): no WARP or proxy is checked for Instagram music until a new sessionid is saved → Test account tab.</div>` : ''}</div>
     <div class="seg igtabs">${IGTABS.map(([k, t]) => `<button data-t="${k}" class="${k === IG.tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igtab"></div>`);
   $$('.igtabs button', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.t; igRender(); });

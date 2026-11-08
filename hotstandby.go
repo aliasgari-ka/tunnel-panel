@@ -130,8 +130,10 @@ func (a *App) hsPlan(t *Tunnel, mid, fam string) []HSPath {
 		for _, r := range a.benchResults(t.ServerID, t.ForeignID, f) {
 			if r.OK {
 				score[r.Method+"|"+f] = r.Score
-			} else if r.Error != "" {
-				score[r.Method+"|"+f] = -1 // failed on this route: keep, but last
+			} else if r.Error != "" && !r.Skipped {
+				// failed on this route: keep, but last (not one only skipped — switched off or
+				// in live use at the time: it was never measured, so it ranks as unmeasured)
+				score[r.Method+"|"+f] = -1
 			}
 		}
 	}

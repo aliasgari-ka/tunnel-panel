@@ -217,10 +217,13 @@ func igParseInfo(rc int, text, agentSum string) map[string]string {
 			}
 		}
 	}
+	// an old agent is flagged on its own: as a state it hid a router that is down
+	_, ig := S["ig"]
+	if ig && agentSum != "" && S["sum"] != agentSum {
+		S["outdated"] = "1"
+	}
 	var st string
-	switch _, ig := S["ig"]; {
-	case ig && agentSum != "" && S["sum"] != agentSum:
-		st = "UPDATE"
+	switch {
 	case ig && S["paused"] == "YES":
 		st = "PAUSED"
 	case ig && (S["router"] != "active" || S["redirect"] != "ON"):
@@ -231,6 +234,10 @@ func igParseInfo(rc int, text, agentSum string) map[string]string {
 		st = "GEMFAIL"
 	case ig && S["igp"] == "FAIL":
 		st = "IGFAIL"
+	case ig && S["guard"] == "DOWN":
+		st = "GUARD"
+	case ig && S["outdated"] == "1":
+		st = "UPDATE"
 	case ig:
 		st = "OK"
 	case rc == 3:

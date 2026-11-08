@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -33,6 +35,8 @@ type AIReport struct {
 	Findings []AIFinding `json:"findings"`
 	Actions  []AIAction  `json:"actions"`
 	Error    string      `json:"error,omitempty"`
+	InTok    int64       `json:"inTokens,omitempty"`
+	OutTok   int64       `json:"outTokens,omitempty"`
 }
 
 type AIFinding struct {
@@ -94,6 +98,7 @@ func (a *App) aiSnapshot() map[string]any {
 	type tunV struct {
 		ID         string         `json:"id"`
 		Name       string         `json:"name"`
+		Owner      string         `json:"account,omitempty"`
 		Iran       string         `json:"iranServer"`
 		Foreign    string         `json:"foreignServer"`
 		Method     string         `json:"method"`
@@ -109,6 +114,7 @@ func (a *App) aiSnapshot() map[string]any {
 	}
 	type srvV struct {
 		Name     string  `json:"name"`
+		Owner    string  `json:"account,omitempty"`
 		Role     string  `json:"role"`
 		Country  string  `json:"country,omitempty"`
 		Reach    bool    `json:"reachable"`
@@ -127,7 +133,7 @@ func (a *App) aiSnapshot() map[string]any {
 	since := time.Now().Add(-7 * 24 * time.Hour).Unix()
 	var tuns []tunV
 	var srvs []srvV
-	var outs []Outage
+	var outs []aiOutage
 	var bench []map[string]any
 	names := map[string]string{}
 	a.store.View(func(st *State) {
@@ -135,23 +141,18 @@ func (a *App) aiSnapshot() map[string]any {
 			names[s.ID] = s.Name
 		}
 		for _, s := range st.Servers {
-			if s.Owner != "" {
-				continue
-			}
-			v := srvV{Name: s.Name, Role: s.Role, Country: s.Country, Reach: a.serverReachable(s.ID)}
+			// every account's: the admin looks after all of them
+			v := srvV{Name: s.Name, Owner: s.Owner, Role: s.Role, Country: s.Country, Reach: a.serverReachable(s.ID)}
 			if r := snap.Res[s.ID]; r != nil {
-				v.Cores, v.CPU, v.Steal, v.SoftIRQ, v.IRQHint, v.Conntrk, v.CTMax, v.Load1, v.Resource = r.Cores, r.CPU, r.Steal, r.SoftIRQ, r.IRQHint, r.Conntrack, r.CTMax, r.Load[0], r.Error
+				v.Cores, v.CPU, v.Steal, v.SoftIRQ, v.IRQHint, v.Conntrk, v.CTMax, v.Load1, v.Resource = r.Cores, r1(r.CPU), r1(r.Steal), r1(r.SoftIRQ), r.IRQHint, r.Conntrack, r.CTMax, r1(r.Load[0]), r.Error
 				if r.MemTotal > 0 {
-					v.MemPct = float64(r.MemUsed) * 100 / float64(r.MemTotal)
+					v.MemPct = r1(float64(r.MemUsed) * 100 / float64(r.MemTotal))
 				}
 			}
 			srvs = append(srvs, v)
 		}
 		for _, t := range st.Tunnels {
-			if t.Owner != "" {
-				continue
-			}
-			v := tunV{ID: t.ID, Name: t.Name, Iran: names[t.ServerID], Foreign: names[t.ForeignID], Method: t.Active, Family: t.Family,
+			v := tunV{ID: t.ID, Name: t.Name, Owner: t.Owner, Iran: names[t.ServerID], Foreign: names[t.ForeignID], Method: t.Active, Family: t.Family,
 				Running: t.Active != "", HotStandby: t.HotStandby, Auto: t.HSAuto, Failover: t.Failover}
 			if v.Method == "" {
 				v.Method = t.Selected
@@ -177,11 +178,11 @@ func (a *App) aiSnapshot() map[string]any {
 						p.RTTms = hv.RTT[i]
 					}
 					if i < len(hv.Loss) && hv.Loss[i] >= 0 {
-						l := hv.Loss[i]
+						l := r1(hv.Loss[i])
 						p.LossPct = &l
 					}
 					if i < len(hv.Kbps) && hv.Kbps[i] > 0 {
-						p.Mbps = float64(hv.Kbps[i]) / 1000
+						p.Mbps = r1(float64(hv.Kbps[i]) / 1000)
 					}
 					v.Paths = append(v.Paths, p)
 				}
@@ -192,16 +193,11 @@ func (a *App) aiSnapshot() map[string]any {
 				}
 			}
 			if ts := snap.Tunnels[t.ID]; ts != nil {
-				v.DownMbps, v.UpMbps = ts.Down/1e6, ts.Up/1e6
+				v.DownMbps, v.UpMbps = r1(ts.Down/1e6), r1(ts.Up/1e6)
 			}
 			tuns = append(tuns, v)
 		}
-		for _, o := range st.Outages {
-			if o.Start >= since || o.End == 0 {
-				o.Reason, o.Cause = aiRedact(o.Reason), aiRedact(clipTo(o.Cause, 300))
-				outs = append(outs, o)
-			}
-		}
+		outs = aiOutages(st.Outages, since, time.Now().Unix())
 		// the newest benchmark of each route
 		seen := map[string]bool{}
 		for i := len(st.BenchHistory) - 1; i >= 0 && len(bench) < 12; i-- {
@@ -218,12 +214,12 @@ func (a *App) aiSnapshot() map[string]any {
 				}
 				m := map[string]any{"method": r.Method, "ok": r.OK}
 				if r.OK {
-					m["rttMs"], m["downMbps"], m["upMbps"], m["score"] = r.RTTms, r.DownMbps, r.UpMbps, r.Score
+					m["rttMs"], m["downMbps"], m["upMbps"], m["score"] = r1(r.RTTms), r1(r.DownMbps), r1(r.UpMbps), r1(r.Score)
 					if r.LossKnown {
-						m["lossPct"] = r.LossPct
+						m["lossPct"] = r1(r.LossPct)
 					}
 				} else {
-					m["error"] = aiRedact(clipTo(r.Error, 120))
+					m["error"] = aiRedact(clipTo(r.Error, 80))
 				}
 				rs = append(rs, m)
 			}
@@ -232,17 +228,149 @@ func (a *App) aiSnapshot() map[string]any {
 	})
 	sort.Slice(tuns, func(i, j int) bool { return tuns[i].Name < tuns[j].Name })
 	aiAlerts.Lock()
-	var alerts []aiAlert
-	for _, al := range aiAlerts.l {
-		alerts = append(alerts, aiAlert{al.At, aiRedact(al.Msg)})
-	}
+	alerts := aiAlertSummary(aiAlerts.l, time.Now().Add(-48*time.Hour).Unix())
 	aiAlerts.Unlock()
 	return map[string]any{
 		"now": time.Now().UTC().Format(time.RFC3339),
 		"switcher": map[string]any{"checkEverySec": hsEvery, "failsToDown": hsFails, "graceSec": hsGrace, "backAfterStableSec": hsFailback,
 			"holdAfterManualSec": hsHold, "autoFailoverAfter": failoverAfter.String(), "failoverRetry": failoverRetry.String()},
-		"tunnels": tuns, "servers": srvs, "outagesLast7Days": outs, "recentAlerts": alerts, "benchmarks": bench,
+		"tunnels": tuns, "servers": srvs, "outagesLast7Days": outs, "alertsLast48h": alerts, "benchmarks": bench,
+		"igRouting": a.aiIG(),
 	}
+}
+
+// r1 rounds to one decimal: long fractions cost tokens and say nothing more.
+func r1(x float64) float64 { return math.Round(x*10) / 10 }
+
+// aiOutage is every outage of one tunnel or server in the window, in one line.
+type aiOutage struct {
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+	Count   int    `json:"count"`
+	DownMin int    `json:"totalDownMin"`
+	Longest int    `json:"longestMin"`
+	Ongoing bool   `json:"ongoing,omitempty"`
+	Last    string `json:"lastAt"`
+	Reason  string `json:"lastReason"`
+	Cause   string `json:"lastCause,omitempty"`
+}
+
+func aiOutages(all []Outage, since, now int64) []aiOutage {
+	by := map[string]*aiOutage{}
+	var order []string
+	for _, o := range all {
+		if o.Start < since && o.End != 0 {
+			continue
+		}
+		k := o.Kind + "|" + o.Target
+		x := by[k]
+		if x == nil {
+			x = &aiOutage{Kind: o.Kind, Name: o.Name}
+			by[k] = x
+			order = append(order, k)
+		}
+		end := o.End
+		if end == 0 {
+			end, x.Ongoing = now, true
+		}
+		m := int((end - o.Start) / 60)
+		x.Count++
+		x.DownMin += m
+		if m > x.Longest {
+			x.Longest = m
+		}
+		x.Last = time.Unix(o.Start, 0).UTC().Format("01-02 15:04")
+		x.Reason, x.Cause = aiRedact(clipTo(o.Reason, 120)), aiRedact(clipTo(o.Cause, 160))
+	}
+	out := make([]aiOutage, 0, len(order))
+	for _, k := range order {
+		out = append(out, *by[k])
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DownMin > out[j].DownMin })
+	if len(out) > 25 {
+		out = out[:25]
+	}
+	return out
+}
+
+var aiDigits = regexp.MustCompile(`\d+`)
+
+// aiAlertSummary: the same alert repeated (a path that keeps flapping) once, with a count.
+func aiAlertSummary(l []aiAlert, since int64) []map[string]any {
+	type agg struct {
+		msg  string
+		n    int
+		last int64
+	}
+	by := map[string]*agg{}
+	var order []string
+	for _, al := range l {
+		if al.At < since {
+			continue
+		}
+		msg := aiRedact(clipTo(al.Msg, 200))
+		k := aiDigits.ReplaceAllString(msg, "#")
+		x := by[k]
+		if x == nil {
+			x = &agg{}
+			by[k] = x
+			order = append(order, k)
+		}
+		x.msg, x.n, x.last = msg, x.n+1, al.At
+	}
+	sort.SliceStable(order, func(i, j int) bool { return by[order[i]].last > by[order[j]].last })
+	if len(order) > 40 {
+		order = order[:40]
+	}
+	out := make([]map[string]any, 0, len(order))
+	for _, k := range order {
+		x := by[k]
+		m := map[string]any{"msg": x.msg, "lastAt": time.Unix(x.last, 0).UTC().Format("01-02 15:04")}
+		if x.n > 1 {
+			m["times"] = x.n
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// aiIGKeys: what the IG Routing agents report that says something about the users' experience
+// (each service's route, the WARP pool, Google's country, the agent's own checks).
+var aiIGKeys = []string{"state", "ig", "google", "ytm", "spotify", "adult", "mode", "warps", "pool", "gw", "gusers",
+	"gcc", "gdom", "igcc", "gem", "igp", "panel", "guard", "wauto", "paused", "proxies", "outdated", "err"}
+
+// aiIG: the IG Routing servers' last known state, from the panel's cache (no new SSH calls).
+func (a *App) aiIG() []map[string]string {
+	var list []*Server
+	a.store.View(func(st *State) {
+		for _, s := range st.Servers {
+			if s.Igproxy {
+				list = append(list, s)
+			}
+		}
+	})
+	var out []map[string]string
+	for _, s := range list {
+		a.ig.mu.Lock()
+		e, ok := a.ig.m[s.ID]
+		a.ig.mu.Unlock()
+		m := map[string]string{"server": s.Name, "country": s.Country}
+		if s.Owner != "" {
+			m["account"] = s.Owner
+		}
+		if !ok {
+			m["state"] = "not read yet"
+		} else {
+			for _, k := range aiIGKeys {
+				if v := e.info[k]; v != "" && v != "-" {
+					m[k] = aiRedact(clipTo(v, 160))
+				}
+			}
+			m["age"] = shortDur(time.Since(e.at))
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // ---- the call
@@ -253,13 +381,20 @@ Tunnels with hot standby run several paths ("method|family", e.g. "espsk|v4") at
 the Iran server moves users between them make-before-break. In manual mode users stay on the chosen
 path until it is down; in auto mode they also move to a clearly faster or cleaner path.
 
-You get a JSON snapshot. Find what hurts users most — outages, flapping, slow or lossy paths, a path
+IG Routing (igRouting): each server routes services through its own IP ("direct"), Cloudflare WARP
+("warp" = the pool, "warpN" = one instance) or proxies: ig = Instagram, google = Google/Gemini,
+ytm = YouTube Music. pool = WARPs in use / all, gusers = the WARP the users' Google goes out of,
+gcc/gdom = the country Google sees, gem/igp = the agent's own Gemini/Instagram checks (OK/FAIL),
+state other than OK = a problem. Google should be in the server's own country.
+
+You get a JSON snapshot of the whole panel. Find what hurts users most — outages, flapping, slow or lossy paths, a path
 the users sit on while a clearly better one runs, overloaded servers (CPU, steal, softirq on one core,
 conntrack near its max), failovers stuck on a backup, paths that never start — and say what to do.
 Be concrete: name the tunnel, the server, the path, the numbers. Only claim what the data shows; say
 when the data is too thin to tell. Do not invent settings the panel does not have.
 
-Write all text in Persian (Farsi), short and plain, for an admin reading on a phone. Keep technical
+At most 8 findings, the most important first, one or two sentences each. Write all text in Persian
+(Farsi), short and plain, for an admin reading on a phone. Keep technical
 names (method ids, server and tunnel names, numbers) as they are.
 
 actions: only changes that cut nobody off, and only when the data clearly supports them:
@@ -318,18 +453,18 @@ func (a *App) aiCall(rep *AIReport) error {
 	if key == "" {
 		return errors.New("no Claude API key — set it in Settings")
 	}
-	body, _ := json.MarshalIndent(a.aiSnapshot(), "", " ")
+	body, _ := json.Marshal(a.aiSnapshot()) // compact: indentation alone was about a third of the input
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	client := anthropic.NewClient(option.WithAPIKey(key))
 	stream := client.Beta.Messages.NewStreaming(ctx, anthropic.BetaMessageNewParams{
 		Model:     aiModel,
-		MaxTokens: 32000,
+		MaxTokens: 16000,
 		Betas:     []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
 		Fallbacks: anthropic.BetaFallbacksParamUnion{OfDefault: constant.ValueOf[constant.Default]()},
 		System:    []anthropic.BetaTextBlockParam{{Text: aiSystem}},
 		OutputConfig: anthropic.BetaOutputConfigParam{
-			Effort: anthropic.BetaOutputConfigEffortHigh,
+			Effort: anthropic.BetaOutputConfigEffortMedium, // a review needs no more; high cost about twice the tokens
 			Format: anthropic.BetaJSONOutputFormatParam{Schema: aiSchema},
 		},
 		Messages: []anthropic.BetaMessageParam{
@@ -376,6 +511,8 @@ func (a *App) aiCall(rep *AIReport) error {
 		return fmt.Errorf("could not read Claude's answer: %v", err)
 	}
 	rep.Summary, rep.Findings = out.Summary, out.Findings
+	rep.InTok, rep.OutTok = msg.Usage.InputTokens, msg.Usage.OutputTokens
+	log.Printf("ai analysis: %d input, %d output tokens", rep.InTok, rep.OutTok)
 	for _, x := range out.Actions {
 		if a.aiCheck(x) == nil { // only what the panel can really carry out
 			rep.Actions = append(rep.Actions, x)
