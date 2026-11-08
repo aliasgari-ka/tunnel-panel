@@ -80,7 +80,7 @@ const archOf = (u) => /^(aarch64|arm64)$/.test(u || '') ? 'arm64' : /^(x86_64|am
 function methodMissing(m, t) {
   if (!m || !m.helper) return '';
   const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
-  const arches = [archOf(ir && ir.arch), fg ? archOf(fg.arch) : STATE.hostArch].filter(Boolean);
+  const arches = m.helperArch ? [m.helperArch] : [archOf(ir && ir.arch), fg ? archOf(fg.arch) : STATE.hostArch].filter(Boolean);
   const miss = [...new Set(arches)].filter(a => !(STATE.helpers || []).includes(m.helper + '-' + a));
   return miss.map(a => m.helper + '-' + a).join(', ');
 }

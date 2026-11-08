@@ -26,7 +26,7 @@ func init() {
 }
 
 // TP Tunnel / TP Reverse: the tunnel core of the botping panel ("tunpanel" tp-agent 1.20.9,
-// closed source, linux amd64 only). Iran is the server: it listens on the tunnel port and on
+// closed source, linux amd64 only; ARM servers run it under qemu-x86_64). Iran is the server: it listens on the tunnel port and on
 // the users' ports; the foreign server dials it and opens the users' connections locally.
 // The binary isn't in this (public) repository: it is uploaded as the helper tpk-agent-amd64
 // (Settings → Helper binaries, or /etc/tunnel-panel/helpers on the panel host). It is named
@@ -39,12 +39,13 @@ const (
 var tpkArt = Artifact{Name: "tpk-agent", Asset: "tpk-agent", Dest: tpkBin, Mode: 0o755}
 
 var methodTPK = &Method{
-	ID:       "tpk",
-	Title:    "TP Tunnel",
-	Desc:     "botping's TP Tunnel (tp-agent 1.20.9, amd64 servers only): TLS / raw / WebSocket / HTTP/2 / UDP carrier with an ed25519 key, a pinned certificate and padding. Iran listens on the tunnel port and the users' ports, the foreign server dials Iran.",
-	Families: []string{"v4", "v6"},
-	Encrypt:  "chacha20/aes + ed25519",
-	Helper:   "tpk-agent",
+	ID:         "tpk",
+	Title:      "TP Tunnel",
+	Desc:       "botping's TP Tunnel (tp-agent 1.20.9; amd64 build, run under qemu on ARM servers): TLS / raw / WebSocket / HTTP/2 / UDP carrier with an ed25519 key, a pinned certificate and padding. Iran listens on the tunnel port and the users' ports, the foreign server dials Iran.",
+	Families:   []string{"v4", "v6"},
+	Encrypt:    "chacha20/aes + ed25519",
+	Helper:     "tpk-agent",
+	HelperArch: "amd64",
 	Fields: []Field{
 		{Key: "transport", Label: "Transport", Type: "select", Default: "tls", Options: []string{"tls", "raw", "wss", "h2", "udp"}},
 		{Key: "port", Label: "Tunnel port", Type: "number", Default: "", Help: "port Iran listens on for the foreign server (blank = auto, unique per tunnel)"},
@@ -65,12 +66,13 @@ var methodTPK = &Method{
 }
 
 var methodTPKReverse = &Method{
-	ID:       "tpk_rev",
-	Title:    "TP Reverse (mTLS)",
-	Desc:     "botping's TP Reverse (tp-agent 1.20.9, amd64 servers only): the foreign server keeps ready mutual-TLS connections to Iran, with a certificate authority made for this tunnel alone.",
-	Families: []string{"v4", "v6"},
-	Encrypt:  "mTLS",
-	Helper:   "tpk-agent",
+	ID:         "tpk_rev",
+	Title:      "TP Reverse (mTLS)",
+	Desc:       "botping's TP Reverse (tp-agent 1.20.9; amd64 build, run under qemu on ARM servers): the foreign server keeps ready mutual-TLS connections to Iran, with a certificate authority made for this tunnel alone.",
+	Families:   []string{"v4", "v6"},
+	Encrypt:    "mTLS",
+	Helper:     "tpk-agent",
+	HelperArch: "amd64",
 	Fields: []Field{
 		{Key: "port", Label: "Tunnel port", Type: "number", Default: "", Help: "blank = auto, unique per tunnel"},
 		{Key: "workers", Label: "Ready connections", Type: "number", Default: "128"},
