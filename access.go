@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -138,13 +139,19 @@ func (s *Server2) guard(kind string, h http.HandlerFunc) http.HandlerFunc {
 			body, _ = io.ReadAll(io.LimitReader(r.Body, 1<<20))
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
+		// check exactly what the handler will use: a GET reads its ids from the query, the rest
+		// from the body (a body id with another ?id, or the reverse, let one object be checked
+		// and another be read or acted on)
 		var f struct {
 			ID, IranID, ForeignID, Iran, Foreign string
 		}
-		if len(body) > 0 {
+		q := r.URL.Query()
+		if r.Method != http.MethodGet && len(body) > 0 {
 			_ = json.Unmarshal(body, &f)
 		}
-		q := r.URL.Query()
+		if r.Method != http.MethodGet {
+			q = url.Values{}
+		}
 		id := f.ID
 		if id == "" {
 			id = q.Get("id")

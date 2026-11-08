@@ -1447,6 +1447,10 @@ func (s *Server2) benchActive(w http.ResponseWriter, r *http.Request) {
 func (s *Server2) serverPrepare(w http.ResponseWriter, r *http.Request) {
 	var in struct{ ID string }
 	_ = readJSON(r, &in)
+	if _, admin := s.who(r); in.ID == "" && !admin {
+		httpErr(w, 403, "only the panel admin can prepare the panel host")
+		return
+	}
 	var srv *Server
 	if in.ID != "" {
 		if srv = s.app.store.Server(in.ID); srv == nil {

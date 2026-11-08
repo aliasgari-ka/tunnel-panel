@@ -32,14 +32,15 @@ func serve(addr, tlsMode, dir string, handler http.Handler) error {
 	switch tlsMode {
 	case "":
 		fmt.Printf("Panel: http://%s\n", addr)
-		return (&http.Server{Addr: addr, Handler: handler}).ListenAndServe()
+		return panelServer(addr, handler).ListenAndServe()
 	case "self":
 		cert, err := selfSignedServerCert(dir)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("Panel: https://%s  (self-signed — your browser will warn once)\n", addr)
-		srv := &http.Server{Addr: addr, Handler: handler, ErrorLog: quietTLSLog, TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
+		srv := panelServer(addr, handler)
+		srv.ErrorLog, srv.TLSConfig = quietTLSLog, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 		return srv.ListenAndServeTLS("", "")
 	default:
 		domains := splitDomains(tlsMode)
@@ -51,14 +52,22 @@ func serve(addr, tlsMode, dir string, handler http.Handler) error {
 		// :80 serves the ACME http-01 challenge and redirects everything else to https.
 		go func() {
 			log.Printf("ACME/redirect listener on :80: %v",
-				http.ListenAndServe(":80", m.HTTPHandler(redirectHTTPS(domains))))
+				panelServer(":80", m.HTTPHandler(redirectHTTPS(domains))).ListenAndServe())
 		}()
 		for _, d := range domains {
 			fmt.Printf("Panel: https://%s/  (Let's Encrypt; needs ports 80 and 443 open and DNS pointing here)\n", d)
 		}
-		srv := &http.Server{Addr: ":443", Handler: handler, ErrorLog: quietTLSLog, TLSConfig: m.TLSConfig()}
+		srv := panelServer(":443", handler)
+		srv.ErrorLog, srv.TLSConfig = quietTLSLog, m.TLSConfig()
 		return srv.ListenAndServeTLS("", "")
 	}
+}
+
+// panelServer: an open port on the internet, so a client gets 20 s to send its request headers
+// and an idle connection is closed after 2 min (no limit on the body or the reply: uploads,
+// the console websocket and live views run long).
+func panelServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 20 * time.Second, IdleTimeout: 2 * time.Minute}
 }
 
 // quietTLSLog drops "TLS handshake error" lines: internet scanners hit the panel's port all

@@ -106,3 +106,27 @@ func TestGemFwdSwitch(t *testing.T) {
 		t.Fatalf("expired hold: up=%s token=%q", f.up, f.token)
 	}
 }
+
+// Two probes asking at once: exactly one gets the browser; an expired hold lets the next one in.
+func TestGemFwdHoldOnce(t *testing.T) {
+	f := &gemFwdT{up: gemHome, conns: map[net.Conn]struct{}{}}
+	got := make(chan string, 20)
+	for i := 0; i < 20; i++ {
+		go func() { got <- f.hold("192.0.2.1:1") }()
+	}
+	n := 0
+	for i := 0; i < 20; i++ {
+		if <-got != "" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d probes got the browser at once", n)
+	}
+	f.mu.Lock()
+	f.until = time.Now().Add(-time.Second)
+	f.mu.Unlock()
+	if tok := f.hold("192.0.2.2:1"); tok == "" || f.up != "192.0.2.2:1" {
+		t.Fatalf("after an expired hold: token %q, exit %s", tok, f.up)
+	}
+}
