@@ -185,11 +185,13 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 	return mk(d.IRPub, d.KHPub, d.IRv4, true), mk(d.KHPub, d.IRPub, d.KHv4, false), nil
 }
 
-// ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and ipx can't
-// run there: qemu-user can't open its packet socket, and box64 crashes the Go core at random
-// (seen live on an aarch64 server, with every dynarec setting). Stop with what to do — a unit
-// that is "active" but carries nothing helps nobody. (Build already refuses when it knows the
-// arch; this catches a server whose arch wasn't detected yet.)
+// premiumEmuCheck: on a non-amd64 server the amd64 v2 core would run emulated, and it can't
+// carry data there in any mode (seen live on an aarch64 server): under qemu-user ipx can't open
+// its packet socket and every forwarded connection of the TCP modes is reset (even on loopback,
+// with control channel and heartbeats up), and box64 crashes the Go core at random with every
+// dynarec setting. Stop with what to do — a unit that is "active" but carries nothing helps
+// nobody. (Build already refuses when it knows the arch; this catches a server whose arch
+// wasn't detected yet.)
 
 // premiumCoreEmulated reports whether s (nil = this panel host) would run the amd64 Premium
 // core under emulation: a non-amd64 CPU with no v2 core of its own uploaded.
@@ -205,17 +207,12 @@ func premiumCoreEmulated(s *Server) (arch string, emulated bool) {
 	return arch, err != nil
 }
 
-func ipxEmuCheck(mode string) string {
-	if mode != "ipx" {
-		return ""
-	}
-	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ]; then
-  echo "→ in Options set Mode to tcpmux or anytls and Apply again (they run under emulation), or use Backhaul Premium v1 (native arm64)"
-  echo "Premium ipx can't run on this $(uname -m) server: there is no $(uname -m) v2 core, and the emulated amd64 core can't open ipx's packet socket under qemu and crashes at random under box64"
+const premiumEmuCheck = `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ]; then
+  echo "Backhaul Premium v2 doesn't run on this $(uname -m) server: there is no $(uname -m) v2 core, and the amd64 core carries no data under emulation"
+  echo "→ use Backhaul Premium v1 (native arm64 core) or another method on this route"
   exit 1
 fi
 `
-}
 
 // goldenSteer adds (or removes) the TPROXY rule that hands the peer's DNS-port packets to
 // this tunnel's relay. TPROXY picks the socket per packet and rewrites nothing, so unlike
@@ -278,12 +275,12 @@ exit 0
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
-	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. Upload the amd64 core; ARM servers run it under emulation (qemu) in the tcpmux/wssmux/anytls/tcp modes; ipx needs an amd64 server.",
+	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. Upload the amd64 core. Not for ARM servers (no ARM v2 core, and the amd64 one carries no data emulated): use Backhaul Premium v1 there.",
 	Families: []string{"v4"},
 	Encrypt:  "AEAD (ipx) / TLS",
 	Helper:   "backhaul_premium",
-	// an arm64 server runs the amd64 v2 core under box64/qemu (premiumEmulated), and the
-	// vendor's arm64 download is v1 anyway: the amd64 core is the one the panel needs
+	// the vendor's arm64 download is v1 (and the amd64 v2 core carries no data emulated, so
+	// Build refuses ARM sides): the amd64 core is the only one the panel needs
 	HelperArch: "amd64",
 	Fields: []Field{
 		{Key: "mode", Label: "Mode", Type: "select", Default: "ipx", Options: []string{"ipx", "anytls", "tcpmux", "wssmux", "tcp"}},
@@ -303,8 +300,7 @@ var methodPremium = &Method{
 	},
 	// the default tcp profile is hand-made TCP segments without a handshake, which stateful
 	// filtering drops; gre passes wherever Plain GRE does
-	// last, the modes over real TCP: they pass where only TCP does, and they also run on an
-	// ARM server, where ipx can't (no ARM v2 core; the emulated one can't open ipx's socket)
+	// last, the modes over real TCP: they pass where only TCP does
 	Alts: func(string) []map[string]string {
 		return []map[string]string{{"profile": "gre"}, {"profile": "icmp"}, {"profile": "ipip"}, {"profile": "bip"}, {"profile": "udp"},
 			{"mode": "tcpmux"}, {"mode": "anytls"}}
@@ -312,11 +308,10 @@ var methodPremium = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		mode := c.Opt("mode")
-		if mode == "ipx" {
-			for _, s := range []*Server{c.Srv, c.FSrv} {
-				if arch, emu := premiumCoreEmulated(s); emu {
-					return ir, kh, fmt.Errorf("Backhaul Premium ipx can't run on this %s server: there is no %s v2 core, and the emulated amd64 core can't open ipx's packet socket under qemu and crashes at random under box64 — set Mode to tcpmux or anytls, which run under emulation", arch, arch)
-				}
+		// (worded so the bench doesn't try the other carriers: none of them runs either)
+		for _, s := range []*Server{c.Srv, c.FSrv} {
+			if arch, emu := premiumCoreEmulated(s); emu {
+				return ir, kh, fmt.Errorf("Backhaul Premium v2 doesn't run on %s servers: there is no %s v2 core, and the amd64 core carries no data under emulation (qemu resets every forwarded connection and can't open ipx's socket; box64 crashes it) — use Backhaul Premium v1, which has a native %s core, or another method", arch, arch, arch)
 			}
 		}
 		hbi, _ := strconv.Atoi(c.Opt("heartbeat_interval"))
@@ -452,7 +447,7 @@ sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
 			sp := SidePlan{
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
-				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode),
+				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + premiumEmuCheck,
 				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg, RestartSec: premiumRestartSec},
 				Check:     premiumLicenseCheck,
 			}
