@@ -334,16 +334,29 @@ func (a *App) trafficCollect() {
 // TPPR (PREROUTING, -s ip: received) and TPPT (POSTROUTING, -d ip: sent) with one rule per
 // address, no target (they only count). Rules are only ever added, so the counters run on
 // across reads; an address no longer used keeps a harmless rule. Prints "P <ip> <rx> <tx>".
+// The chains are entered once per real network card (-i/-o eth0, eth1: the cards nicRead
+// counts), never from a tunnel interface: a packet from the foreign address that arrives
+// inside a tunnel (a hot-standby GRE path carrying the reverse link) crossed a card once
+// already, and a second jump to the same chain would count every packet twice. Each read
+// puts the jumps back to exactly that set.
 func peerScript(ips map[string]string) string {
 	if len(ips) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(`tpp_chain() {
+	b.WriteString(`tpp_nics=; for d in /sys/class/net/*; do [ -e "$d/device" ] && tpp_nics="$tpp_nics ${d##*/}"; done
+tpp_jump() { # ipt hook chain -i|-o
+  want=$(for n in $tpp_nics; do echo "-A $2 $4 $n -j $3"; done; [ -n "$tpp_nics" ] || echo "-A $2 -j $3")
+  have=$($1 -w -t mangle -S $2 2>/dev/null | grep -- " -j $3\$")
+  [ "$(echo "$have" | sort)" = "$(echo "$want" | sort)" ] && return
+  echo "$have" | while read -r a rest; do [ -n "$rest" ] && $1 -w -t mangle -D $rest; done
+  echo "$want" | while read -r a rest; do $1 -w -t mangle -I $rest; done
+}
+tpp_chain() {
   $1 -w -t mangle -nL TPPR >/dev/null 2>&1 || $1 -w -t mangle -N TPPR
   $1 -w -t mangle -nL TPPT >/dev/null 2>&1 || $1 -w -t mangle -N TPPT
-  $1 -w -t mangle -C PREROUTING -j TPPR 2>/dev/null || $1 -w -t mangle -I PREROUTING -j TPPR
-  $1 -w -t mangle -C POSTROUTING -j TPPT 2>/dev/null || $1 -w -t mangle -I POSTROUTING -j TPPT
+  tpp_jump $1 PREROUTING TPPR -i
+  tpp_jump $1 POSTROUTING TPPT -o
 }
 tpp() { # ipt ip
   $1 -w -t mangle -C TPPR -s $2 2>/dev/null || $1 -w -t mangle -A TPPR -s $2
