@@ -16,8 +16,12 @@ import (
 var geo = struct {
 	sync.Mutex
 	cache  map[string]geoInfo
+	failed map[string]time.Time // ip -> when a failed lookup may be tried again
 	client *http.Client
-}{cache: map[string]geoInfo{}, client: &http.Client{Timeout: 6 * time.Second}}
+}{cache: map[string]geoInfo{}, failed: map[string]time.Time{}, client: &http.Client{Timeout: 6 * time.Second}}
+
+// geoRetry: a failed lookup (endpoint down, rate limit) is tried again after this, not never.
+var geoRetry = 10 * time.Minute
 
 type geoInfo struct {
 	Country string // ISO alpha-2
@@ -45,11 +49,20 @@ func lookupGeo(ctx context.Context, host string) geoInfo {
 		geo.Unlock()
 		return g
 	}
+	if time.Now().Before(geo.failed[key]) {
+		geo.Unlock()
+		return geoInfo{}
+	}
 	geo.Unlock()
 
 	g := queryGeo(ctx, key)
 	geo.Lock()
-	geo.cache[key] = g
+	if g.Country != "" {
+		geo.cache[key] = g
+		delete(geo.failed, key)
+	} else {
+		geo.failed[key] = time.Now().Add(geoRetry)
+	}
 	geo.Unlock()
 	return g
 }

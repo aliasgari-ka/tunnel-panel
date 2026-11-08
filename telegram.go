@@ -656,7 +656,7 @@ func (b *Bot) benchHistoryText(sc string) string {
 			}
 		}
 		fmt.Fprintf(&sb, "\n<b>%s → %s</b> (%s) · %s\n  %s\n", esc(h.IranName), esc(h.ForeignName), h.Family,
-			time.Unix(h.At, 0).Format("Jan 2 15:04"), esc(best))
+			time.Unix(h.At, 0).In(tehran).Format("Jan 2 15:04"), esc(best))
 	}
 	return sb.String()
 }

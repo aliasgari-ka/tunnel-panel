@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -80,10 +81,27 @@ func aiNoteAlert(msg string) {
 
 // ---- the snapshot
 
-var aiIPRe = regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b|\b[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{0,4}){3,7}\b`)
+var (
+	aiIPRe = regexp.MustCompile(`\b\d{1,3}(\.\d{1,3}){3}\b|\b[0-9a-fA-F]{1,4}(:[0-9a-fA-F]{0,4}){3,7}\b`)
+	// what may be a short IPv6 address (2a01::1, fe80::1), checked with net.ParseIP: times
+	// such as 15:04 or 12:30:00 are no address and stay
+	aiIP6Re = regexp.MustCompile(`\w*::[\w:]*`) // whole words: std::vector is no address
+)
 
 // aiRedact keeps addresses out of the text sent (names identify the servers well enough).
-func aiRedact(s string) string { return aiIPRe.ReplaceAllString(s, "<ip>") }
+func aiRedact(s string) string {
+	s = aiIPRe.ReplaceAllString(s, "<ip>")
+	return aiIP6Re.ReplaceAllStringFunc(s, func(m string) string {
+		c := m
+		if !strings.HasSuffix(c, "::") {
+			c = strings.TrimSuffix(c, ":") // "fe80::1: timeout"
+		}
+		if c != "::" && net.ParseIP(c) != nil {
+			return "<ip>" + m[len(c):]
+		}
+		return m
+	})
+}
 
 func (a *App) aiSnapshot() map[string]any {
 	type pathV struct {
@@ -144,7 +162,7 @@ func (a *App) aiSnapshot() map[string]any {
 			// every account's: the admin looks after all of them
 			v := srvV{Name: s.Name, Owner: s.Owner, Role: s.Role, Country: s.Country, Reach: a.serverReachable(s.ID)}
 			if r := snap.Res[s.ID]; r != nil {
-				v.Cores, v.CPU, v.Steal, v.SoftIRQ, v.IRQHint, v.Conntrk, v.CTMax, v.Load1, v.Resource = r.Cores, r1(r.CPU), r1(r.Steal), r1(r.SoftIRQ), r.IRQHint, r.Conntrack, r.CTMax, r1(r.Load[0]), r.Error
+				v.Cores, v.CPU, v.Steal, v.SoftIRQ, v.IRQHint, v.Conntrk, v.CTMax, v.Load1, v.Resource = r.Cores, r1(r.CPU), r1(r.Steal), r1(r.SoftIRQ), aiRedact(r.IRQHint), r.Conntrack, r.CTMax, r1(r.Load[0]), aiRedact(r.Error)
 				if r.MemTotal > 0 {
 					v.MemPct = r1(float64(r.MemUsed) * 100 / float64(r.MemTotal))
 				}
@@ -153,7 +171,12 @@ func (a *App) aiSnapshot() map[string]any {
 		}
 		for _, t := range st.Tunnels {
 			v := tunV{ID: t.ID, Name: t.Name, Owner: t.Owner, Iran: names[t.ServerID], Foreign: names[t.ForeignID], Method: t.Active, Family: t.Family,
-				Running: t.Active != "", HotStandby: t.HotStandby, Auto: t.HSAuto, Failover: t.Failover}
+				Running: t.Active != "", HotStandby: t.HotStandby, Auto: t.HSAuto}
+			if t.Failover != nil {
+				fo := *t.Failover // a copy: the state stays as it is
+				fo.Reason = aiRedact(fo.Reason)
+				v.Failover = &fo
+			}
 			if v.Method == "" {
 				v.Method = t.Selected
 			}
@@ -161,7 +184,7 @@ func (a *App) aiSnapshot() map[string]any {
 				v.Foreign = "panel host"
 			}
 			if h, ok := a.cachedHealth(t.ID); ok {
-				v.Health = h
+				v.Health = aiRedact(h)
 				if h == "" {
 					v.Health = "ok"
 				}

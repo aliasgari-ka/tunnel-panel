@@ -18,15 +18,19 @@ func TestAISnapshotNoSecrets(t *testing.T) {
 			{ID: "fo", Name: "germany", Role: "foreign", IPv4: "159.195.1.2", AgentToken: "agent-secret"},
 		}
 		s.Tunnels = []*Tunnel{{ID: "t1", Name: "tun", ServerID: "ir", ForeignID: "fo", Family: "v4", Ports: "443", Index: 1, Active: "gre",
-			Secrets: map[string]string{"psk": "psk-secret"}}}
+			Secrets:  map[string]string{"psk": "psk-secret"},
+			Failover: &FailoverState{Method: "gre", Family: "v4", Reason: "no answer from 81.12.32.26"}}}
 		s.Outages = []Outage{{ID: "o", Kind: "tunnel", Target: "t1", Name: "tun", Start: 1 << 40, Reason: "no answer from 81.12.32.26"}}
 		return nil
 	})
-	a := &App{store: st, jobs: newJobs(), agents: newAgentHub(), traffic: newTrafficMon()}
+	a := &App{store: st, jobs: newJobs(), agents: newAgentHub(), traffic: newTrafficMon(),
+		healthCache: map[string]string{"t1": "license IP 81.12.32.26 does not match"}}
+	a.traffic.res = map[string]*ServerRes{"fo": {Error: "unreachable: dial tcp 159.195.1.2:22: i/o timeout",
+		IRQHint: "one core of 2a01::1 does the packet work"}}
 	aiNoteAlert("🔴 down: 159.195.1.2 unreachable")
 	b, _ := json.Marshal(a.aiSnapshot())
 	out := string(b)
-	for _, bad := range []string{"81.12.32.26", "2a01:4f8", "159.195.1.2", "secret"} {
+	for _, bad := range []string{"81.12.32.26", "2a01:4f8", "2a01::1", "159.195.1.2", "secret"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("snapshot carries %q", bad)
 		}
@@ -34,6 +38,22 @@ func TestAISnapshotNoSecrets(t *testing.T) {
 	for _, want := range []string{"iran1", "germany", `"tun"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("snapshot lacks %s", want)
+		}
+	}
+}
+
+// Short IPv6 addresses go too; times stay.
+func TestAIRedactIPv6Short(t *testing.T) {
+	for in, want := range map[string]string{
+		"from 2a01::1 down":           "from <ip> down",
+		"fe80::1: timeout":            "<ip>: timeout",
+		"[2a01:4f8::5]:443":           "[<ip>]:443",
+		"at 15:04 and 12:30:00":       "at 15:04 and 12:30:00",
+		"std::vector":                 "std::vector",
+		"2a01:4f8:1:2::5 and 1.2.3.4": "<ip> and <ip>",
+	} {
+		if got := aiRedact(in); got != want {
+			t.Errorf("aiRedact(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

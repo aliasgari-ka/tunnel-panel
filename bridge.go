@@ -34,15 +34,20 @@ var bridges = &bridgeMgr{m: map[string]*Bridge{}}
 func (a *App) OpenBridge(srv *Server, bindPublic bool, ttl time.Duration) (*Bridge, error) {
 	bridges.mu.Lock()
 	defer bridges.mu.Unlock()
-	if b := bridges.m[srv.ID]; b != nil {
-		b.mu.Lock()
-		b.expires = time.Now().Add(ttl)
-		b.mu.Unlock()
-		return b, nil
-	}
 	bind := "127.0.0.1"
 	if bindPublic {
 		bind = "0.0.0.0"
+	}
+	if b := bridges.m[srv.ID]; b != nil {
+		if b.Bind == bind {
+			b.mu.Lock()
+			b.expires = time.Now().Add(ttl)
+			b.mu.Unlock()
+			return b, nil
+		}
+		// asked on another interface (a public one must not stay public): open it anew
+		delete(bridges.m, srv.ID)
+		b.ln.Close()
 	}
 	ln, err := net.Listen("tcp", bind+":0")
 	if err != nil {
@@ -117,7 +122,9 @@ func (b *Bridge) reaper() {
 
 func (b *Bridge) Close() {
 	bridges.mu.Lock()
-	delete(bridges.m, b.ServerID)
+	if bridges.m[b.ServerID] == b { // not the one that replaced it
+		delete(bridges.m, b.ServerID)
+	}
 	bridges.mu.Unlock()
 	b.ln.Close()
 }
