@@ -39,6 +39,9 @@ type Settings struct {
 	// AIDaily "HH:MM" (Tehran time): the panel runs the AI analysis by itself once a day and
 	// sends its summary to the admin chat; "" = 09:30 while a key is set, "off" = never
 	AIDaily string `json:"aiDaily,omitempty"`
+	// AIAuto "off": the daily run only reports; otherwise it also applies the actions it
+	// returns (only what aiCheck allows: users to a working path, the switcher's mode)
+	AIAuto string `json:"aiAuto,omitempty"`
 }
 
 // Server is a remote Iran server reached over SSH.
