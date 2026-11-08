@@ -450,7 +450,7 @@ async function viewRoutes(w) {
     const methodsTbl = mids.length ? `<table class="rt-tbl"><thead><tr><th>Method</th>${fams.map(f => `<th>${famName(f)}${bench[f] ? ` <span class="faint">· measured ${ageTxt(bench[f].at)}</span>` : ' <span class="faint">· not measured yet</span>'}</th>`).join('')}</tr></thead>
       <tbody>${mids.map((mid, i) => (i === 0 || gOf(mids[i - 1]) !== gOf(mid) ? `<tr class="rt-grp"><td colspan="${fams.length + 1}">${GROUP_ICON[gOf(mid)] || '🔧'} ${esc(gOf(mid))}</td></tr>` : '') +
         `<tr><td class="rt-mn">${esc(methodTitle(mid))}</td>${fams.map(f => cell(mid, f)).join('')}</tr>`).join('')}</tbody></table>
-      <div class="faint rt-leg">Switch on = the route's tunnels may use it (hot standby keeps it ready, failover can move users to it); off = never used here. ★ best measured · numbers = the order they're tried · tap ✕ for the whole error · 📊 measures them all${fams.some(f => !bench[f]) ? ' — not measured yet: you can still choose' : ''}</div>`
+      <div class="faint rt-leg">Switch on = the route's tunnels may use it (hot standby keeps it ready, failover can move users to it); off = never used here. ★ best measured · numbers = the order they're tried · tap ✕ for the whole error · 📊 measures the running ones (every method when none runs)${fams.some(f => !bench[f]) ? ' — not measured yet: you can still choose' : ''}</div>`
       : '<div class="faint" style="font-size:12.5px">No method can run between these two servers over the address families they have.</div>';
 
     const cells = mids.flatMap(mid => { const m = STATE.methods.find(x => x.id === mid); return fams.filter(f => !m || m.families.includes(f)).map(f => mid + '|' + f); });
@@ -466,7 +466,7 @@ async function viewRoutes(w) {
     const sharedNote = p.shared && p.shared.length ? `<div class="faint rt-leg" style="margin:0 0 6px">These switches belong to the server pair, so they also apply to ${p.shared.map(esc).join(', ')}.</div>` : '';
     const card = h(`<div class="card rt-card">
       <div class="rt-head"><div>${title}</div>
-        <div class="actions">${fams.map(f => `<button class="btn sm" data-rb="${f}" title="measure every method over ${famName(f)} between these two servers (a few minutes; live tunnels are not touched)">📊 Measure ${famName(f)}</button>`).join('')}</div></div>
+        <div class="actions">${fams.map(f => `<button class="btn sm" data-rb="${f}" title="measure the methods the tunnels run over ${famName(f)} between these two servers, or every method when none runs (each on a temporary tunnel; live tunnels are not touched)">📊 Measure ${famName(f)}</button>`).join('')}</div></div>
       ${p.tunnel ? '' : '<div class="lbl">Tunnels</div>'}<div class="rt-rows">${tunnels}</div>
       <details class="rt-more"${p.tunnel || STATE.routeSel ? ' open' : ''}><summary><span class="lbl">Methods this tunnel may use</span> <span class="faint">${onCount} of ${cellCount} on — speeds and order</span></summary>${sharedNote}${methodsTbl}</details></div>`);
     const setSkip = async (v, on) => {
@@ -480,7 +480,7 @@ async function viewRoutes(w) {
     $$('[data-use]', card).forEach(b => b.onchange = () => setSkip(b.dataset.use, !b.checked));
     $$('[data-err]', card).forEach(b => b.onclick = () => alertModal('Why it failed', b.dataset.err));
     $$('[data-rb]', card).forEach(b => b.onclick = async () => {
-      try { const r = await api('/bench/start', { iranId: p.iran, foreignId: p.foreign, family: b.dataset.rb, seconds: 3 }); toast('Benchmark started'); openLog({ id: 'bench', name: 'Benchmark · ' + famName(b.dataset.rb) }, r.job); } catch (er) { alertModal('Benchmark', er.message); }
+      try { const r = await api('/bench/start', { iranId: p.iran, foreignId: p.foreign, family: b.dataset.rb, running: true, seconds: 3 }); toast('Benchmark started'); openLog({ id: 'bench', name: 'Benchmark · ' + famName(b.dataset.rb) }, r.job); } catch (er) { alertModal('Benchmark', er.message); }
     });
     return card;
   };
@@ -779,7 +779,7 @@ function viewSettings(w) {
       <div class="two">
         <label class="f">FRP version <span class="faint">(blank = latest)</span><input name="frpVersion" class="mono" value="${esc(s.frpVersion || '')}"></label>
         <label class="f">GitHub download prefix<input name="githubProxy" class="mono" value="${esc(s.githubProxy || '')}" placeholder="https://ghproxy.net/"></label>
-        <label class="f">Automatic benchmark every … hours <span class="faint">(every route with a running tunnel, on the spare slot — live tunnels aren't touched; blank = 24, 0 = off; each method moves at most 3 MB each way)</span><input name="autoBench" class="mono" inputmode="numeric" value="${esc(s.autoBench || '')}" placeholder="24"></label>
+        <label class="f">Automatic benchmark every … hours <span class="faint">(only the methods running on each route, on the spare slot — live tunnels aren't touched; blank = 24, 0 = off; each method moves at most 3 MB each way)</span><input name="autoBench" class="mono" inputmode="numeric" value="${esc(s.autoBench || '')}" placeholder="24"></label>
       </div>
       <h3 style="margin-top:6px">Telegram bot</h3>
       <div class="two">
@@ -1736,7 +1736,7 @@ function tunnelModal(t) {
     const ms = STATE.methods.filter(x => x.id !== 'spoof' && fams.some(f => x.families.includes(f)));
     const cells = ms.flatMap(x => fams.filter(f => x.families.includes(f)).map(f => x.id + '|' + f));
     const on = cells.filter(c => !off.includes(c)).length;
-    box.innerHTML = `<details${on < cells.length ? ' open' : ''}><summary class="muted" style="font-size:13px;cursor:pointer">Paths to keep running: <b data-pn>${on}</b> of ${cells.length} <span class="faint">— only these are installed and started (the method you Start with always runs)</span></summary>
+    box.innerHTML = `<details open><summary class="muted" style="font-size:13px;cursor:pointer">Tunnels to build: <b data-pn>${on}</b> of ${cells.length} <span class="faint">— only the checked ones are installed and started on the servers, your pick (not the benchmark's); the method you Start with always runs</span></summary>
       <div style="margin-top:8px;padding:10px 12px;background:var(--panel-2);border-radius:10px">
         <div class="actions" style="margin-bottom:6px"><button type="button" class="btn sm ghost" data-pall="1">All</button><button type="button" class="btn sm ghost" data-pall="0">None</button></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 12px;font-size:13px">${ms.map(x => fams.filter(f => x.families.includes(f)).map(f => `<label class="row"><input type="checkbox" data-path="${esc(x.id)}|${f}"${off.includes(x.id + '|' + f) ? '' : ' checked'}> ${esc(x.title)} <span class="faint">${famName(f)}</span></label>`).join('')).join('')}</div>
@@ -1793,7 +1793,7 @@ function tunnelModal(t) {
 // navigation, and /bench/active lets a fresh page (or reload) re-attach to a running job.
 let benchTimer = null;
 function viewBench(w) {
-  w.innerHTML = topbar('Route benchmark', 'Measure every method between two servers and get a recommendation.');
+  w.innerHTML = topbar('Route benchmark', 'Measure the tunnels running between two servers (or every method) and compare them.');
   const card = h(`<div class="grid" style="gap:16px">
     <form class="card pad ff" id="bf" style="max-width:640px">
       <div class="two">
@@ -1804,6 +1804,7 @@ function viewBench(w) {
         <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>
         <label class="f">Throughput probe (s)<input name="seconds" type="number" class="mono" value="5"></label>
       </div>
+      <label class="f">Methods<select name="scope"><option value="running">Only the ones running on this route (every method if none runs)</option><option value="all">All methods</option></select></label>
       <div class="faint" style="font-size:12px">Each method is deployed on a temporary tunnel, measured, then removed. It runs on the server — you can leave this page and come back.</div>
       <div style="display:flex;gap:8px"><button class="btn pri" id="brun">Run benchmark</button><button type="button" class="btn danger" id="bcancel" hidden>■ Cancel</button></div>
     </form>
@@ -1815,7 +1816,7 @@ function viewBench(w) {
   form.onsubmit = async (ev) => {
     ev.preventDefault();
     const fd = Object.fromEntries(new FormData(form));
-    try { const r = await api('/bench/start', { iranId: fd.iran, foreignId: fd.foreign, family: fd.family, seconds: parseInt(fd.seconds || '5', 10) }); benchWatch(r.job, cur()); }
+    try { const r = await api('/bench/start', { iranId: fd.iran, foreignId: fd.foreign, family: fd.family, running: fd.scope !== 'all', seconds: parseInt(fd.seconds || '5', 10) }); benchWatch(r.job, cur()); }
     catch (e) { alertModal('Error', e.message); }
   };
   loadBenchHistory();

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,17 +22,18 @@ func TestAutoBenchDue(t *testing.T) {
 			{ID: "d", ServerID: "ir", ForeignID: "k2", Family: "v4"}, // stopped
 		}
 		s.BenchHistory = []BenchRecord{
-			{IranID: "ir", ForeignID: "k1", Family: "v4", At: now - 3600},    // fresh
-			{IranID: "ir", ForeignID: "k2", Family: "v4", At: now - 13*3600}, // stale
+			{IranID: "ir", ForeignID: "k1", Family: "v4", At: now - 3600, Full: true},    // fresh
+			{IranID: "ir", ForeignID: "k1", Family: "v6", At: now - 3600},                // fresh, but never a full run
+			{IranID: "ir", ForeignID: "k2", Family: "v4", At: now - 13*3600, Full: true}, // stale: the running ones
 		}
 		return nil
 	})
 	a := &App{store: st}
-	got := map[benchRoute]bool{}
+	got := map[dueRoute]bool{}
 	for _, r := range a.dueRoutes(12 * time.Hour) {
 		got[r] = true
 	}
-	want := map[benchRoute]bool{{"ir", "k1", "v6"}: true, {"ir", "k2", "v4"}: true}
+	want := map[dueRoute]bool{{benchRoute{"ir", "k1", "v6"}, true}: true, {benchRoute{"ir", "k2", "v4"}, false}: true}
 	if len(got) != len(want) {
 		t.Fatalf("due: %v", got)
 	}
@@ -39,5 +41,56 @@ func TestAutoBenchDue(t *testing.T) {
 		if !got[r] {
 			t.Errorf("missing %v (got %v)", r, got)
 		}
+	}
+}
+
+// The benchmark measures only what runs: hot-standby paths that came up, a plain tunnel's method.
+func TestRunningMethods(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{{ID: "ir", IPv4: "192.0.2.1"}}
+		s.Tunnels = []*Tunnel{
+			{ID: "a", ServerID: "ir", ForeignID: "k1", Family: "v4", Active: "gre"},
+			{ID: "b", ServerID: "ir", ForeignID: "k1", Family: "v4", Active: "wg", Paths: []HSPath{
+				{Method: "wg", Family: "v4"}, {Method: "espsk", Family: "v4"}, {Method: "ipsec", Family: "v4", Failed: "no"}, {Method: "gre", Family: "v6"}}},
+			{ID: "c", ServerID: "ir", ForeignID: "k1", Family: "v4", Selected: "icmp"}, // stopped
+			{ID: "d", ServerID: "ir", ForeignID: "k2", Family: "v4", Active: "icmp"},   // other route
+		}
+		return nil
+	})
+	a := &App{store: st}
+	if got := strings.Join(a.runningMethods("ir", "k1", "v4"), ","); got != "gre,wg,espsk" {
+		t.Errorf("v4: %s", got)
+	}
+	if got := strings.Join(a.runningMethods("ir", "k1", "v6"), ","); got != "gre" {
+		t.Errorf("v6: %s", got)
+	}
+	// nothing runs over v6 on k2: every method is measured instead
+	if ms, note, err := a.runningToMeasure("ir", "k2", "v6"); ms != nil || err != nil || !strings.Contains(note, "every method") {
+		t.Errorf("v6 on k2: %v %q %v", ms, note, err)
+	}
+}
+
+// A test copy of Golden-GRE can't run beside a live one (DNS packets): it is left out, and
+// when it is all that runs there is nothing to measure.
+func TestRunningGolden(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{{ID: "ir", IPv4: "192.0.2.1"}}
+		s.Tunnels = []*Tunnel{
+			{ID: "g", Name: "gold", ServerID: "ir", ForeignID: "k1", Family: "v4", Active: "golden"},
+			{ID: "h", Name: "gold2", ServerID: "ir", ForeignID: "k2", Family: "v4", Active: "golden"},
+			{ID: "i", ServerID: "ir", ForeignID: "k2", Family: "v4", Active: "gre"},
+		}
+		return nil
+	})
+	a := &App{store: st}
+	if ms, _, err := a.runningToMeasure("ir", "k1", "v4"); ms != nil || err == nil || !strings.Contains(err.Error(), "nothing to measure") {
+		t.Errorf("golden only: %v %v", ms, err)
+	}
+	if ms, note, err := a.runningToMeasure("ir", "k2", "v4"); strings.Join(ms, ",") != "gre" || err != nil || !strings.Contains(note, "Golden-GRE not measured") {
+		t.Errorf("golden + gre: %v %q %v", ms, note, err)
 	}
 }

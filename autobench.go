@@ -6,11 +6,13 @@ import (
 	"time"
 )
 
-// autoBench benchmarks every route that carries a running tunnel (Iran server → foreign
-// server, per address family) every Settings.AutoBench hours, one at a time on the spare
-// benchmark slot, so failover and hot standby always pick from fresh results. A route that
-// was benchmarked recently (by hand or here) is left alone, and so is everything while a
-// benchmark is already running.
+// autoBench benchmarks the methods running on every route that carries a running tunnel
+// (Iran server → foreign server, per address family; see runningMethods) every
+// Settings.AutoBench hours, one at a time on the spare benchmark slot. Every autoBenchFull
+// such rounds it measures every method instead: failover and hot standby also choose from
+// the methods that aren't running (a backup, a method that failed once), and those results
+// would otherwise never be refreshed. A route that was benchmarked recently (by hand or
+// here) is left alone, and so is everything while a benchmark is already running.
 func (a *App) autoBench() {
 	time.Sleep(5 * time.Minute) // let the panel settle after a start
 	for {
@@ -22,6 +24,10 @@ func (a *App) autoBench() {
 // autoBenchMB caps each automatic throughput test (per method, per direction), so the
 // periodic benchmark costs the Iran server little traffic: about 2×autoBenchMB per method.
 const autoBenchMB = 3
+
+// autoBenchFull: a full run (every method) once per this many automatic intervals — weekly
+// at the default 24 h. A family nothing runs on gets only these.
+const autoBenchFull = 7
 
 func autoBenchEvery(set Settings) time.Duration {
 	v := strings.TrimSpace(set.AutoBench)
@@ -37,10 +43,49 @@ func autoBenchEvery(set Settings) time.Duration {
 
 type benchRoute struct{ iran, foreign, family string }
 
-// dueRoutes lists the routes in use whose newest benchmark is older than every.
-func (a *App) dueRoutes(every time.Duration) []benchRoute {
+// dueRoute is a route to benchmark now; full = every method, not only the running ones.
+type dueRoute struct {
+	benchRoute
+	full bool
+}
+
+// runningMethods lists the methods the route's tunnels run on the servers now over fam: a
+// hot-standby tunnel's paths that came up, a plain tunnel's active method (its backup's while
+// on failover). The benchmark measures only these — the ones users actually ride.
+func (a *App) runningMethods(iran, foreign, fam string) []string {
+	var out []string
+	add := func(m string) {
+		if m != "" && !contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	a.store.View(func(st *State) {
+		for _, t := range st.Tunnels {
+			if t.Active == "" || t.ServerID != iran || t.ForeignID != foreign {
+				continue
+			}
+			if len(t.Paths) > 0 {
+				for _, p := range hsGood(t) {
+					if p.Family == fam {
+						add(p.Method)
+					}
+				}
+				continue
+			}
+			if t.Family == fam {
+				add(t.Active)
+			}
+		}
+	})
+	return out
+}
+
+// dueRoutes lists the routes in use that are due: the running methods when the newest run
+// is older than every, every method when the newest full run is older than
+// autoBenchFull×every (or nothing runs over that family: there is nothing else to measure).
+func (a *App) dueRoutes(every time.Duration) []dueRoute {
 	seen := map[benchRoute]bool{}
-	var out []benchRoute
+	var out []dueRoute
 	var ts []*Tunnel
 	a.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
@@ -56,16 +101,23 @@ func (a *App) dueRoutes(every time.Duration) []benchRoute {
 				continue
 			}
 			seen[r] = true
-			last := int64(0)
+			var last, lastFull int64
 			a.store.View(func(st *State) {
 				for _, h := range st.BenchHistory {
-					if h.IranID == r.iran && h.ForeignID == r.foreign && h.Family == r.family && h.At > last {
-						last = h.At
+					if h.IranID == r.iran && h.ForeignID == r.foreign && h.Family == r.family {
+						last = max(last, h.At)
+						if h.Full {
+							lastFull = max(lastFull, h.At)
+						}
 					}
 				}
 			})
-			if time.Since(time.Unix(last, 0)) >= every {
-				out = append(out, r)
+			running := len(a.runningMethods(r.iran, r.foreign, f)) > 0
+			switch {
+			case time.Since(time.Unix(lastFull, 0)) >= autoBenchFull*every:
+				out = append(out, dueRoute{r, true})
+			case running && time.Since(time.Unix(last, 0)) >= every:
+				out = append(out, dueRoute{r, false})
 			}
 		}
 	}
@@ -84,7 +136,7 @@ func (a *App) autoBenchRound() {
 		if !a.serverReachable(r.iran) || (r.foreign != "" && !a.serverReachable(r.foreign)) {
 			continue // a server is down: nothing useful to measure now
 		}
-		j, err := a.Bench(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Seconds: 3, MaxMB: autoBenchMB})
+		j, err := a.Bench(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Running: !r.full, Seconds: 3, MaxMB: autoBenchMB})
 		if err != nil {
 			continue
 		}

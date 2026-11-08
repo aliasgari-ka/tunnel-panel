@@ -1190,7 +1190,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		}
 		b.edit(chat, msg, text, kb)
 	case "bq": // confirm before a route benchmark (a few minutes, some test traffic)
-		b.edit(chat, msg, fmt.Sprintf("📊 Measure every method between the servers of <b>%s</b> over %s?\nIt takes a few minutes and runs on a spare slot — the tunnel and its users are not touched.", esc(v.Name), famName(v.Family)),
+		b.edit(chat, msg, fmt.Sprintf("📊 Measure the methods running between the servers of <b>%s</b> over %s (every method, if none runs there)?\nIt takes a few minutes and runs on a spare slot — the tunnel and its users are not touched.", esc(v.Name), famName(v.Family)),
 			b.keyboard([][]ikey{{{Text: "📊 Yes, benchmark", Data: "bqy:" + t.ID}, {Text: "Cancel", Data: "t:" + t.ID}}}))
 	case "bqy":
 		b.startRouteBench(chat, msg, t)
