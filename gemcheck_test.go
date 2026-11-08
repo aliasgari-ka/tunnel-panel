@@ -32,3 +32,28 @@ func TestGemWantDom(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayAllowLists(t *testing.T) {
+	list := []*Server{
+		{ID: "a1", IPv4: "198.51.100.1"},
+		{ID: "a2", IPv4: "198.51.100.2"},
+		{ID: "r1", IPv4: "198.51.100.2", Owner: "arshad"}, // the admin's machine, added by arshad too
+		{ID: "r2", IPv4: "203.0.113.5", Owner: "arshad"},
+		{ID: "r3", IPv4: "203.0.113.6", Owner: "arshad"},
+	}
+	got := relayAllowLists(list)
+	want := map[string]string{
+		"a1": "198.51.100.1\n198.51.100.2",
+		"a2": "198.51.100.1\n198.51.100.2",
+		"r2": "203.0.113.5\n203.0.113.6",
+		"r3": "203.0.113.5\n203.0.113.6",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lists %v, want %d", len(got), got, len(want))
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("%s: got %q, want %q", id, got[id], w)
+		}
+	}
+}

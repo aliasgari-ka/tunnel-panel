@@ -233,26 +233,47 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 	return fmt.Sprintf("no .%s exit opens Gemini signed in (%d tried) — left as is", want, len(cands))
 }
 
-// gemRelaySync gives every agent the IPv4 list of all our agent servers: they may use each
-// other's relays, so a new server works with the others without a new agent script.
-func (a *App) gemRelaySync(list []*Server, sent map[string]string) {
-	ips := make([]string, 0, len(list))
+// relayAllowLists: the relay allow-list for each agent machine (server id -> sorted IPv4s): only
+// the servers of the machine's own person, so one person's internal proxies are never open to
+// another person's servers. A machine added by two people (same IP) is the admin's when the
+// admin has it; it gets one list, sent through the admin's entry.
+func relayAllowLists(list []*Server) map[string]string {
+	owner := map[string]string{} // ip -> the person the machine belongs to
+	via := map[string]*Server{}  // ip -> the entry the list is sent through
 	for _, s := range list {
-		ips = append(ips, s.IPv4)
+		if o, ok := owner[s.IPv4]; !ok || (o != "" && s.Owner == "") {
+			owner[s.IPv4], via[s.IPv4] = s.Owner, s
+		}
 	}
-	sort.Strings(ips)
-	want := strings.Join(ips, "\n")
+	ips := map[string][]string{} // person -> machines
+	for ip, o := range owner {
+		ips[o] = append(ips[o], ip)
+	}
+	out := map[string]string{}
+	for ip, s := range via {
+		l := ips[owner[ip]]
+		sort.Strings(l)
+		out[s.ID] = strings.Join(l, "\n")
+	}
+	return out
+}
+
+// gemRelaySync gives every agent the IPv4 list of the same person's agent servers: they may use
+// each other's relays, so a new server works with the others without a new agent script.
+func (a *App) gemRelaySync(list []*Server, sent map[string]string) {
+	lists := relayAllowLists(list)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	for _, s := range list {
+		want, ok := lists[s.ID]
 		mu.Lock()
-		done := sent[s.ID] == want
+		done := !ok || sent[s.ID] == want
 		mu.Unlock()
 		if done {
 			continue
 		}
 		wg.Add(1)
-		go func(s *Server) {
+		go func(s *Server, want string) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
@@ -263,7 +284,7 @@ func (a *App) gemRelaySync(list []*Server, sent map[string]string) {
 			mu.Lock()
 			sent[s.ID] = want
 			mu.Unlock()
-		}(s)
+		}(s, want)
 	}
 	wg.Wait()
 }
