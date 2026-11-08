@@ -177,7 +177,7 @@ func (a *App) hsSyncPaths(t *Tunnel) {
 			return // stopped: its next Start plans the paths from the switches
 		}
 		if time.Now().After(deadline) {
-			a.pushT(t, fmt.Sprintf("⚠ %s: the route's switches are applied on its next Start/Re-apply (a job kept the tunnel busy)", t.Name))
+			a.pushTInfo(t, fmt.Sprintf("⚠ %s: the route's switches are applied on its next Start/Re-apply (a job kept the tunnel busy)", t.Name))
 			return
 		}
 		time.Sleep(hsSyncPoll)
@@ -480,9 +480,9 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 	}
 	j.log("DONE — %s; %d paths running", strings.Join(msg, "; "), len(good))
 	if retry {
-		a.pushT(t, fmt.Sprintf("✅ %s: %s runs again as a hot-standby path (%d running) — it had been refused on this route and was tried again", t.Name, strings.Join(an, ", "), len(good)))
+		a.pushTInfo(t, fmt.Sprintf("✅ %s: %s runs again as a hot-standby path (%d running) — it had been refused on this route and was tried again", t.Name, strings.Join(an, ", "), len(good)))
 		return nil
 	}
-	a.pushT(t, fmt.Sprintf("🔀 %s: paths updated to this route's choices — %s (%d running)", t.Name, strings.Join(msg, "; "), len(good)))
+	a.pushTInfo(t, fmt.Sprintf("🔀 %s: paths updated to this route's choices — %s (%d running)", t.Name, strings.Join(msg, "; "), len(good)))
 	return nil
 }

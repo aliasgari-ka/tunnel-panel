@@ -78,7 +78,11 @@ func (a *App) Repair(why string) (*Job, error) {
 		}
 		j.log("DONE — %d repaired, %d failed, %d skipped", len(fixed), len(failed), len(skipped))
 		j.finish("ok")
-		a.push(b.String())
+		if len(failed) > 0 {
+			a.push(b.String())
+		} else {
+			a.pushInfo(b.String())
+		}
 	}()
 	return j, nil
 }
@@ -306,7 +310,7 @@ func (a *App) resumeInterrupted() {
 		if !still {
 			continue // started or stopped from the panel meanwhile
 		}
-		a.pushT(x.t, fmt.Sprintf("🔄 %s was left down by a panel restart in the middle of applying %s — bringing it back", x.t.Name, methodTitle(x.mid)))
+		a.pushTInfo(x.t, fmt.Sprintf("🔄 %s was left down by a panel restart in the middle of applying %s — bringing it back", x.t.Name, methodTitle(x.mid)))
 		j, err := a.ApplyRoute(x.t, x.mid, x.fam)
 		if err != nil {
 			a.pushT(x.t, fmt.Sprintf("❌ %s: could not resume %s — %v", x.t.Name, methodTitle(x.mid), err))

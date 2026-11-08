@@ -311,7 +311,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		if best := firstOK(out); best != nil {
 			j.log("DONE — best: %s (score %.0f, ↓%.0f/↑%.0f Mbps, %.1f ms)",
 				best.Title, best.Score, best.DownMbps, best.UpMbps, best.RTTms)
-			a.push(fmt.Sprintf("📊 Route benchmark done — best: %s (↓%.0f Mbps, %.1f ms)", best.Title, best.DownMbps, best.RTTms))
+			a.pushInfo(fmt.Sprintf("📊 Route benchmark done — best: %s (↓%.0f Mbps, %.1f ms)", best.Title, best.DownMbps, best.RTTms))
 		} else {
 			j.log("DONE — no method succeeded on this route")
 		}

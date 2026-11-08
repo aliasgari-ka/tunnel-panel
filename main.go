@@ -111,7 +111,7 @@ func main() {
 	app.syncAgentTokens()
 	app.agents.onChange = func(serverID string, online bool) {
 		if online {
-			app.pushCh("🟢 agent online: " + serverName(app, serverID))
+			app.pushChInfo("🟢 agent online: " + serverName(app, serverID))
 			if srv := app.store.Server(serverID); srv != nil {
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

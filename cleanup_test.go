@@ -113,6 +113,7 @@ func TestApplyRestoresPrevious(t *testing.T) {
 		s.Servers = []*Server{{ID: "ir", Name: "iran", IPv4: "192.0.2.1"}, {ID: "kh", Name: "foreign", IPv4: "198.51.100.1", Role: "foreign"}}
 		s.Tunnels = []*Tunnel{{ID: "t1", Name: "one", ServerID: "ir", ForeignID: "kh", Family: "v4", Ports: "443", Index: 1, Active: "gre", Selected: "gre",
 			Options: map[string]map[string]string{}, Secrets: map[string]string{}}}
+		s.Settings.BotAll = "on" // the restore is a routine message, sent only when asked for
 		return nil
 	})
 	var msgs []string

@@ -49,7 +49,7 @@ func (a *App) hsRebuild(t *Tunnel, reason string, down time.Duration) {
 	if mid == "" {
 		return // stopped meanwhile
 	}
-	a.pushT(t, fmt.Sprintf("🔄 %s: down for %s with both servers answering (%s) — applying it again", name, shortDur(down), reason))
+	a.pushTInfo(t, fmt.Sprintf("🔄 %s: down for %s with both servers answering (%s) — applying it again", name, shortDur(down), reason))
 	// a real re-apply: ApplyRoute turns into a mere pin/switch when the switcher has the users
 	// on another path — a dead one here, so the tunnel stayed down
 	if _, err := a.rebuildMode(t); err != nil {
