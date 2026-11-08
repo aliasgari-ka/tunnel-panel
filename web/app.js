@@ -720,6 +720,8 @@ function viewSettings(w) {
       <div class="faint" style="font-size:12px">Message your bot <b>/start</b>; it replies with your chat id if you're not yet an admin. The bot can start, stop and switch every tunnel.</div>
       <label class="f">📣 Alert channel <span class="faint">(tunnel &amp; server up/down alerts go here instead of the admin chat — add the bot to your channel as an admin and it fills this in by itself; -100… id or @name, blank = admin chat. WARP / Instagram / Gemini alerts stay in the admin chat: only the important ones, one short summary every 10 min)</span><input name="telegramChannel" class="mono" placeholder="-1001234567890" value="${esc(s.telegramChannel || '')}"></label>
       <label class="row f"><input type="checkbox" name="telegramBackup" value="on" ${s.telegramBackup === 'on' ? 'checked' : ''}> Send the daily backup to the admin chat too</label>
+      <h3 style="margin-top:6px">🧠 AI analysis (Claude)</h3>
+      <label class="f">Claude API key <span class="faint">(from console.anthropic.com — the Tunnels page's 🧠 AI analysis sends the tunnels' state to Claude: names, paths, measurements, outages and alerts; no server addresses, passwords or keys. Blank = off)</span><input name="claudeKey" class="mono" type="password" autocomplete="off" value="${esc(s.claudeKey || '')}" placeholder="sk-ant-..."></label>
       <label class="f">☀️ Daily report at <span class="faint">(HH:MM, Tehran time — tunnels, their paths and the last day's outages; blank = off)</span><input name="telegramReport" class="mono" placeholder="09:00" maxlength="5" value="${esc(s.telegramReport || '')}"></label>
       <div><button class="btn pri">Save settings</button></div>
     </form>
@@ -1202,7 +1204,7 @@ function serverModal(s) {
 // Summary strip, then tunnels grouped by their Iran server.
 function viewTunnels(w) {
   w.innerHTML = topbar('Tunnels', 'Each tunnel links one Iran server to one foreign server. Pick a connection method and switch any time.',
-    `${isAdmin() ? '' : '<!--'}<button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button>${isAdmin() ? '' : '-->'}<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
+    `${isAdmin() ? '' : '<!--'}<button class="btn" id="aiTun" title="Claude reviews the tunnels, their paths, outages and the servers' load, and says what to improve">🧠 AI analysis</button><button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button>${isAdmin() ? '' : '-->'}<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
   // everything on this page follows the View selector (an admin looking at one account sees
   // that account's numbers and chips, not the whole panel's)
   const mine = STATE.tunnels.filter(t => shownOwner(t.owner));
@@ -1260,6 +1262,7 @@ function viewTunnels(w) {
     applySearch();
   }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
+  if ($('#aiTun')) $('#aiTun').onclick = () => aiModal();
   if ($('#repairTun')) $('#repairTun').onclick = async () => {
     try { const r = await api('/repair', {}); openLog({ id: 'repair', name: 'Repair' }, r.job); } catch (e) { alertModal('Repair', e.message); }
   };
@@ -1323,6 +1326,38 @@ function tunnelCard(t) {
   if (t.active && t.health) paintDown(t, card, t.health);
   refreshStatus(t, card);
   return card;
+}
+// AI analysis: the last report, a button for a new one (1-3 min), and the safe actions it suggests
+async function aiModal() {
+  const m = modal(`<h2>🧠 AI analysis</h2><div data-ai><div class="muted">Loading…</div></div>`, true);
+  const box = $('[data-ai]', m);
+  const sev = { high: 'bad', medium: 'warn', low: '' };
+  const paint = (r) => {
+    if (!box.isConnected) return;
+    const rep = r.report;
+    const tname = (id) => (STATE.tunnels.find(t => t.id === id) || {}).name || id;
+    const head = !r.hasKey ? `<div class="muted">Set the Claude API key in Settings first.</div>`
+      : `<div class="actions" style="margin-bottom:10px"><button class="btn pri" data-airun${r.running ? ' disabled' : ''}>${r.running ? '⏳ Analysing… (1-3 min)' : rep ? '↻ Analyse again' : '▶ Analyse now'}</button>${rep ? `<span class="faint" style="font-size:12px">last: ${ago(rep.at)}</span>` : ''}</div>`;
+    let body = '';
+    if (rep && rep.error) body = `<div class="downbar">⚠ ${esc(rep.error)}</div>`;
+    else if (rep) {
+      body = `<div data-notr dir="rtl" style="text-align:right;line-height:1.7">
+        <p style="margin:0 0 10px">${esc(rep.summary)}</p>
+        ${(rep.actions || []).length ? `<h3 style="margin:12px 0 6px">پیشنهادهای قابل اعمال</h3>${rep.actions.map((a, i) => `<div class="card pad" style="margin-bottom:8px"><b>${esc(tname(a.tunnel))}</b> — ${a.kind === 'switch_path' ? 'رفتن کاربرها به مسیر <span class="mono">' + esc(a.path) + '</span>' : 'حالت سوییچر: ' + (a.auto ? 'خودکار' : 'دستی')}<div class="faint" style="font-size:13px">${esc(a.why)}</div><div style="margin-top:6px">${a.applied ? `<span class="chip">✓ ${esc(a.result || 'done')}</span>` : `<button class="btn sm pri" data-aiapply="${i}">اعمال</button>`}</div></div>`).join('')}` : ''}
+        ${(rep.findings || []).map(f => `<div class="card pad" style="margin-bottom:8px"><div><span class="chip ${sev[f.severity] || ''}">${f.severity === 'high' ? 'مهم' : f.severity === 'medium' ? 'متوسط' : 'کم'}</span> <b>${esc(f.title)}</b></div><div style="font-size:13.5px;margin-top:4px">${esc(f.detail)}</div>${f.fix ? `<div style="font-size:13.5px;margin-top:4px">🔧 ${esc(f.fix)}</div>` : ''}</div>`).join('')}
+      </div>`;
+    }
+    box.innerHTML = head + body;
+    const run = $('[data-airun]', box);
+    if (run) run.onclick = async () => { try { await api('/ai/run', {}); load(); } catch (e) { alertModal('AI analysis', e.message); } };
+    $$('[data-aiapply]', box).forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { const x = await api('/ai/apply', { I: +b.dataset.aiapply }); toast(x.result || 'Applied'); load(); } catch (e) { b.disabled = false; alertModal('Could not apply', e.message); }
+    });
+    if (r.running) setTimeout(load, 4000);
+  };
+  const load = () => api('/ai').then(paint).catch(e => { box.innerHTML = `<div class="downbar">⚠ ${esc(e.message)}</div>`; });
+  load();
 }
 async function applyMethod(t, mid, fam) {
   try { const r = await api('/tunnels/apply', { ID: t.id, Method: mid, Family: fam || t.family }); openLog(t, r.job); return true; }

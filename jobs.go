@@ -564,6 +564,7 @@ func (a *App) push(msg string) {
 // pushCh sends a tunnel or server alert to the alert channel (Settings.TelegramChannel), or
 // to the admin chat when there is none or the channel refuses it.
 func (a *App) pushCh(msg string) {
+	aiNoteAlert(msg)
 	ch := strings.TrimSpace(a.settings().TelegramChannel)
 	a.botMu.Lock()
 	b := a.bot

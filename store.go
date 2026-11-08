@@ -34,6 +34,8 @@ type Settings struct {
 	// TelegramChannel: the channel/group (id like -100…, or @name) that tunnel and server
 	// alerts go to instead of the admin chat; "" = the admin chat. The bot must be its admin.
 	TelegramChannel string `json:"telegramChannel,omitempty"`
+	// ClaudeKey: Anthropic API key for the AI analysis (ai.go); "" = off
+	ClaudeKey string `json:"claudeKey,omitempty"`
 }
 
 // Server is a remote Iran server reached over SSH.
@@ -219,7 +221,8 @@ type State struct {
 	LastVersion string   `json:"lastVersion,omitempty"`
 	Outages     []Outage `json:"outages,omitempty"` // servers/tunnels down, newest last
 	// IgproxyImported: the server lists and backups of the old igpanel (port 2083) were read once
-	IgproxyImported bool `json:"igproxyImported,omitempty"`
+	IgproxyImported bool      `json:"igproxyImported,omitempty"`
+	AIReport        *AIReport `json:"aiReport,omitempty"` // the last AI analysis
 }
 
 // FailoverState is the original path of a tunnel that was moved to a backup.
