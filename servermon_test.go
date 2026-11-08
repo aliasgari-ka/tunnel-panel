@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +77,45 @@ func TestProbePlan(t *testing.T) {
 		p4, p6 := probePlan(c.pool4, c.pool6, c.alive, c.full)
 		if p4 != c.want4 || p6 != c.want6 {
 			t.Errorf("probePlan(%v %v %v %v) = %v %v, want %v %v", c.pool4, c.pool6, c.alive, c.full, p4, p6, c.want4, c.want6)
+		}
+	}
+}
+
+// A user's own bot hears both "unreachable" and "reachable again" for their server.
+func TestServerMonRecoveryReachesOwner(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(s *State) error {
+		s.Users = []User{{Username: "boss"}, {Username: "ali", Role: roleUser}}
+		s.Servers = []*Server{{ID: "ir2", Name: "ali-iran", Owner: "ali"}}
+		return nil
+	})
+	f := &fakeTG{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	a := &App{store: st}
+	ub := newBot(a, "TOKEN", "77")
+	ub.owner, ub.base = "ali", srv.URL
+	a.userBots = map[string]*Bot{"ali": ub}
+	m := &serverMon{state: map[string]*srvState{}}
+	a.transition(m, "ir2/v4", "ssh-v4", "ali-iran (IPv4)", true, time.Time{}, "ssh")
+	a.transition(m, "ir2/v4", "ssh-v4", "ali-iran (IPv4)", false, time.Time{}, "")
+	var all string
+	for i := 0; i < 250; i++ { // the pushes are async
+		f.mu.Lock()
+		all = ""
+		for _, c := range f.calls {
+			all += c.Get("text") + "\n"
+		}
+		f.mu.Unlock()
+		if strings.Contains(all, "SSH over IPv4 back") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, want := range []string{"SSH over IPv4 down: ali-iran", "SSH over IPv4 back: ali-iran"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("ali's bot missed %q in:\n%s", want, all)
 		}
 	}
 }
