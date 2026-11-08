@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
-	"runtime"
 	"strconv"
 )
 
@@ -185,34 +184,48 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 	return mk(d.IRPub, d.KHPub, d.IRv4, true), mk(d.KHPub, d.IRPub, d.KHv4, false), nil
 }
 
-// premiumEmuCheck: on a non-amd64 server the amd64 v2 core would run emulated, and it can't
-// carry data there in any mode (seen live on an aarch64 server): under qemu-user ipx can't open
-// its packet socket and every forwarded connection of the TCP modes is reset (even on loopback,
-// with control channel and heartbeats up), and box64 crashes the Go core at random with every
-// dynarec setting. Stop with what to do — a unit that is "active" but carries nothing helps
-// nobody. (Build already refuses when it knows the arch; this catches a server whose arch
-// wasn't detected yet.)
+// ipxEmuCheck: on a non-amd64 server the amd64 Premium core runs emulated, and only box64
+// (not qemu-user) can open ipx's packet socket. Get box64 if the distro has it, else stop
+// with what to do — a unit that is "active" but carries nothing helps nobody. (The core
+// runs with Go's async preemption off: its SIGURG preemption signals are what crashed it at
+// random under box64 — seen live on an aarch64 server.)
+// box64Release is where the release workflow publishes box64 for arm64 (built from pinned
+// upstream source on Ubuntu 22.04), for distros that don't package it.
+const box64Release = "https://github.com/aliasgari-ka/tunnel-panel/releases/latest/download/box64-arm64"
 
-// premiumCoreEmulated reports whether s (nil = this panel host) would run the amd64 Premium
-// core under emulation: a non-amd64 CPU with no v2 core of its own uploaded.
-func premiumCoreEmulated(s *Server) (arch string, emulated bool) {
-	if !emulatedAmd64(s) {
-		return "", false
+func ipxEmuCheck(mode, ghPrefix string) string {
+	if mode != "ipx" {
+		return ""
 	}
-	arch = runtime.GOARCH
-	if s != nil {
-		arch = goArch(s.Arch)
-	}
-	_, err := helperBytes("backhaul_premium", arch)
-	return arch, err != nil
-}
-
-const premiumEmuCheck = `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ]; then
-  echo "Backhaul Premium v2 doesn't run on this $(uname -m) server: there is no $(uname -m) v2 core, and the amd64 core carries no data under emulation"
-  echo "→ use Backhaul Premium v1 (native arm64 core) or another method on this route"
-  exit 1
+	return `if [ -f /opt/backhaul-premium/backhaul_premium.amd64 ] && [ "$(uname -m)" != x86_64 ] && ! command -v box64 >/dev/null 2>&1; then
+  echo "ipx on $(uname -m) needs box64 — trying the distro's package"
+  # (setup runs with set -e: every try must be allowed to fail, the check below decides)
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y -qq box64 >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq box64 >/dev/null 2>&1; } || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y box64 >/dev/null 2>&1 || true
+  fi
+  if ! command -v box64 >/dev/null 2>&1 && [ "$(uname -m)" = aarch64 ]; then
+    echo "no box64 package — installing the panel release's box64 build"
+    T=$(mktemp -d)
+    if curl -fsSL --retry 2 --max-time 300 -o "$T/box64" ` + shq(ghPrefix+box64Release) + ` &&
+       curl -fsSL --retry 2 --max-time 30 -o "$T/box64.sha256" ` + shq(ghPrefix+box64Release+".sha256") + ` &&
+       (cd "$T" && sed 's#  *[^ ]*$#  box64#' box64.sha256 | sha256sum -c - >/dev/null 2>&1) &&
+       chmod 0755 "$T/box64" && "$T/box64" --version >/dev/null 2>&1; then
+      install -m0755 "$T/box64" /usr/local/bin/box64 && echo "box64 installed: $(box64 --version 2>/dev/null | head -1)"
+    else
+      echo "could not download/verify box64 from the panel's GitHub release"
+    fi
+    rm -rf "$T"
+  fi
+  if ! command -v box64 >/dev/null 2>&1; then
+    echo "Premium ipx can't run on this $(uname -m) server: there is no arm64 v2 core, the amd64 core needs box64 for ipx's packet socket (qemu-user can't open it), and box64 could not be installed ($(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}"))."
+    echo "→ install box64 by hand and Apply again, or use Backhaul Premium v1 (native arm64)"
+    exit 1
+  fi
 fi
 `
+}
 
 // goldenSteer adds (or removes) the TPROXY rule that hands the peer's DNS-port packets to
 // this tunnel's relay. TPROXY picks the socket per packet and rewrites nothing, so unlike
@@ -275,12 +288,12 @@ exit 0
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
-	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. Upload the amd64 core. Not for ARM servers (no ARM v2 core, and the amd64 one carries no data emulated): use Backhaul Premium v1 there.",
+	Desc:     "Closed-source core (uploaded to the panel, not fetched over HTTP). tun with ipx raw carrier (icmp/ipip/udp/tcp/gre/bip) and anytls. Upload the amd64 core; ARM servers run it under box64 (ipx needs it), else qemu.",
 	Families: []string{"v4"},
 	Encrypt:  "AEAD (ipx) / TLS",
 	Helper:   "backhaul_premium",
-	// the vendor's arm64 download is v1 (and the amd64 v2 core carries no data emulated, so
-	// Build refuses ARM sides): the amd64 core is the only one the panel needs
+	// an arm64 server runs the amd64 v2 core under box64/qemu (premiumEmulated), and the
+	// vendor's arm64 download is v1 anyway: the amd64 core is the one the panel needs
 	HelperArch: "amd64",
 	Fields: []Field{
 		{Key: "mode", Label: "Mode", Type: "select", Default: "ipx", Options: []string{"ipx", "anytls", "tcpmux", "wssmux", "tcp"}},
@@ -308,12 +321,6 @@ var methodPremium = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		d := c.D
 		mode := c.Opt("mode")
-		// (worded so the bench doesn't try the other carriers: none of them runs either)
-		for _, s := range []*Server{c.Srv, c.FSrv} {
-			if arch, emu := premiumCoreEmulated(s); emu {
-				return ir, kh, fmt.Errorf("Backhaul Premium v2 doesn't run on %s servers: there is no %s v2 core, and the amd64 core carries no data under emulation (qemu resets every forwarded connection and can't open ipx's socket; box64 crashes it) — use Backhaul Premium v1, which has a native %s core, or another method", arch, arch, arch)
-			}
-		}
 		hbi, _ := strconv.Atoi(c.Opt("heartbeat_interval"))
 		hbt, _ := strconv.Atoi(c.Opt("heartbeat_timeout"))
 		if hbi < 1 || hbt <= hbi {
@@ -447,7 +454,7 @@ sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
 			sp := SidePlan{
 				Files:     map[string]FileSpec{cfg: {Content: []byte(toml), Mode: 0o600}},
 				Artifacts: []Artifact{core},
-				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + premiumEmuCheck,
+				Setup:     sysctlBBR + certGen + fixIface(cfg, peer) + ipxEmuCheck(mode, c.Set.GitHubProxy),
 				Unit:      Unit{Desc: "Backhaul Premium " + side + " " + c.T.Name, ExecStart: bin + " -c " + cfg, RestartSec: premiumRestartSec},
 				Check:     premiumLicenseCheck,
 			}
