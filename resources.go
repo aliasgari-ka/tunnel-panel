@@ -526,13 +526,38 @@ fi
 true
 `
 
+// leanHost undoes two defaults that cost a small VPS memory for nothing.
+//
+// Transparent huge pages "always" (Debian's default; Ubuntu ships madvise): khugepaged glues
+// the pages a Go program gave back into 2 MB pages again, so the cores and Xray never shrink —
+// seen live on the two Debian 13 servers: Xray 1 GB with 770 MB of it in huge pages against
+// 150-600 MB for the same traffic elsewhere, BackPack 1-1.5 GB. madvise keeps huge pages for
+// the programs that ask for them; a tmpfiles.d line keeps it over a reboot. "never" is left.
+//
+// fwupd (the firmware updater) has nothing to update on a virtual machine and sits on
+// 130-160 MB once its daily timer has woken it. Stopped, and the timer with it, on VMs only.
+const leanHost = `f=/sys/kernel/mm/transparent_hugepage/enabled
+if grep -q '\[always\]' $f 2>/dev/null && echo madvise > $f 2>/dev/null; then
+  [ -d /etc/tmpfiles.d ] && printf 'w %s - - - - madvise
+' $f > /etc/tmpfiles.d/tunnel-panel-thp.conf
+  echo "THPMADVISE"
+fi
+if systemd-detect-virt -q 2>/dev/null && systemctl is-active -q fwupd 2>/dev/null; then
+  mb=$(( $(cat /sys/fs/cgroup/system.slice/fwupd.service/memory.current 2>/dev/null || echo 0) / 1048576 ))
+  systemctl disable --now fwupd-refresh.timer >/dev/null 2>&1
+  systemctl stop fwupd >/dev/null 2>&1 && echo "FWUPDOFF $mb"
+fi
+true
+`
+
 var housekept = struct {
 	sync.Mutex
 	m map[string]time.Time // server id -> last run
 }{m: map[string]time.Time{}}
 
 // housekeep runs the once-a-day tidying on a server the resource watcher just read: the
-// journal cap. Each run is a test of a file; the work happens on the first run only.
+// journal cap and leanHost. Each run is a test of a file or two; the work happens on the
+// first run only.
 func (a *App) housekeep(h Host, s *Server) {
 	housekept.Lock()
 	last := housekept.m[s.ID]
@@ -544,7 +569,7 @@ func (a *App) housekeep(h Host, s *Server) {
 	housekept.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	out, err := h.Run(ctx, journalCap, nil)
+	out, err := h.Run(ctx, journalCap+leanHost, nil)
 	if err != nil {
 		housekept.Lock()
 		delete(housekept.m, s.ID) // again next time
@@ -554,6 +579,12 @@ func (a *App) housekeep(h Host, s *Server) {
 	for _, l := range strings.Split(out, "\n") {
 		if f := strings.Fields(l); len(f) == 3 && f[0] == "JOURNALCAPPED" {
 			log.Printf("%s: journal capped at 200 MB (%s MB → %s MB)", s.Name, f[1], f[2])
+		}
+		switch {
+		case strings.TrimSpace(l) == "THPMADVISE":
+			log.Printf("%s: transparent huge pages always → madvise", s.Name)
+		case strings.HasPrefix(l, "FWUPDOFF"):
+			log.Printf("%s: fwupd stopped (%s MB)", s.Name, strings.TrimSpace(strings.TrimPrefix(l, "FWUPDOFF")))
 		}
 	}
 }

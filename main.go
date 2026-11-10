@@ -138,6 +138,7 @@ func main() {
 	go app.resumeInterrupted()
 	go app.repairAfterUpdate()
 	go app.memNightly()
+	go app.standbyTrim()
 	go app.igImport()
 	go app.igAlertLoop()
 	go app.aiDailyLoop()
