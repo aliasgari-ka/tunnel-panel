@@ -300,10 +300,8 @@ func (a *App) hsDropPaths(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, b
 		if d.Failed != "" {
 			continue
 		}
-		pt := pathTunnel(t, d)
 		j.log("stopping %s (left out on this route)", d.label())
-		_, _ = ir.Run(ctx, teardownScript(pt), nil)
-		_, _ = kh.Run(ctx, teardownScript(pt), nil)
+		a.teardownPaths(ctx, ir, kh, t, []HSPath{d})
 	}
 	return names, nil
 }
@@ -478,16 +476,24 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 	sw := a.hsSwitcherPlan(t, good)
 	sw.Setup = hsActiveRemap(hsDir(t), before, good) + sw.Setup
 	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), sw); err != nil {
+		// the old switcher still runs the left-out paths: they stay in t.Paths (next to the added
+		// ones, which run too), so a Stop, a delete or the next update still removes them
+		_ = a.store.Update(func(*State) error {
+			for _, d := range drop {
+				if d.Failed == "" {
+					t.Paths = append(t.Paths, d)
+				}
+			}
+			return nil
+		})
 		return fmt.Errorf("switcher: %w", err)
 	}
 	for _, d := range drop {
 		if d.Failed != "" {
 			continue // was never up: nothing to stop
 		}
-		pt := pathTunnel(t, d)
 		j.log("stopping %s (left out on this route)", d.label())
-		_, _ = ir.Run(ctx, teardownScript(pt), nil)
-		_, _ = kh.Run(ctx, teardownScript(pt), nil)
+		a.teardownPaths(ctx, ir, kh, t, []HSPath{d})
 	}
 	names = append(early, names...)
 	var msg []string

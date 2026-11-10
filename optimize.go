@@ -72,11 +72,12 @@ func (a *App) Optimize(ctx context.Context, srv *Server, apply bool) OptimizeRes
 			r.Notes = append(r.Notes, "/etc/sysctl.d is not writable as this user — run the manual command as root.")
 		}
 		applyScript := fmt.Sprintf(`set -e
-cat >/etc/sysctl.d/99-tunnel-panel-optz.conf <<'SYSCTL'
+rm -f /etc/sysctl.d/99-tunnel-panel-optz.conf
+cat >/etc/sysctl.d/zzz-tunnel-panel-optz.conf <<'SYSCTL'
 %s
 SYSCTL
 %s
-sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-tunnel-panel-optz.conf
+sysctl -p /etc/sysctl.d/zzz-tunnel-panel-optz.conf >/dev/null 2>&1 || true
 %s
 mkdir -p /etc/security/limits.d
 printf '* soft nofile 1048576\n* hard nofile 1048576\nroot soft nofile 1048576\nroot hard nofile 1048576\n' >/etc/security/limits.d/99-tunnel-panel.conf
@@ -90,6 +91,11 @@ echo APPLIED_OK
 		} else {
 			cur, _ := host.Run(ctx, "sysctl -n net.ipv4.tcp_congestion_control net.core.default_qdisc 2>/dev/null", nil)
 			r.Output += "\nnow: " + strings.ReplaceAll(strings.TrimSpace(cur), "\n", " / ")
+			// a file that sorts after ours wins at boot (and /etc/sysctl.conf over everything on
+			// "sysctl --system"): name the ones that set a key we set, it went unnoticed before
+			if o, _ := host.Run(ctx, optzOverrides(r.SysctlConf), nil); strings.TrimSpace(o) != "" {
+				r.Notes = append(r.Notes, "These files set some of the same keys and can override them: "+strings.Join(strings.Fields(o), ", ")+" — remove them if nothing needs them.")
+			}
 		}
 	}
 	return r
@@ -142,6 +148,16 @@ func buildSysctl(r OptimizeResult) (string, []string) {
 	case r.RAMMB >= 2048:
 		ctMax = 262144
 	}
+	// TCP memory of the whole host and orphaned sockets: the kernel sizes both for a desktop
+	// (tcp_mem ~9 % of RAM at most, 32768 orphans), and an exit node with 60k xray connections
+	// hit both — "TCP: too many orphaned sockets", connections reset (seen live). 1/8, 3/16 and
+	// 1/4 of RAM in 4 KB pages; one orphan per 64 KB of RAM. rmem_default/wmem_default stay
+	// small: they size every UDP/unix/netlink socket, and maxBuf/4 gave each one 16 MB.
+	pages := r.RAMMB * 256
+	if pages <= 0 {
+		pages = 262144 // RAM unknown: as for 1 GB
+	}
+	orphans := min(max(pages/16, 16384), 262144)
 	// ip_local_reserved_ports keeps the panel's own ports (panelPorts: 40000 + index*4 … and the
 	// bench slot, the hot-standby probes 49000+, the forwarder paths 50000+) out of the
 	// ephemeral range: an outgoing connection that got one of them made the tunnel or probe
@@ -151,8 +167,8 @@ net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=%s
 net.core.rmem_max=%d
 net.core.wmem_max=%d
-net.core.rmem_default=%d
-net.core.wmem_default=%d
+net.core.rmem_default=262144
+net.core.wmem_default=262144
 net.ipv4.tcp_rmem=4096 87380 %d
 net.ipv4.tcp_wmem=4096 65536 %d
 net.core.netdev_max_backlog=%d
@@ -164,6 +180,10 @@ net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_fin_timeout=15
 net.ipv4.tcp_tw_reuse=1
 net.ipv4.tcp_keepalive_time=120
+net.ipv4.tcp_mem=%d %d %d
+net.ipv4.tcp_max_orphans=%d
+net.ipv4.tcp_orphan_retries=2
+net.ipv4.tcp_notsent_lowat=131072
 net.ipv4.ip_local_port_range=10000 65535
 net.ipv4.ip_local_reserved_ports=40000-41023,49000-49255,50000-55000
 net.ipv4.udp_rmem_min=16384
@@ -173,16 +193,29 @@ fs.file-max=1048576
 -net.netfilter.nf_conntrack_max=%d
 -net.netfilter.nf_conntrack_tcp_timeout_established=21600
 -net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
-`, r.Virt, r.RAMMB, r.CPUs, cc, cc, maxBuf, maxBuf, maxBuf/4, maxBuf/4, maxBuf, wmemHi, backlog, somax, backlog, ctMax)
+`, r.Virt, r.RAMMB, r.CPUs, cc, cc, maxBuf, maxBuf, maxBuf, wmemHi, backlog, somax, backlog, pages/8, pages*3/16, pages/4, orphans, ctMax)
 	return strings.TrimRight(conf, "\n"), notes
 }
 
+// optzOverrides lists the files other than the panel's that set a key conf sets.
+func optzOverrides(conf string) string {
+	var keys []string
+	for _, l := range strings.Split(conf, "\n") {
+		l = strings.TrimPrefix(strings.TrimSpace(l), "-")
+		if i := strings.Index(l, "="); i > 0 && !strings.HasPrefix(l, "#") {
+			keys = append(keys, strings.ReplaceAll(strings.TrimSpace(l[:i]), ".", `\.`))
+		}
+	}
+	return fmt.Sprintf(`grep -lE '^[[:space:]]*-?(%s)[[:space:]]*=' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null | grep -v /zzz-tunnel-panel- | while read -r f; do [ -L "$f" ] || echo "$f"; done; true`, strings.Join(keys, "|"))
+}
+
 func manualOptz(conf string, bbr bool) string {
-	return fmt.Sprintf(`sudo tee /etc/sysctl.d/99-tunnel-panel-optz.conf >/dev/null <<'SYSCTL'
+	return fmt.Sprintf(`sudo rm -f /etc/sysctl.d/99-tunnel-panel-optz.conf
+sudo tee /etc/sysctl.d/zzz-tunnel-panel-optz.conf >/dev/null <<'SYSCTL'
 %s
 SYSCTL
 %s
-sudo sysctl --system
+sudo sysctl -p /etc/sysctl.d/zzz-tunnel-panel-optz.conf
 printf '* soft nofile 1048576\n* hard nofile 1048576\n' | sudo tee /etc/security/limits.d/99-tunnel-panel.conf >/dev/null`,
 		conf, "sudo "+strings.ReplaceAll(bbrLoad(bbr), "\n", "\nsudo "))
 }

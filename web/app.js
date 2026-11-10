@@ -1077,7 +1077,7 @@ function optimizeModal(id) {
       <table class="tbl">${info.map(x => `<tr><td class="faint">${x[0]}</td><td class="mono">${esc(String(x[1]))}</td></tr>`).join('')}</table>
       ${(r.notes || []).map(n => `<div class="mdesc" style="margin-top:8px">${esc(n)}</div>`).join('')}
       ${applied ? `<div class="mdesc" style="border-color:var(--good);margin-top:8px"><b>${r.applied ? '✓ Applied' : '⚠ Apply failed'}</b>${r.output ? '\n' + esc(r.output) : ''}</div>` : ''}
-      <h3 style="margin-top:14px">Recommended /etc/sysctl.d/99-tunnel-panel-optz.conf</h3>
+      <h3 style="margin-top:14px">Recommended /etc/sysctl.d/zzz-tunnel-panel-optz.conf</h3>
       <div class="codebox" style="margin-top:6px"><code>${esc(r.sysctlConf)}</code></div>
       <h3 style="margin-top:14px">Run it manually (as root)</h3>
       <div class="codebox" style="margin-top:6px"><code id="ozman">${esc(r.manual)}</code></div>
