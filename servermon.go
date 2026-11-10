@@ -217,18 +217,21 @@ func (a *App) checkServer(m *serverMon, s *Server, addr string, pause time.Durat
 	if probe6 {
 		up6, _ = tcpUp(addr6, 3, pause)
 	}
-	reason := "SSH port " + addr + " doesn't answer"
+	// no address in the reasons: they go to every account with a tunnel on the server (a
+	// user's bot, its Outages page) and to the AI analysis, and the address of a server shared
+	// with a user is hidden from them (sharedView); the Servers page has it
+	reason := "the SSH port doesn't answer"
 	if addr6 != "" {
 		if !up6 {
-			reason = "SSH doesn't answer on " + addr + " nor over IPv6 on " + addr6
+			reason = "SSH doesn't answer over IPv4 nor over IPv6"
 		}
 		// one family down while the other works: worth knowing (and logging) on its own —
 		// judged only once both were looked at this round
 		// — and only while one of them answers: with both gone it is the server that is down,
 		// and "IPv6 back" came next to "Server unreachable" (then flapped when it returned)
 		if (up || probe4) && (up6 || probe6) && (up || up6) {
-			a.transition(m, s.ID+"/v4", "ssh-v4", s.Name+" (IPv4)", !up && up6, first, "SSH over IPv4 ("+addr+") doesn't answer — IPv6 ("+addr6+") works; the panel manages it over IPv6 meanwhile")
-			a.transition(m, s.ID+"/v6", "ssh-v6", s.Name+" (IPv6)", up && !up6, time.Now(), "SSH over IPv6 ("+addr6+") doesn't answer — IPv4 works")
+			a.transition(m, s.ID+"/v4", "ssh-v4", s.Name+" (IPv4)", !up && up6, first, "SSH over IPv4 doesn't answer — IPv6 works; the panel manages it over IPv6 meanwhile")
+			a.transition(m, s.ID+"/v6", "ssh-v6", s.Name+" (IPv6)", up && !up6, time.Now(), "SSH over IPv6 doesn't answer — IPv4 works")
 		}
 	}
 	alive := up || up6 || any

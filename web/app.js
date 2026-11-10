@@ -29,8 +29,9 @@ function fallbackCopy(text, done) { const t = document.createElement('textarea')
 
 /* ---------------- boot ---------------- */
 async function boot() {
+  let s = {};
   try {
-    const s = await api('/setup-state');
+    s = await api('/setup-state');
     document.title = s.panelName || 'Tunnel Panel';
     if (!s.configured) return renderAuth('register', s.panelName);
     const me = await api('/me');
@@ -38,7 +39,7 @@ async function boot() {
     STATE.user = me.user; STATE.role = me.role || 'admin'; STATE.version = me.version || "";
     await loadAll();
     renderShell();
-  } catch (e) { renderAuth('login'); }
+  } catch (e) { renderAuth('login', s.panelName); } // signed out: /me answers 401
 }
 async function loadAll() {
   const [methods, servers, tunnels, settings, helpers] = await Promise.all([

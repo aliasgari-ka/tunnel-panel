@@ -73,7 +73,9 @@ func (a *App) reversePreflight(ctx context.Context, j *Job, t *Tunnel, m *Method
 	// and ports other tunnels on this Iran server use, even while they are stopped
 	a.store.View(func(st *State) {
 		for _, o := range st.Tunnels {
-			if o.ID != t.ID && o.ServerID == t.ServerID {
+			// a hot-standby path ("<tunnel>x<index>") of o is o itself: its first path takes o's
+			// own tunnel port, which must be tested, not skipped (portClash makes the same exception)
+			if o.ID != t.ID && o.ServerID == t.ServerID && !strings.HasPrefix(t.ID, o.ID+"x") {
 				for p := range iranPorts(o, "") {
 					busy[p] = true
 				}
@@ -346,7 +348,7 @@ func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *M
 		case userspaceIran(m, t) && want[hp.port] == "forwarded port" && hp.unit == "none" && !strings.Contains(hp.cmd, "/etc/tunnel-panel/t/"):
 			// another program (haproxy, xray…) has the users' port: listen on a free
 			// internal port and REDIRECT the outside traffic there, like the DNAT methods
-			q := a.freeInternalPort(ctx, h, t, len(redir))
+			q := a.freeInternalPort(ctx, h, t, redir)
 			if q == 0 {
 				return nil, fmt.Errorf("Iran port %d is used by %s (pid %d) and no free internal port was found for a redirect", hp.port, hp.name, hp.pid)
 			}
@@ -372,12 +374,17 @@ func (a *App) freeIranPorts(ctx context.Context, j *Job, h Host, t *Tunnel, m *M
 	return redir, nil
 }
 
-// freeInternalPort picks the k-th per-tunnel internal port (50000+index*20+k…) that
-// nothing listens on.
-func (a *App) freeInternalPort(ctx context.Context, h Host, t *Tunnel, k int) int {
-	for ; k < 20; k++ {
+// freeInternalPort picks a per-tunnel internal port (50000+index*20+k…) that nothing listens
+// on and that taken doesn't already hand out: those don't listen yet, so two users' ports once
+// got the same one when the first internal port was held.
+func (a *App) freeInternalPort(ctx context.Context, h Host, t *Tunnel, taken map[int]int) int {
+	used := map[int]bool{}
+	for _, q := range taken {
+		used[q] = true
+	}
+	for k := 0; k < 20; k++ {
 		q := 50000 + t.Index*20 + k
-		if len(heldPorts(ctx, h, []int{q})) == 0 {
+		if !used[q] && len(heldPorts(ctx, h, []int{q})) == 0 {
 			return q
 		}
 	}
