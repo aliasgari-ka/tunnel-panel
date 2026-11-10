@@ -137,7 +137,7 @@ func igProxyName(inf map[string]string, route string, byIP func(string) *Server)
 }
 
 const (
-	gemFixVisits = 3               // signed-in checks per gemFix at most
+	gemFixVisits = 6               // browser checks per gemFix at most (without the account)
 	gemSettle    = 5 * time.Second // after a route change, before the users' route is checked
 )
 
@@ -173,7 +173,7 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 	prev := inf["google"]
 	signedIn, usersFail := 0, 0
 	for _, c := range cands {
-		if signedIn >= gemFixVisits { // the test account is signed out when seen too often
+		if signedIn >= gemFixVisits {
 			break
 		}
 		signedIn++
