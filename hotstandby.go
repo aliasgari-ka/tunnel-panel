@@ -393,7 +393,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 12
+# tp-switcher 13
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 cd "$(dirname "$0")" || exit 1
@@ -468,8 +468,12 @@ measure() { # measure <kind> <from> <why> <k...>: speed tests in the background
   # a comparison (cmp, verify) also pings each path 20 times first, all at the same moment:
   # loss from the few pings of the routine checks (one lost of 6 reads as 17 %) and old
   # readings of idle paths sent users to paths that were worse than theirs
+  # each run has its own number (cmpid) and result file: a run cancelled by a press in the
+  # panel still finishes in the background, and its results used to be read as the next
+  # run's — they moved the users straight off the path just chosen
   local kind=$1 from=$2 why=$3; shift 3
-  echo "$kind $from $why" > cmp.run; rm -f cmp.done
+  cmpcancel; cmpid=$((cmpid + 1))
+  echo "$kind $from $why" > cmp.run
   ( for k in "$@"; do
       q="- -"
       if [ $kind != speed ] && [ -n "${H[$k]}" ]; then
@@ -477,11 +481,19 @@ measure() { # measure <kind> <from> <why> <k...>: speed tests in the background
         [ "$r" = ok ] && q="$rt ${ls:--1}"
       fi
       s=$(timeout 20 $P probe speed -addr ${A[$k]} -max $SPMB -secs 10 2>/dev/null); echo "$k ${s:-0} $q"
-    done > cmp.tmp; mv cmp.tmp cmp.done ) &
+    done > cmp.tmp.$cmpid; mv cmp.tmp.$cmpid cmp.done.$cmpid ) &
+  cmppid=$!
+}
+# cmpcancel: drop the run in flight (and whatever an older one left)
+cmpcancel() { # (killed only while it is still this shell's job: a finished one's pid may be reused)
+  [ -n "$cmppid" ] && jobs -p | grep -qx "$cmppid" && kill $cmppid 2>/dev/null
+  cmppid=""; rm -f cmp.run cmp.done cmp.done.* cmp.tmp.*
 }
 declare -a ok since fails qr ql sp spb spat flushed dropat leftat
-active=-1
-rm -f cmp.run cmp.done cmp.tmp
+active=-1; cmpid=0; cmppid=""
+# failfrom: the path an outage moved the users off (auto mode takes them back to it, see below)
+failfrom=-1
+rm -f cmp.run cmp.done cmp.tmp cmp.done.* cmp.tmp.*
 bash base.sh >/dev/null 2>&1
 if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
 [ $active -ge 0 ] || use 0 "start"
@@ -552,11 +564,13 @@ while true; do
     use $P0 "chosen in the panel"
     # a choice made by hand holds for HOLD against auto mode's comparisons (it moved the users
     # straight back off a lossy path someone picked on purpose); a path that dies is still left
-    hold=$((now + HOLD)); rm -f cmp.run cmp.done
+    hold=$((now + HOLD)); cmpcancel; failfrom=-1
   elif [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -ge $FAILS ] && [ $((now - ${since[$active]:-$now})) -ge ${GRACE:-0} ]; then
     # down for GRACE s (a blip shorter than that moves nobody): to the steadiest, cleanest path
     best=$(pick); was=$active
     [ $best -ge 0 ] && use $best "path $active down for $((now - ${since[$active]:-$now}))s — took path $best: loss $(pc ${ql[$best]})%, rtt ${qr[$best]:-?} ms, up $((now - ${since[$best]:-$now}))s"
+    # remember the first path of a run of outages; landing back on it ends the run
+    if [ $best -ge 0 ]; then [ $failfrom -ge 0 ] || failfrom=$was; [ $best = $failfrom ] && failfrom=-1; fi
     # it has been down GRACE s already, past any traffic burst: its stuck connections are
     # cleared now, not FLUSHAFTER s after it died (apps hung ~15 s longer on the dead path)
     [ $best -ge 0 ] && [ ${GRACE:-0} -ge 15 ] && [ "${flushed[$was]}" != 1 ] && flush $was
@@ -568,8 +582,16 @@ while true; do
         [ $k != $P0 ] && stable $k && clean $k && budget && { planned $k "$(backmsg $k)"; break; }
       done
     fi
-  elif [ "${ok[$active]}" = 1 ] && [ -f cmp.done ]; then
-    read -r kind from why < cmp.run; rm -f cmp.run
+  elif [ "${ok[$active]}" = 1 ] && [ $failfrom -ge 0 ] && [ $failfrom != $active ] && stable $failfrom && clean $failfrom && budget; then
+    # auto: an outage moved the users, auto mode didn't choose it — back to the path they were
+    # on once it is stable and clean again. NOBACK and the comparisons don't apply: they keep
+    # auto mode from undoing its own choices. Without this the users stayed on a slower path
+    # (seen live: ger1, 6 h on the qemu-emulated Backhaul v1 after a 34 s blip of TP Tunnel).
+    o=$failfrom; failfrom=-1; cmpcancel
+    planned $o "back to path $o after its outage: $(backmsg $o)"
+    hold=$((now + HOLD))
+  elif [ "${ok[$active]}" = 1 ] && [ -f cmp.run ] && [ -f cmp.done.$cmpid ]; then
+    read -r kind from why < cmp.run; rm -f cmp.run; mv -f cmp.done.$cmpid cmp.done; cmppid=""
     while read -r k s frt fls; do
       [ -n "$k" ] || continue; sp[$k]=$s; spat[$k]=$now
       [ -n "$frt" ] && [ "$frt" != - ] && qr[$k]=$frt
@@ -594,9 +616,11 @@ while true; do
         fi
         [ $win = 1 ] && [ $sc -gt $bs ] && { best=$c; bs=$sc; }
       done < cmp.done
-      if [ $best -ge 0 ] && budget; then
+      if [ $best -ge 0 ] && [ $now -lt $hold ]; then
+        : # a path chosen in the panel (or just gone back to) holds for HOLD; compared again later
+      elif [ $best -ge 0 ] && budget; then
         planned $best "auto: $(mb $bs) vs $(mb $sa) Mbit/s, loss $(pc ${ql[$best]})% vs $(pc ${ql[$a]})%, rtt ${qr[$best]:-?} vs ${qr[$a]:-?} ms${why:+ — $why}"
-        leftat[$a]=$now
+        leftat[$a]=$now; failfrom=-1
         vfrom=$a; vto=$best; vso=$sa; vlo=${ql[$a]:-0}; vco=$(cost $a); verifyat=$((now + VERIFY))
         hold=$((now + HOLD)); backoff=1800
         # the connections already open stay on the old path until they end: clearing them (as a
@@ -849,8 +873,21 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 	}
 	j.log("stopping what ran before on both servers")
 	a.setApplying(t, m.ID)
-	a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, hsTeardown(&old))
-	a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, hsTeardown(&old))
+	okIR := a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, hsTeardown(&old))
+	okKH := a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, hsTeardown(&old))
+	// old paths the new plan doesn't reuse leave t.Paths: where their teardown didn't finish
+	// they keep cleanups of their own (the reused ones are redeployed below anyway)
+	var gone []HSPath
+	for _, o := range old.Paths {
+		reused := false
+		for _, p := range paths {
+			reused = reused || p.Index == o.Index
+		}
+		if !reused {
+			gone = append(gone, o)
+		}
+	}
+	a.deferHSLeftovers(&old, gone, !okIR, !okKH, false)
 	a.setActive(t, "")
 
 	j.log("== probe server on the foreign side (port %d, reachable only through the tunnels) ==", hsProbePort(t))
@@ -1152,8 +1189,15 @@ func (a *App) hsPinTo(ctx context.Context, t *Tunnel, pin string) (string, error
 	if pin == t.Active+"|"+t.Family {
 		pin = ""
 	}
-	_ = a.store.Update(func(*State) error { t.HSPin = pin; return nil })
-	idx := hsPinIndex(t, hsGood(t))
+	// the index for the new pin, worked out on a copy: t.HSPin changes only once the switcher
+	// took the press — saved before, a press that failed still showed as chosen and took
+	// effect at the next re-apply (pin.new), at some unrelated moment
+	var idx string
+	a.store.View(func(*State) {
+		c := *t
+		c.HSPin = pin
+		idx = hsPinIndex(&c, hsGood(t))
+	})
 	srv := a.store.Server(t.ServerID)
 	if srv == nil {
 		return "", fmt.Errorf("Iran server not found")
@@ -1171,6 +1215,7 @@ func (a *App) hsPinTo(ctx context.Context, t *Tunnel, pin string) (string, error
 	case !strings.Contains(out, "OK"):
 		return "", fmt.Errorf("hot standby isn't running on the Iran server — press Re-apply")
 	}
+	_ = a.store.Update(func(*State) error { t.HSPin = pin; return nil })
 	name := methodTitle(t.Active) + " (" + t.Family + ")"
 	if pin != "" {
 		f := strings.SplitN(pin, "|", 2)
@@ -1274,10 +1319,12 @@ const panelPorts = "40000-41023,49000-49255,50000-55000"
 // panelPortsSetup keeps panelPorts out of the ephemeral range (added to what is reserved
 // already, and kept across reboots): on a default server outgoing connections take local
 // ports 32768-60999, and one that got a probe port blocked the probe server (seen live: usa,
-// "listen tcp :49056: bind: address already in use", the tunnel left down by a repair).
+// "listen tcp :49056: bind: address already in use", the tunnel left down by a repair). The
+// file sorts last (zzz-), after other panels' files that set their own reserved ports.
 var panelPortsSetup = fmt.Sprintf(`cur=$(sysctl -n net.ipv4.ip_local_reserved_ports 2>/dev/null)
 case ",$cur," in *",49000-49255,"*) ;; *) sysctl -qw net.ipv4.ip_local_reserved_ports="${cur:+$cur,}%[1]s" 2>/dev/null || true ;; esac
-[ -f /etc/sysctl.d/98-tunnel-panel-ports.conf ] || echo "net.ipv4.ip_local_reserved_ports=%[1]s" > /etc/sysctl.d/98-tunnel-panel-ports.conf 2>/dev/null || true
+tp_pf=/etc/sysctl.d/zzz-tunnel-panel-ports.conf; [ -f /etc/sysctl.d/98-tunnel-panel-ports.conf ] && mv -f /etc/sysctl.d/98-tunnel-panel-ports.conf $tp_pf
+[ -f $tp_pf ] || echo "net.ipv4.ip_local_reserved_ports=$(sysctl -n net.ipv4.ip_local_reserved_ports 2>/dev/null)" > $tp_pf 2>/dev/null || true
 `, panelPorts)
 
 // freePort closes connections that use port p as their local port while nothing listens on

@@ -250,17 +250,21 @@ func teardownScript(t *Tunnel) string {
     systemctl disable --now $u 2>&1 | grep -v "Removed" || true
     rm -f /etc/systemd/system/$u
   fi
+  # its drop-ins (Repair's memory tuning) too, also when the unit file is already gone
+  rm -rf /etc/systemd/system/$u.d
 done
 systemctl daemon-reload 2>/dev/null || true
 [ -x %[2]s/fw-in-down.sh ] && %[2]s/fw-in-down.sh >/dev/null 2>&1
 rm -rf %[2]s
+# BackPack keeps a tunnel's metrics and usage totals next to its own files, named after the config
+rm -f /etc/backpack/tp-%[6]s.*
 # an IPsec config left by a failed deploy would keep strongSwan trying (or failing to start)
 if [ -f /etc/swanctl/conf.d/tp%[5]d.conf ]; then
   swanctl --terminate --ike tp%[5]d >/dev/null 2>&1
   rm -f /etc/swanctl/conf.d/tp%[5]d.conf
   swanctl --load-all --noprompt >/dev/null 2>&1 || true
 fi
-%[4]s`, unitName(t), tunnelDir(t), shapeUnitName(t), acctDown(t), t.Index)
+%[4]s`, unitName(t), tunnelDir(t), shapeUnitName(t), acctDown(t), t.Index, t.ID)
 }
 
 // deploy installs a side plan on one host.
@@ -386,9 +390,13 @@ func (a *App) apply(t *Tunnel, mid string, keep bool) (*Job, error) {
 		}
 		if len(t.Paths) > 0 { // hot standby was turned off: remove its paths and switcher
 			j.log("removing the hot-standby paths")
-			_, _ = irHost.Run(ctx, hsTeardown(t), nil)
-			_, _ = khHost.Run(ctx, hsTeardown(t), nil)
+			old := *t
+			old.Paths = append([]HSPath(nil), t.Paths...)
+			okIR := a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, hsTeardown(&old))
+			okKH := a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, hsTeardown(&old))
 			_ = a.store.Update(func(*State) error { t.Paths = nil; return nil })
+			// t.Paths is gone, so a side the teardown didn't finish keeps each path's own cleanup
+			a.deferHSLeftovers(&old, old.Paths, !okIR, !okKH, true)
 		}
 
 		if ro := a.routeOpts(t, mid, t.Family); len(ro) > 0 {

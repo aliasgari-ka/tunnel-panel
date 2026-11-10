@@ -473,7 +473,7 @@ window.TP_FA = {
 "Re-apply / restart": "اعمال دوباره / ری‌استارت",
 "Reached via": "دسترسی از طریق",
 "Reason": "دلیل",
-"Recommended /etc/sysctl.d/99-tunnel-panel-optz.conf": "پیشنهادی /etc/sysctl.d/99-tunnel-panel-optz.conf",
+"Recommended /etc/sysctl.d/zzz-tunnel-panel-optz.conf": "پیشنهادی /etc/sysctl.d/zzz-tunnel-panel-optz.conf",
 "Reinstall the agent even if it's already there": "ایجنت را حتی اگر از قبل نصب است دوباره نصب کن",
 "Remove": "حذف",
 "Remove Gemini key": "حذف کلید Gemini",

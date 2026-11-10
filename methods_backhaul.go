@@ -82,7 +82,9 @@ func backhaulPlans(c *buildCtx, bin string, art Artifact, title, certDir string)
 		if v := c.Opt("accept_udp"); v == "true" || v == "false" {
 			udp = v == "true"
 		}
-		// server (Iran): exposes mapped ports; targets default to foreign 127.0.0.1
+		// server (Iran): exposes mapped ports; targets default to foreign 127.0.0.1.
+		// skip_optz: the panel tunes the host (sysctlBBR, Optimize) — the core's own tuning on
+		// every start widened the ephemeral ports down to 1024 and set 256 MB socket buffers
 		irToml := fmt.Sprintf(`[server]
 bind_addr = "%s"
 transport = "%s"
@@ -94,6 +96,7 @@ channel_size = %s
 accept_udp = %v
 sniffer = %s
 log_level = "%s"
+skip_optz = true
 %s%sports = [%s]
 `, bind, tr, tok, c.Opt("nodelay"), c.Opt("keepalive_period"), c.Opt("heartbeat"), c.Opt("channel_size"), udp, c.Opt("sniffer"), c.Opt("log_level"), muxBlock, tlsSrv, portsTOML(c.T.Ports))
 
@@ -107,6 +110,7 @@ dial_timeout = 10
 retry_interval = 3
 nodelay = %s
 log_level = "%s"
+skip_optz = true
 %s`, bracket(d.IRPub), tp, tr, tok, c.Opt("connection_pool"), c.Opt("keepalive_period"), c.Opt("nodelay"), c.Opt("log_level"), muxBlock)
 
 		dir := tunnelDir(c.T)

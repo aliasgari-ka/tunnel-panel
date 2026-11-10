@@ -537,15 +537,43 @@ func methodsForFamily(fam string) []*Method {
 
 // sysctlBBR is a portable snippet enabling IPv4 forwarding + BBR, idempotent. The tunnels
 // carry IPv4 inside, so IPv6 forwarding stays as the server had it (see ipv6RAFix).
+//
+// The panel's files are named zzz-tunnel-panel-* so they sort after what other panels and
+// installers leave in /etc/sysctl.d (zz-backpack.conf, 99-botping*.conf…): the last file
+// wins at boot, and one of those set 256 MB socket buffers that ran a 60k-connection node out
+// of TCP memory ("TCP: too many orphaned sockets", users cut). At runtime only the panel's own
+// files are applied — "sysctl --system" re-applied those others on every tunnel start, and
+// reset what the switcher and paqet raise live (nf_conntrack_max, so the optimize file goes
+// in without its conntrack lines). tcp_mem and tcp_max_orphans scale with RAM (1/8, 3/16,
+// 1/4 of it in 4 KB pages; RAM/64 KB orphans), the kernel's defaults are sized for a desktop.
 const sysctlBBR = `
-cat >/etc/sysctl.d/98-tunnel-panel.conf <<'SYSCTL'
+tp_sd=/etc/sysctl.d
+rm -f $tp_sd/98-tunnel-panel.conf
+[ -f $tp_sd/99-tunnel-panel-optz.conf ] && mv -f $tp_sd/99-tunnel-panel-optz.conf $tp_sd/zzz-tunnel-panel-optz.conf
+[ -f $tp_sd/98-tunnel-panel-ports.conf ] && mv -f $tp_sd/98-tunnel-panel-ports.conf $tp_sd/zzz-tunnel-panel-ports.conf
+tp_pg=$(awk '/MemTotal/{print int($2/4)}' /proc/meminfo 2>/dev/null)
+{ cat <<'SYSCTL'
 net.ipv4.ip_forward=1
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
-net.core.rmem_max=16777216
-net.core.wmem_max=16777216
+net.core.rmem_max=33554432
+net.core.wmem_max=33554432
+net.ipv4.tcp_orphan_retries=2
+net.ipv4.tcp_notsent_lowat=131072
 SYSCTL
-sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/98-tunnel-panel.conf >/dev/null 2>&1 || true
+if [ "${tp_pg:-0}" -gt 0 ]; then
+  tp_o=$((tp_pg / 16)); [ $tp_o -lt 16384 ] && tp_o=16384; [ $tp_o -gt 262144 ] && tp_o=262144
+  echo "net.ipv4.tcp_mem=$((tp_pg / 8)) $((tp_pg * 3 / 16)) $((tp_pg / 4))"
+  echo "net.ipv4.tcp_max_orphans=$tp_o"
+fi
+} >$tp_sd/zzz-tunnel-panel-base.conf
+sysctl -q -p $tp_sd/zzz-tunnel-panel-base.conf >/dev/null 2>&1
+if [ -f $tp_sd/zzz-tunnel-panel-optz.conf ]; then
+  grep -v nf_conntrack $tp_sd/zzz-tunnel-panel-optz.conf >/run/tp-optz.conf 2>/dev/null && sysctl -q -p /run/tp-optz.conf >/dev/null 2>&1
+  rm -f /run/tp-optz.conf
+fi
+[ -f $tp_sd/zzz-tunnel-panel-ports.conf ] && sysctl -q -p $tp_sd/zzz-tunnel-panel-ports.conf >/dev/null 2>&1
+true
 ` + ipv6RAFix
 
 // ipv6RAFix repairs what earlier versions did: they turned IPv6 forwarding on, and with
@@ -553,7 +581,7 @@ sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/98-tunnel-panel.conf 
 // default route from them lost IPv6 once that route expired. The setting is dropped from
 // the panel's files; while forwarding is still on (until a reboot, or because something
 // else wants it), accept_ra=2 keeps the interfaces taking RAs anyway.
-const ipv6RAFix = `if [ -f /etc/sysctl.d/99-tunnel-panel-optz.conf ]; then sed -i '/^net\.ipv6\.conf\.all\.forwarding=1$/d' /etc/sysctl.d/99-tunnel-panel-optz.conf 2>/dev/null || true; fi
+const ipv6RAFix = `for f in /etc/sysctl.d/99-tunnel-panel-optz.conf /etc/sysctl.d/zzz-tunnel-panel-optz.conf; do [ -f $f ] && sed -i '/^net\.ipv6\.conf\.all\.forwarding=1$/d' $f 2>/dev/null; done; true
 if [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)" = 1 ]; then
   for f in /proc/sys/net/ipv6/conf/*/accept_ra; do
     i=${f%/accept_ra}; i=${i##*/}

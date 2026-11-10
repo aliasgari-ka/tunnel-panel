@@ -39,6 +39,7 @@ heartbeat = 40
 channel_size = 4096
 preset = "%s"
 log_level = "info"
+skip_optz = true
 accept_udp = %v
 ports = [%s]
 `, bind, tr, tok, c.Opt("preset"), c.OptB("accept_udp"), portsTOML(c.T.Ports))
@@ -52,6 +53,7 @@ dial_timeout = 10
 nodelay = true
 preset = "%s"
 log_level = "info"
+skip_optz = true
 `, bracket(d.IRPub), tp, tr, tok, c.Opt("preset"))
 
 		return backpackPlans(c, irToml, khToml)
