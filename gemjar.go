@@ -26,7 +26,11 @@ import (
 const (
 	gemFwdAddr = "127.0.0.1:9278"       // the test browser's proxy (reached over gb-tunnel -R)
 	gemCtlAddr = "127.0.0.1:9279"       // hold / release (this host only)
-	gemHome    = "159.195.78.190:12371" // the browser host's own IP: where the account normally lives
+	// where the test account lives, always: the panel host's own IP (its relay). Google serves
+	// Gemini to the account there, and no user's Google leaves from it, so Google has no reason to
+	// turn against it (the browser host's own IP, the home before, came to be refused: every user
+	// of that server went to Google from it)
+	gemHome    = "152.53.86.103:12371"
 	gemHoldMax = 3 * time.Minute        // a probe that never releases gives the exit back after this
 )
 
