@@ -301,8 +301,10 @@ func (a *App) igInfos(list []*Server, fresh bool) map[string]map[string]string {
 		}
 		e, ok := a.ig.m[s.ID]
 		if ok && !fresh && time.Since(e.at) < igInfoTTL {
-			res[s.ID] = e.info
 			a.ig.mu.Unlock()
+			mu.Lock() // the waiters below write res too
+			res[s.ID] = e.info
+			mu.Unlock()
 			continue
 		}
 		ch, running := a.ig.inflight[s.ID]

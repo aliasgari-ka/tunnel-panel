@@ -277,12 +277,12 @@ func (a *App) gemLoop() {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			inf := a.igInfo(ctx, s)
 			cancel()
-			if d := inf["gdom"]; d == "" || d == "-" || d == want {
+			if d := inf["gdom"]; d == "" || d == "-" || gemDomIs(d, want) {
 				continue
 			}
 			moved[s.ID] = time.Now()
 			res := a.gemFix(s, inf)
-			if strings.Contains(res, "signed out") { // tried again next round; told once a day
+			if strings.Contains(res, "signed out") || strings.HasPrefix(res, gemNoBrowser) { // tried again next round; told once a day
 				delete(moved, s.ID)
 				if time.Since(signedOutSent) < 24*time.Hour {
 					break

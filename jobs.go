@@ -216,6 +216,39 @@ func (a *App) settings() Settings {
 	return s
 }
 
+// keepPathSecrets: a hot-standby path ("<tunnel>x<index>", see pathTunnel) shares its
+// tunnel's Secrets, but a key made while building it lands in the path's own copy of the map
+// (copy-on-write), which nothing saved — so every apply of a path made new tokens and keys.
+// The new ones go to the tunnel here (under the store lock).
+func keepPathSecrets(st *State, pt *Tunnel) {
+	id, _, ok := strings.Cut(pt.ID, "x")
+	if !ok {
+		return
+	}
+	for _, t := range st.Tunnels {
+		if t.ID != id {
+			continue
+		}
+		var ns map[string]string
+		for k, v := range pt.Secrets {
+			if t.Secrets[k] == v {
+				continue
+			}
+			if ns == nil {
+				ns = make(map[string]string, len(t.Secrets)+len(pt.Secrets))
+				for k2, v2 := range t.Secrets {
+					ns[k2] = v2
+				}
+			}
+			ns[k] = v
+		}
+		if ns != nil {
+			t.Secrets = ns // copy-on-write: readers use Secrets without the lock
+		}
+		return
+	}
+}
+
 // build creates plans under the store lock (secrets may be created) and persists them.
 func (a *App) build(m *Method, t *Tunnel, srv *Server, redir ...map[int]int) (SidePlan, SidePlan, error) {
 	var ir, kh SidePlan
@@ -227,6 +260,7 @@ func (a *App) build(m *Method, t *Tunnel, srv *Server, redir ...map[int]int) (Si
 	}
 	uerr := a.store.Update(func(st *State) error {
 		ir, kh, err = buildPlansRedirect(m, t, srv, fsrv, st.Settings, rd)
+		keepPathSecrets(st, t)
 		if err == nil && t.ID != "bench" {
 			err = portClash(st, t, m.ID)
 		}
@@ -468,6 +502,12 @@ func (a *App) apply(t *Tunnel, mid string, keep bool) (*Job, error) {
 		}
 		j.log("== Iran server ==")
 		if err := a.deploy(ctx, j, "IR", irHost, t, irP); err != nil {
+			// the foreign side is up already: take it (and what Iran got of it) down again, or
+			// its unit keeps running and starting at boot with its firewall openings, while the
+			// tunnel shows as stopped (applyHot does the same for a path that fails)
+			j.log("taking the half-applied %s down again on both servers", m.Title)
+			a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, teardownScript(t))
+			a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, teardownScript(t))
 			fail("Iran: %v", err)
 			return
 		}

@@ -106,6 +106,7 @@ func (a *App) restoreBackup(data []byte) (string, error) {
 	if err := a.store.replace(st); err != nil {
 		return "", err
 	}
+	a.syncAgentTokens() // the agents' tokens are the restored ones now (the old ones stop working)
 	for _, s := range st.Servers {
 		dropHost(s.ID)
 	}

@@ -65,6 +65,8 @@ func renderUnit(u Unit) string {
 		return r
 	}, u.Desc)
 	desc = strings.ReplaceAll(desc, "%", "%%") // systemd expands %-specifiers in Description=
+	// a line ending in "\" continues on the next one: "uk\" swallowed After= into Description=
+	desc = strings.ReplaceAll(desc, "\\", "/")
 	fmt.Fprintf(&b, "[Unit]\nDescription=%s\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=%s\n", desc, typ)
 	if u.RemainAfterExit {
 		b.WriteString("RemainAfterExit=yes\n")

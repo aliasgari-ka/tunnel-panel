@@ -148,10 +148,12 @@ func handle(c net.Conn) {
 		}
 		el := 0.0
 		if !start.IsZero() {
-			el = time.Since(start).Seconds()
+			// a forwarder that already buffered everything hands it over in microseconds: at
+			// %.4f that printed 0 s, so the client saw "no speed" for data that did arrive
+			el = max(time.Since(start).Seconds(), 1e-6)
 		}
 		_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		fmt.Fprintf(c, "%d %.4f\n", total, el)
+		fmt.Fprintf(c, "%d %.6f\n", total, el)
 		// let the client close: closing here with unread data sends a reset, and even a
 		// half-close (FIN) makes forwarders like Backhaul drop the whole connection — both
 		// can overtake the report on its way back. Keep reading until the client, which has

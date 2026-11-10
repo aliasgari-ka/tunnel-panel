@@ -110,6 +110,17 @@ func hsForwarderOK(t *Tunnel) bool {
 	return true
 }
 
+// hsMethodOK: m can be the chosen (first) path of a hot-standby tunnel. A port forwarder there
+// is held to the same rule as a standby path: the selector REDIRECTs single ports to internal
+// ones (50000+index*20+n, the probe at +19), so a range never gets a valid rule and a 19th
+// port would land on the probe's.
+func hsMethodOK(t *Tunnel, m *Method) error {
+	if m == nil || benchIsL3(m, t.Options[m.ID]) || hsForwarderOK(t) {
+		return nil
+	}
+	return fmt.Errorf("hot standby with %s (it forwards ports) takes single ports only, at most 18 — list the ports one by one, pick a kernel method (GRE, IPsec, WireGuard), or turn hot standby off", m.Title)
+}
+
 // hsCandidate: m over f can be a standby path of t (the user didn't leave it out on this route).
 func (a *App) hsCandidate(t *Tunnel, m *Method, f string) bool {
 	if !supportsFamily(m, f) || m.ID == "spoof" || (hsOnly != nil && !contains(hsOnly, m.ID)) || a.routeSkipped(t.ServerID, t.ForeignID, m.ID, f) {
@@ -864,6 +875,10 @@ func hsTeardown(t *Tunnel) string {
 // applyHot deploys every path, the probe server and the switcher. Paths that fail are left
 // out (the tunnel works as long as one does); the result lists them.
 func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *Server, irHost, khHost Host, fail func(string, ...any)) bool {
+	if err := hsMethodOK(t, m); err != nil {
+		fail("%v", err)
+		return false
+	}
 	old := *t
 	old.Paths = append([]HSPath(nil), t.Paths...)
 	paths := a.hsPlan(t, m.ID, t.Family)

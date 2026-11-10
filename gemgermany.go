@@ -3,7 +3,7 @@ package main
 // Each server's Google goes out in the server's own country: a customer who buys a US
 // server wants Gemini's US features (Germany lacked some, e.g. video editing). Its own IP
 // when Google places that in the country, else one of its WARPs that Google places there.
-// Each choice must first pass the signed-in Gemini check.
+// Each choice must first pass the Gemini check in the test browser.
 
 import (
 	"context"
@@ -32,6 +32,13 @@ func gemWantDom(srv *Server) string {
 		return d
 	}
 	return cc
+}
+
+// gemDomIs: Google's domain d is the country want stands for. Many countries' domain is
+// "com.<cc>" or "co.<cc>" (com.cy, co.il, com.ua…), which the map above doesn't list: without
+// this a server in such a country looked misplaced every round.
+func gemDomIs(d, want string) bool {
+	return d == want || (want != "" && !strings.Contains(want, ".") && (d == "com."+want || d == "co."+want))
 }
 
 var gemDomRe = regexp.MustCompile(`og[.]qtm[^"]*","([a-z.]{2,8})"`)
@@ -141,9 +148,13 @@ const (
 	gemSettle    = 5 * time.Second // after a route change, before the users' route is checked
 )
 
+// gemNoBrowser starts gemFix's answer when the check could not run at all (gemLoop retries
+// such a server next round instead of after gemServerEvery).
+const gemNoBrowser = "the Google test browser did not answer"
+
 var gemRouteRe = regexp.MustCompile(`^(proxy[0-9]*|warp6?|ipv6|direct)$`)
 
-// gemFix moves a server's Google to an exit in its own country that the signed-in check
+// gemFix moves a server's Google to an exit in its own country that the browser check
 // passes: its own IP, else one of its WARPs (pinned as a WARP). Another server is never used:
 // the internal relay proxies it once added broke Gemini and are no longer made.
 func (a *App) gemFix(srv *Server, inf map[string]string) string {
@@ -161,12 +172,12 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		warp       int // 0 = the server's own IP (route "direct"), else that WARP
 	}
 	var cands []cand
-	if inf["google"] != "direct" && gemOwnDomOf(ctx, srv) == want {
+	if inf["google"] != "direct" && gemDomIs(gemOwnDomOf(ctx, srv), want) {
 		cands = append(cands, cand{"12371", "its own IP", 0})
 	}
 	for n := 1; n <= 8; n++ {
 		port := strconv.Itoa(12371 + n)
-		if gemDom(ctx, srv.IPv4+":"+port) == want {
+		if gemDomIs(gemDom(ctx, srv.IPv4+":"+port), want) {
 			cands = append(cands, cand{port, fmt.Sprintf("its WARP %d", n), n})
 		}
 	}
@@ -178,8 +189,12 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		}
 		signedIn++
 		pc, pcancel := context.WithTimeout(ctx, 2*time.Minute)
-		v, _, _ := gemProbe(pc, "socks5://"+srv.IPv4+":"+c.port)
+		v, _, perr := gemProbe(pc, "socks5://"+srv.IPv4+":"+c.port)
 		pcancel()
+		if perr != nil && v == "" {
+			// the check never ran (test browser or its tunnel down): not a verdict on the exits
+			return gemNoBrowser + ": " + clipTo(perr.Error(), 100)
+		}
 		if v == "signedout" {
 			return "the Gemini test account is signed out — log in again (IG Routing → 🔑 Google test browser), then Google is moved on the next round"
 		}
@@ -208,14 +223,24 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		// the exit passed in the test browser, but the users' route must reach it too: check the
 		// users' relay a few times
 		d := ""
-		for i := 0; i < 3 && d != want; i++ {
+		for i := 0; i < 3 && !gemDomIs(d, want); i++ {
 			time.Sleep(gemSettle)
 			d = gemDom(ctx, srv.IPv4+":"+strconv.Itoa(gemRelayPort))
 		}
-		if d == want {
-			return "Google moved to " + c.what + " — ." + want + ", signed-in Gemini works there"
+		if gemDomIs(d, want) {
+			return "Google moved to " + c.what + " — ." + want + ", Gemini opens there"
 		}
 		usersFail++
+		if c.warp > 0 && via == prev {
+			// the route stayed, but Google is pinned to this WARP now: let the agent pick its
+			// WARP again instead of leaving it on one the users' route doesn't get through
+			bc, bcancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			if rc, out := a.igRun(bc, srv, []string{"google", "rotate"}, "", 110, nil); rc != 0 {
+				log.Printf("gemini fix %s: unpinning Google from %s: %s", srv.Name, c.what, agentLine(srv, out))
+			}
+			bcancel()
+			a.igForget(srv.ID)
+		}
 		if via != prev {
 			// put it back, with a context of its own: the round's may be spent by now
 			bc, bcancel := context.WithTimeout(context.Background(), 4*time.Minute)
@@ -232,7 +257,7 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		return "no exit that Google places in ." + want + " — move it by hand"
 	}
 	if usersFail > 0 {
-		return fmt.Sprintf("%d exit(s) opened Gemini signed in, but the users' route did not reach them — left on %s", usersFail, prev)
+		return fmt.Sprintf("%d exit(s) opened Gemini, but the users' route did not reach them — left on %s", usersFail, prev)
 	}
-	return fmt.Sprintf("no .%s exit opens Gemini signed in (%d tried) — left as is", want, signedIn)
+	return fmt.Sprintf("no .%s exit opens Gemini (%d tried) — left as is", want, signedIn)
 }

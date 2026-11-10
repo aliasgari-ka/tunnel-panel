@@ -98,7 +98,17 @@ func (s *Server2) routeSkip(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if user, admin := s.who(r); !s.pairVisible(user, admin, in.Iran, in.Foreign) {
+		// the switches belong to the server pair (every tunnel on it, benchmarks and failover):
+		// a user changes them only where both servers are their own, the same test the list
+		// below uses — not on the admin's servers that merely carry a tunnel of theirs
+		user, admin := s.who(r)
+		own := admin
+		if !own {
+			s.app.store.View(func(st *State) {
+				own = visible(user, admin, ownerOfLocked(st, in.Iran)) && visible(user, admin, ownerOfLocked(st, in.Foreign))
+			})
+		}
+		if !own || !s.pairVisible(user, admin, in.Iran, in.Foreign) {
 			httpErr(w, 404, "not found")
 			return
 		}

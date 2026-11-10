@@ -38,6 +38,7 @@ type AgentHub struct {
 
 type agentConn struct {
 	sess     *yamux.Session
+	token    string // the token it came in with: a session whose token is gone is closed
 	hostname string
 	arch     string
 	os       string
@@ -55,6 +56,13 @@ func (hub *AgentHub) setTokens(servers []*Server) {
 	for _, s := range servers {
 		if s.AgentToken != "" {
 			hub.tokens[s.AgentToken] = s.ID
+		}
+	}
+	// a session on a token no longer valid (server deleted, token rotated, a backup restored)
+	// ends now instead of running until the agent reconnects
+	for id, c := range hub.conns {
+		if hub.tokens[c.token] != id {
+			c.sess.Close()
 		}
 	}
 }
@@ -126,8 +134,9 @@ func (hub *AgentHub) validToken(tok string) bool {
 }
 
 func (hub *AgentHub) connect(w http.ResponseWriter, r *http.Request) {
+	tok := r.Header.Get(agentproto.TokenHeader)
 	hub.mu.Lock()
-	serverID := hub.tokens[r.Header.Get(agentproto.TokenHeader)]
+	serverID := hub.tokens[tok]
 	hub.mu.Unlock()
 	if serverID == "" {
 		http.Error(w, "unknown agent token", 403)
@@ -150,7 +159,7 @@ func (hub *AgentHub) connect(w http.ResponseWriter, r *http.Request) {
 		c.Close()
 		return
 	}
-	ac := &agentConn{sess: sess, since: time.Now()}
+	ac := &agentConn{sess: sess, token: tok, since: time.Now()}
 	if st, err := sess.AcceptStream(); err == nil {
 		_ = st.SetDeadline(time.Now().Add(10 * time.Second))
 		sbr := bufio.NewReader(st)

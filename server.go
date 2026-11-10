@@ -1731,6 +1731,9 @@ func validateOptions(opts map[string]map[string]string) error {
 					if err != nil || n < 0 || n > 65535 {
 						return fmt.Errorf("%s: %s must be a number", m.Title, f.Label)
 					}
+					if n == 0 && strings.Contains(k, "port") {
+						return fmt.Errorf("%s: %s must be between 1 and 65535 (blank = automatic)", m.Title, f.Label)
+					}
 					if r, ok := optRange[k]; ok && (n < r[0] || n > r[1]) {
 						return fmt.Errorf("%s: %s must be between %d and %d", m.Title, f.Label, r[0], r[1])
 					}
