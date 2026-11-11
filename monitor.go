@@ -166,6 +166,11 @@ func (a *App) healthMonitor() {
 					// a healthy tunnel with a path that could not start: that one path is
 					// tried again (hsretry.go) — the users stay where they are
 					go a.hsRetryFailed(t)
+				case t.HotStandby && reason == "" && a.jobs.running(t.ID) == "" && len(a.hsKickDue(t, a.hsViewOf(t.ID), time.Now())) > 0:
+					// a healthy tunnel with a path that started and then went down: only that
+					// path's core is restarted (hskick.go) — the users stay where they are
+					v := a.hsViewOf(t.ID)
+					go a.hsKickPaths(t, v, a.hsKickDue(t, v, time.Now()))
 				case t.HotStandby:
 					// the switcher on the Iran server moves the users itself
 				case reason != "" && !t.NoFailover && !strings.Contains(reason, "unreachable") && time.Since(h.failoverAt) >= failoverRetry &&
@@ -262,7 +267,9 @@ func (a *App) premiumLicenseNote(ctx context.Context, t *Tunnel, reason string) 
 	}
 	var h Host
 	switch {
-	case strings.HasPrefix(reason, "Iran service"):
+	// a core with no license verdict keeps running and passes nothing: "tunnel link down",
+	// with both units active — the Iran side (the server) logs the verdict
+	case strings.HasPrefix(reason, "Iran service"), strings.HasPrefix(reason, "tunnel link down"):
 		if srv := a.store.Server(t.ServerID); srv != nil {
 			h, _, _ = a.reach(ctx, srv, nil)
 		}
@@ -272,7 +279,7 @@ func (a *App) premiumLicenseNote(ctx context.Context, t *Tunnel, reason string) 
 	if h == nil {
 		return ""
 	}
-	out, _ := h.Run(ctx, "journalctl -u "+unitName(t)+" -n 200 --no-pager -o cat 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' | grep -i -E 'licen[cs]e (ip|does not|has expired|is expired|is invalid|status unknown|issue)|invalid license' | tail -1 | sed 's/^.*\\] *//'", nil)
+	out, _ := h.Run(ctx, "journalctl -u "+unitName(t)+" -n 200 --no-pager -o cat 2>/dev/null | sed 's/\\x1b\\[[0-9;]*m//g' | grep -i -E 'licen[cs]e is valid|"+premiumLicenseBad+"' | tail -1 | grep -viE 'licen[cs]e is valid' | sed 's/^.*\\] *//'", nil)
 	if l := strings.TrimSpace(lastLine(out)); l != "" {
 		return " — Backhaul Premium license: " + l
 	}

@@ -19,6 +19,13 @@ func TestPremiumLicenseCheck(t *testing.T) {
 		{"[ERROR] License has expired", "License has expired", false},
 		{"[ERROR] License does not exist", "License does not exist", false},
 		{"[INFO] control channel established successfully", "no license verdict", true},
+		// bad verdicts that used to pass with a note blaming the server's DNS (bug hunt 2026-11-12)
+		{"[ERROR] License rejected", "license problem: License rejected", false},
+		{"[ERROR] License status is unknown", "license problem: License status is unknown", false},
+		{"[ERROR] Unknown license status", "license problem: Unknown license status", false},
+		{"[ERROR] Invalid license or IP address", "license problem: Invalid license or IP address", false},
+		{"[ERROR] License server returned failure", "license server is failing", false},
+		{"[ERROR] License verification API failed", "license server is failing", false},
 	}
 	for _, c := range cases {
 		dir := t.TempDir()
