@@ -74,7 +74,7 @@ func (a *App) routes() http.Handler {
 		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
 		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
-		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true}
+		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true}
 	g := func(path, kind string, h http.HandlerFunc) {
 		if !reads[path] {
 			h = postOnly(h)
@@ -130,6 +130,7 @@ func (a *App) routes() http.Handler {
 	gb := s.auth(s.guard("admin", s.gbrowser()))
 	mux.HandleFunc("/gbrowser", gb)
 	mux.HandleFunc("/gbrowser/", gb)
+	g("/api/igproxy/gaccount", "admin", s.gemAcctGet)
 	g("/api/helpers/fetch", "admin", s.helperFetch)
 	g("/api/users", "admin", s.users)
 	g("/api/users/delete", "admin", s.userDelete)

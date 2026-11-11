@@ -144,6 +144,7 @@ func main() {
 	go gemFwd.serve()
 	go app.gemLoop()
 	go app.gemOneLoop()
+	go app.gemAcctLoop()
 	app.usage = loadUsage()
 	go app.usageLoop()
 	go app.usageWatchLoop()

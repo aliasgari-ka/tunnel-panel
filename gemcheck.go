@@ -11,11 +11,13 @@ package main
 // on one it refuses to accounts that line never comes (compared with the signed-in answer on 7
 // exits, 2026-11-10: the same every time). The account itself never leaves its home exit
 // (gemHome): seen from another IP and country at every check, Google signed it out again and
-// again. Only `gemini-check --signed` still takes the account to an exit, for a check by hand.
+// again — the last time on 2026-11-10, when hand checks with --signed did it. Nothing takes the
+// account away from home any more, not even by hand (gemjar.go has no switch).
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -97,10 +99,13 @@ func gemProbe(ctx context.Context, proxy string) (string, gemPage, error) {
 	return gemProbeAs(ctx, proxy, proxy == "")
 }
 
-// gemProbeAs: signed = with the test account (its one cookie jar; the browser's own proxy is
-// switched to the exit for the visit, see gemjar.go).
+// gemProbeAs: signed = with the test account, which exists only on its home exit: a signed
+// probe through any other exit is refused.
 func gemProbeAs(ctx context.Context, proxy string, signed bool) (string, gemPage, error) {
 	var page gemPage
+	if signed && proxy != "" {
+		return "", page, errors.New(gemNoAway)
+	}
 	w, err := cdpDial(ctx, gemCDPAddr)
 	if err != nil {
 		return "", page, fmt.Errorf("Google test browser: %w", err)
@@ -108,13 +113,7 @@ func gemProbeAs(ctx context.Context, proxy string, signed bool) (string, gemPage
 	defer w.Close()
 	tp := map[string]any{"url": "about:blank", "background": true}
 	verdict := gemVerdict
-	if signed && proxy != "" {
-		release, err := gemHold(ctx, strings.TrimPrefix(proxy, "socks5://"))
-		if err != nil {
-			return "", page, err
-		}
-		defer release()
-	} else if !signed {
+	if !signed {
 		var bc struct {
 			ID string `json:"browserContextId"`
 		}
@@ -197,21 +196,24 @@ func gemProbeAs(ctx context.Context, proxy string, signed bool) (string, gemPage
 	return "noanswer", page, nil
 }
 
-// gemini-check [--signed] [socks5://ip:port]: one probe from the command line (prints what the
-// page showed). Without an exit it is the test account on its home exit; --signed takes the
-// account to the exit (by hand only: Google signs out an account it sees on many IPs).
+// gemNoAway: the test account is never taken to another exit (see gemjar.go).
+const gemNoAway = "the test account never leaves its home exit (Google signed it out after visits from other IPs); the exit is checked without it"
+
+// gemini-check [socks5://ip:port]: one probe from the command line (prints what the page
+// showed). Without an exit it is the test account on its home exit; with one it is the
+// account-less check of that exit.
 func gemCheckCmd(args []string) {
-	proxy, signed := "", false
+	proxy := ""
 	for _, a := range args {
 		if a == "--signed" {
-			signed = true
-		} else {
-			proxy = a
+			fmt.Println(gemNoAway)
+			os.Exit(2)
 		}
+		proxy = a
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	v, p, err := gemProbeAs(ctx, proxy, signed || proxy == "")
+	v, p, err := gemProbe(ctx, proxy)
 	b, _ := json.MarshalIndent(p, "", " ")
 	fmt.Printf("verdict=%s err=%v\n%s\n", v, err, b)
 	if v != "ok" {
