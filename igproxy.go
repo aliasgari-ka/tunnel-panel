@@ -219,6 +219,12 @@ func igParseInfo(rc int, text, agentSum string) map[string]string {
 	}
 	// an old agent is flagged on its own: as a state it hid a router that is down
 	_, ig := S["ig"]
+	// Google's WARP (gact) and its country (gcc) are only true while Google goes through WARP:
+	// the agent keeps its last WARP's file after Google moves to a proxy or direct, and the page
+	// showed "Google's WARP 7 · US" for a server whose Google went direct
+	if g, ok := S["google"]; ok && !strings.HasPrefix(g, "warp") {
+		S["gact"], S["gcc"] = "-", "-"
+	}
 	if ig && agentSum != "" && S["sum"] != agentSum {
 		S["outdated"] = "1"
 	}
