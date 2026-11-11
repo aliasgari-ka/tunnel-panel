@@ -51,13 +51,13 @@ func testSocks(t *testing.T) (string, *int) {
 	return l.Addr().String(), &n
 }
 
-func TestGemFwdSwitch(t *testing.T) {
+// Every connection of the test browser leaves through its one exit.
+func TestGemFwdOneExit(t *testing.T) {
 	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "hi") }))
 	defer web.Close()
 	a, na := testSocks(t)
-	b, nb := testSocks(t)
 
-	f := &gemFwdT{up: a, conns: map[net.Conn]struct{}{}}
+	f := &gemFwdT{up: a}
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer l.Close()
 	go func() {
@@ -71,62 +71,25 @@ func TestGemFwdSwitch(t *testing.T) {
 	}()
 	d, _ := proxy.SOCKS5("tcp", l.Addr().String(), nil, proxy.Direct)
 	host := "localhost:" + web.URL[len("http://127.0.0.1:"):]
-	get := func(c net.Conn) string {
-		io.WriteString(c, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+	for i := 1; i <= 3; i++ {
+		c, err := d.Dial("tcp", host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.SetDeadline(time.Now().Add(5 * time.Second))
+		io.WriteString(c, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
 		r, err := http.ReadResponse(bufio.NewReader(c), nil)
 		if err != nil {
-			return "ERR " + err.Error()
+			t.Fatal(err)
 		}
-		defer r.Body.Close()
-		s, _ := io.ReadAll(r.Body)
-		return string(s)
-	}
-
-	c1, err := d.Dial("tcp", host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := get(c1); got != "hi" || *na != 1 {
-		t.Fatalf("through a: %q (a=%d)", got, *na)
-	}
-	f.switchTo(b, "tok", time.Now().Add(time.Minute))
-	c1.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err := c1.Read(make([]byte, 1)); err == nil {
-		t.Fatal("the connection through the old exit stayed open")
-	}
-	c2, err := d.Dial("tcp", host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := get(c2); got != "hi" || *nb != 1 || *na != 1 {
-		t.Fatalf("after the switch: %q (a=%d b=%d)", got, *na, *nb)
-	}
-	f.until = time.Now().Add(-time.Second) // an expired hold goes home
-	if f.current() != gemHome || f.token != "" {
-		t.Fatalf("expired hold: up=%s token=%q", f.up, f.token)
-	}
-}
-
-// Two probes asking at once: exactly one gets the browser; an expired hold lets the next one in.
-func TestGemFwdHoldOnce(t *testing.T) {
-	f := &gemFwdT{up: gemHome, conns: map[net.Conn]struct{}{}}
-	got := make(chan string, 20)
-	for i := 0; i < 20; i++ {
-		go func() { got <- f.hold("192.0.2.1:1") }()
-	}
-	n := 0
-	for i := 0; i < 20; i++ {
-		if <-got != "" {
-			n++
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		c.Close()
+		if string(b) != "hi" || *na != i {
+			t.Fatalf("request %d: %q (exit saw %d)", i, b, *na)
 		}
 	}
-	if n != 1 {
-		t.Fatalf("%d probes got the browser at once", n)
-	}
-	f.mu.Lock()
-	f.until = time.Now().Add(-time.Second)
-	f.mu.Unlock()
-	if tok := f.hold("192.0.2.2:1"); tok == "" || f.up != "192.0.2.2:1" {
-		t.Fatalf("after an expired hold: token %q, exit %s", tok, f.up)
+	if gemFwd.up != gemHome {
+		t.Fatalf("the test browser leaves through %s, not its home %s", gemFwd.up, gemHome)
 	}
 }

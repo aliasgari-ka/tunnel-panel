@@ -912,6 +912,8 @@ window.TP_FA = {
 "🔎 Trace": "🔎 ردیابی",
 "🔎 Trace connections (30 s)": "🔎 ردیابی اتصال‌ها (30 s)",
 "🔑 Google test browser": "🔑 مرورگر تست Google",
+"🔑 Google test account: signed out — log in": "🔑 حساب تست Google خارج شده — وارد شوید",
+"🔑 Google test browser ✓": "🔑 مرورگر تست Google ✓",
 "🔑 SSH bridge": "🔑 پل SSH",
 "🔗 connections": "🔗 اتصال‌ها",
 "🔧 Other": "🔧 سایر",

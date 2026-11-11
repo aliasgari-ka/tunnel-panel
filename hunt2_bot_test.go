@@ -364,7 +364,7 @@ func TestHunt2GemFwdDialTimeout(t *testing.T) {
 			defer c.Close()
 		}
 	}()
-	f := &gemFwdT{up: l.Addr().String(), conns: map[net.Conn]struct{}{}}
+	f := &gemFwdT{up: l.Addr().String()}
 	cl, sv := net.Pipe()
 	done := make(chan struct{})
 	go func() { f.handle(sv); close(done) }()
