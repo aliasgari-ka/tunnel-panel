@@ -781,13 +781,10 @@ func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 		// the switcher's own verdict: the path it keeps the users on works
 		v, events, err := a.hsRead(ctx, h, t, seen)
 		a.hsReport(t, v, events)
-		switch {
-		case err != nil:
+		if err != nil {
 			return err.Error(), foreign(), ""
-		case v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active]:
-			return "active", "active", "up"
 		}
-		return "active", "active", "down"
+		return "active", "active", a.hsLink(t.ID, v)
 	}
 	chk := linkCheck(t, srv, a.store.Server(t.ForeignID), a.settings())
 	out, _ := h.Run(ctx, cmd+"\n"+chk, nil)
@@ -808,6 +805,28 @@ func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 		link = "up"
 	}
 	return ir, foreign(), link
+}
+
+// hsUsersRate is the data rate towards the users (bits/s) that proves a hot-standby
+// tunnel's link works although the switcher's probe on the users' path fails. Higher than
+// trafficFlowing's 2 kbit/s: the users' ports end at a local forwarder on the Iran server,
+// so a dead path still answers the clients' handshakes, but it brings them no data.
+const hsUsersRate = 256_000
+
+// hsLink is a hot-standby tunnel's link verdict from the switcher's view: "up" when the
+// path the users are on passes its probe, or when data reaches the users through it right
+// now. A probe can fail on a path that carries the users' traffic (Paqet-plus under load
+// dropped its probes for ~30 s again and again while it moved 50+ Mbit/s), and the card
+// then said "no traffic between the servers" over a live traffic graph. Standby paths that
+// fail don't make the link down: the card's "n/m paths working" chip shows them.
+func (a *App) hsLink(id string, v *hsView) string {
+	if v != nil && v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active] {
+		return "up"
+	}
+	if a.trafficAtLeast(id, hsUsersRate, 2000) {
+		return "up"
+	}
+	return "down"
 }
 
 // linkCheck is the shell that prints "LINK up|down" on the Iran side.
