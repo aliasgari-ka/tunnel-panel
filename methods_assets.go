@@ -88,8 +88,8 @@ func buildGolden(c *buildCtx, facade string) (ir, kh SidePlan, err error) {
 ip link add %[1]s type gre local %[2]s remote %[3]s ttl 255 key %[4]d
 ip addr add %[5]s/30 dev %[1]s
 ip link set %[1]s mtu %[6]s up
-iptables -C INPUT -p gre -s %[3]s -j ACCEPT 2>/dev/null || iptables -I INPUT -p gre -s %[3]s -j ACCEPT
-`, d.Iface, selfPub, peerPub, d.GREKey, tunAddr, mtu)
+iptables -C INPUT -p gre -s %[3]s -m comment --comment %[7]s -j ACCEPT 2>/dev/null || iptables -I INPUT -p gre -s %[3]s -m comment --comment %[7]s -j ACCEPT
+`, d.Iface, selfPub, peerPub, d.GREKey, tunAddr, mtu, tag)
 			return s
 		}
 		inRule := "-p udp --dport " + wirePort
@@ -107,11 +107,11 @@ ip link add %[1]s type gre local 127.0.0.1 remote 127.0.0.1 ttl 255 key %[3]d en
 ip addr add %[5]s/30 dev %[1]s
 ip link set %[1]s mtu %[6]s up
 ethtool -K %[1]s tso off gso off gro off 2>/dev/null || true
-iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]s -s %[8]s -j ACCEPT
-`, d.Iface, fouPort, d.GREKey, relayPort, tunAddr, mtu, inRule, peerPub)
+iptables -C INPUT %[7]s -s %[8]s -m comment --comment %[9]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]s -s %[8]s -m comment --comment %[9]s -j ACCEPT
+`, d.Iface, fouPort, d.GREKey, relayPort, tunAddr, mtu, inRule, peerPub, tag)
 		if facade == "icmp" {
 			// stop the kernel answering the relay's echo requests to the peer
-			s += fmt.Sprintf("iptables -C OUTPUT -d %[1]s -p icmp --icmp-type 0 -j DROP 2>/dev/null || iptables -I OUTPUT -d %[1]s -p icmp --icmp-type 0 -j DROP\n", peerPub)
+			s += fmt.Sprintf("iptables -C OUTPUT -d %[1]s -p icmp --icmp-type 0 -m comment --comment %[2]s -j DROP 2>/dev/null || iptables -I OUTPUT -d %[1]s -p icmp --icmp-type 0 -m comment --comment %[2]s -j DROP\n", peerPub, tag)
 		}
 		return s
 	}
@@ -124,13 +124,23 @@ iptables -C INPUT %[7]s -s %[8]s -j ACCEPT 2>/dev/null || iptables -I INPUT %[7]
 		if facade == "dns" {
 			s += goldenSteer(false, peerPub, wirePort, selfPub, rxPort, tag)
 		}
-		if facade != "none" {
-			s += fmt.Sprintf("iptables -D INPUT %s -s %s -j ACCEPT 2>/dev/null || true\n", inRule, peerPub)
-			if facade == "icmp" {
-				s += fmt.Sprintf("iptables -D OUTPUT -d %s -p icmp --icmp-type 0 -j DROP 2>/dev/null || true\n", peerPub)
+		// each tunnel removes only its own (tagged) rules: two ICMP tunnels, or a benchmark
+		// copy, between the same servers have the same rule body, and one teardown used to
+		// take away the other's. An untagged rule from an older build goes only once no other
+		// tunnel's tagged rule for this peer is left.
+		rules := [][2]string{{"INPUT", inRule + " -s " + peerPub}}
+		if facade == "none" {
+			rules[0][1] = "-p gre -s " + peerPub
+		} else if facade == "icmp" {
+			rules = append(rules, [2]string{"OUTPUT", "-d " + peerPub + " -p icmp --icmp-type 0"})
+		}
+		for _, r := range rules {
+			verdict := "ACCEPT"
+			if r[0] == "OUTPUT" {
+				verdict = "DROP"
 			}
-		} else {
-			s += fmt.Sprintf("iptables -D INPUT -p gre -s %s -j ACCEPT 2>/dev/null || true\n", peerPub)
+			s += fmt.Sprintf("while iptables -w -D %s %s -m comment --comment %s -j %s 2>/dev/null; do :; done\n", r[0], r[1], tag, verdict)
+			s += fmt.Sprintf("iptables -w -S %s 2>/dev/null | grep -F -- ' %s/32 ' | grep -q -- '--comment tpg-' || iptables -w -D %s %s -j %s 2>/dev/null || true\n", r[0], peerPub, r[0], r[1], verdict)
 		}
 		return s
 	}

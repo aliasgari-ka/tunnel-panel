@@ -250,12 +250,13 @@ func iranPortSpans(t *Tunnel, mid string) []portSpan {
 	if mid == "" {
 		mid = t.Selected
 	}
+	// every port Iran listens on for the tunnel itself, TCP or not: a pck, kcp, quic or udp
+	// reverse transport (or WireGuard dialled from abroad) holds its port as much as a TCP one
 	tunnelPort := func(m *Method, t *Tunnel, what string) {
-		if key, ok := reverseTCPPort(m, t); ok {
-			get, _ := resolveOptions(m, t.Options[m.ID])
-			if p, err := strconv.Atoi(portOr(get(key), 40000+t.Index*4)); err == nil {
-				out = append(out, portSpan{p, p, what})
-			}
+		get, _ := resolveOptions(m, t.Options[m.ID])
+		ir, _ := tunnelListenPort(m, t, get, derived{BasePort: 40000 + t.Index*4})
+		if p, err := strconv.Atoi(ir); err == nil && p > 0 {
+			out = append(out, portSpan{p, p, what})
 		}
 	}
 	if m := methodByID[mid]; m != nil {

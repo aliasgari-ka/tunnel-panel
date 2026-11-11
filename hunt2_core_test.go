@@ -421,9 +421,10 @@ func TestHunt2CoreTPKListenPort(t *testing.T) {
 		if !strings.Contains(fw, "--dport 40004 -j ACCEPT") {
 			t.Errorf("%s/%s: Iran's tunnel port 40004 is not opened", c.mid, c.transport)
 		}
-		_, held := iranPorts(tn, "")[40004]
-		if held != c.rev {
-			t.Errorf("%s/%s: tunnel port counted in iranPorts=%v, want %v", c.mid, c.transport, held, c.rev)
+		// counted whatever the transport (a UDP listener holds the port as much as a TCP
+		// one); only the TCP preflight depends on it
+		if _, held := iranPorts(tn, "")[40004]; !held {
+			t.Errorf("%s/%s: tunnel port not counted in iranPorts", c.mid, c.transport)
 		}
 		if key, rev := reverseTCPPort(methodByID[c.mid], tn); rev != c.rev || (rev && key != "port") {
 			t.Errorf("%s/%s: reverseTCPPort = %q %v", c.mid, c.transport, key, rev)

@@ -74,6 +74,18 @@ func pathTunnel(t *Tunnel, p HSPath) *Tunnel {
 		}
 		opts[k] = cp
 	}
+	// a port pinned on the tunnel (by hand, or by an earlier preflight) is its own family's:
+	// the other family's path of the same method would bind [::]:P next to 0.0.0.0:P and
+	// never start, so it listens on its own port (its preflight may move it again)
+	if p.Family != t.Family && opts[p.Method] != nil {
+		if m := methodByID[p.Method]; m != nil {
+			for _, k := range []string{"tunnel_port", "bind_port", "port"} {
+				if methodField(m, k) != nil {
+					delete(opts[p.Method], k)
+				}
+			}
+		}
+	}
 	if len(p.Opts) > 0 {
 		if opts[p.Method] == nil {
 			opts[p.Method] = map[string]string{}

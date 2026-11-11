@@ -525,6 +525,8 @@ window.TP_FA = {
 "Save settings": "ذخیره تنظیمات",
 "Save, send your bot": "ذخیره کنید، سپس به ربات خود پیام بدهید",
 "Saved": "ذخیره شد",
+"These servers belong to the admin, who decides which methods this route uses.": "این سرورها مال مدیر هستند و او تعیین می‌کند این مسیر از کدام روش‌ها استفاده کند.",
+"Which methods this route keeps ready is set by the admin, who owns these servers.": "این‌که این مسیر کدام روش‌ها را آماده نگه دارد را مدیر، که صاحب این سرورهاست، تعیین می‌کند.",
 "Saved for this pair of servers (the Routes page shows the same switches).": "برای این جفت سرور ذخیره شد (صفحه مسیرها همین کلیدها را نشان می‌دهد).",
 "Saved — the panel restarts in a few seconds. Open it at": "ذخیره شد — پنل تا چند ثانیه دیگر ری‌استارت می‌شود. آن را در این آدرس باز کنید:",
 "Search name or IP…": "جستجوی نام یا IP…",

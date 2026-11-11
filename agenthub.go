@@ -167,6 +167,13 @@ func (hub *AgentHub) connect(w http.ResponseWriter, r *http.Request) {
 		st.Close()
 	}
 	hub.mu.Lock()
+	// the hello can take 10 s: a token rotated or revoked meanwhile (server deleted, backup
+	// restored) must not come online, nor push out the session on the new token
+	if hub.tokens[tok] != serverID {
+		hub.mu.Unlock()
+		sess.Close()
+		return
+	}
 	if old := hub.conns[serverID]; old != nil {
 		old.sess.Close()
 	}
@@ -307,7 +314,12 @@ func (h AgentHost) Run(ctx context.Context, script string, log func(string)) (st
 	out.log = log
 	done := make(chan error, 1)
 	go func() {
-		_, err := agentproto.ReadResult(st, out.write)
+		code, err := agentproto.ReadResult(st, out.write)
+		if err == nil && code != 0 {
+			// a failed script is an error, as on SSH and locally: deploy, Setup and Check
+			// rely on it ("systemctl restart … || exit 1" must not read as working)
+			err = fmt.Errorf("exit status %d", code)
+		}
 		done <- err
 	}()
 	select {

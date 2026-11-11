@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -629,8 +630,22 @@ func (a *App) testPathOnBenchSlot(ctx context.Context, j *Job, t *Tunnel, mid, f
 		return false
 	}
 	probePort := 40000 + 250*4 + 2
+	// the live backup's preflight may have moved it to the same port as this method's saved
+	// one (the one the route lets in): a copy on that port never binds, and the tunnel never
+	// failed back. Such a copy starts from the slot's own port and gets a preflight of its own
+	opts := map[string]string{}
+	for k, v := range t.Options[mid] {
+		opts[k] = v
+	}
+	movePort := false
+	if key, ok := reverseTCPPort(m, t); ok {
+		if p, err := strconv.Atoi(opts[key]); err == nil && iranPorts(t, t.Active)[p] != "" {
+			delete(opts, key)
+			movePort = true
+		}
+	}
 	bt := &Tunnel{ID: "bench", Name: "failback-check", ServerID: t.ServerID, ForeignID: t.ForeignID, Family: fam,
-		Ports: fmt.Sprint(probePort), Index: 250, Options: map[string]map[string]string{mid: t.Options[mid]}, Secrets: map[string]string{}}
+		Ports: fmt.Sprint(probePort), Index: 250, Options: map[string]map[string]string{mid: opts}, Secrets: map[string]string{}}
 	irHost, _, err := a.reach(ctx, srv, nil)
 	if err != nil {
 		return false
@@ -641,6 +656,11 @@ func (a *App) testPathOnBenchSlot(ctx context.Context, j *Job, t *Tunnel, mid, f
 	}
 	if pushArtifacts(ctx, j, "IR", irHost, []Artifact{probeArt}) != nil || pushArtifacts(ctx, j, "KH", khHost, []Artifact{probeArt}) != nil {
 		return false
+	}
+	if movePort {
+		if _, err := a.reversePreflight(ctx, j, bt, m, irHost, khHost); err != nil {
+			return false
+		}
 	}
 	_, _ = khHost.Run(ctx, probeServerUp(probePort), nil)
 	defer func() {

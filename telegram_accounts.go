@@ -148,7 +148,8 @@ func (a *App) pushTo(owner, msg string) {
 	b := a.userBots[owner]
 	a.botMu.Unlock()
 	if b != nil {
-		go b.push(msg)
+		// an apply error quotes SSH addresses and jump hosts: the user sees only theirs
+		go b.push(a.logRedactor(owner).Replace(msg))
 	}
 }
 

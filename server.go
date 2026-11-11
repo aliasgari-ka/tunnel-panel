@@ -620,6 +620,7 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 		// a benchmark job the account started is followed by its name too: a new account
 		// with the old name must not inherit it
 		s.app.jobs.renameOwner(user, name)
+		s.app.usage.renameOwner(user, name)
 		go s.app.restartBot() // a user's own bot belongs to the account by name
 	}
 	s.setCookie(w, r, name) // this browser stays signed in; every other session has ended

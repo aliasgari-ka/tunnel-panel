@@ -1055,6 +1055,20 @@ func (b *Bot) methodPicker(t *Tunnel, fam string, fams []string) (string, string
 }
 
 // watchJob reports a job's outcome to the chat when it ends (the important lines only).
+// redactLines is what the web API does to job logs for a non-admin: a user's own bot must
+// not show the admin's servers (SSH addresses, jump hosts, proxy credentials) either.
+func (b *Bot) redactLines(lines []string) []string {
+	if b.owner == "" {
+		return lines
+	}
+	rep := b.app.logRedactor(b.owner)
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = rep.Replace(l)
+	}
+	return out
+}
+
 func (b *Bot) watchJob(chat string, j *Job, title string) {
 	msg := b.sendMsg(chat, "⏳ "+esc(title)+"…", "")
 	go func() {
@@ -1066,7 +1080,7 @@ func (b *Bot) watchJob(chat string, j *Job, title string) {
 				continue
 			}
 			var keep []string
-			for _, l := range s.Lines {
+			for _, l := range b.redactLines(s.Lines) {
 				if strings.Contains(l, "✓") || strings.Contains(l, "✕") || strings.Contains(l, "→") || strings.Contains(l, "ERROR") ||
 					strings.Contains(l, "DONE") || strings.Contains(l, "WARNING") || strings.Contains(l, "clients →") || strings.Contains(l, "Mbps") {
 					keep = append(keep, esc(l))
@@ -1331,7 +1345,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 			return
 		}
 		s := j.snapshot()
-		lines := s.Lines
+		lines := b.redactLines(s.Lines)
 		if len(lines) > 25 {
 			lines = lines[len(lines)-25:]
 		}
