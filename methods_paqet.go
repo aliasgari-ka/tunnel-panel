@@ -45,13 +45,13 @@ var methodPaqet = &Method{
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1250", Help: "lower it if large packets get dropped", Advanced: true},
 		{Key: "block", Label: "Cipher", Type: "select", Default: "aes-128-gcm", Options: []string{"aes-128-gcm", "aes", "salsa20", "none"},
 			Help: "aes-128-gcm is the only one that also detects tampering", Advanced: true},
-		// the TCP flags on every frame. paqet's own default is PSH+ACK, and seen live (xe108,
-		// Iran→Germany) the route passed the first few PSH frames of each flow and then dropped
-		// the rest (353 sent, 12 arrived; the switcher's checks got no answer); ACK-only,
-		// SYN and SYN+ACK frames all passed in full on the same servers (121 of 121), and any
-		// mix that still holds PSH was cut again.
-		{Key: "flags", Label: "TCP flags", Type: "select", Default: "A", Options: []string{"A", "S", "SA", "PA"},
-			Help: "flags on the raw TCP frames: A (ACK) passes where PA (PSH+ACK, paqet's own default) is cut after a few packets on some Iran routes", Advanced: true},
+		// the TCP flags on every frame, the same on both sides. PA (PSH+ACK) is paqet's own
+		// default. On xe108 (Iran→Germany) the route cut some paqet flows a few seconds in and
+		// let others through, whatever the flags: in back-to-back runs on the same servers PA,
+		// A, S and SA each passed in some runs and were cut in others. A cut flow stays cut;
+		// a restart (new client port) may get through. The option is there to try others.
+		{Key: "flags", Label: "TCP flags", Type: "select", Default: "PA", Options: []string{"PA", "A", "S", "SA"},
+			Help: "flags on the raw TCP frames (PA = PSH+ACK, paqet's own default); another may pass where a route cuts PA", Advanced: true},
 		{Key: "fec", Label: "FEC (Reed-Solomon 10+1)", Type: "bool", Default: "false", Help: "for lossy links, at about 10 % more traffic", Advanced: true},
 		// warn: at info the core writes a stats line every few seconds on both servers (700 journal
 		// lines an hour per path, seen live) — a path problem still shows as warn/error
