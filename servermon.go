@@ -128,6 +128,32 @@ func (a *App) endOutage(id string, end time.Time) {
 	})
 }
 
+// forgetServerMon drops what the monitor keeps of a deleted server: its open outages end
+// now (nothing would end them: Clear keeps open ones for good) and its state goes, so a
+// server of that id is not taken for down.
+func (a *App) forgetServerMon(id string) {
+	keys := []string{id, id + "/v4", id + "/v6"}
+	if m := a.srvMon; m != nil {
+		m.mu.Lock()
+		for _, k := range keys {
+			delete(m.state, k)
+		}
+		m.mu.Unlock()
+	}
+	now := time.Now().Unix()
+	_ = a.store.Update(func(st *State) error {
+		for i := range st.Outages {
+			o := &st.Outages[i]
+			if o.End == 0 && (o.Kind == "server" || o.Kind == "ssh-v4" || o.Kind == "ssh-v6") &&
+				(o.Target == keys[0] || o.Target == keys[1] || o.Target == keys[2]) {
+				o.End = now
+				o.Reason += " (server deleted)"
+			}
+		}
+		return nil
+	})
+}
+
 // serverReachable is the monitor's last word on a server (true when not checked yet).
 func (a *App) serverReachable(id string) bool {
 	if a.srvMon == nil {

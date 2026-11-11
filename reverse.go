@@ -32,6 +32,10 @@ func reverseTCPPort(m *Method, t *Tunnel) (key string, ok bool) {
 		return "bind_port", p == "tcp" || p == "websocket"
 	case "premium":
 		return "port", get("mode") != "ipx"
+	case "tpk": // TP Tunnel's udp carrier is no TCP dial
+		return "port", get("transport") != "udp"
+	case "tpk_rev":
+		return "port", true
 	}
 	return "", false
 }
@@ -244,12 +248,22 @@ func iranPortSpans(t *Tunnel, mid string) []portSpan {
 	if mid == "" {
 		mid = t.Selected
 	}
-	if m := methodByID[mid]; m != nil {
+	tunnelPort := func(m *Method, t *Tunnel, what string) {
 		if key, ok := reverseTCPPort(m, t); ok {
 			get, _ := resolveOptions(m, t.Options[m.ID])
 			if p, err := strconv.Atoi(portOr(get(key), 40000+t.Index*4)); err == nil {
-				out = append(out, portSpan{p, p, m.Title + " tunnel port"})
+				out = append(out, portSpan{p, p, what})
 			}
+		}
+	}
+	if m := methodByID[mid]; m != nil {
+		tunnelPort(m, t, m.Title+" tunnel port")
+	}
+	// hot-standby paths: each reverse path listens on a tunnel port of its own (its own
+	// index, or the one a preflight moved it to, kept in the path's options)
+	for _, p := range t.Paths {
+		if m := methodByID[p.Method]; m != nil && p.Failed == "" {
+			tunnelPort(m, pathTunnel(t, p), m.Title+" tunnel port (hot-standby path)")
 		}
 	}
 	return out

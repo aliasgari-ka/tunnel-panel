@@ -210,8 +210,20 @@ func lastLines(s string, n int) string {
 // confirm message, so its button can't start a second run.
 func (b *Bot) startRouteBench(chat string, msg int64, t *Tunnel) {
 	var iran, foreign, fam, name string
-	b.app.store.View(func(*State) { iran, foreign, fam, name = t.ServerID, t.ForeignID, t.Family, t.Name })
+	allowed := true
+	b.app.store.View(func(st *State) {
+		iran, foreign, fam, name = t.ServerID, t.ForeignID, t.Family, t.Name
+		// the same guard as the web API's benchStart: a user's bot must not reach a pair the
+		// panel refuses them (e.g. the panel host, ForeignID "")
+		if b.owner != "" {
+			allowed = pairVisibleLocked(st, b.owner, false, iran, foreign)
+		}
+	})
 	back := b.keyboard([][]ikey{{{Text: "« " + name, Data: "t:" + t.ID}}})
+	if !allowed {
+		b.edit(chat, msg, "⚠ Only the admin can benchmark this route.", back)
+		return
+	}
 	j, err := b.app.Bench(BenchRequest{IranID: iran, ForeignID: foreign, Family: fam, Running: true, Seconds: 3, MaxMB: 8})
 	if err != nil {
 		b.edit(chat, msg, "⚠ "+esc(err.Error()), back)

@@ -199,7 +199,7 @@ func TestFmtBytesRounding(t *testing.T) {
 // The counter lines with marks are parsed into totals, parts and the marks.
 func TestTrafficParseMarks(t *testing.T) {
 	a := &App{traffic: newTrafficMon()}
-	a.trafficParse("ir", nil, "T a 30 3 ports 10/1+20/2 ep 111+222\nT b 5 6 iface tp3 ep 7\nT c 8 9 ep 0\nT d - - ports  ep \n")
+	a.trafficParse("ir", []*Tunnel{{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"}}, "T a 30 3 ports 10/1+20/2 ep 111+222\nT b 5 6 iface tp3 ep 7\nT c 8 9 ep 0\nT d - - ports  ep \n")
 	s := a.traffic.tunnels
 	if s["a"].epoch != "e:111+222" || len(s["a"].parts) != 2 || s["a"].parts[1][0] != 20 {
 		t.Fatalf("a: %+v", s["a"])

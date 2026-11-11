@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,6 +20,29 @@ var reachCache = struct {
 	sync.Mutex
 	m map[string]Host
 }{m: map[string]Host{}}
+
+// reachDial holds one dial slot per server id (see sshReach).
+var reachDial = struct {
+	sync.Mutex
+	m map[string]chan struct{}
+}{m: map[string]chan struct{}{}}
+
+// reachDialLock takes srv's dial slot, or gives up when ctx ends first.
+func reachDialLock(ctx context.Context, serverID string) (func(), error) {
+	reachDial.Lock()
+	c := reachDial.m[serverID]
+	if c == nil {
+		c = make(chan struct{}, 1)
+		reachDial.m[serverID] = c
+	}
+	reachDial.Unlock()
+	select {
+	case c <- struct{}{}:
+		return func() { <-c }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 func dropHost(serverID string) {
 	reachCache.Lock()
@@ -147,17 +171,34 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 
 	// a connection already open on any path first: dialling the earlier ones anew (a
 	// filtered direct address: 15-35 s each) before reaching it made checks time out
-	for _, c := range cands {
-		key := srv.ID + "|" + c.path
-		reachCache.Lock()
-		cached := reachCache.m[key]
-		reachCache.Unlock()
-		if sh, ok := cached.(*SSHHost); ok {
-			if _, err := sh.client(); err == nil {
-				return sh, c.path, nil
+	pooled := func() (Host, string) {
+		for _, c := range cands {
+			key := srv.ID + "|" + c.path
+			reachCache.Lock()
+			cached := reachCache.m[key]
+			reachCache.Unlock()
+			if sh, ok := cached.(*SSHHost); ok {
+				if _, err := sh.client(); err == nil {
+					return sh, c.path
+				}
+				dropKey(key)
 			}
-			dropKey(key)
 		}
+		return nil, ""
+	}
+	if h, path := pooled(); h != nil {
+		return h, path, nil
+	}
+	// one dial per server at a time: concurrent callers (the monitor, a status page, a job)
+	// each dialled their own connection and overwrote the cached one, which stayed open
+	// with nothing left to close it; the ones that waited take the connection just made
+	unlock, err := reachDialLock(ctx, srv.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	defer unlock()
+	if h, path := pooled(); h != nil {
+		return h, path, nil
 	}
 	var lastErr, firstErr error
 	tried := 0
@@ -181,7 +222,19 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 			logf("  %s failed: %v", c.path, err)
 			continue
 		}
+		// one cached while this dialled (stored past the dial slot): keep that one if it
+		// answers and close this one, never leave one open that nothing knows about
 		reachCache.Lock()
+		old, _ := reachCache.m[key].(*SSHHost)
+		reachCache.Unlock()
+		if old != nil && old != sh && old.alive() {
+			sh.Close()
+			return old, c.path, nil
+		}
+		reachCache.Lock()
+		if prev, ok := reachCache.m[key].(*SSHHost); ok && prev != sh {
+			prev.Close()
+		}
 		reachCache.m[key] = sh
 		reachCache.Unlock()
 		return sh, c.path, nil
@@ -325,10 +378,24 @@ func proxyDial(proxyURL string) dialFunc {
 	}
 }
 
+// httpConnect opens a tunnel to addr through an HTTP CONNECT proxy: http:// in the clear,
+// https:// over TLS to the proxy (it was dialled in the clear, so the handshake failed or
+// the proxy login went out unencrypted). A proxy without a port is on 80 / 443.
 func httpConnect(u *url.URL, addr string) (net.Conn, error) {
-	c, err := net.DialTimeout("tcp", u.Host, 15*time.Second)
+	tlsProxy := strings.EqualFold(u.Scheme, "https")
+	c, err := net.DialTimeout("tcp", proxyAddr(u), 15*time.Second)
 	if err != nil {
 		return nil, err
+	}
+	if tlsProxy {
+		tc := tls.Client(c, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12})
+		_ = tc.SetDeadline(time.Now().Add(15 * time.Second))
+		if err := tc.Handshake(); err != nil {
+			c.Close()
+			return nil, fmt.Errorf("proxy TLS: %w", err)
+		}
+		_ = tc.SetDeadline(time.Time{})
+		c = tc
 	}
 	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: addr}, Host: addr, Header: http.Header{}}
 	if u.User != nil {
@@ -349,5 +416,30 @@ func httpConnect(u *url.URL, addr string) (net.Conn, error) {
 		c.Close()
 		return nil, fmt.Errorf("proxy CONNECT %s: %s", addr, resp.Status)
 	}
+	// what the reader already took past the proxy's answer (the SSH server's banner, sent
+	// at once) is the tunnel's first bytes: read from the conn alone, they were lost
+	if br.Buffered() > 0 {
+		return &bufConn{Conn: c, r: br}, nil
+	}
 	return c, nil
 }
+
+// proxyAddr is the HTTP proxy's host:port (80 / 443 when the URL has no port).
+func proxyAddr(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	port := "80"
+	if strings.EqualFold(u.Scheme, "https") {
+		port = "443"
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
+// bufConn reads what a bufio.Reader holds before the rest of the connection.
+type bufConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }

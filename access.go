@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Accounts: the admin (role "" or "admin" — every account from before roles) sees and runs
@@ -177,7 +175,17 @@ func (s *Server2) guard(kind string, h http.HandlerFunc) http.HandlerFunc {
 				return s.tunnelVisible(user, admin, id)
 			case "job":
 				if j := s.app.jobs.get(id); j != nil {
-					return (j.Tunnel != "" && s.tunnelVisible(user, admin, j.Tunnel)) || (j.Owner != "" && j.Owner == user)
+					j.mu.Lock()
+					owner := j.Owner
+					j.mu.Unlock()
+					if (j.Tunnel != "" && s.tunnelVisible(user, admin, j.Tunnel)) || (owner != "" && owner == user) {
+						return true
+					}
+					// the running benchmark /api/bench/active shows this account (a route of
+					// theirs that someone else started): its job can be followed there too
+					if b := s.app.activeBench(); b != nil && b.Job == id {
+						return s.pairVisible(user, admin, b.Req.IranID, b.Req.ForeignID)
+					}
 				}
 			}
 			return false
@@ -232,7 +240,9 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			httpErr(w, 400, "A username is 1–32 characters: letters, digits and . _ @ -")
 			return
 		}
-		if in.Role != roleUser {
+		// no Role: a new account is an admin (as before roles), an existing one keeps its own
+		// (a password change alone made a user an admin)
+		if in.Role != "" && in.Role != roleUser {
 			in.Role = "admin"
 		}
 		if in.Password != "" && len(in.Password) < 8 {
@@ -241,8 +251,12 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 		}
 		var hash string
 		if in.Password != "" {
-			h, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
-			hash = string(h)
+			h, err := hashPassword(in.Password)
+			if err != nil {
+				httpErr(w, 400, err.Error())
+				return
+			}
+			hash = h
 		}
 		err := s.app.store.Update(func(st *State) error {
 			for i := range st.Users {
@@ -252,7 +266,9 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 				if in.Username == me && in.Role == roleUser {
 					return fmt.Errorf("you can't take the admin role from your own account")
 				}
-				st.Users[i].Role = in.Role
+				if in.Role != "" {
+					st.Users[i].Role = in.Role
+				}
 				if hash != "" {
 					st.Users[i].Hash = hash
 					st.Users[i].Gen++
@@ -261,6 +277,9 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			}
 			if hash == "" {
 				return fmt.Errorf("a new account needs a password")
+			}
+			if in.Role == "" {
+				in.Role = "admin"
 			}
 			st.Users = append(st.Users, User{Username: in.Username, Hash: hash, Role: in.Role, Gen: newGen()})
 			igBackupRetire(in.Username) // a name used before: its old backups are not this account's
@@ -337,6 +356,7 @@ func (s *Server2) userDelete(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
+	s.app.jobs.renameOwner(in.Username, "") // a new account of that name doesn't get its jobs
 	go s.app.restartBot() // the account's own bot goes with it
 	writeJSON(w, map[string]string{"ok": "1"})
 }
@@ -394,6 +414,23 @@ func ownerOfLocked(st *State, serverID string) string {
 		}
 	}
 	return ""
+}
+
+// renameOwner moves the jobs an account started (a benchmark) to another name ("" = no
+// account: the account was deleted).
+func (js *Jobs) renameOwner(from, to string) {
+	if from == "" {
+		return
+	}
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	for _, j := range js.m {
+		j.mu.Lock()
+		if j.Owner == from {
+			j.Owner = to
+		}
+		j.mu.Unlock()
+	}
 }
 
 // renameOwnerLocked moves everything owned by from to to (an account renamed itself).

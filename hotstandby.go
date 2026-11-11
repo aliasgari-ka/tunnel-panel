@@ -96,6 +96,26 @@ func pathTunnel(t *Tunnel, p HSPath) *Tunnel {
 	return pt
 }
 
+// movedOpts is a path's own options after a preflight moved one of them (a reverse tunnel
+// port): what the path held plus only the keys the preflight changed. Storing every option
+// froze the tunnel's other settings into the path, and later changes never reached it.
+func movedOpts(prev, base, after map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range prev {
+		out[k] = v
+	}
+	for k, v := range after {
+		cur, ok := prev[k]
+		if !ok {
+			cur, ok = base[k]
+		}
+		if !ok || cur != v {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // hsUsable: hot standby forwards single ports or small ranges per path.
 func hsForwarderOK(t *Tunnel) bool {
 	ps := splitPorts(t.Ports)
@@ -903,10 +923,13 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		}
 	}
 	a.deferHSLeftovers(&old, gone, !okIR, !okKH, false)
+	j.tornDown.Store(t.Active != "")
 	a.setActive(t, "")
 
 	j.log("== probe server on the foreign side (port %d, reachable only through the tunnels) ==", hsProbePort(t))
 	if err := a.deploy(ctx, j, "KH", khHost, hsUnitTunnel(t), hsProbePlan(t)); err != nil {
+		// a half-installed probe unit would keep starting at boot with nothing to serve
+		a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, teardownScript(hsUnitTunnel(t)))
 		fail("foreign probe server: %v", err)
 		return false
 	}
@@ -935,7 +958,7 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 				if irP, khP, err = a.build(pm, pt, srv); err != nil {
 					return err
 				}
-				p.Opts = pt.Options[pm.ID]
+				p.Opts = movedOpts(p.Opts, t.Options[pm.ID], pt.Options[pm.ID])
 			}
 			if err := a.deploy(ctx, j, "KH", khHost, pt, khP); err != nil {
 				return fmt.Errorf("foreign: %w", err)
@@ -965,6 +988,11 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 	}
 	j.log("== switcher on the Iran server (checks every %ds; switches after %ds down, to the steadiest path with the least loss; back after %ds stable and clean) ==", hsEvery, hsGrace, hsFailback)
 	if err := a.deploy(ctx, j, "IR", irHost, hsUnitTunnel(t), a.hsSwitcherPlan(t, good)); err != nil {
+		// without a switcher nothing moves the users onto a path: take the paths, the probe
+		// server and what the switcher got down again instead of leaving them running
+		j.log("taking the paths down again on both servers")
+		a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, hsTeardown(t))
+		a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, hsTeardown(t))
 		fail("switcher: %v", err)
 		return false
 	}

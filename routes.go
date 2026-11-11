@@ -403,7 +403,7 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 				if irP, khP, err = a.build(pm, pt, srv); err != nil {
 					return err
 				}
-				p.Opts = pt.Options[pm.ID]
+				p.Opts = movedOpts(p.Opts, t.Options[pm.ID], pt.Options[pm.ID])
 			}
 			if err := a.deploy(ctx, j, "KH", kh, pt, khP); err != nil {
 				return fmt.Errorf("foreign: %w", err)
@@ -463,7 +463,10 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 	// the switcher moves to the new list first, then the left-out paths stop: users on one
 	// of them go over to the first path the moment the switcher restarts
 	var names []string
+	var oldPaths []HSPath
+	var oldActive, oldFamily, oldPin string
 	_ = a.store.Update(func(*State) error {
+		oldPaths, oldActive, oldFamily, oldPin = t.Paths, t.Active, t.Family, t.HSPin
 		t.Paths = append(left, added...)
 		pinned := false
 		for _, p := range good {
@@ -486,16 +489,20 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 	sw := a.hsSwitcherPlan(t, good)
 	sw.Setup = hsActiveRemap(hsDir(t), before, good) + sw.Setup
 	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), sw); err != nil {
-		// the old switcher still runs the left-out paths: they stay in t.Paths (next to the added
-		// ones, which run too), so a Stop, a delete or the next update still removes them
+		// the old switcher still runs, with the old paths in their old order: the panel goes back
+		// to exactly that (its index 0 is the tunnel's own method, the pin one of its paths),
+		// and the added paths, which no switcher knows, stop again
 		_ = a.store.Update(func(*State) error {
-			for _, d := range drop {
-				if d.Failed == "" {
-					t.Paths = append(t.Paths, d)
-				}
-			}
+			t.Paths, t.Active, t.Family, t.HSPin = oldPaths, oldActive, oldFamily, oldPin
 			return nil
 		})
+		var up []HSPath
+		for _, p := range added {
+			if p.Failed == "" {
+				up = append(up, p)
+			}
+		}
+		a.teardownPaths(ctx, ir, kh, t, up)
 		return fmt.Errorf("switcher: %w", err)
 	}
 	for _, d := range drop {

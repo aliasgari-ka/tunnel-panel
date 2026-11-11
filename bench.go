@@ -327,7 +327,12 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 					err = fmt.Errorf("%v — also tried %s: no traffic either (this route likely filters these carriers)", firstLine(first.Error()), strings.Join(tried, " / "))
 				}
 			}
-			if err != nil {
+			// cancelled or out of time while measuring: that says nothing about the method — a
+			// failure here replaced its earlier good result (and dropped it from failover)
+			aborted := err != nil && ctx.Err() != nil
+			if aborted {
+				j.log("   stopped before the measurement ended — %s keeps its earlier result", m.Title)
+			} else if err != nil {
 				r.Error = benchFailHint(m.ID, err.Error())
 				j.log("   FAILED: %v", r.Error)
 			} else {
@@ -338,6 +343,10 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			_, _ = irHost.Run(tctx, teardownScript(bt), nil)
 			_, _ = khHost.Run(tctx, teardownScript(bt), nil)
 			tcancel()
+			if aborted {
+				measured--
+				break
+			}
 			out = append(out, r)
 			// publish partial results so the page shows progress even after a reload
 			partial := withEarlier(append([]BenchResult(nil), out...), earlier)
@@ -485,10 +494,13 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 	deadline := time.Now().Add(25 * time.Second)
 	for {
 		rt, lastErr = runProbe[probeRTT](ctx, irHost, fmt.Sprintf("probe rtt -addr %s -n 20", target), 25)
-		if lastErr == nil || time.Now().After(deadline) {
+		if lastErr == nil || time.Now().After(deadline) || ctx.Err() != nil {
 			break
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
 	}
 	if lastErr != nil {
 		// the daemons usually say why (dial timeout, auth, bind) — show it

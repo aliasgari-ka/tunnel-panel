@@ -19,10 +19,12 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,7 +36,8 @@ import (
 type Server2 struct {
 	app      *App
 	failMu   sync.Mutex
-	failures map[string][]time.Time // ip -> recent failed logins
+	failures map[string][]time.Time // loginKey(ip) or "user:<name>" -> recent sign-in tries
+	swept    time.Time              // when failures was last cleared of old entries
 }
 
 func (a *App) routes() http.Handler {
@@ -58,7 +61,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/setup-state", s.setupState)
 	mux.HandleFunc("/api/register", s.json(s.register))
 	mux.HandleFunc("/api/login", s.json(s.login))
-	mux.HandleFunc("/api/logout", s.json(s.logout))
+	// POST only: a GET from a link (an <img> on any page) signed out every session
+	mux.HandleFunc("/api/logout", postOnly(s.json(s.logout)))
 
 	// g: signed in + JSON + the account may touch what the request names (see access.go).
 	// Only these answer a GET (they only read, or read on GET and change on POST); the rest
@@ -305,52 +309,104 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// tooManyFailures limits login attempts to 5 per 5 minutes per IP.
-func (s *Server2) tooManyFailures(ip string, add bool) bool {
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
-	cut := time.Now().Add(-5 * time.Minute)
+// Sign-in tries: 5 per 5 minutes per address (an IPv6 /64: one host usually holds a whole
+// /64, so per IPv6 address there was no limit), and 20 per 5 minutes per username (many
+// addresses guessing one account).
+const (
+	loginWindow  = 5 * time.Minute
+	loginMaxIP   = 5
+	loginMaxUser = 20
+)
+
+// loginKey is what the per-address limit counts against.
+func loginKey(ip string) string {
+	if a := net.ParseIP(ip); a != nil && a.To4() == nil {
+		return a.Mask(net.CIDRMask(64, 128)).String() + "/64"
+	}
+	return ip
+}
+
+// recentTries is l without the tries older than the window.
+func recentTries(l []time.Time, now time.Time) []time.Time {
 	var keep []time.Time
-	for _, t := range s.failures[ip] {
-		if t.After(cut) {
+	for _, t := range l {
+		if now.Sub(t) < loginWindow {
 			keep = append(keep, t)
 		}
 	}
-	if add {
-		keep = append(keep, time.Now())
+	return keep
+}
+
+// sweepLocked drops old tries of every key once a minute: a key is otherwise only cleaned
+// when it tries again, so the map kept every address and name that ever tried.
+func (s *Server2) sweepLocked(now time.Time) {
+	if now.Sub(s.swept) < time.Minute {
+		return
 	}
-	if len(keep) == 0 {
-		delete(s.failures, ip) // or the map keeps every address that ever tried
+	s.swept = now
+	for k, l := range s.failures {
+		if keep := recentTries(l, now); len(keep) == 0 {
+			delete(s.failures, k)
+		} else {
+			s.failures[k] = keep
+		}
+	}
+}
+
+// try counts a try against key (false = already max tries in the window).
+func (s *Server2) try(key string, max int) bool {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	now := time.Now()
+	s.sweepLocked(now)
+	keep := recentTries(s.failures[key], now)
+	if len(keep) >= max {
+		s.failures[key] = keep
+		return false
+	}
+	s.failures[key] = append(keep, now)
+	return true
+}
+
+// untry takes the newest try of key back.
+func (s *Server2) untry(key string) {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	if l := s.failures[key]; len(l) > 1 {
+		s.failures[key] = l[:len(l)-1]
 	} else {
-		s.failures[ip] = keep
+		delete(s.failures, key)
 	}
-	return len(keep) >= 5
 }
 
 // attempt counts a sign-in try before its password is checked (false = over the limit):
 // counted only after bcrypt, a burst of parallel tries all passed the check.
 // attemptOK takes a try back when it was not a wrong guess.
-func (s *Server2) attempt(ip string) bool {
-	if s.tooManyFailures(ip, false) {
-		return false
+func (s *Server2) attempt(ip string) bool { return s.try(loginKey(ip), loginMaxIP) }
+
+func (s *Server2) attemptOK(ip string) { s.untry(loginKey(ip)) }
+
+// userKey is the per-username limit's key (cut short: the name comes from the request).
+func userKey(name string) string {
+	if len(name) > 64 {
+		name = name[:64]
 	}
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
-	if len(s.failures[ip]) >= 5 {
-		return false
-	}
-	s.failures[ip] = append(s.failures[ip], time.Now())
-	return true
+	return "user:" + name
 }
 
-func (s *Server2) attemptOK(ip string) {
-	s.failMu.Lock()
-	defer s.failMu.Unlock()
-	if l := s.failures[ip]; len(l) > 1 {
-		s.failures[ip] = l[:len(l)-1]
-	} else {
-		delete(s.failures, ip)
+// maxPassword: bcrypt reads at most 72 bytes; GenerateFromPassword refuses a longer one.
+const maxPassword = 72
+
+// hashPassword is the bcrypt hash of pass; it never returns "" without an error.
+func hashPassword(pass string) (string, error) {
+	if len(pass) > maxPassword {
+		return "", fmt.Errorf("The password can be at most %d bytes.", maxPassword)
 	}
+	h, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil || len(h) == 0 {
+		return "", fmt.Errorf("could not hash the password: %v", err)
+	}
+	return string(h), nil
 }
 
 // ---- auth endpoints ----
@@ -379,9 +435,27 @@ func (s *Server2) register(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "A username is 1–32 characters: letters, digits and . _ @ -")
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	if len(in.Password) > maxPassword {
+		s.attemptOK(ip)
+		httpErr(w, 400, fmt.Sprintf("The password can be at most %d bytes.", maxPassword))
+		return
+	}
+	// a configured panel answers at once: no bcrypt run for a request that can't succeed
+	configured := false
+	s.app.store.View(func(st *State) { configured = len(st.Users) > 0 })
+	if configured {
+		s.attemptOK(ip)
+		httpErr(w, 409, "already configured")
+		return
+	}
+	hash, err := hashPassword(in.Password)
+	if err != nil {
+		s.attemptOK(ip)
+		httpErr(w, 400, err.Error())
+		return
+	}
 	badCode := false
-	err := s.app.store.Update(func(st *State) error {
+	err = s.app.store.Update(func(st *State) error {
 		if len(st.Users) > 0 {
 			return fmt.Errorf("already configured")
 		}
@@ -390,7 +464,7 @@ func (s *Server2) register(w http.ResponseWriter, r *http.Request) {
 			badCode = true
 			return fmt.Errorf("wrong setup code — it was printed by the installer; on the server run:  tunnel-panel setup-code")
 		}
-		st.Users = append(st.Users, User{Username: in.Username, Hash: string(hash), Gen: newGen()})
+		st.Users = append(st.Users, User{Username: in.Username, Hash: hash, Gen: newGen()})
 		igBackupRetire(in.Username) // a name used before: its old backups are not this account's
 		st.SetupCode = ""
 		return nil
@@ -421,6 +495,12 @@ func (s *Server2) login(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "bad request")
 		return
 	}
+	uk := userKey(in.Username)
+	if !s.try(uk, loginMaxUser) {
+		s.attemptOK(ip) // not a guess this address made
+		httpErr(w, 429, "Too many failed attempts. Wait 5 minutes and try again.")
+		return
+	}
 	var hash string
 	s.app.store.View(func(st *State) {
 		for _, u := range st.Users {
@@ -434,6 +514,7 @@ func (s *Server2) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.attemptOK(ip)
+	s.untry(uk)
 	s.setCookie(w, r, in.Username)
 	writeJSON(w, map[string]string{"ok": "1"})
 }
@@ -494,6 +575,15 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "A username is 1–32 characters: letters, digits and . _ @ -")
 		return
 	}
+	var newHash string
+	if in.New != "" {
+		h, err := hashPassword(in.New)
+		if err != nil {
+			httpErr(w, 400, err.Error())
+			return
+		}
+		newHash = h
+	}
 	user := s.currentUser(r)
 	name := user
 	err := s.app.store.Update(func(st *State) error {
@@ -513,9 +603,8 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 					renameOwnerLocked(st, user, in.NewUser)
 					igBackupMove(user, in.NewUser)
 				}
-				if in.New != "" {
-					h, _ := bcrypt.GenerateFromPassword([]byte(in.New), bcrypt.DefaultCost)
-					st.Users[i].Hash = string(h)
+				if newHash != "" {
+					st.Users[i].Hash = newHash
 				}
 				st.Users[i].Gen++ // sessions from before the change end
 				return nil
@@ -528,6 +617,9 @@ func (s *Server2) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if name != user {
+		// a benchmark job the account started is followed by its name too: a new account
+		// with the old name must not inherit it
+		s.app.jobs.renameOwner(user, name)
 		go s.app.restartBot() // a user's own bot belongs to the account by name
 	}
 	s.setCookie(w, r, name) // this browser stays signed in; every other session has ended
@@ -681,6 +773,12 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, admin := s.who(r)
+	if !admin {
+		if err := s.app.userHostsOK(&in); err != nil {
+			httpErr(w, 400, err.Error())
+			return
+		}
+	}
 	err = s.app.store.Update(func(st *State) error {
 		// a jump host must be a server of the same account (a user never goes through
 		// someone else's servers)
@@ -747,6 +845,10 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 func (s *Server2) serverDelete(w http.ResponseWriter, r *http.Request) {
 	var in struct{ ID string }
 	_ = readJSON(r, &in)
+	if in.ID == "" {
+		httpErr(w, 400, "server not found")
+		return
+	}
 	err := s.app.store.Update(func(st *State) error {
 		for _, t := range st.Tunnels {
 			if t.ServerID == in.ID || t.ForeignID == in.ID {
@@ -760,6 +862,21 @@ func (s *Server2) serverDelete(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		st.Servers = keep
+		// what is kept for the server goes with it: its pending cleanups (they held their
+		// tunnel numbers for good — the server never answers again), and other servers'
+		// jump-host setting pointing at it
+		var cl []Cleanup
+		for _, c := range st.Cleanups {
+			if c.ServerID != in.ID {
+				cl = append(cl, c)
+			}
+		}
+		st.Cleanups = cl
+		for _, x := range st.Servers {
+			if x.Via == in.ID {
+				x.Via = ""
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -767,8 +884,73 @@ func (s *Server2) serverDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dropHost(in.ID)
+	s.app.forgetServerMon(in.ID)
 	s.app.syncAgentTokens()
 	writeJSON(w, map[string]string{"ok": "1"})
+}
+
+// panelHostIP: ip is the panel host itself or a place only it reaches (loopback,
+// link-local, unspecified, multicast, one of its own addresses).
+func (a *App) panelHostIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	set := a.settings()
+	for _, s := range []string{set.LocalIPv4, set.LocalIPv6} {
+		if x := net.ParseIP(strings.Trim(strings.TrimSpace(s), "[]")); x != nil && x.Equal(ip) {
+			return true
+		}
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, ad := range addrs {
+			if n, ok := ad.(*net.IPNet); ok && n.IP.Equal(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// userHostsOK refuses a user's server whose SSH address or proxy is the panel host: the
+// panel would connect there itself, and the connection test's answers would tell the user
+// which ports are open on the panel host (and reach what listens only on its loopback).
+func (a *App) userHostsOK(in *Server) error {
+	hosts := []struct{ what, host string }{{"SSH address", in.SSHHost}, {"IPv4", in.IPv4}, {"IPv6", in.IPv6}}
+	if in.Proxy != "" {
+		u, err := url.Parse(in.Proxy)
+		if err != nil || u.Hostname() == "" {
+			return fmt.Errorf("Proxy: not a valid URL")
+		}
+		hosts = append(hosts, struct{ what, host string }{"Proxy", u.Hostname()})
+	}
+	for _, h := range hosts {
+		host := strings.Trim(strings.TrimSpace(h.host), "[]")
+		if host == "" {
+			continue
+		}
+		var ips []net.IP
+		if ip := net.ParseIP(host); ip != nil {
+			ips = append(ips, ip)
+		} else {
+			name := strings.ToLower(strings.TrimSuffix(host, "."))
+			if name == "localhost" || strings.HasSuffix(name, ".localhost") {
+				return fmt.Errorf("%s: the panel host itself can't be one of your servers", h.what)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			addrs, _ := net.DefaultResolver.LookupIPAddr(ctx, host)
+			cancel()
+			for _, ad := range addrs {
+				ips = append(ips, ad.IP)
+			}
+		}
+		for _, ip := range ips {
+			if a.panelHostIP(ip) {
+				return fmt.Errorf("%s: the panel host itself (or a loopback / link-local address) can't be one of your servers", h.what)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server2) serverResetKey(w http.ResponseWriter, r *http.Request) {
@@ -1382,7 +1564,7 @@ func (s *Server2) tunnelLastJob(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "no jobs yet")
 		return
 	}
-	writeJSON(w, j.snapshot())
+	writeJSON(w, s.jobView(r, j))
 }
 
 func (s *Server2) jobCancel(w http.ResponseWriter, r *http.Request) {
@@ -1393,7 +1575,7 @@ func (s *Server2) jobCancel(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, err.Error())
 		return
 	}
-	writeJSON(w, j.snapshot())
+	writeJSON(w, s.jobView(r, j))
 }
 
 func (s *Server2) job(w http.ResponseWriter, r *http.Request) {
@@ -1402,7 +1584,78 @@ func (s *Server2) job(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "job not found")
 		return
 	}
-	writeJSON(w, j.snapshot())
+	writeJSON(w, s.jobView(r, j))
+}
+
+// jobView is a job as this account may read it. A user's tunnel may run on the admin's
+// servers: its log then named how the panel reaches them ("dial tcp <ssh host:port>",
+// "trying jump via <another admin server>"), which a user never sees anywhere else.
+func (s *Server2) jobView(r *http.Request, j *Job) *Job {
+	snap := j.snapshot()
+	user, admin := s.who(r)
+	if admin {
+		return snap
+	}
+	rep := s.app.logRedactor(user)
+	for i, l := range snap.Lines {
+		snap.Lines[i] = rep.Replace(l)
+	}
+	return snap
+}
+
+// logRedactor takes out of a log line what user may not see of servers that aren't theirs:
+// the SSH address and the proxy of each, and of the ones that don't carry a tunnel of theirs
+// (shared servers' name and addresses are on their Servers page) the addresses and the name.
+func (a *App) logRedactor(user string) *strings.Replacer {
+	const hidden = "(hidden)"
+	seen := map[string]bool{}
+	var olds []string
+	add := func(s, with string) {
+		if s = strings.TrimSpace(s); s != "" && !seen[s] {
+			seen[s] = true
+			olds = append(olds, s, with)
+		}
+	}
+	a.store.View(func(st *State) {
+		shared := sharedServersLocked(st, user)
+		for _, x := range st.Servers {
+			if user != "" && x.Owner == user {
+				continue
+			}
+			add(x.sshAddr(), hidden)
+			add(x.sshAddr6(), hidden)
+			if x.Proxy != "" {
+				add(x.Proxy, hidden)
+				if u, err := url.Parse(x.Proxy); err == nil {
+					add(u.Host, hidden)
+					add(u.Hostname(), hidden)
+				}
+			}
+			if x.SSHHost != x.IPv4 && x.SSHHost != x.IPv6 {
+				add(x.SSHHost, hidden)
+			}
+			if !shared[x.ID] {
+				add(x.IPv4, hidden)
+				add(x.IPv6, hidden)
+				if x.Name != "" {
+					add("jump via "+x.Name, "jump via another server")
+					add("jump host "+x.Name, "jump host (hidden)")
+				}
+			}
+		}
+	})
+	// the longest first: a host:port before its host, a name before a shorter one inside it
+	type pair struct{ old, new string }
+	ps := make([]pair, 0, len(olds)/2)
+	for i := 0; i < len(olds); i += 2 {
+		ps = append(ps, pair{olds[i], olds[i+1]})
+	}
+	sort.SliceStable(ps, func(i, j int) bool { return len(ps[i].old) > len(ps[j].old) })
+	args := make([]string, 0, len(olds))
+	for _, p := range ps {
+		args = append(args, p.old, p.new)
+	}
+	return strings.NewReplacer(args...)
 }
 
 // ---- benchmark ----

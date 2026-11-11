@@ -132,6 +132,9 @@ func (a *App) Trace(t *Tunnel, secs int) (*Job, error) {
 	if secs < 10 || secs > 180 {
 		secs = 30
 	}
+	if len(firstPorts(t.Ports, 3)) == 0 { // a restored backup may hold one: the trace indexed khPorts[0]
+		return nil, fmt.Errorf("no ports: the tunnel forwards no port to trace")
+	}
 	j, err := a.jobs.start(t.ID, "trace")
 	if err != nil {
 		return nil, err

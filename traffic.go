@@ -514,6 +514,13 @@ func (tm *trafficMon) stat(m map[string]*TrafficStat, id string) *TrafficStat {
 func (a *App) trafficParse(serverID string, ts []*Tunnel, out string) {
 	tm := a.traffic
 	now := time.Now()
+	// only the tunnels this server was asked about: a server's output is the server's word,
+	// and a user's own server printed counters for any tunnel (the admin's too) into the
+	// traffic page and the usage the panel books
+	asked := map[string]bool{}
+	for _, t := range ts {
+		asked[t.ID] = true
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	seen := map[string]bool{}
@@ -525,7 +532,7 @@ func (a *App) trafficParse(serverID string, ts []*Tunnel, out string) {
 			s := tm.stat(tm.servers, serverID)
 			tm.update(s, "nic "+f[3], f[1], f[2], now)
 			s.parts = partsOf(s, f, 4)
-		case len(f) >= 4 && f[0] == "T":
+		case len(f) >= 4 && f[0] == "T" && asked[f[1]]:
 			src := "ports"
 			s := tm.stat(tm.tunnels, f[1])
 			s.epoch = ""

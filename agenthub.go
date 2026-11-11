@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -162,13 +163,7 @@ func (hub *AgentHub) connect(w http.ResponseWriter, r *http.Request) {
 	ac := &agentConn{sess: sess, token: tok, since: time.Now()}
 	if st, err := sess.AcceptStream(); err == nil {
 		_ = st.SetDeadline(time.Now().Add(10 * time.Second))
-		sbr := bufio.NewReader(st)
-		if _, err := agentproto.ReadRequest(sbr); err == nil {
-			if _, p, err := agentproto.ReadFrame(sbr); err == nil {
-				parts := strings.SplitN(string(p), "|", 3)
-				ac.hostname, ac.arch, ac.os = get(parts, 0), get(parts, 1), get(parts, 2)
-			}
-		}
+		ac.hostname, ac.arch, ac.os = readHello(st)
 		st.Close()
 	}
 	hub.mu.Lock()
@@ -190,6 +185,22 @@ func (hub *AgentHub) connect(w http.ResponseWriter, r *http.Request) {
 	if hub.onChange != nil {
 		hub.onChange(serverID, false)
 	}
+}
+
+// helloMax is the most of the hello stream read: a hello is a few dozen bytes.
+const helloMax = 4 << 10
+
+// readHello reads the agent's hello: hostname|arch|os. Its request line is read up to the
+// newline, so a token holder sending none kept growing the buffer for the whole 10 s.
+func readHello(st io.Reader) (host, arch, osName string) {
+	sbr := bufio.NewReader(io.LimitReader(st, helloMax))
+	if _, err := agentproto.ReadRequest(sbr); err == nil {
+		if _, p, err := agentproto.ReadFrame(sbr); err == nil {
+			parts := strings.SplitN(string(p), "|", 3)
+			host, arch, osName = get(parts, 0), get(parts, 1), get(parts, 2)
+		}
+	}
+	return
 }
 
 // agentInstallScript is what `curl … /agent/install | bash` runs on the Iran server.

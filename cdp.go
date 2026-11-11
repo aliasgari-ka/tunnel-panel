@@ -51,6 +51,13 @@ func cdpDial(ctx context.Context, addr string) (*cdpConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// the upgrade under a deadline: a port that accepts but never answers held this forever
+	// (the context's, when it has one sooner; call sets its own deadline later)
+	dl := time.Now().Add(15 * time.Second)
+	if cd, ok := ctx.Deadline(); ok && cd.Before(dl) {
+		dl = cd
+	}
+	_ = c.SetDeadline(dl)
 	key := make([]byte, 16)
 	_, _ = rand.Read(key)
 	fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
@@ -66,6 +73,7 @@ func cdpDial(ctx context.Context, addr string) (*cdpConn, error) {
 		c.Close()
 		return nil, fmt.Errorf("browser refused the websocket: %s", hr.Status)
 	}
+	_ = c.SetDeadline(time.Time{})
 	return &cdpConn{c: c, r: r}, nil
 }
 

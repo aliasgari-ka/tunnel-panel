@@ -145,6 +145,9 @@ func (f *gemFwdT) serve() {
 	}
 }
 
+// gemDialTimeout bounds the dial through the upstream exit, its SOCKS handshake included.
+var gemDialTimeout = 25 * time.Second
+
 // handle: a SOCKS5 CONNECT without auth (what Chromium sends; it passes host names, so the exit
 // resolves them).
 func (f *gemFwdT) handle(c net.Conn) {
@@ -192,7 +195,17 @@ func (f *gemFwdT) handle(c net.Conn) {
 
 	up := f.current()
 	d, _ := proxy.SOCKS5("tcp", up, nil, &net.Dialer{Timeout: 15 * time.Second})
-	u, err := d.Dial("tcp", target)
+	// the whole dial under one deadline: the dialer's timeout covers only the TCP connect, and
+	// an exit that accepts but never answers the SOCKS handshake held this forever
+	ctx, cancel := context.WithTimeout(context.Background(), gemDialTimeout)
+	var u net.Conn
+	var err error
+	if cd, ok := d.(proxy.ContextDialer); ok {
+		u, err = cd.DialContext(ctx, "tcp", target)
+	} else {
+		u, err = d.Dial("tcp", target)
+	}
+	cancel()
 	if err != nil {
 		c.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
 		return

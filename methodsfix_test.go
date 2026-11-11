@@ -103,7 +103,7 @@ func TestInboundPeerRichRuleShared(t *testing.T) {
 
 func TestRestoreRefusesBenchIndex(t *testing.T) {
 	for idx, ok := range map[int]bool{1: true, 249: true, 250: false, 251: false, 0: false} {
-		err := checkBackup(&State{Tunnels: []*Tunnel{{ID: "t1", Family: "v4", Index: idx}}})
+		err := checkBackup(&State{Tunnels: []*Tunnel{{ID: "t1", Family: "v4", Ports: "443", Index: idx}}})
 		if ok != (err == nil) {
 			t.Errorf("index %d: err %v", idx, err)
 		}

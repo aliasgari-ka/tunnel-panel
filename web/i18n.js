@@ -979,6 +979,35 @@ window.TP_FA = {
 "jitter": "جیتر",
 "loss": "افت",
 "score": "امتیاز",
+// texts that were left in English on the Persian page (bug hunt 2)
+"Watch it, or cancel it to free the tunnel. Stop always works — it cancels the running job first.": "آن را دنبال کنید، یا لغوش کنید تا تانل آزاد شود. «توقف» همیشه کار می‌کند — اول کار در حال اجرا را لغو می‌کند.",
+"SSH port": "پورت SSH",
+"SSH user": "کاربر SSH",
+"👤 Account of": "👤 حساب",
+"That account sees it and can run it; other users don't see it. Admins always see everything.": "آن حساب آن را می‌بیند و می‌تواند اجرایش کند؛ کاربران دیگر آن را نمی‌بینند. ادمین‌ها همیشه همه چیز را می‌بینند.",
+"That account sees it and can run it; other users don't see it. Admins always see everything. Its tunnels keep their own account — move them too.": "آن حساب آن را می‌بیند و می‌تواند اجرایش کند؛ کاربران دیگر آن را نمی‌بینند. ادمین‌ها همیشه همه چیز را می‌بینند. تانل‌هایش حساب خودشان را نگه می‌دارند — آن‌ها را هم منتقل کنید.",
+"▶ Analyse now": "▶ همین حالا تحلیل کن",
+"↻ Analyse again": "↻ تحلیل دوباره",
+"⏳ Analysing… (1-3 min)": "⏳ در حال تحلیل… (۱ تا ۳ دقیقه)",
+"Set the Claude API key in Settings first.": "اول کلید API کلود را در تنظیمات وارد کنید.",
+"⚠ tunnel link is down — no traffic between the servers": "⚠ لینک تانل قطع است — هیچ ترافیکی بین سرورها نیست",
+"healthy": "سالم",
+"router": "روتر",
+"redirect": "ریدایرکت",
+"agent": "ایجنت",
+"empty": "خالی",
+"set": "تنظیم شده",
+"paused": "مکث‌شده",
+"finished": "تمام شد",
+"error": "خطا",
+"min": "دقیقه",
+"sessionid cookie": "کوکی sessionid",
+"Key (AIza…)": "کلید (AIza…)",
+"Token (from BotFather)": "توکن (از BotFather)",
+"10 to 1440 (20 suggested); 0 = only when the IP breaks": "۱۰ تا ۱۴۴۰ (۲۰ پیشنهادی)؛ ۰ = فقط وقتی IP خراب شود",
+"These apply to this server only; for the others use Backup & copy → Copy settings.": "این‌ها فقط روی همین سرور اعمال می‌شوند؛ برای سرورهای دیگر از «پشتیبان و کپی ← کپی تنظیمات» استفاده کنید.",
+"no answer from the panel": "پنل جواب نمی‌دهد",
+"Route changes not applied": "تغییرات مسیر اعمال نشد"
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title
@@ -1002,6 +1031,7 @@ window.TP_FA = {
   const T = {};
   Object.keys(D).forEach(k => { T[k.trim()] = D[k].trim(); });
   const STOP = /\b(the|an?|is|are|was|but|through|to|of|and|or|can't|isn't|doesn't|don't|with|for|from|in|if|not|when|its?|this|that|be|you|your|by|at|as|has|have|than|then|there|will|would|only|also)\b/i;
+  const AGO = { min: 'دقیقه', h: 'ساعت', d: 'روز' };
   // messages the server writes, with addresses and numbers inside
   const PAT = [
     [/^(\d+) tunnels?$/, '$1 تانل'],
@@ -1034,6 +1064,12 @@ window.TP_FA = {
     [/^(\d+) min ago$/, '$1 دقیقه پیش'],
     [/^(\d+) h ago$/, '$1 ساعت پیش'],
     [/^(\d+) d ago$/, '$1 روز پیش'],
+    // the Routes table's "· measured 5 min ago", the AI window's "last: 2 h ago · 1234 tokens"
+    [/^· measured (\d+) (min|h|d) ago$/, (m, n, u) => `· اندازه‌گیری‌شده ${n} ${AGO[u]} پیش`],
+    [/^last: (?:just now|(\d+) (min|h|d) ago)(?: · (\d+) tokens)?$/, (m, n, u, k) => 'آخرین: ' + (n ? `${n} ${AGO[u]} پیش` : 'همین حالا') + (k ? ` · ${k} توکن` : '')],
+    [/^\((\d+) sites?\)$/, '($1 سایت)'],
+    [/^(⚠ )?Iran service: (.+)$/, '$1سرویس سرور ایران: $2'],
+    [/^(⚠ )?foreign service: (.+)$/, '$1سرویس سرور خارج: $2'],
   ];
   const cache = new Map();
   // texts this translator wrote: never translated again (a Persian text that keeps an English

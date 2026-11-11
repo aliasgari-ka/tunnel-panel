@@ -29,7 +29,12 @@ func Run(connect, token, pin string) error {
 	}
 	backoff := time.Second
 	for {
-		err := agentSession(connect, token, pin)
+		up, err := agentSession(connect, token, pin)
+		if up {
+			// the session came up and ended later: a fresh outage starts at 1 s again (the
+			// doubling never reset, so after a few drops every reconnect waited 30 s)
+			backoff = time.Second
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent: %v (retry in %s)\n", err, backoff)
 		}
@@ -42,7 +47,12 @@ func Run(connect, token, pin string) error {
 	}
 }
 
-func agentSession(connect, token, pin string) error {
+// upgradeTimeout bounds the HTTP upgrade: a panel (or proxy in front) that accepts TLS but never
+// answers held the agent there forever, with no retry.
+var upgradeTimeout = 30 * time.Second
+
+// agentSession runs one connection to the panel; up says it got as far as serving it.
+func agentSession(connect, token, pin string) (up bool, err error) {
 	tlsCfg := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
 	if pin != "" {
 		tlsCfg.VerifyPeerCertificate = func(raw [][]byte, _ [][]*x509.Certificate) error {
@@ -58,33 +68,41 @@ func agentSession(connect, token, pin string) error {
 	d := &net.Dialer{Timeout: 15 * time.Second}
 	raw, err := tls.DialWithDialer(d, "tcp", connect, tlsCfg)
 	if err != nil {
-		return err
+		return false, err
 	}
+	defer raw.Close()
+	return serveConn(raw, connect, token)
+}
+
+// serveConn does the upgrade on an open connection to the panel and serves it.
+func serveConn(raw net.Conn, connect, token string) (up bool, err error) {
+	_ = raw.SetDeadline(time.Now().Add(upgradeTimeout))
 	// HTTP-ish upgrade so the panel can also sit behind a reverse proxy
 	fmt.Fprintf(raw, "GET %s HTTP/1.1\r\nHost: %s\r\n%s: %s\r\nConnection: Upgrade\r\nUpgrade: tp-agent\r\n\r\n",
 		agentproto.ConnectPath, connect, agentproto.TokenHeader, token)
 	br := bufio.NewReader(raw)
 	status, err := br.ReadString('\n')
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !strings.Contains(status, "101") {
 		rest, _ := io.ReadAll(io.LimitReader(br, 512))
-		return fmt.Errorf("panel refused agent: %s %s", strings.TrimSpace(status), strings.TrimSpace(string(rest)))
+		return false, fmt.Errorf("panel refused agent: %s %s", strings.TrimSpace(status), strings.TrimSpace(string(rest)))
 	}
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			return err
+			return false, err
 		}
 		if strings.TrimSpace(line) == "" {
 			break
 		}
 	}
+	_ = raw.SetDeadline(time.Time{}) // yamux keeps the session alive itself from here
 	conn := PreBuffered(raw, br)
 	sess, err := yamux.Server(conn, yamux.DefaultConfig())
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer sess.Close()
 
@@ -99,7 +117,7 @@ func agentSession(connect, token, pin string) error {
 	for {
 		st, err := sess.AcceptStream()
 		if err != nil {
-			return err
+			return true, err
 		}
 		go serveStream(st)
 	}
@@ -118,7 +136,17 @@ func serveStream(st net.Conn) {
 	case "exec":
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "bash", "-s")
+		// the panel cancels a run by closing the stream: nothing else comes after the request,
+		// so the end of the stream stops the script (it ran on, up to 30 min, after a cancel)
+		go func() {
+			_, _ = io.Copy(io.Discard, br)
+			cancel()
+		}()
+		cmd := exec.CommandContext(ctx, execShell[0], execShell[1:]...)
+		// the whole process group: killing bash alone left its children running and holding
+		// the output pipe open, so the run didn't end either
+		killGroup(cmd)
+		cmd.WaitDelay = 5 * time.Second
 		cmd.Stdin = strings.NewReader(prelude + req.Script)
 		fw := agentproto.FrameWriter{W: st}
 		cmd.Stdout, cmd.Stderr = fw, fw
@@ -149,6 +177,9 @@ func serveStream(st net.Conn) {
 		pipe(st, up, br)
 	}
 }
+
+// execShell runs an exec request's script (read from stdin).
+var execShell = []string{"bash", "-s"}
 
 func agentWrite(req agentproto.Request, br *bufio.Reader) error {
 	if req.Path == "" {
