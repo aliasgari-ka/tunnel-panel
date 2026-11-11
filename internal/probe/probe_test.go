@@ -171,3 +171,32 @@ func TestCappedTests(t *testing.T) {
 		t.Fatalf("capped upload through a forwarder that resets on half-close: %+v %v", up, err)
 	}
 }
+
+// A tunnel that holds the data back and hands it over in one burst: the download is timed
+// from the request, so 1 MiB after a 1 s wait is about 8 Mbit/s, not the loopback's speed
+// (seen live: 244 Mbit/s on a route where nothing passes 40).
+func TestBwDownBurstAfterWait(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		req := make([]byte, 6)
+		_, _ = io.ReadFull(c, req)
+		time.Sleep(time.Second)
+		_, _ = c.Write(make([]byte, 1<<20))
+	}()
+	r, err := bwDown(ln.Addr().String(), 2, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Mbps > 12 || r.Secs < 0.9 {
+		t.Errorf("burst after a 1 s wait measured %.1f Mbit/s over %.2f s (want about 8 over ≥ 1 s)", r.Mbps, r.Secs)
+	}
+}

@@ -553,6 +553,15 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 		}
 		return fmt.Errorf("answers small packets (RTT %.0f ms) but no bulk data passes either way (%v) — typically an MTU problem on this route: try a lower MTU in the method's options", r.RTTms, dnErr)
 	}
+	// one direction passing is no working tunnel either: every download starts with a
+	// request upstream (seen live: an upload that timed out next to a download that passed,
+	// and the method came out "best" on the route)
+	if upErr != nil {
+		return fmt.Errorf("download passes (↓%.1f Mbit/s) but the upload stalls (%v) — users' requests and uploads would hang on this route", r.DownMbps, upErr)
+	}
+	if dnErr != nil {
+		return fmt.Errorf("upload passes (↑%.1f Mbit/s) but the download stalls (%v) — users' downloads would hang on this route", r.UpMbps, dnErr)
+	}
 	r.Mbps = (r.UpMbps + r.DownMbps) / 2
 	r.OK = true
 	return nil
