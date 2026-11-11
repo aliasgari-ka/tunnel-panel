@@ -2539,34 +2539,7 @@ const IGTAB = {
     $('#igcadd').onclick = () => igAct({ srv: $('#igcall').checked ? 'all' : IG.cur.id, action: 'custom_add', site: $('#igcs').value.trim(), route: $('#igcr').value });
     igListInto('#igcl', 'custom_list', false, 'custom_del');
   },
-  settings() {
-    const i = IG.cur.info;
-    const tog = (k, label, v, help) => `<div class="set"><div class="d"><b>${label}</b><small>${help}</small></div><label class="sw2"><input type="checkbox" data-tg="${k}"${v === 'ON' ? ' checked' : ''}><i></i></label></div>`;
-    const num = (k, label, v, help, unit) => `<div class="set"><div class="d"><b>${label}</b><small>${help}</small></div><input class="inp mono" style="width:90px" data-nv="${k}" value="${esc(v)}"><span class="faint">${unit || ''}</span><button class="btn sm" data-ns="${k}">Save</button></div>`;
-    $('#igtab').innerHTML = `<div class="card pad">
-      ${num('minspeed', 'Minimum WARP speed', i.min, 'best WARP = music OK and at least this fast; the fastest wins', 'Mbps')}
-      ${num('minwarps', 'Minimum number of WARPs', i.minw, 'missing ones are made automatically (more users = more WARPs); 0 = off', '')}
-      ${num('grotate', 'Fresh IP for Google every', i.grot, '10 to 1440 (20 suggested); 0 = only when the IP breaks', 'min')}
-      ${i.guard !== undefined ? tog('guard', 'WARP guard (fast switch)', i.guard === 'OFF' ? 'OFF' : 'ON', 'the active WARP is checked every 5 s; down / no music / slow → live switch to the best other WARP' + (i.guard === 'DOWN' ? ' — <b style="color:var(--crit)">on, but its service isn\'t running</b>' : '')) : ''}
-      ${i.gw !== undefined ? num('gwarps', 'WARPs only for Google', i.gwarps ?? (i.gw ? i.gw.split(',').length : ''), 'the last N WARP accounts serve only Google (0-9, default 2); Instagram uses the rest', '') : ''}
-      ${i.gw !== undefined ? `<div class="set"><div class="d"><b>Allowed countries for Google</b><small>two-letter codes with spaces; a WARP that Google places in another country isn't used for Google. With none allowed, Google goes through a proxy for now.</small></div>
-        <input class="inp mono" style="width:260px" id="iggcs" placeholder="US GB DE FR NL FI SE CH AT BE IT ES PL CA JP SG AU" value="${esc(i.gcountries || '')}"><button class="btn sm" id="iggcsave">Save</button></div>` : ''}
-      ${i.mchk !== undefined ? num('musiccheck', 'Instagram music check every', i.mchk, '0 = off; only while Instagram is on WARP and a test account is set', 'min') : ''}
-      <div class="set"><div class="d"><b>WARP mode</b><small>FAILOVER = the best one active, the rest stand by · BALANCE = spread the load (may break Instagram music)</small></div>
-        <select class="inp" style="width:150px" id="igmode"><option value="failover"${i.mode !== 'BALANCE' ? ' selected' : ''}>FAILOVER</option><option value="balance"${i.mode === 'BALANCE' ? ' selected' : ''}>BALANCE</option></select></div>
-      ${tog('autokey', 'Automatic WARP+ key', i.autokey, 'finds WARP+ keys in a public channel and tries them')}
-      ${tog('geosite', 'geosite domain lists', i.geo, 'fuller domain lists (updated daily, loaded at night)')}
-      ${tog('gspread', 'Google on every WARP', i.gspread, 'many users → spread Gemini over every WARP IP')}
-      ${tog('gall', 'All of Google on Google\'s WARP', i.gall, 'all google.com / gstatic / googleapis (YouTube video stays direct)')}
-      ${tog('warpauto', 'WARP count follows the load', i.wauto, 'from the 24 h peak: one WARP per ~2500 connections in 5 min, plus a spare (3-10) and Google\'s WARPs')}
-      ${i.kwg !== undefined ? tog('kwg', 'Kernel WARP (all CPU cores)', i.kwg === 'OFF' ? 'OFF' : 'ON', 'the IPv4 WARPs run as kernel WireGuard interfaces instead of inside the router process: a busy server (thousands of Instagram connections on 1-2 cores) keeps its WARP speed; same accounts, same exit IPs' + (i.kwg !== 'OFF' ? ` — <b>${esc(i.kwg)}</b> interface(s) up` : '')) : ''}
-      <div class="mdesc">These apply to this server only; for the others use Backup & copy → Copy settings.</div></div>`;
-    $$('[data-tg]').forEach(c => c.onchange = () => igAct(igS({ action: 'set', key: c.dataset.tg, val: c.checked ? 'on' : 'off' })));
-    $$('[data-ns]').forEach(b => b.onclick = () => igAct(igS({ action: 'set', key: b.dataset.ns, val: $(`[data-nv="${b.dataset.ns}"]`).value.trim() })));
-    $('#igmode').onchange = (e) => igAct(igS({ action: 'set', key: 'mode', val: e.target.value }));
-    $('#iggcsave') && ($('#iggcsave').onclick = () => { const v = $('#iggcs').value.trim().toUpperCase().replace(/[\s,]+/g, ' ');
-      if (!/^[A-Z]{2}( [A-Z]{2})*$/.test(v)) return toast('Two-letter codes with spaces, like US GB DE'); igAct(igS({ action: 'set', key: 'gcountries', val: v })); });
-  },
+  settings() { igOptTab(); },
   checks() {
     const i = IG.cur.info, st = (v) => `<span class="pill ${v === 'SET' || v === 'ON' ? 'on' : 'off'}"><span class="led"></span>${v === 'SET' || v === 'ON' ? 'set' : 'not set'}</span>`;
     $('#igtab').innerHTML = `<div class="card pad sec"><h3>Instagram test account (music) ${igAccBroken(i) ? `<span class="pill off"><span class="led"></span>logged out — ${esc(igAccWhy(i))}</span>` : st(i.igacc)}</h3>
@@ -2610,6 +2583,138 @@ async function igRemove(uninstall) {
     try { const r = await api('/igproxy/action', igS({ action: 'uninstall' })); const res = await igRunJob(r.job, 'Uninstall igproxy'); if (!res.done) return; } catch (e) { return toast(e.message); }
   } else if (!confirm(`Take ${s.name} off the IG routing page? igproxy keeps running on it.`)) return;
   try { await api('/igproxy/enable', { ID: s.id, On: false }); IG.cur = null; toast('Removed'); igLoad(true); } catch (e) { toast(e.message); }
+}
+// ---- Settings tab: the agent's settings in four groups, one Save for the tab (this server or
+// every server in view), each value against its default. /igproxy/opts reads the setting files
+// themselves: the info line has no "WARPs only for Google" nor the countries for Google.
+const IGOPT = { srv: null, o: null, err: '', edit: {}, adv: false, to: 'one' };
+const igoN = (lo, hi) => (v) => { v = latinDigits(String(v)).trim(); return /^\d{1,5}$/.test(v) && +v >= lo && +v <= hi ? String(+v) : null; };
+const IGO = {
+  mode: { t: 'seg', label: 'How the WARPs are used', opts: [['failover', 'One at a time'], ['balance', 'Spread the load']] },
+  minspeed: { t: 'num', label: 'Minimum speed', unit: 'Mbps', help: 'a slower WARP is not chosen (its music must work too)', ok: igoN(0, 10000), bad: '0 to 10000' },
+  minwarps: { t: 'num', label: 'Keep at least', unit: 'WARPs', help: 'missing ones are made automatically · 0 = none made', ok: igoN(0, 20), bad: '0 to 20' },
+  warpauto: { t: 'sw', label: 'More WARPs with the load', help: 'on top of the minimum: 3 to 10 by the 24 h peak, added at night (03-06)' },
+  gwarps: { t: 'num', label: 'Google\'s own WARPs', unit: 'WARPs', help: 'the last ones serve only Google, Instagram uses the rest · 0 = shared', ok: igoN(0, 9), bad: '0 to 9' },
+  gcountries: { t: 'cc', label: 'Allowed countries', help: 'Google only gets a WARP it places in one of these; none fits → a proxy for now',
+    ok: (v) => { v = latinDigits(String(v)).toUpperCase().split(/[\s,]+/).filter(Boolean).join(' '); return /^[A-Z]{2}( [A-Z]{2}){0,60}$/.test(v) ? v : null; }, bad: 'two-letter codes, like US GB DE' },
+  gspread: { t: 'sw', label: 'Spread Google over its WARPs', help: 'for many Gemini users: every WARP IP instead of one' },
+  grotate: { t: 'num', label: 'Fresh IP every', unit: 'min', help: '0 = only when the IP breaks · 20 suggested', ok: (v) => { const n = igoN(0, 1440)(v); return n !== null && (n === '0' || +n >= 10) ? n : null; }, bad: '0, or 10 to 1440' },
+  gall: { t: 'sw', label: 'All of Google', help: 'also google.com, gstatic and googleapis, not only Gemini, sign-in and search (YouTube video stays direct)' },
+  guard: { t: 'sw', label: 'Fast switch (WARP guard)', help: 'the WARP in use is checked every 5 s; down, slow or no music → the best other one, live' },
+  musiccheck: { t: 'num', label: 'Music check every', unit: 'min', help: '0 = off · plays a song with the test account', ok: igoN(0, 60), bad: '0 to 60' },
+  autokey: { t: 'sw', label: 'Find WARP+ keys', help: 'tries WARP+ keys posted in a public channel' },
+  geosite: { t: 'sw', label: 'Full domain lists (geosite)', help: 'updated daily, loaded at night' },
+  kwg: { t: 'sw', label: 'Kernel WARP (all CPU cores)', help: 'for a busy server: the IPv4 WARPs run as kernel WireGuard, not inside the router; same accounts and exit IPs' },
+};
+const IGO_SEC = [['pool', 'WARP accounts', ['mode', 'minspeed', 'minwarps', 'warpauto']], ['google', 'Google · Gemini', ['gwarps', 'gcountries', 'gspread', 'grotate', 'gall']],
+  ['ig', 'Instagram', ['guard', 'musiccheck']], ['adv', 'Advanced', ['autokey', 'geosite', 'kwg']]];
+const igoShow = (k, v) => k === 'mode' ? (v === 'balance' ? 'Spread the load' : 'One at a time') : IGO[k].t === 'sw' ? (v === 'on' ? 'on' : 'off') : v;
+async function igOptLoad(id) {
+  IGOPT.err = '';
+  try { const o = await api('/igproxy/opts?id=' + encodeURIComponent(id)); if (IGOPT.srv === id) IGOPT.o = o; }
+  catch (e) { if (IGOPT.srv === id) IGOPT.err = e.message; }
+  igOptDraw();
+}
+function igOptTab() {
+  if (IGOPT.srv !== IG.cur.id) Object.assign(IGOPT, { srv: IG.cur.id, o: null, err: '', edit: {}, to: 'one' });
+  IGOPT.adv = recall('tp-igadv') === '1';
+  igOptDraw();
+  if (!Object.keys(IGOPT.edit).length) igOptLoad(IG.cur.id); // unsaved edits survive a repaint of the page
+}
+// the value a field shows: what is typed, else what the server has
+const igoCur = (k) => k in IGOPT.edit ? IGOPT.edit[k] : IGOPT.o.val[k];
+// a typed value, checked: [normalised value or null, changed from the server's]
+function igoChk(k) {
+  if (!(k in IGOPT.edit)) return [IGOPT.o.val[k], false];
+  const f = IGO[k], v = f.ok ? f.ok(IGOPT.edit[k]) : IGOPT.edit[k];
+  return [v, v === null || v !== IGOPT.o.val[k]];
+}
+// why a setting does nothing now (another one rules it out), or a warning next to it
+function igoWhy(k, i) {
+  const val = (x) => igoChk(x)[0] ?? IGOPT.o.val[x], n = (x) => +val(x), on = (x) => val(x) === 'on';
+  if (k === 'grotate' && n('gwarps') > 0) return ['off', 'Google has its own WARPs, so it keeps one steady IP and moves only when it fails. Set Google\'s own WARPs to 0 to use this.'];
+  if (k === 'grotate' && on('gspread')) return ['off', 'Not used while Google is spread over its WARPs.'];
+  if (k === 'musiccheck' && !on('guard')) return ['off', 'Runs inside the WARP guard: turn the fast switch on.'];
+  if (k === 'musiccheck' && n('musiccheck') > 0 && i.igacc !== 'SET') return ['warn', 'No Instagram test account yet: nothing is checked.', 'checks'];
+  if (k === 'musiccheck' && n('musiccheck') > 0 && igAccBroken(i)) return ['warn', 'The test account is logged out: nothing is checked.', 'checks'];
+  if (k === 'mode' && val('mode') === 'balance') return ['warn', 'Instagram music may break: the users\' IP changes between WARPs.'];
+  if (k === 'warpauto' && on('warpauto') && n('minwarps') === 0) return ['info', 'With 0 above, only the load decides (3 or more).'];
+  if (k === 'guard' && i.guard === 'DOWN' && on('guard')) return ['warn', 'On, but its service isn\'t running: Re-apply in the ⋯ menu.'];
+  if (k === 'kwg' && on('kwg') && /^\d+$/.test(i.kwg || '')) return ['info', `${+i.kwg} kernel interface(s) up`];
+  return null;
+}
+function igoRow(k, i) {
+  const f = IGO[k], o = IGOPT.o, cur = igoCur(k), [nv, dirty] = igoChk(k), bad = nv === null, why = igoWhy(k, i);
+  const def = o.def[k], notDef = (bad ? cur : nv) !== def, off = why && why[0] === 'off';
+  let ctl;
+  if (f.t === 'sw') ctl = `<label class="sw2"><input type="checkbox" data-ok="${k}"${cur === 'on' ? ' checked' : ''}><i></i></label>`;
+  else if (f.t === 'seg') ctl = `<div class="seg iso-seg">${f.opts.map(([v, t]) => `<button type="button" data-ok="${k}" data-v="${v}" class="${cur === v ? 'on' : ''}">${t}</button>`).join('')}</div>`;
+  else if (f.t === 'cc') ctl = `<input class="inp mono iso-cc${bad ? ' err' : ''}" data-ok="${k}" dir="ltr" spellcheck="false" autocapitalize="characters" value="${esc(cur)}">`;
+  else ctl = `<span class="iso-num"><input class="inp mono${bad ? ' err' : ''}" data-ok="${k}" inputmode="numeric" dir="ltr" value="${esc(cur)}"><span class="faint">${f.unit}</span></span>`;
+  const reset = `<button type="button" class="iso-rs" data-rs="${k}" title="Back to the default: ${esc(igoShow(k, def))}"${notDef ? '' : ' hidden'}>↺</button>`;
+  const cnt = f.t === 'cc' && !bad ? `<small class="faint iso-cnt">${String(nv).split(' ').length} countries${nv === def ? ' · the default list' : ''}</small>` : '';
+  return `<div class="iso-row${dirty ? ' dirty' : ''}${off ? ' off' : ''}${f.t === 'cc' ? ' wide' : ''}" data-row="${k}">
+    <div class="iso-d"><b>${f.label}${notDef ? `<span class="iso-nd" title="not the default (${esc(igoShow(k, def))})"></span>` : ''}</b>${f.help ? `<small>${f.help}</small>` : ''}${cnt}
+      ${bad ? `<small class="iso-err">${f.bad}</small>` : ''}${why ? `<small class="iso-why ${why[0]}">${why[1]}${why[2] ? ` <a href="#" data-igto="${why[2]}">Open</a>` : ''}</small>` : ''}</div>
+    <div class="iso-c">${ctl}${reset}</div></div>`;
+}
+function igOptDraw() {
+  const box = $('#igtab'); if (!box || !IG.cur || IG.tab !== 'settings' || IGOPT.srv !== IG.cur.id) return;
+  const i = IG.cur.info, o = IGOPT.o;
+  if (!o) {
+    box.innerHTML = IGOPT.err ? `<div class="card pad"><div class="igx-empty"><div class="big">⚠️</div><b>Couldn't read the settings</b><p class="mono" data-notr>${esc(IGOPT.err)}</p><button class="btn" id="igoretry">Try again</button></div></div>`
+      : '<div class="card pad"><div class="skel" style="height:220px"></div></div>';
+    $('#igoretry') && ($('#igoretry').onclick = () => { IGOPT.err = ''; igOptDraw(); igOptLoad(IG.cur.id); });
+    return;
+  }
+  if (o.none) { box.innerHTML = '<div class="card pad"><div class="igx-empty"><div class="big">📦</div><b>The agent isn\'t installed on this server</b></div></div>'; return; }
+  const has = (k) => (o.keys || []).includes(k);
+  const keys = Object.keys(IGO).filter(has), dirty = keys.filter(k => igoChk(k)[1]), bad = dirty.filter(k => igoChk(k)[0] === null);
+  const nd = keys.filter(k => o.val[k] !== o.def[k]).length, n = igList().length;
+  const routeNote = (g) => { const v = i[g.toLowerCase()] || ''; return /^warp/.test(v) ? '' : `<div class="iso-note"><b>${IGSV[g]}</b> → <b>${esc(igViaW(v, i))}</b> <span>now · these count once it goes out through WARP (Routes tab)</span></div>`; };
+  const sec = ([id, title, ks]) => {
+    const rows = ks.filter(has); if (!rows.length) return '';
+    const chg = rows.filter(k => igoChk(k)[1]).length;
+    const body = (id === 'google' ? routeNote('GOOGLE') : id === 'ig' ? routeNote('IG') : '') + rows.map(k => igoRow(k, i)).join('');
+    if (id === 'adv') return `<details class="iso-sec iso-adv"${IGOPT.adv || chg ? ' open' : ''}><summary><h4>${title}</h4><span class="faint">${rows.length} more</span></summary>${body}</details>`;
+    return `<section class="iso-sec"><h4>${title}</h4>${body}</section>`;
+  };
+  box.innerHTML = `<div class="card pad sec igw iso"><h3>Settings ${nd ? `<span class="chip" title="settings that are not the default">${nd} changed from default</span>` : '<span class="chip">all default</span>'}<span class="grow"></span>
+      <span class="wact"><button class="btn sm" id="igoload" title="read the settings from the server again">↻</button></span></h3>
+    ${IGO_SEC.map(sec).join('')}
+    <div class="iso-bar${dirty.length ? ' on' : ''}">
+      ${dirty.length ? `<span class="iso-n"><b>${dirty.length}</b> unsaved</span><button class="btn sm ghost" id="igoundo">Undo</button><span class="grow"></span>
+        <label class="iso-to"><span class="faint">Save on</span><select class="inp" id="igoto"><option value="one"${IGOPT.to === 'one' ? ' selected' : ''}>This server</option>${n > 1 ? `<option value="all"${IGOPT.to === 'all' ? ' selected' : ''}>All ${n} servers in view</option>` : ''}</select></label>
+        <button class="btn pri" id="igosave"${bad.length ? ' disabled' : ''}>Save</button>`
+      : '<span class="faint">● = not the default · ↺ = back to the default. Saving can also write the changed settings on every server in view.</span>'}</div></div>`;
+  const set = (k, v) => { IGOPT.edit[k] = v; if (v === o.val[k]) delete IGOPT.edit[k]; igOptDraw(); };
+  $$('[data-ok]', box).forEach(el => {
+    const k = el.dataset.ok;
+    if (el.type === 'checkbox') el.onchange = () => set(k, el.checked ? 'on' : 'off');
+    else if (el.tagName === 'BUTTON') el.onclick = () => set(k, el.dataset.v);
+    else {
+      // typing marks only this row (a full redraw would drop the caret); leaving the field redraws all
+      el.oninput = () => { IGOPT.edit[k] = el.value; const [v, d] = igoChk(k); el.classList.toggle('err', v === null); el.closest('.iso-row').classList.toggle('dirty', d); };
+      el.onchange = () => { const [v] = igoChk(k); set(k, v === null ? el.value : v); };
+    }
+  });
+  $$('[data-rs]', box).forEach(b => b.onclick = () => set(b.dataset.rs, o.def[b.dataset.rs]));
+  $$('[data-igto]', box).forEach(a => a.onclick = (e) => { e.preventDefault(); IG.tab = a.dataset.igto; igRender(); });
+  const adv = $('.iso-adv', box); if (adv) adv.ontoggle = () => { IGOPT.adv = adv.open; remember('tp-igadv', adv.open ? '1' : '0'); };
+  $('#igoload').onclick = () => { IGOPT.o = null; IGOPT.edit = {}; igOptDraw(); igOptLoad(IG.cur.id); };
+  $('#igoundo') && ($('#igoundo').onclick = () => { IGOPT.edit = {}; igOptDraw(); });
+  $('#igoto') && ($('#igoto').onchange = (e) => { IGOPT.to = e.target.value; });
+  $('#igosave') && ($('#igosave').onclick = async () => {
+    const setv = {}; dirty.forEach(k => { setv[k] = igoChk(k)[0]; });
+    const all = IGOPT.to === 'all', id = IG.cur.id;
+    if (all && !confirm(`Save ${dirty.length} setting(s) on all ${n} servers in view? Only these change; each server's other settings stay.`)) return;
+    try {
+      const r = await api('/igproxy/opts/save', { srv: all ? 'all' : id, view: igView(), set: setv });
+      await igRunJob(r.job, all ? `Settings — ${n} servers` : 'Settings — ' + IG.cur.name, () => {});
+      if (IGOPT.srv === id) { IGOPT.edit = {}; IGOPT.o = null; igOptDraw(); igOptLoad(id); }
+      igRefreshAfter(all ? { srv: 'all' } : { srv: id });
+    } catch (e) { toast(e.message); }
+  });
 }
 // ---- WARP tab: one row per WARP account (/igproxy/warps: the agent's state + one Cloudflare trace each)
 const igAgo = (s) => s < 0 ? '' : s < 90 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago';
