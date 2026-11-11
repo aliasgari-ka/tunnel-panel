@@ -59,13 +59,10 @@ type serverMon struct {
 	round int                  // rounds so far; every serverFull-th connects to the ports too
 }
 
-// tehran is the time zone outages are reported in.
-var tehran = func() *time.Location {
-	if l, err := time.LoadLocation("Asia/Tehran"); err == nil {
-		return l
-	}
-	return time.FixedZone("IRST", 3*3600+1800)
-}()
+// tehran is the time zone outages are reported in, and usage hours and days are cut at.
+// Iran has had no summer time since 2022: a fixed +3:30, so a server with old time-zone data
+// (which still moves clocks in spring) can't shift the hours or make a 23-hour day.
+var tehran = time.FixedZone("IRST", 3*3600+1800)
 
 func clock(t time.Time) string { return t.In(tehran).Format("2006-01-02 15:04:05") }
 

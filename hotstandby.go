@@ -1129,12 +1129,21 @@ func hsAcct(t *Tunnel) string {
 			fmt.Fprintf(&rules, "    iptables -w -t mangle -A %s -p %s -m conntrack --ctdir REPLY --ctorigdstport %s\n", out, proto, p)
 		}
 	}
-	return fmt.Sprintf(`if ! iptables -w -t mangle -nL %[1]s >/dev/null 2>&1; then
-    iptables -w -t mangle -N %[1]s; iptables -w -t mangle -N %[2]s
-%[4]sfi
-%[5]s%[6]sd=$(iptables -w -t mangle -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
-u=$(iptables -w -t mangle -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
-echo "T %[3]s $d $u"
+	// The rules go in only when this read made the chains (a listing that failed once added
+	// them a second time: every byte counted twice), and the chains get a new mark then
+	// (/run/tp-acct/<id>.hs, see acctScript). A failed listing prints "-", never 0.
+	return fmt.Sprintf(`ad=${TP_ACCT_DIR:-/run/tp-acct}; mk=$ad/%[3]s.hs
+if iptables -w -t mangle -N %[1]s 2>/dev/null; then
+    iptables -w -t mangle -N %[2]s 2>/dev/null; iptables -w -t mangle -F %[2]s
+%[4]s    mkdir -p $ad; echo "$(date +%%s).$$" > $mk
+elif ! iptables -w -t mangle -nL %[2]s >/dev/null 2>&1 && iptables -w -t mangle -N %[2]s 2>/dev/null; then
+    iptables -w -t mangle -F %[1]s
+%[4]s    mkdir -p $ad; echo "$(date +%%s).$$" > $mk
+fi
+m=$(cat $mk 2>/dev/null); [ -n "$m" ] || { mkdir -p $ad; m=0; echo 0 > $mk; }
+%[5]s%[6]sd=$(iptables -w -t mangle -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{if(NR<2)print "-";else printf "%%.0f", s+0}')
+u=$(iptables -w -t mangle -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{if(NR<2)print "-";else printf "%%.0f", s+0}')
+echo "T %[3]s ${d:--} ${u:--} ep $m"
 `, in, out, t.ID, rules.String(), jumpOnce("iptables -t mangle", "PREROUTING", in), jumpOnce("iptables -t mangle", "POSTROUTING", out))
 }
 
@@ -1144,8 +1153,9 @@ func hsAcctDown(t *Tunnel) string {
 while iptables -w -t mangle -D POSTROUTING -j %[2]s 2>/dev/null; do :; done
 iptables -w -t mangle -F %[1]s 2>/dev/null; iptables -w -t mangle -X %[1]s 2>/dev/null
 iptables -w -t mangle -F %[2]s 2>/dev/null; iptables -w -t mangle -X %[2]s 2>/dev/null
+rm -f ${TP_ACCT_DIR:-/run/tp-acct}/%[3]s.hs
 true
-`, in, out)
+`, in, out, t.ID)
 }
 
 // hsReport keeps the switcher's view for the UI and sends its new events to Telegram.

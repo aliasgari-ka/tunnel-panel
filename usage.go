@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,13 +56,27 @@ type usageBucket struct {
 	Tunnels map[string]*UsageBytes `json:"t"`
 	Servers map[string]*UsageBytes `json:"s"`           // "" = the panel host
 	Peers   map[string]*UsageBytes `json:"p,omitempty"` // "<iran id>|<foreign id>": Down = Iran received from it
+	// the route each tunnel was counted on ("<iran id>|<foreign id>"), so a tunnel deleted or
+	// moved to another server later keeps its share of these hours (buckets from before
+	// 2026-11-11 have none: they are priced on the tunnels' routes as the log knows them)
+	Pairs map[string]string `json:"tp,omitempty"`
 }
 
 type usageLast struct {
 	D, U uint64
-	Src  string      `json:"s,omitempty"` // a server's network cards ("eth0+eth1"); other set = new counter
-	P    [][2]uint64 `json:"p,omitempty"` // down/up of each part the totals add up
-	At   int64       `json:"a,omitempty"` // when it was read (unix)
+	// a server's network cards ("eth0+eth1"; another set = a new counter); a tunnel's counter
+	// marks ("e:<mark>+<mark>", one per part: another mark = that part was made again from 0)
+	Src string      `json:"s,omitempty"`
+	P   [][2]uint64 `json:"p,omitempty"` // down/up of each part the totals add up
+	At  int64       `json:"a,omitempty"` // when it was read (unix)
+}
+
+// usageTun is what the log keeps of a tunnel, so its history is still priced, shown and
+// shown to the right account after it was deleted or moved.
+type usageTun struct {
+	Pair  string `json:"p"` // "<iran id>|<foreign id>"
+	Owner string `json:"o,omitempty"`
+	Name  string `json:"n,omitempty"`
 }
 
 type usageLog struct {
@@ -70,17 +85,44 @@ type usageLog struct {
 	Days    []*usageBucket        `json:"days"`
 	Last    map[string]*usageLast `json:"last"` // "t:<id>" / "s:<id>" -> counters at the last read
 	Started int64                 `json:"started"`
+	Known   map[string]*usageTun  `json:"known,omitempty"` // every tunnel with history: its route, owner, name
+
+	pairNow map[string]string // the running tunnels' routes in the round being booked
+	saveErr string            // the last save error, logged once
 }
 
 func usagePath() string { return filepath.Join(dataDir, "usage.json") }
 
+// loadUsage reads usage.json, or the copy the last save kept (usage.json.bak) when it is
+// missing or damaged. A damaged file is set aside, never written over: it holds the history.
 func loadUsage() *usageLog {
 	u := &usageLog{Last: map[string]*usageLast{}}
-	if b, err := os.ReadFile(usagePath()); err == nil {
-		_ = json.Unmarshal(b, u)
+	for _, p := range []string{usagePath(), usagePath() + ".bak"} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("usage: cannot read %s: %v", p, err)
+			}
+			continue
+		}
+		x := &usageLog{}
+		if err := json.Unmarshal(b, x); err != nil {
+			bad := p + ".bad-" + time.Now().Format("20060102-150405")
+			_ = os.Rename(p, bad)
+			log.Printf("usage: %s is damaged (%v): set aside as %s", p, err, bad)
+			continue
+		}
+		u = x
+		if p != usagePath() {
+			log.Printf("usage: %s was missing or damaged: history taken from %s", usagePath(), p)
+		}
+		break
 	}
 	if u.Last == nil {
 		u.Last = map[string]*usageLast{}
+	}
+	if u.Known == nil {
+		u.Known = map[string]*usageTun{}
 	}
 	if len(u.Days) == 0 { // a log from before daily buckets: fold its hours in
 		for _, h := range u.Buckets {
@@ -106,15 +148,39 @@ func addBytes(m map[string]*UsageBytes, id string, d, u uint64) {
 	x.Up += u
 }
 
+// saveLocked writes the log to disk (synced, so a power cut can't leave a half file) and keeps
+// the previous one as usage.json.bak.
 func (u *usageLog) saveLocked() {
 	b, err := json.Marshal(u)
 	if err != nil {
 		return
 	}
-	tmp := usagePath() + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, usagePath())
+	p := usagePath()
+	tmp := p + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err == nil {
+		_, err = f.Write(b)
+		if e := f.Sync(); err == nil {
+			err = e
+		}
+		if e := f.Close(); err == nil {
+			err = e
+		}
 	}
+	if err == nil {
+		if _, e := os.Stat(p); e == nil {
+			_ = os.Rename(p, p+".bak")
+		}
+		err = os.Rename(tmp, p)
+	}
+	if err != nil {
+		if err.Error() != u.saveErr {
+			log.Printf("usage: cannot save %s: %v", p, err)
+		}
+		u.saveErr = err.Error()
+		return
+	}
+	u.saveErr = ""
 }
 
 // add records one counter read into the hour and the day; the first read of a counter only
@@ -152,6 +218,28 @@ func usageSumUp(old, cur uint64) uint64 {
 	return usageUp(old, cur)
 }
 
+// usagePartUp is how much one part (down, up) grew. A part restarted when either direction
+// went down: both directions then count from zero.
+func usagePartUp(old, cur [2]uint64) (uint64, uint64) {
+	if cur[0] < old[0] || cur[1] < old[1] {
+		return cur[0], cur[1]
+	}
+	return cur[0] - old[0], cur[1] - old[1]
+}
+
+// usageMarks splits a tunnel's counter marks ("e:<m>+<m>", traffic.go); nil when it has none.
+func usageMarks(src string) []string {
+	if !strings.HasPrefix(src, "e:") {
+		return nil
+	}
+	return strings.Split(src[2:], "+")
+}
+
+// usageMarksFit: two reads' marks can be compared part by part.
+func usageMarksFit(oe, ne []string, op, np [][2]uint64) bool {
+	return len(oe) > 0 && len(oe) == len(ne) && len(op) == len(oe) && len(np) == len(ne)
+}
+
 // usageSplitMax: an interval longer than this (the panel was down) is spread over its last
 // usageSplitMax seconds only.
 const usageSplitMax = 24 * 3600
@@ -162,22 +250,43 @@ func (u *usageLog) addPartsLocked(now time.Time, kind, id, src string, d, up uin
 	key := kind + ":" + id
 	l := u.Last[key]
 	u.Last[key] = &usageLast{D: d, U: up, Src: src, P: parts, At: now.Unix()}
-	if l == nil || l.Src != src {
+	if l == nil {
 		return
 	}
 	var dd, du uint64
-	if len(parts) > 0 && len(parts) == len(l.P) {
-		for i, p := range parts {
-			dd += usageUp(l.P[i][0], p[0])
-			du += usageUp(l.P[i][1], p[1])
+	restarted := d < l.D || up < l.U
+	switch {
+	case l.Src != src:
+		// a tunnel's counting chains (or its interface) were made again: those parts count
+		// from zero, so their whole value is new. Any other change (a card added or gone,
+		// the first read with marks) is a new counter: only a new baseline.
+		oe, ne := usageMarks(l.Src), usageMarks(src)
+		if kind != "t" || !usageMarksFit(oe, ne, l.P, parts) {
+			return
 		}
-	} else {
+		for i, p := range parts {
+			if ne[i] != oe[i] {
+				dd, du, restarted = dd+p[0], du+p[1], true
+				continue
+			}
+			a, b := usagePartUp(l.P[i], p)
+			dd, du = dd+a, du+b
+		}
+	case len(parts) > 0 && len(parts) == len(l.P):
+		for i, p := range parts {
+			a, b := usagePartUp(l.P[i], p)
+			dd, du = dd+a, du+b
+		}
+	default:
 		dd, du = usageSumUp(l.D, d), usageSumUp(l.U, up)
+		if d < l.D/2 || up < l.U/2 { // the whole counter restarted: both directions start again
+			dd, du = d, up
+		}
 	}
 	// spread over the hours since the last read by time; a restarted counter's bytes were
 	// made after the restart, so they all go to now
 	end, from := now.Unix(), l.At
-	if d < l.D || up < l.U || from <= 0 || from >= end || hourStart(time.Unix(from, 0)) == hourStart(now) {
+	if restarted || from <= 0 || from >= end || hourStart(time.Unix(from, 0)) == hourStart(now) {
 		u.bookLocked(now, kind, id, dd, du)
 		return
 	}
@@ -215,6 +324,14 @@ func (u *usageLog) bookLocked(now time.Time, kind, id string, dd, du uint64) {
 			}
 		}
 		addBytes(m, bid, dd, du)
+		if kind == "t" {
+			if p := u.pairNow[id]; p != "" {
+				if b.Pairs == nil {
+					b.Pairs = map[string]string{}
+				}
+				b.Pairs[id] = p
+			}
+		}
 	}
 }
 
@@ -228,6 +345,9 @@ func bucketIn(list *[]*usageBucket, at int64, keep int) *usageBucket {
 	}
 	if i > 0 && l[i-1].Hour == at {
 		return l[i-1]
+	}
+	if i == 0 && len(l) >= keep { // older than all that is kept: a new one would be cut at once
+		return l[0]
 	}
 	b := &usageBucket{Hour: at, Tunnels: map[string]*UsageBytes{}, Servers: map[string]*UsageBytes{}}
 	l = append(l, nil)
@@ -269,7 +389,7 @@ func (a *App) usageRecord(start time.Time) {
 	fresh := start.Add(-time.Minute).Unix()
 	for id, s := range tm.tunnels {
 		if s.Error == "" && s.Updated >= fresh {
-			reads = append(reads, rd{"t", id, "", s.TotalDown, s.TotalUp, s.parts})
+			reads = append(reads, rd{"t", id, s.epoch, s.TotalDown, s.TotalUp, s.parts})
 		}
 	}
 	for id, s := range tm.servers {
@@ -284,8 +404,10 @@ func (a *App) usageRecord(start time.Time) {
 	}
 	tm.mu.Unlock()
 	pairOf := map[string]string{} // running tunnel -> "<iran>|<foreign>"
+	all := map[string]*usageTun{} // every tunnel now
 	a.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
+			all[t.ID] = &usageTun{Pair: t.ServerID + "|" + t.ForeignID, Owner: t.Owner, Name: t.Name}
 			if t.Active != "" {
 				pairOf[t.ID] = t.ServerID + "|" + t.ForeignID
 			}
@@ -299,8 +421,43 @@ func (a *App) usageRecord(start time.Time) {
 		u.Started = time.Now().Unix()
 	}
 	u.recordLocked(time.Now(), reads, pairOf)
+	u.knowLocked(all)
 	u.saveLocked()
 }
+
+// knowLocked keeps what the log knows of each tunnel (Known): the ones there are now as they
+// are, deleted ones while some kept bucket still has their bytes. A deleted tunnel's last
+// counter read is dropped (a tunnel made again with the same id starts a new baseline).
+func (u *usageLog) knowLocked(all map[string]*usageTun) {
+	if u.Known == nil {
+		u.Known = map[string]*usageTun{}
+	}
+	for id, k := range all {
+		u.Known[id] = k
+	}
+	for key := range u.Last {
+		if id, ok := strings.CutPrefix(key, "t:"); ok && all[id] == nil {
+			delete(u.Last, key)
+		}
+	}
+	has := map[string]bool{}
+	for _, l := range [][]*usageBucket{u.Buckets, u.Days} {
+		for _, b := range l {
+			for id := range b.Tunnels {
+				has[id] = true
+			}
+		}
+	}
+	for id := range u.Known {
+		if all[id] == nil && !has[id] {
+			delete(u.Known, id)
+		}
+	}
+}
+
+// usageStale: a running tunnel not read for this long (its server unreachable, its counters
+// broken) no longer holds its route's foreign-server count back.
+const usageStale = 15 * 60
 
 // usageRead is one counter read: kind "t" tunnel, "s" server NIC, "p" peer address.
 type usageRead struct {
@@ -314,29 +471,61 @@ type usageRead struct {
 // applied or down is not read, and one re-applied starts its counters again, while the
 // address counter runs on — without this the bytes of a whole outage landed in one hour
 // against none of the users' (x4.2 on Arshad's route to Germany 1, Nov 8).
+//
+// A route is counted (its tunnels' reads and its foreign-server read cover the same interval),
+// held (a running tunnel missed this read but was read lately: the foreign count keeps its
+// last read and is counted with the tunnel's next one — a read cut short loses nothing), or
+// started again (a tunnel counted from a new baseline: new, or restarted without a mark that
+// says so). A tunnel unread for usageStale is left out: one broken tunnel no longer stopped
+// its whole route from being counted.
 func (u *usageLog) recordLocked(now time.Time, reads []usageRead, pairOf map[string]string) {
-	ok := map[string]bool{}
+	const pOK, pHold, pRebase = 0, 1, 2
+	state := map[string]int{}
 	for _, pair := range pairOf {
-		ok[pair] = true
+		state[pair] = pOK
 	}
-	read := map[string]bool{}
+	worse := func(pair string, s int) {
+		if s > state[pair] {
+			state[pair] = s
+		}
+	}
+	read := map[string]usageRead{}
 	for _, r := range reads {
 		if r.kind == "t" {
-			read[r.id] = true
-			if l := u.Last["t:"+r.id]; l == nil || r.d < l.D || r.u < l.U {
-				ok[pairOf[r.id]] = false
-			}
+			read[r.id] = r
 		}
 	}
 	for id, pair := range pairOf {
-		if !read[id] {
-			ok[pair] = false
+		l := u.Last["t:"+id]
+		r, ok := read[id]
+		switch {
+		case !ok:
+			if l != nil && now.Unix()-l.At < usageStale {
+				worse(pair, pHold)
+			}
+		case l == nil:
+			worse(pair, pRebase)
+		case l.Src != r.src:
+			if !usageMarksFit(usageMarks(l.Src), usageMarks(r.src), l.P, r.parts) {
+				worse(pair, pRebase)
+			}
+		case r.d < l.D || r.u < l.U:
+			worse(pair, pRebase)
 		}
 	}
+	u.pairNow = pairOf
+	defer func() { u.pairNow = nil }()
 	for _, r := range reads {
 		if r.kind == "p" {
-			if i := strings.LastIndex(r.id, "|"); i > 0 && !ok[r.id[:i]] {
+			s, known := pRebase, false
+			if i := strings.LastIndex(r.id, "|"); i > 0 {
+				s, known = state[r.id[:i]]
+			}
+			if !known || s == pRebase {
 				u.Last["p:"+r.id] = &usageLast{D: r.d, U: r.u, P: r.parts, At: now.Unix()} // a new baseline, nothing counted
+				continue
+			}
+			if s == pHold {
 				continue
 			}
 		}
@@ -421,9 +610,8 @@ func usageCoef(hours []*usageBucket, pairs map[string][2]string) map[string]floa
 // panel's tunnels, the server's own), and before 2026-11-06 only one of two cards was read.
 func usagePaidEst(b *usageBucket, pairs map[string][2]string, coef map[string]float64) (map[string]uint64, map[string]bool) {
 	paid, est := usagePaid(b, pairs)
-	for id := range pairs {
-		x := b.Tunnels[id]
-		if x == nil || x.Down+x.Up == 0 || (!est[id] && paid[id] > 0) {
+	for id, x := range b.Tunnels {
+		if x.Down+x.Up == 0 || (!est[id] && paid[id] > 0) {
 			continue
 		}
 		if c := coef[id]; c > 0 {
@@ -439,21 +627,29 @@ func usagePaidEst(b *usageBucket, pairs map[string][2]string, coef map[string]fl
 // With peer counters for the Iran server, a tunnel pays its users' upload plus its share
 // (by users' download) of what its foreign server sent; before them (est) its Iran server's
 // whole intake is split by the users' total.
+//
+// A tunnel is priced on the route it was counted on in that bucket (b.Pairs), so moving it
+// to another foreign server or deleting it later doesn't change what its past hours cost;
+// buckets from before that was kept use pairs. A route with no foreign-server count in the
+// bucket (it was started again that hour, or its address counter is new) is estimated.
 func usagePaid(b *usageBucket, pairs map[string][2]string) (paid map[string]uint64, est map[string]bool) {
 	paid, est = map[string]uint64{}, map[string]bool{}
 	hasPeer := map[string]bool{}
 	for k := range b.Peers {
 		hasPeer[strings.SplitN(k, "|", 2)[0]] = true
 	}
+	pairOf := map[string][2]string{}
+	for id := range b.Tunnels {
+		if p, ok := usagePairOf(b, pairs, id); ok {
+			pairOf[id] = p
+		}
+	}
 	// only the tunnels in this bucket share it: an idle hour split with tunnels that have no
 	// row here gave them shares nothing shows
 	pairDown, srvTot := map[string]uint64{}, map[string]uint64{}
 	pairN, srvN := map[string]int{}, map[string]int{}
-	for id, p := range pairs {
+	for id, p := range pairOf {
 		x := b.Tunnels[id]
-		if x == nil {
-			continue
-		}
 		pk := p[0] + "|" + p[1]
 		pairDown[pk] += x.Down
 		pairN[pk]++
@@ -466,18 +662,19 @@ func usagePaid(b *usageBucket, pairs map[string][2]string) (paid map[string]uint
 		}
 		return uint64(float64(total) * float64(part) / float64(sum))
 	}
-	for id, p := range pairs {
+	for id, p := range pairOf {
 		x := b.Tunnels[id]
-		if x == nil {
-			continue
-		}
 		if hasPeer[p[0]] {
 			pk := p[0] + "|" + p[1]
-			var from uint64
-			if pr := b.Peers[pk]; pr != nil {
-				from = share(pr.Down, x.Down, pairDown[pk], pairN[pk])
+			pr := b.Peers[pk]
+			if pr == nil { // no count of its foreign server: what its users moved, until a coefficient says better
+				paid[id], est[id] = x.Down+x.Up, true
+				continue
 			}
-			paid[id] = x.Up + from
+			paid[id] = x.Up + share(pr.Down, x.Down, pairDown[pk], pairN[pk])
+			continue
+		}
+		if x.Down+x.Up == 0 { // an idle tunnel pays nothing of its server's card
 			continue
 		}
 		if nic := b.Servers[p[0]]; nic != nil && nic.Down > 0 {
@@ -486,6 +683,18 @@ func usagePaid(b *usageBucket, pairs map[string][2]string) (paid map[string]uint
 		}
 	}
 	return paid, est
+}
+
+// usagePairOf is the route [iran, foreign] a tunnel was counted on in bucket b: as the
+// bucket kept it, else pairs (the tunnel now, or as the log knew it).
+func usagePairOf(b *usageBucket, pairs map[string][2]string, id string) ([2]string, bool) {
+	if s, ok := b.Pairs[id]; ok {
+		if i := strings.LastIndex(s, "|"); i >= 0 {
+			return [2]string{s[:i], s[i+1:]}, true
+		}
+	}
+	p, ok := pairs[id]
+	return p, ok
 }
 
 // usageGet: GET /api/usage?days=1|7|30[&hourly=1] or ?date=<unix, a Tehran midnight> —
@@ -518,8 +727,14 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 		if h := hourStart(time.Unix(rf, 0)); h >= hourStart(now)-int64(usageKeep-1)*3600 {
 			from, n = h, min(int((rt-h+3599)/3600), usageKeep)
 		} else {
+			// day by day; a span longer than the days kept keeps its end (it was cut at the
+			// end: the latest days went missing)
 			step, from = 86400, dayStart(time.Unix(rf, 0))
-			n = min(int((rt-from+86399)/86400), usageKeepDays)
+			last := dayStart(time.Unix(rt-1, 0))
+			n = int((last-from)/86400) + 1
+			if n > usageKeepDays {
+				from, n = last-int64(usageKeepDays-1)*86400, usageKeepDays
+			}
 		}
 		n = max(1, n)
 		days = max(1, int(int64(n)*step/86400))
@@ -531,11 +746,14 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 	case days > 1:
 		n, step, from = days, 86400, dayStart(now)-int64(days-1)*86400
 	}
-	// the tunnels' servers, as they are now (a tunnel's whole history is counted on them)
+	// the tunnels' servers as they are now, and deleted ones' as the log knew them (buckets
+	// that kept each tunnel's route are priced on that)
 	pairs := map[string][2]string{}
+	alive := map[string]bool{}
 	s.app.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
 			pairs[t.ID] = [2]string{t.ServerID, t.ForeignID}
+			alive[t.ID] = true
 		}
 	})
 	tun, srv := map[string]*UsageSum{}, map[string]*UsageSum{}
@@ -549,6 +767,29 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 	}
 	u.mu.Lock()
 	started := u.Started
+	known := map[string]usageTun{}
+	for id, k := range u.Known {
+		known[id] = *k
+		if _, ok := pairs[id]; !ok {
+			if i := strings.LastIndex(k.Pair, "|"); i >= 0 {
+				pairs[id] = [2]string{k.Pair[:i], k.Pair[i+1:]}
+			}
+		}
+	}
+	// a deleted tunnel is shown to the account it was of
+	see := map[string]bool{}
+	visibleID := func(id string) bool {
+		v, ok := see[id]
+		if !ok {
+			if alive[id] {
+				v = s.tunnelVisible(user, admin, id)
+			} else {
+				v = visible(user, admin, known[id].Owner)
+			}
+			see[id] = v
+		}
+		return v
+	}
 	coef := usageCoef(u.Buckets, pairs)
 	list := u.Buckets
 	if step == 86400 {
@@ -567,7 +808,7 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 			paid, est = u.dayPaidLocked(b, pairs, coef)
 		}
 		for id, x := range b.Tunnels {
-			if !s.tunnelVisible(user, admin, id) {
+			if !visibleID(id) {
 				continue
 			}
 			v := get(tun, id)
@@ -599,6 +840,14 @@ func (s *Server2) usageGet(w http.ResponseWriter, r *http.Request) {
 		sort.Slice(out, func(i, j int) bool { return out[i].Down+out[i].Up > out[j].Down+out[j].Up })
 		return out
 	}
-	writeJSON(w, map[string]any{"days": days, "from": from, "step": step, "n": n, "started": started,
-		"tunnels": sorted(tun), "servers": sorted(srv)})
+	// deleted tunnels that have bytes here: their name and route, for the table
+	gone := map[string]map[string]string{}
+	for id := range tun {
+		if !alive[id] {
+			k := known[id]
+			gone[id] = map[string]string{"name": k.Name, "pair": k.Pair, "owner": k.Owner}
+		}
+	}
+	writeJSON(w, map[string]any{"days": days, "from": from, "to": from + int64(n)*step, "step": step, "n": n,
+		"started": started, "tunnels": sorted(tun), "servers": sorted(srv), "gone": gone})
 }
