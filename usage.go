@@ -645,6 +645,13 @@ func usagePaidEst(b *usageBucket, pairs map[string][2]string, coef map[string]fl
 		if c := coef[id]; c > 0 {
 			paid[id] = uint64(c * float64(x.Down+x.Up))
 			est[id] = true
+			continue
+		}
+		// nothing prices it (a tunnel deleted before its route was kept, or an Iran server
+		// with no card count): its users' bytes at ×1, estimated. Leaving it at 0 kept its
+		// traffic in the totals but not its pay, so a total came out below every row (×0.96).
+		if _, ok := paid[id]; !ok {
+			paid[id], est[id] = x.Down+x.Up, true
 		}
 	}
 	return paid, est

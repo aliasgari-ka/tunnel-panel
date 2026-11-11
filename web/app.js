@@ -323,21 +323,26 @@ async function viewUsage(w) {
   const z = { down: 0, up: 0, paid: 0, series: [] };
   const tot = (x) => x.down + x.up;
   // deleted tunnels whose bytes are in this window still count (their route as it was)
-  const gone = Object.entries(r.gone || {}).map(([id, g]) => { const p = (g.pair || '').split('|'); return { id, name: g.name || id, owner: g.owner || '', serverId: p[0] || '', foreignId: p[1] || '', active: '', deleted: true }; });
+  // (one deleted before its route was kept has none: '~', shown as "route unknown", paid at ×1)
+  const gone = Object.entries(r.gone || {}).map(([id, g]) => { const p = (g.pair || '').split('|'); const k = p.length === 2; return { id, name: g.name || 'deleted ' + id.slice(0, 6), owner: g.owner || '', serverId: k ? p[0] : '~', foreignId: k ? p[1] : '~', active: '', deleted: true }; });
   const tunnels = STATE.tunnels.concat(gone).filter(t => shownOwner(t.owner)).sort((a, b) => tot(T[b.id] || z) - tot(T[a.id] || z));
   const routeOf = Object.fromEntries(STATE.tunnels.concat(gone).map(t => [t.id, t.serverId]));
   const stopTag = (t) => t.deleted ? ' <span class="faint">(deleted)</span>' : t.active ? '' : ' <span class="faint">(stopped)</span>';
   // one physical server may be in the list twice (two accounts added it): its card counts once
   const all = STATE.servers.concat(STATE.shared || []);
   const nicOf = (id) => {
+    if (id === '~') return { key: '~', u: z };
     const s = id ? serverById(id) : null;
     const ip = s ? (s.ipv4 || s.ipv6 || id) : 'panel';
     const u = S[id] || (s ? all.filter(o => (o.ipv4 || o.ipv6) === ip).map(o => S[o.id]).find(Boolean) : null) || z;
     return { key: ip, u };
   };
-  const srvOf = (id) => id ? serverById(id) : null;
-  const flagOf = (id) => { const s = srvOf(id); return s ? (s.country ? flag(s.country) : '🌍') : '🏠'; };
-  const nameOf = (id) => { const s = srvOf(id); return s ? `${s.country ? flag(s.country) : ''} ${nm(s.name)}` : '🏠 panel host'; };
+  const srvOf = (id) => id && id !== '~' ? serverById(id) : null;
+  const flagOf = (id) => { if (id === '~') return '❔'; const s = srvOf(id); return s ? (s.country ? flag(s.country) : '🌍') : '🏠'; };
+  const nameOf = (id) => { if (id === '~') return '❔ route unknown'; const s = srvOf(id); return s ? `${s.country ? flag(s.country) : ''} ${nm(s.name)}` : '🏠 panel host'; };
+  // the count line: what the total sums (live tunnels, deleted ones with bytes here, the Iran servers they ran on)
+  const countTxt = (list, gs) => { const d = list.filter(t => t.deleted).length, n = list.length - d, k = gs.filter(g => g.id !== '~').length;
+    return `${n} tunnel${n === 1 ? '' : 's'}${d ? ` + ${d} deleted` : ''} on ${k} Iran server${k === 1 ? '' : 's'}`; };
   const coef = (paid, used) => used > 1 << 20 && paid > 0 ? '×' + (paid / used).toFixed(2) : '—';
   const coefCls = (paid, used) => used > 1 << 20 ? (paid / used > 1.3 ? ' class="ucoef bad"' : paid / used > 1.1 ? ' class="ucoef warn"' : ' class="ucoef"') : '';
   const since = r.started ? Math.floor((Date.now() / 1000 - r.started) / 3600) : 0;
@@ -347,7 +352,7 @@ async function viewUsage(w) {
   const groups = [];
   const seen = new Map();
   tunnels.forEach(t => {
-    const k = nicOf(t.serverId).key;
+    const k = t.serverId === '~' ? '~' : nicOf(t.serverId).key;
     if (!seen.has(k)) { const g = { id: t.serverId, key: k, tunnels: [] }; seen.set(k, g); groups.push(g); }
     seen.get(k).tunnels.push(t);
   });
@@ -361,8 +366,8 @@ async function viewUsage(w) {
   if (cur === '' || (cur.startsWith('t:') && !tunnels.some(t => 't:' + t.id === cur)) || (cur.startsWith('s:') && !groups.some(g => 's:' + g.id === cur))) cur = 'all';
   box.innerHTML = `<aside class="card srvlist">
       ${tunnels.length > 6 ? '<input class="sq" type="search" placeholder="Filter by name…" data-sq>' : ''}
-      <button class="srow" data-pick="all"><span class="sflag">Σ</span><span class="sinfo"><b>All tunnels</b><small>${tunnels.length} tunnels · ${groups.length} Iran servers</small></span>${meta(total)}</button>
-      ${groups.map(g => { const x = sum(g.tunnels); return `<div class="sgrp"><button class="srow sgh2" data-pick="s:${g.id}"><span class="sflag">${flagOf(g.id)}</span><span class="sinfo"><b>${srvOf(g.id) ? nm(srvOf(g.id).name) : 'panel host'}</b><small>Iran server · ${g.tunnels.length} tunnel${g.tunnels.length > 1 ? 's' : ''}</small></span>${meta(x)}</button>
+      <button class="srow" data-pick="all"><span class="sflag">Σ</span><span class="sinfo"><b>All tunnels</b><small>${countTxt(tunnels, groups)}</small></span>${meta(total)}</button>
+      ${groups.map(g => { const x = sum(g.tunnels); return `<div class="sgrp"><button class="srow sgh2" data-pick="s:${g.id}"><span class="sflag">${flagOf(g.id)}</span><span class="sinfo"><b>${g.id === '~' ? 'Route unknown' : srvOf(g.id) ? nm(srvOf(g.id).name) : 'panel host'}</b><small>${g.id === '~' ? 'deleted before routes were kept · ×1' : 'Iran server'} · ${g.tunnels.length} tunnel${g.tunnels.length > 1 ? 's' : ''}</small></span>${meta(x)}</button>
         <div class="usub">${g.tunnels.map(tRow).join('')}</div></div>`; }).join('') || '<div class="faint sempty">No tunnels yet.</div>'}
     </aside>
     <div class="srvdetail" data-detail></div>`;
@@ -376,7 +381,7 @@ async function viewUsage(w) {
   const legend = `<div class="card pad ulegend">
     <div><b>💰 You pay for</b> = what the Iran server <b>received</b> for the tunnel: the users' upload + what the foreign server sent it. Sending from Iran is free.</div>
     <div><b>Coefficient</b> = paid ÷ total traffic. ×1.00 means you pay exactly what the users used; ×1.15 means 15 % more (tunnel headers, health checks, tests).</div>
-    <div class="faint">Each Iran server's intake is counted separately per foreign server, so an Iran server with two foreign servers is split between them.${total.est ? ' Hours before this was counted (marked ≈) are estimated from the whole Iran server.' : ''}${r.started > r.from ? ` Counting started ${since < 1 ? 'less than an hour' : since < 48 ? since + ' h' : Math.floor(since / 24) + ' days'} ago.` : ''}</div></div>`;
+    <div class="faint">Each Iran server's intake is counted separately per foreign server, so an Iran server with two foreign servers is split between them.${total.est ? ' Hours before this was counted (marked ≈) are estimated from the whole Iran server.' : ''}${tunnels.some(t => t.serverId === '~') ? ' Tunnels deleted before their route was kept (route unknown) are counted at ×1: the panel cannot tell which Iran server they ran on.' : ''}${r.started > r.from ? ` Counting started ${since < 1 ? 'less than an hour' : since < 48 ? since + ' h' : Math.floor(since / 24) + ' days'} ago.` : ''}</div></div>`;
   // one Iran server's bill: what its cards received, how much the tunnels explain (the ones
   // shown, and others on the same card: another account's, or hidden by the account filter), the rest
   const otherPaid = (g) => (r.tunnels || []).reduce((a, x) => routeOf[x.id] !== undefined && nicOf(routeOf[x.id]).key === g.key && !g.tunnels.some(t => t.id === x.id) ? a + (x.paid || 0) : a, 0);
@@ -437,7 +442,7 @@ async function viewUsage(w) {
       head = `<div class="card pad uhead"><h2>${nameOf(g.id)}</h2><div class="muted">Iran server · ${g.tunnels.map(t => nm(t.name) + ' → ' + nameOf(t.foreignId)).join(' · ')}</div></div>`;
     } else {
       list = tunnels; gs = groups;
-      head = `<div class="card pad uhead"><h2>All tunnels</h2><div class="muted">${tunnels.length} tunnels on ${groups.length} Iran servers</div></div>`;
+      head = `<div class="card pad uhead"><h2>All tunnels</h2><div class="muted">${countTxt(tunnels, groups)}</div></div>`;
     }
     det.innerHTML = head + rounded + kpi(sum(list)) + '<div class="card pad" data-uh></div>' + (list.length > 1 ? tunTbl(list) : '') + (gs ? billTbl(gs) : '') + legend;
     $$('.urow', det).forEach(tr => tr.onclick = () => show(tr.dataset.pick, true));

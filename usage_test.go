@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -185,5 +188,65 @@ func TestUsageRecordGap(t *testing.T) {
 	}
 	if x := u.Days[0].Tunnels["tun"]; x.Down != 250 { // 100 + 50 after the restart + 100
 		t.Fatalf("tunnel %+v", x)
+	}
+}
+
+// A tunnel deleted before the log kept routes has bytes but no route: it was left at
+// paid 0, so the page's total (sum of the rows) paid ×0.96 while every priced row was
+// ×1.02. It now pays its users' bytes (×1, estimated), and the total is the sum of the rows.
+func TestUsageTotalCountsUnroutedTunnels(t *testing.T) {
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	_ = st.Update(func(x *State) error {
+		x.Users = []User{{Username: "admin", Role: "admin"}}
+		x.Tunnels = []*Tunnel{{ID: "live", ServerID: "ir", ForeignID: "de"}}
+		return nil
+	})
+	now := time.Now()
+	h := hourStart(now) - 3600
+	u := &usageLog{Last: map[string]*usageLast{}, Known: map[string]*usageTun{}, Buckets: []*usageBucket{{
+		Hour:    h,
+		Tunnels: map[string]*UsageBytes{"live": {Down: 900e6, Up: 100e6}, "old": {Down: 450e6, Up: 50e6}},
+		Servers: map[string]*UsageBytes{"ir": {Down: 1.2e9}},
+		Peers:   map[string]*UsageBytes{"ir|de": {Down: 1e9}},
+	}}, Days: []*usageBucket{{
+		Hour:    dayStart(time.Unix(h, 0)),
+		Tunnels: map[string]*UsageBytes{"live": {Down: 900e6, Up: 100e6}, "old": {Down: 450e6, Up: 50e6}},
+		Servers: map[string]*UsageBytes{"ir": {Down: 1.2e9}},
+		Peers:   map[string]*UsageBytes{"ir|de": {Down: 1e9}},
+	}}}
+	s := &Server2{app: &App{store: st, jobs: newJobs(), agents: newAgentHub(), usage: u}, failures: map[string][]time.Time{}}
+	cw := httptest.NewRecorder()
+	s.setCookie(cw, httptest.NewRequest("GET", "/", nil), "admin")
+	for _, q := range []string{"days=1", "days=7", "days=7&hourly=1", fmt.Sprintf("from=%d&to=%d", h, now.Unix())} {
+		req := httptest.NewRequest("GET", "/api/usage?"+q, nil)
+		req.AddCookie(cw.Result().Cookies()[0])
+		w := httptest.NewRecorder()
+		s.usageGet(w, req)
+		var m struct {
+			Tunnels []*UsageSum `json:"tunnels"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		var used, paid, series uint64
+		by := map[string]*UsageSum{}
+		for _, x := range m.Tunnels {
+			by[x.ID] = x
+			used += x.Down + x.Up
+			paid += x.Paid
+			for _, st := range x.Series {
+				series += st.Paid
+			}
+		}
+		if by["old"] == nil || by["old"].Paid != 500e6 || !by["old"].Est {
+			t.Fatalf("%s: the unrouted tunnel %+v, want paid 500 MB at ×1, estimated", q, by["old"])
+		}
+		if by["live"] == nil || by["live"].Paid != 1.1e9 {
+			t.Fatalf("%s: live %+v, want 1.1 GB", q, by["live"])
+		}
+		if paid < used || series != paid {
+			t.Fatalf("%s: total paid %d for %d used (series %d): the total fell below the rows", q, paid, used, series)
+		}
 	}
 }
