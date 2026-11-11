@@ -351,6 +351,9 @@ func directDial(addr string) (net.Conn, error) {
 	return net.DialTimeout("tcp", addr, 15*time.Second)
 }
 
+// proxyTimeout bounds a proxy's handshake (SOCKS5, or HTTP CONNECT after the TCP dial).
+var proxyTimeout = 20 * time.Second
+
 // proxyDial returns a dialFunc routing through a socks5:// or http(s):// (CONNECT) proxy.
 func proxyDial(proxyURL string) dialFunc {
 	u, err := url.Parse(proxyURL)
@@ -368,6 +371,13 @@ func proxyDial(proxyURL string) dialFunc {
 			d, err := xproxy.SOCKS5("tcp", u.Host, auth, &net.Dialer{Timeout: 15 * time.Second})
 			if err != nil {
 				return nil, err
+			}
+			// the whole SOCKS handshake has a time limit: a proxy that takes the connection
+			// and never answers held the SSH dial (and the host's lock) forever
+			ctx, cancel := context.WithTimeout(context.Background(), proxyTimeout)
+			defer cancel()
+			if cd, ok := d.(xproxy.ContextDialer); ok {
+				return cd.DialContext(ctx, "tcp", addr)
 			}
 			return d.Dial("tcp", addr)
 		}
@@ -394,9 +404,10 @@ func httpConnect(u *url.URL, addr string) (net.Conn, error) {
 			c.Close()
 			return nil, fmt.Errorf("proxy TLS: %w", err)
 		}
-		_ = tc.SetDeadline(time.Time{})
 		c = tc
 	}
+	// and so does the CONNECT exchange (an http:// proxy had no deadline at all)
+	_ = c.SetDeadline(time.Now().Add(proxyTimeout))
 	req := &http.Request{Method: http.MethodConnect, URL: &url.URL{Opaque: addr}, Host: addr, Header: http.Header{}}
 	if u.User != nil {
 		pw, _ := u.User.Password()
@@ -416,6 +427,7 @@ func httpConnect(u *url.URL, addr string) (net.Conn, error) {
 		c.Close()
 		return nil, fmt.Errorf("proxy CONNECT %s: %s", addr, resp.Status)
 	}
+	_ = c.SetDeadline(time.Time{})
 	// what the reader already took past the proxy's answer (the SSH server's banner, sent
 	// at once) is the tunnel's first bytes: read from the conn alone, they were lost
 	if br.Buffered() > 0 {

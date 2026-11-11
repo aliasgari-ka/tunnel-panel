@@ -425,6 +425,26 @@ func (a *App) usageRecord(start time.Time) {
 	u.saveLocked()
 }
 
+// renameOwner moves the usage history of deleted tunnels (Known, by owner name) with an
+// account renamed to to, or takes it from an account deleted (to = ""): a new account with
+// the old name must not see it, and the renamed one must not lose it.
+func (u *usageLog) renameOwner(from, to string) {
+	if u == nil || from == "" {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	moved := false
+	for _, k := range u.Known {
+		if k.Owner == from {
+			k.Owner, moved = to, true
+		}
+	}
+	if moved {
+		u.saveLocked()
+	}
+}
+
 // knowLocked keeps what the log knows of each tunnel (Known): the ones there are now as they
 // are, deleted ones while some kept bucket still has their bytes. A deleted tunnel's last
 // counter read is dropped (a tunnel made again with the same id starts a new baseline).
@@ -505,6 +525,11 @@ func (u *usageLog) recordLocked(now time.Time, reads []usageRead, pairOf map[str
 			}
 		case l == nil:
 			worse(pair, pRebase)
+		case now.Unix()-l.At >= usageStale:
+			// back after a long gap (stopped, unreachable): what the foreign server sent
+			// meanwhile was not over a counted interval of this tunnel, even when its new
+			// counters look like the old ones made again
+			worse(pair, pRebase)
 		case l.Src != r.src:
 			if !usageMarksFit(usageMarks(l.Src), usageMarks(r.src), l.P, r.parts) {
 				worse(pair, pRebase)
@@ -520,6 +545,9 @@ func (u *usageLog) recordLocked(now time.Time, reads []usageRead, pairOf map[str
 			s, known := pRebase, false
 			if i := strings.LastIndex(r.id, "|"); i > 0 {
 				s, known = state[r.id[:i]]
+			}
+			if l := u.Last["p:"+r.id]; l != nil && now.Unix()-l.At >= usageStale {
+				s = pRebase // the address was last read long ago: no interval to count over
 			}
 			if !known || s == pRebase {
 				u.Last["p:"+r.id] = &usageLast{D: r.d, U: r.u, P: r.parts, At: now.Unix()} // a new baseline, nothing counted

@@ -3,6 +3,18 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Persian / Arabic digits and the Persian comma (a Persian keypad types ۱۴۰۰ and ۴۴۳،۸۰) become
+// Latin as they are typed in number, port and id fields: the server reads Latin digits only
+const latinDigits = (s) => String(s).replace(/[۰-۹]/g, d => d.charCodeAt(0) - 0x06F0).replace(/[٠-٩]/g, d => d.charCodeAt(0) - 0x0660).replace(/،/g, ',');
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!el || !el.matches || el.type === 'password' || !el.matches('input.mono, input[inputmode="numeric"], input[type="number"]')) return;
+  const v = latinDigits(el.value);
+  if (v === el.value) return;
+  const p = el.selectionStart;
+  el.value = v;
+  try { el.setSelectionRange(p, p); } catch (er) {} // number inputs have no selection
+}, true);
 const STATE = { user: null, methods: [], servers: [], tunnels: [], settings: {}, agentPin: '', view: 'tunnels' };
 // the page and (admin) the account being viewed survive a refresh: kept in this browser only
 const remember = (k, v) => { try { localStorage.setItem(k, v || ''); } catch (e) {} };
@@ -119,6 +131,9 @@ const sharedOpts = (role, cur) => (STATE.shared || []).filter(s => s.id === cur 
 // accounts: the admin sees everything (and can narrow the view to one account); a user only
 // ever gets their own servers and tunnels from the panel
 const isAdmin = () => STATE.role !== 'user';
+// a route a user's tunnel runs on the admin's servers (shared, or the panel host): its
+// method switches are the admin's — the server neither shows a user them nor lets them change
+const sharedPair = (iran, foreign) => !isAdmin() && (!foreign || !!serverById(iran)?.shared || !!serverById(foreign)?.shared);
 // the admin's account filter: '' = everything, '-' = the admin's own, else a username
 const shownOwner = (o) => !isAdmin() || !STATE.ownerFilter || (STATE.ownerFilter === '-' ? !o : o === STATE.ownerFilter);
 const ownerChip = (o) => isAdmin() && o ? `<span class="chip own" title="belongs to the account ${esc(o)}">👤 ${nm(o)}</span>` : '';
@@ -462,6 +477,7 @@ async function viewRoutes(w) {
   const buildCard = (p) => {
     const fams = ['v4', 'v6'].filter(f => hasFam(p.iran, f) && hasFam(p.foreign, f));
     const off = skip[key(p.iran, p.foreign)] || [];
+    const adminPair = sharedPair(p.iran, p.foreign);
     const bench = {};
     ['v4', 'v6'].forEach(f => { bench[f] = hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f); });
 
@@ -512,7 +528,7 @@ async function viewRoutes(w) {
       const m = STATE.methods.find(x => x.id === mid);
       if (m && !m.families.includes(f)) return `<td class="rt-c na" data-f="${famName(f)}"><span class="faint">—</span></td>`;
       const isOff = off.includes(mid + '|' + f);
-      const sw = `<label class="rt-sw" title="${isOff ? 'not used on this route — turn on to let hot standby and failover use it' : 'used on this route (hot standby, failover, benchmark) — turn off to leave it out'}"><input type="checkbox" data-use="${esc(mid)}|${f}"${isOff ? '' : ' checked'}><i></i></label>`;
+      const sw = adminPair ? '' : `<label class="rt-sw" title="${isOff ? 'not used on this route — turn on to let hot standby and failover use it' : 'used on this route (hot standby, failover, benchmark) — turn off to leave it out'}"><input type="checkbox" data-use="${esc(mid)}|${f}"${isOff ? '' : ' checked'}><i></i></label>`;
       const c = rank[mid][f], x = c && c.r;
       let body;
       if (isOff) body = '<span class="faint">off</span>';
@@ -527,7 +543,7 @@ async function viewRoutes(w) {
     const methodsTbl = mids.length ? `<table class="rt-tbl"><thead><tr><th>Method</th>${fams.map(f => `<th>${famName(f)}${bench[f] ? ` <span class="faint">· measured ${ageTxt(bench[f].at)}</span>` : ' <span class="faint">· not measured yet</span>'}</th>`).join('')}</tr></thead>
       <tbody>${mids.map((mid, i) => (i === 0 || gOf(mids[i - 1]) !== gOf(mid) ? `<tr class="rt-grp"><td colspan="${fams.length + 1}">${GROUP_ICON[gOf(mid)] || '🔧'} ${esc(gOf(mid))}</td></tr>` : '') +
         `<tr><td class="rt-mn">${esc(methodTitle(mid))}</td>${fams.map(f => cell(mid, f)).join('')}</tr>`).join('')}</tbody></table>
-      <div class="faint rt-leg">Switch on = the route's tunnels may use it (hot standby keeps it ready, failover can move users to it); off = never used here. ★ best measured · numbers = the order they're tried · tap ✕ for the whole error · 📊 measures the running ones (every method when none runs)${fams.some(f => !bench[f]) ? ' — not measured yet: you can still choose' : ''}</div>`
+      ${adminPair ? '<div class="faint rt-leg">These servers belong to the admin, who decides which methods this route uses.</div>' : ''}<div class="faint rt-leg">Switch on = the route's tunnels may use it (hot standby keeps it ready, failover can move users to it); off = never used here. ★ best measured · numbers = the order they're tried · tap ✕ for the whole error · 📊 measures the running ones (every method when none runs)${fams.some(f => !bench[f]) ? ' — not measured yet: you can still choose' : ''}</div>`
       : '<div class="faint" style="font-size:12.5px">No method can run between these two servers over the address families they have.</div>';
 
     const cells = mids.flatMap(mid => { const m = STATE.methods.find(x => x.id === mid); return fams.filter(f => !m || m.families.includes(f)).map(f => mid + '|' + f); });
@@ -1141,7 +1157,7 @@ function outageSection() {
     } catch (e) { $('[data-olist]', sec).innerHTML = `<div style="padding:14px;color:var(--crit)">${esc(e.message)}</div>`; }
   };
   $('[data-oref]', sec).onclick = load;
-  $('[data-oclr]', sec).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; await api('/outages', { Clear: true }); load(); };
+  $('[data-oclr]', sec).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; try { await api('/outages', { Clear: true }); load(); } catch (er) { alertModal('Error', er.message); } };
   load();
   return sec;
 }
@@ -1813,7 +1829,7 @@ function renderOpts(box, t, mid) {
     const v = saved[f.key] !== undefined ? saved[f.key] : f.default;
     const help = f.help ? `<small class="fhelp">${esc(f.help)}</small>` : '';
     if (f.type === 'bool') return `<label class="row f" style="grid-column:1/-1"><input type="checkbox" data-k="${f.key}"${String(v) === 'true' ? ' checked' : ''}> ${esc(f.label)}${help}</label>`;
-    if (f.type === 'select') return `<label class="f">${esc(f.label)}<select data-k="${f.key}">${f.options.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>${help}</label>`;
+    if (f.type === 'select') return `<label class="f">${esc(f.label)}<select data-k="${f.key}">${f.options.map(o => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>${help}</label>`;
     return `<label class="f">${esc(f.label)}<input data-k="${f.key}" class="mono" value="${esc(v)}"${f.type === 'number' ? ` inputmode="numeric" placeholder="${esc(f.default || 'auto')}"` : ''}>${help}</label>`;
   };
   const basic = m.fields.filter(f => !f.advanced), adv = m.fields.filter(f => f.advanced);
@@ -1857,7 +1873,7 @@ function tunnelModal(t) {
         <div class="ff">
           <label class="row f"><input type="checkbox" id="shEnabled"${sh.enabled ? ' checked' : ''}> Enable shaping on the Iran egress (CAKE/HTB/… qdisc)</label>
           <div class="two">
-            <label class="f">Queue discipline<select id="shQdisc">${['cake', 'htb', 'tbf', 'fq_codel'].map(q => `<option${sh.qdisc === q ? ' selected' : ''}>${q}</option>`).join('')}</select></label>
+            <label class="f">Queue discipline<select id="shQdisc">${['cake', 'htb', 'tbf', 'fq_codel'].map(q => `<option value="${q}"${sh.qdisc === q ? ' selected' : ''}>${q}</option>`).join('')}</select></label>
             <label class="f">MSS clamp <span class="faint">(0 = off)</span><input id="shMss" type="number" class="mono" value="${sh.mss || 0}"></label>
           </div>
           <label class="f">Egress interface <span class="faint">(blank = default route)</span><input id="shIface" class="mono" value="${esc(sh.iface || '')}"></label>
@@ -1879,6 +1895,11 @@ function tunnelModal(t) {
     // "everything off is nothing", so Save sent off=[] and turned skipped methods back on)
     if (!$('#tAuto', m).checked || !skipAll) { box.innerHTML = ''; pathsKey = ''; return; }
     const p = pair(), k = p.iran + '|' + p.foreign;
+    if (sharedPair(p.iran, p.foreign)) {
+      pathsKey = '';
+      box.innerHTML = '<div class="faint" style="font-size:12.5px">Which methods this route keeps ready is set by the admin, who owns these servers.</div>';
+      return;
+    }
     const off = pathsKey === k ? $$('[data-path]', box).filter(c => !c.checked).map(c => c.dataset.path) : (skipAll[k] || []);
     pathsKey = k;
     const fams = ['v4', 'v6'].filter(f => hasFam(p.iran, f) && hasFam(p.foreign, f));
@@ -2000,7 +2021,7 @@ async function loadBenchHistory() {
       <td class="faint">${ok}/${(r.results || []).length} ok</td>
       <td><button class="btn sm" data-hv="${i}">View</button></td></tr>`;
   }).join('');
-  box.innerHTML = `<div class="card pad"><div style="display:flex;justify-content:space-between;align-items:center"><h3>History</h3><button class="btn sm ghost danger" id="bhclear">Clear history</button></div>
+  box.innerHTML = `<div class="card pad"><div style="display:flex;justify-content:space-between;align-items:center"><h3>History</h3>${isAdmin() ? '<button class="btn sm ghost danger" id="bhclear">Clear history</button>' : ''}</div>
     <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>when</th><th>route</th><th>family</th><th>best</th><th>methods</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   $$('[data-hv]', box).forEach(b => b.onclick = () => {
     const r = hs[+b.dataset.hv];
@@ -2008,7 +2029,8 @@ async function loadBenchHistory() {
       `${nm(r.iranName)} → ${r.foreignId ? nm(r.foreignName) : esc(r.foreignName)} · ${r.family} · ${new Date(r.at * 1000).toLocaleString()}`);
     $('#bres').scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
-  $('#bhclear', box).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; try { await api('/bench/history', { Clear: true }); loadBenchHistory(); } catch (er) {} };
+  // only the admin may clear it (the server refuses others); an error is said, not swallowed
+  if ($('#bhclear', box)) $('#bhclear', box).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; try { await api('/bench/history', { Clear: true }); loadBenchHistory(); } catch (er) { alertModal('Error', er.message); } };
 }
 function benchWatch(job, fd) {
   if (benchTimer) clearInterval(benchTimer);

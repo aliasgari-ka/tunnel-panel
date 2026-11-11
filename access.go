@@ -258,6 +258,7 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			}
 			hash = h
 		}
+		created := false
 		err := s.app.store.Update(func(st *State) error {
 			for i := range st.Users {
 				if st.Users[i].Username != in.Username {
@@ -283,11 +284,15 @@ func (s *Server2) users(w http.ResponseWriter, r *http.Request) {
 			}
 			st.Users = append(st.Users, User{Username: in.Username, Hash: hash, Role: in.Role, Gen: newGen()})
 			igBackupRetire(in.Username) // a name used before: its old backups are not this account's
+			created = true
 			return nil
 		})
 		if err != nil {
 			httpErr(w, 400, err.Error())
 			return
+		}
+		if created { // nor the usage of tunnels an earlier account of that name deleted
+			s.app.usage.renameOwner(in.Username, "")
 		}
 		go s.app.restartBot() // a role change starts or stops that account's own bot
 	}
@@ -356,8 +361,9 @@ func (s *Server2) userDelete(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
-	s.app.jobs.renameOwner(in.Username, "") // a new account of that name doesn't get its jobs
-	go s.app.restartBot() // the account's own bot goes with it
+	s.app.jobs.renameOwner(in.Username, "")  // a new account of that name doesn't get its jobs
+	s.app.usage.renameOwner(in.Username, "") // nor its deleted tunnels' usage
+	go s.app.restartBot()                    // the account's own bot goes with it
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 
