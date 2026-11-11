@@ -40,10 +40,7 @@ var (
 	igANSI    = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	igNum     = regexp.MustCompile(`^[1-9][0-9]{0,3}$`)
 	igVia     = regexp.MustCompile(`^(proxy|proxy[1-9][0-9]*|warp|warp6|ipv6|direct)$`)
-	igHostRx  = regexp.MustCompile(`^[A-Za-z0-9.:_\-\[\]]{1,253}$`)
 	igWord    = regexp.MustCompile(`^[A-Za-z0-9._:/\-]{0,80}$`)
-	igNoSpace = regexp.MustCompile(`^[^\s]{0,200}$`)
-	igPort    = regexp.MustCompile(`^[0-9]{1,5}$`)
 	igSite    = regexp.MustCompile(`^[A-Za-z0-9._:/*\-]{1,200}$`)
 	igCC      = regexp.MustCompile(`^[A-Z]{2}( [A-Z]{2}){0,60}$`)
 	igParts   = regexp.MustCompile(`^(routes|proxies|ig|tg|opts)( (routes|proxies|ig|tg|opts))*$`)
@@ -414,29 +411,11 @@ func igBuild(a string, p map[string]any) (igCmd, error) {
 		}
 		return igCmd{"route " + svc + " -> " + via, []string{"route", svc, via}, "", 180}, nil
 	case "proxy_add":
-		t := "http"
-		if g("type") == "socks5" {
-			t = "socks5"
-		}
-		host, err := igNeed(p["host"], igHostRx, "host")
+		px, err := igProxyNorm(g("type"), g("host"), g("port"), g("user"), igStr(p["pass"]))
 		if err != nil {
 			return igCmd{}, err
 		}
-		port, err := igNeed(p["port"], igPort, "port")
-		if err != nil {
-			return igCmd{}, err
-		}
-		user, pass := g("user"), igStr(p["pass"])
-		if user == "" {
-			user = "-"
-		}
-		if pass == "" {
-			pass = "-"
-		}
-		if !igNoSpace.MatchString(user) || !igNoSpace.MatchString(pass) {
-			return igCmd{}, errors.New("user and password can't have spaces")
-		}
-		return igCmd{"add proxy", []string{"proxy", "add", "-"}, strings.Join([]string{t, host, port, user, pass}, " "), 120}, nil
+		return igCmd{"add proxy", []string{"proxy", "add", "-"}, px.line(), 120}, nil
 	case "custom_add":
 		r := g("route")
 		if r != "" && !regexp.MustCompile(`^(proxy|proxy[1-9][0-9]*|warp|direct)$`).MatchString(r) {
