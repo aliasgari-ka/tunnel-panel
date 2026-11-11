@@ -243,7 +243,7 @@ var methodByID = map[string]*Method{}
 // the UI lists the groups in this order: Backhaul, BackPack, Kernel, TP, Other).
 var methodGroups = map[string]string{
 	"backhaul": "Backhaul", "premium": "Backhaul", "premium1": "Backhaul",
-	"bp_reverse": "BackPack", "bp_l3": "BackPack",
+	"bp_reverse": "BackPack", "bp_l3": "BackPack", "bp_multi": "BackPack", "bp_pckfec": "BackPack", "bp_pckturbo": "BackPack",
 	"gre": groupKernel, "direct6": groupKernel, "ipsec6": groupKernel, "espsk": groupKernel, "wg": groupKernel,
 	"frp": "Other", "golden": "Other", "icmp": "Other", "paqet": "Other", "spoof": "Other",
 	"tpk": "TP", "tpk_rev": "TP",
@@ -381,7 +381,7 @@ func buildPlansRedirect(m *Method, t *Tunnel, srv, fsrv *Server, set Settings, r
 // tunnelListenPort is the port each side listens on for the tunnel itself ("" = none).
 func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) (ir, kh string) {
 	switch m.ID {
-	case "backhaul", "bp_reverse", "premium1":
+	case "backhaul", "bp_reverse", "bp_multi", "bp_pckfec", "bp_pckturbo", "premium1":
 		return portOr(get("tunnel_port"), d.BasePort), ""
 	case "frp":
 		return portOr(get("bind_port"), d.BasePort), ""

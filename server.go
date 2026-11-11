@@ -1961,7 +1961,7 @@ var (
 	// numbers with a narrower sensible range than a port
 	optRange = map[string][2]int{"mtu": {576, 9000}, "mux_con": {1, 64}, "mux_concurrency": {1, 64},
 		"keepalive_period": {5, 600}, "heartbeat": {2, 300}, "heartbeat_interval": {1, 120}, "heartbeat_timeout": {3, 600},
-		"channel_size": {64, 65535}, "connection_pool": {1, 128}}
+		"channel_size": {64, 65535}, "connection_pool": {1, 128}, "links": {1, 64}}
 )
 
 // validateOptions checks method options before they reach configs and shell scripts:
