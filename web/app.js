@@ -2443,19 +2443,14 @@ function igDetail(w) {
     pause: () => igAct(igS({ action: 'pause' }), 'Pause igproxy? All traffic goes direct until you turn it back on.'),
     remove: () => igRemove(false), uninstall: () => igRemove(true),
   })[b.dataset.ia]());
-  w.insertAdjacentHTML('beforeend', `<div class="card pad"><div class="statline">${igPill(i.state)} ${igOwner(s)}
-    ${i.ig ? `<span>router <b>${esc(i.router)}</b></span><span>redirect <b>${esc(i.redirect)}</b></span><span>🔗 connections <b>${+i.caught || 0}</b></span>
-    <span>active WARP <b class="mono">${esc(i.active)}</b></span><span>Google's WARP <b class="mono">${esc(i.gact)}</b></span>
-    <span>Gemini ${igChk(i.gem)}</span><span>Instagram ${igChk(i.igp)}</span><span>panel <b class="mono">${esc(i.panel || '-')}</b></span>
-    ${i.guard !== undefined ? `<span>WARP guard <b style="${i.guard === 'DOWN' ? 'color:var(--crit)' : ''}">${i.guard === 'ON' ? 'on' : i.guard === 'DOWN' ? 'not running' : 'off'}</b></span>` : ''}
-    <span>Gemini users (10 min) <b class="mono">${esc((i.gusers || '').replace(/,/g, ' ') || '—')}</b></span><span>agent <b class="mono">${esc(i.sum)}</b></span>`
-    : `<span>${esc(i.err || '')}</span>`}</div>
-    ${i.wide === 'ON' ? '<div class="mdesc">Wide catch is on: all web traffic of this server passes the igproxy router and is routed by domain.</div>' : ''}
-    ${i.state === 'PANEL' ? '<div class="mcrit" style="margin:10px 0 0">The x-ui panel on this server blocks or diverts Google before igproxy sees it → Tests & diagnosis → Fix panel.</div>' : ''}
-    ${['UPDATE', 'NOAGENT'].includes(i.state) || i.outdated === '1' ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → ⋯ at the top → Install / update agent.</div>' : ''}
-    ${igAccBroken(i) ? `<div class="mwarn" style="margin:10px 0 0">Instagram logged the test account out (${esc(igAccWhy(i))}): no WARP or proxy is checked for Instagram music until a new sessionid is saved → Test account tab.</div>` : ''}</div>
+  w.insertAdjacentHTML('beforeend', igStatus(s, i) + `
     <div class="seg igtabs">${IGTABS.map(([k, t]) => `<button data-t="${k}" class="${k === IG.tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igtab"></div>`);
   $$('.igtabs button', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.t; igRender(); });
+  // the status card's fix buttons: a tab to open, or the server's re-apply
+  $$('[data-igto]', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.igto; igRender(); });
+  // the same actions as the ⋯ menu (its confirmations too)
+  $$('[data-igdo]', w).forEach(b => b.onclick = () => b.dataset.igdo === 'deploy' ? igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`) : igAct(igS({ action: b.dataset.igdo })));
+  const det = $('.igst-more', w); if (det) { det.open = recall('tp-igdet') === '1'; det.ontoggle = () => remember('tp-igdet', det.open ? '1' : '0'); }
   if (!i.ig && IG.tab !== 'tools') {
     $('#igtab').innerHTML = `<div class="card empty"><div class="big">${i.state === 'OFFLINE' ? '📡' : '📦'}</div><h3>${esc((IGST[i.state] || [i.state])[0])}</h3>
       <p class="muted">${i.state === 'OFFLINE' ? 'The panel can\'t reach this server right now.' : 'This part works once the agent is installed.'}</p>${i.state === 'OFFLINE' ? '' : `<button class="btn pri" id="igdep">Install / update agent</button>`}</div>`;
@@ -2463,6 +2458,87 @@ function igDetail(w) {
     return;
   }
   (IGTAB[IG.tab] || IGTAB.routes)();
+}
+// ---- the server's status card: is it OK, where Instagram and Google leave and do they work,
+// how busy it is. Problems come first with their fix; the router's internals sit under "Details".
+const igSet = (v) => v !== undefined && v !== '' && v !== '-';
+// the users' exit of one service in plain words: [what, more]
+function igExit(i, g) {
+  const v = i[g.toLowerCase()] || '';
+  if (v === 'direct') return ["Server's own IP", ''];
+  if (v === 'ipv6') return ["Server's own IPv6", ''];
+  if (/^warp/.test(v)) {
+    const w = v === 'warp6' ? 'WARP IPv6' : 'WARP';
+    if (g === 'GOOGLE') return i.gcc === 'PROXY' ? ['Proxy', 'no allowed WARP for now'] : [igSet(i.gact) ? w + ' ' + i.gact : w, ''];
+    if (i.mode === 'BALANCE') { const [a, b] = String(i.pool || '').split('/'); return [w, igSet(i.pool) && b ? `${a} of ${b} WARPs in use` : 'spread over the WARPs']; }
+    return [igSet(i.active) ? w + ' ' + i.active : w, igSet(i.active) ? '' : 'no WARP connected yet'];
+  }
+  return [igViaW(v, i), ''];
+}
+// the agent's check on the users' route every minute: [class, text]
+function igCheck(i, g) {
+  const v = g === 'IG' ? i.igp : i.gem, route = i[g.toLowerCase()] || '';
+  if (v === 'OK') return ['ok', 'works'];
+  if (v === 'FAIL') return ['bad', "doesn't open"];
+  return ['', route === 'direct' ? 'not checked on the own IP' : 'not checked yet'];
+}
+function igSvcTile(s, i, g) {
+  const [via, more] = igExit(i, g), [c, t] = igCheck(i, g), route = i[g.toLowerCase()] || '';
+  let cc = '', ccBad = false, ccTip = '';
+  if (g === 'IG' && igSet(i.igcc)) { cc = 'seen in ' + i.igcc; ccBad = i.igcc === 'IR'; ccTip = 'the country Instagram places the users of this server in'; }
+  if (g === 'GOOGLE' && igSet(i.gdom)) {
+    const want = igGDom(s.country); cc = 'google.' + i.gdom; ccBad = !!want && i.gdom !== want;
+    ccTip = 'the Google country of the users of this server' + (want ? ' (should be .' + want + ', the server\'s own country)' : '');
+  }
+  const gcc = g === 'GOOGLE' && /^warp/.test(route) && igSet(i.gcc) && i.gcc !== 'PROXY' ? `<span class="faint" title="the country Google sees for its current WARP" data-notr>${esc(i.gcc)}</span>` : '';
+  return `<div class="igst-tile ${c}"><div class="igst-h"><span>${g === 'IG' ? 'Instagram' : 'Gemini · Google'}</span><span class="igst-ck ${c}"><i class="igd ${c}"></i>${esc(t)}</span></div>
+    <div class="igst-v"><b class="${igViaC(g === 'GOOGLE' && i.gcc === 'PROXY' ? 'proxy' : route)}"${/^proxy/.test(route) ? ' data-notr' : ''}>${esc(via)}</b>${gcc}</div>
+    ${more || cc ? `<div class="igst-n">${more ? `<span>${esc(more)}</span>` : ''}${cc ? `<span class="igst-cc${ccBad ? ' bad' : ''}" title="${esc(ccTip)}">${esc(cc)}</span>` : ''}</div>` : ''}</div>`;
+}
+// "warp6:14,direct:1" (Gemini connections per exit in 10 min) -> [[exit, n]]
+const igGusers = (i) => (i.gusers || '').split(',').filter(Boolean).map(x => { const [k, n] = x.split(':'); return [k, +n || 0]; });
+function igProblems(s, i) {
+  const P = [], add = (lvl, text, btn, to, act) => P.push({ lvl, text, btn, to, act });
+  if (i.paused === 'YES') add('warn', "igproxy is paused: every service leaves through the server's own IP.", 'Turn back on', '', 'apply');
+  if (i.ig && i.paused !== 'YES' && (i.router !== 'active' || i.redirect !== 'ON')) add('bad', "The router isn't running: Instagram and Google leave through the server's own IP.", 'Re-apply', '', 'apply');
+  if (['BLOCK', 'AWAY', 'MARK', 'V6', 'SOME'].includes(i.panel)) add('bad', 'The x-ui panel on this server blocks or diverts Google before igproxy sees it.', 'Fix panel', 'tools');
+  if (i.gem === 'FAIL') add('bad', "Gemini doesn't open on the users' route (checked every minute).", 'Tests & diagnosis', 'tools');
+  if (i.igp === 'FAIL') add('bad', "Instagram doesn't open on the users' route (checked every minute).", 'Tests & diagnosis', 'tools');
+  if (i.guard === 'DOWN') add('bad', "The WARP guard isn't running: dead WARPs are not replaced.", 'Settings', 'settings');
+  if (/^warp/.test(i.google || '') && i.gcc === 'PROXY') add('warn', 'No allowed WARP for Google: Google goes through a proxy for now.', 'WARP', 'warp');
+  if (igAccBroken(i)) add('warn', `Instagram logged the test account out (${igAccWhy(i)}): music is not checked on any WARP or proxy.`, 'Test account', 'checks');
+  if (i.ig && i.outdated === '1') add('warn', 'The agent here is old.', 'Install / update agent', '', 'deploy');
+  return P;
+}
+function igStatus(s, i) {
+  if (!i.ig) { // no agent answer: the state and the reason (the tabs below say what to do)
+    const w = IGST[i.state] || [i.state, 'bad'];
+    return `<div class="card igst ${w[1]}"><div class="igst-top"><span class="igst-dot"></span><div class="igst-t"><b>${esc(w[0] || '')}</b>${i.err ? `<small class="mono">${esc(i.err)}</small>` : ''}</div>${igOwner(s)}</div></div>`;
+  }
+  const P = igProblems(s, i), nbad = P.filter(p => p.lvl === 'bad').length;
+  const lvl = i.state === 'CHECKING' ? 'acc' : nbad ? 'bad' : P.length ? 'warn' : 'on';
+  const head = nbad ? (nbad === 1 ? '1 problem' : nbad + ' problems') : i.paused === 'YES' ? 'Paused' : P.length ? 'Works · needs a look' : 'Everything works';
+  const conn = +i.caught || 0, gu = igGusers(i), gsum = gu.reduce((a, x) => a + x[1], 0);
+  const probs = P.length ? `<div class="igst-probs">${P.map(p => `<div class="igst-p ${p.lvl}"><span>${esc(p.text)}</span><button class="btn sm" ${p.act ? `data-igdo="${p.act}"` : `data-igto="${p.to}"`}>${esc(p.btn)}</button></div>`).join('')}</div>` : '';
+  const yn = (ok, on, off) => ok ? `<b class="ok">${on}</b>` : `<b class="bad">${off}</b>`;
+  const row = (k, v, tip) => `<div class="igst-r"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><span class="igst-rv">${v}</span></div>`;
+  const n = igWarpNeed(i);
+  const det = [
+    row('Router', yn(i.router === 'active', 'running', esc(i.router || 'stopped')), 'igproxy-xray: the router that sends each service its way'),
+    row('Traffic sent to the router', yn(i.redirect === 'ON', 'on', 'off')),
+    row('Wide catch', i.wide === 'ON' ? '<b>on</b><small>all web traffic is routed by domain</small>' : '<b>off</b><small>only the listed services</small>'),
+    row('WARP mode', i.mode === 'BALANCE' ? `<b>balance</b>${igSet(i.pool) ? `<small>${esc(String(i.pool).replace('/', ' of '))} in use</small>` : ''}` : `<b>failover</b>${igSet(i.active) ? `<small data-notr>WARP ${esc(i.active)}</small>` : ''}`),
+    row('WARP accounts', `<b data-notr>${+i.warps || 0}</b>${n ? `<small>${n.total} suggested for the 24 h peak</small>` : ''}`),
+    row('Proxies', `<b data-notr>${+i.proxies || 0}</b>`),
+    i.guard !== undefined ? row('WARP guard', i.guard === 'ON' ? '<b class="ok">on</b>' : i.guard === 'DOWN' ? '<b class="bad">not running</b>' : '<b>off</b>', 'replaces a WARP that stops working') : '',
+    row('x-ui panel', i.panel === 'OK' ? '<b class="ok">passes Google</b>' : igSet(i.panel) ? `<b class="bad" data-notr>${esc(i.panel)}</b>` : '<b>no x-ui panel</b>', 'does the x-ui panel on this server pass Google to igproxy untouched'),
+    row('Gemini connections (10 min)', gu.length ? gu.map(([k, c]) => `<b class="igst-gu"><span${/^proxy/.test(k) ? ' data-notr' : ''}>${esc(k === 'direct' ? "Server's own IP" : k === 'ipv6' ? "Server's own IPv6" : /^warp\d+$/.test(k) ? 'WARP ' + k.slice(4) : igViaW(k, i))}</span> <span data-notr>${c}</span></b>`).join('') : '<b>none</b>'),
+    row('Agent', `<b class="mono">${esc(i.sum || '—')}</b>${i.outdated === '1' ? '<small class="bad">old</small>' : '<small>current</small>'}`),
+  ].join('');
+  return `<div class="card igst ${lvl}"><div class="igst-top"><span class="igst-dot"></span><div class="igst-t"><b>${esc(head)}</b>
+      <small><b data-notr>${conn}</b> connections now${gsum ? ` · <b data-notr>${gsum}</b> to Gemini in 10 min` : ''}</small></div>${igOwner(s)}</div>
+    ${probs}<div class="igst-tiles">${igSvcTile(s, i, 'IG')}${igSvcTile(s, i, 'GOOGLE')}</div>
+    <details class="igst-more"><summary>Details</summary><div class="igst-det">${det}</div></details></div>`;
 }
 function igViaOpts(svc, cur, nprox, i) {
   const o = ['proxy']; for (let k = 1; k <= nprox; k++) o.push('proxy' + k); o.push('warp'); if (!IGWIDE.includes(svc)) o.push('warp6', 'ipv6'); o.push('direct');

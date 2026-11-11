@@ -44,6 +44,13 @@ func TestIgParseInfo(t *testing.T) {
 	if inf := igParseInfo(255, "x ig=1 router=active", ""); inf["state"] != "OFFLINE" || inf["ig"] != "" {
 		t.Errorf("unreached server parsed as an answer: %v", inf)
 	}
+	// Google direct: the agent's leftover Google WARP and its country are not shown
+	if inf := igParseInfo(0, "ig=warp6 google=direct gact=7 gcc=US router=active redirect=ON", ""); inf["gact"] != "-" || inf["gcc"] != "-" {
+		t.Errorf("stale Google WARP kept while Google is direct: gact=%s gcc=%s", inf["gact"], inf["gcc"])
+	}
+	if inf := igParseInfo(0, "ig=warp google=warp6 gact=7 gcc=US router=active redirect=ON", ""); inf["gact"] != "7" || inf["gcc"] != "US" {
+		t.Errorf("Google's WARP dropped while Google is on WARP: gact=%s gcc=%s", inf["gact"], inf["gcc"])
+	}
 }
 
 func TestIgBuild(t *testing.T) {
