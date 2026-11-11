@@ -27,6 +27,8 @@ func reverseTCPPort(m *Method, t *Tunnel) (key string, ok bool) {
 		case "tcp", "tcpmux", "stealth", "ws", "wsmux", "wss", "wssmux":
 			return "tunnel_port", true
 		}
+	case "bp_multi": // wsmux; bp_pckfec's pck is raw packets, no TCP dial
+		return "tunnel_port", true
 	case "frp":
 		p := get("protocol")
 		return "bind_port", p == "tcp" || p == "websocket"
