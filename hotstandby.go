@@ -1175,9 +1175,17 @@ done`
 // line reaches the page or the admin chat
 var hsSecretRe = regexp.MustCompile(`(?i)(token|psk|secret|passw(or)?d|license|key)(\S*\s*[=:]\s*)\S+`)
 
+var hsPaqetLossRe = regexp.MustCompile(`BOTTLENECK: (?:packet_loss|kcp_lost)\W*([0-9.]+% retransmission|[0-9]+ lost segments)`)
+
 // hsWhyText makes the reason a down path shows from its unit's state and last logged error.
 func hsWhyText(state, line string) string {
 	line = strings.TrimSpace(hsSecretRe.ReplaceAllString(aiRedact(line), "$1$3***"))
+	// paqet-plus logs its losses as "[ALERT] BOTTLENECK: packet_loss — 82% retransmission"
+	// or "kcp_lost — 894 lost segments": the core runs, but the route drops its frames —
+	// that, not a vague "last error", is what the path shows
+	if m := hsPaqetLossRe.FindStringSubmatch(line); m != nil && (state == "active" || state == "reloading") {
+		return "the route drops most of its raw TCP frames (" + strings.TrimSpace(m[1]) + ") — try other TCP flags in Paqet's settings"
+	}
 	switch state {
 	case "active", "none", "reloading":
 		if line != "" {

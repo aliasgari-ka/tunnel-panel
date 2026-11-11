@@ -45,6 +45,13 @@ var methodPaqet = &Method{
 		{Key: "mtu", Label: "MTU", Type: "number", Default: "1250", Help: "lower it if large packets get dropped", Advanced: true},
 		{Key: "block", Label: "Cipher", Type: "select", Default: "aes-128-gcm", Options: []string{"aes-128-gcm", "aes", "salsa20", "none"},
 			Help: "aes-128-gcm is the only one that also detects tampering", Advanced: true},
+		// the TCP flags on every frame. paqet's own default is PSH+ACK, and seen live (xe108,
+		// Iran→Germany) the route passed the first few PSH frames of each flow and then dropped
+		// the rest (353 sent, 12 arrived; the switcher's checks got no answer); ACK-only,
+		// SYN and SYN+ACK frames all passed in full on the same servers (121 of 121), and any
+		// mix that still holds PSH was cut again.
+		{Key: "flags", Label: "TCP flags", Type: "select", Default: "A", Options: []string{"A", "S", "SA", "PA"},
+			Help: "flags on the raw TCP frames: A (ACK) passes where PA (PSH+ACK, paqet's own default) is cut after a few packets on some Iran routes", Advanced: true},
 		{Key: "fec", Label: "FEC (Reed-Solomon 10+1)", Type: "bool", Default: "false", Help: "for lossy links, at about 10 % more traffic", Advanced: true},
 		// warn: at info the core writes a stats line every few seconds on both servers (700 journal
 		// lines an hour per path, seen live) — a path problem still shows as warn/error
@@ -95,8 +102,14 @@ func buildPaqet(c *buildCtx) (ir, kh SidePlan, err error) {
 	if c.T.Family == "v6" {
 		addrKey = "ipv6"
 	}
+	flags := c.Opt("flags")
+	switch flags {
+	case "A", "S", "SA", "PA":
+	default:
+		return ir, kh, fmt.Errorf("TCP flags %q: one of A, S, SA, PA", flags)
+	}
 	network := func(localPort string) string {
-		return fmt.Sprintf("network:\n  interface: \"@DEV@\"\n  %s:\n    addr: \"@SRC@:%s\"\n    router_mac: \"@MAC@\"\n  pcap:\n    sockbuf: 16777216\n", addrKey, localPort)
+		return fmt.Sprintf("network:\n  interface: \"@DEV@\"\n  %s:\n    addr: \"@SRC@:%s\"\n    router_mac: \"@MAC@\"\n  tcp:\n    local_flag: [\"%[3]s\"]\n    remote_flag: [\"%[3]s\"]\n  pcap:\n    sockbuf: 16777216\n", addrKey, localPort, flags)
 	}
 	logBlock := fmt.Sprintf("log:\n  level: \"%s\"\n", c.Opt("log_level"))
 	irTmpl := "role: \"client\"\n" + logBlock + network("0") + fmt.Sprintf("server:\n  addr: \"%s:%s\"\n", bracket(d.KHPub), port) + transport + "forward:\n" + fwd.String()
