@@ -142,9 +142,13 @@ systemctl restart tunnel-panel
 
 ## Notes & limitations
 
-- The **Backhaul Premium** core is closed source and is **not** bundled or downloaded. Upload it
-  once in *Settings → Helper binaries*; the panel stores it and pushes it to hosts itself. It is
-  amd64 only, and the vendor's own installer (plain HTTP) is avoided.
+- Closed helper binaries are handled by the panel itself; nothing is uploaded by hand. The
+  **Backhaul Premium** core is not bundled: at first need the panel downloads the vendor's build
+  (both vendor mirrors must serve the identical file, and its CPU type is checked) and keeps it.
+  The **TP Tunnel** core (`tpk-agent`, third party) is never in this repository: the panel keeps
+  its copy in `/etc/tunnel-panel/helpers`, carries it in downloaded/Telegram backups, and if it is
+  ever lost copies it back from a server that runs it (pinned sha256, or the same build on two
+  servers).
 - **Golden-GRE**'s relay is built for amd64 and arm64; **Premium**'s core is amd64 (arm64 via the
   vendor build or emulation, see above). Every other method is architecture-independent.
 - **IPv6:** the panel never turns IPv6 forwarding on (the tunnels carry IPv4 inside). Earlier

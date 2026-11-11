@@ -71,7 +71,8 @@ async function boot() {
 async function loadAll() {
   const [methods, servers, tunnels, settings, helpers] = await Promise.all([
     api('/methods'), api('/servers'), api('/tunnels'), api('/settings'), api('/helpers').catch(() => [])]);
-  STATE.helpers = (helpers || []).map(x => x.name); STATE.hostArch = (settings && settings.hostArch) || 'amd64';
+  STATE.helperLost = Object.fromEntries((helpers || []).filter(x => x.source === 'missing').map(x => [x.name, x.note || '']));
+  STATE.hostArch = (settings && settings.hostArch) || 'amd64';
   STATE.methods = methods || []; STATE.tunnels = tunnels || [];
   // a user also gets the admin's servers that carry their tunnels (shared, read-only): they
   // name where a tunnel runs but aren't the user's to manage
@@ -117,13 +118,15 @@ function groupedOptions(ms, opt) {
 }
 // uname -m → release arch, as the server does (goArch)
 const archOf = (u) => /^(aarch64|arm64)$/.test(u || '') ? 'arm64' : /^(x86_64|amd64)$/.test(u || '') ? 'amd64' : (u || '');
-// what a method still needs for this tunnel's two hosts ("" = ready): arch-specific helper binaries
+// why a method's core can't be installed ("" = fine). The panel gets its helper binaries by
+// itself (vendor download, or copied back from a server); only a lost one it couldn't
+// recover has a note.
 function methodMissing(m, t) {
   if (!m || !m.helper) return '';
   const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
   const arches = m.helperArch ? [m.helperArch] : [archOf(ir && ir.arch), fg ? archOf(fg.arch) : STATE.hostArch].filter(Boolean);
-  const miss = [...new Set(arches)].filter(a => !(STATE.helpers || []).includes(m.helper + '-' + a));
-  return miss.map(a => m.helper + '-' + a).join(', ');
+  const lost = [...new Set(arches)].map(a => (STATE.helperLost || {})[m.helper + '-' + a]).filter(x => x !== undefined);
+  return lost.length ? (lost[0] || m.helper + ' is missing on the panel') : '';
 }
 const serverById = (id) => STATE.servers.find(s => s.id === id) || (STATE.shared || []).find(s => s.id === id);
 // the tunnel's own servers when they're shared ones (the pickers list only the user's servers)
@@ -941,7 +944,6 @@ function viewSettings(w) {
       <div class="codebox"><code>${esc(STATE.agentPin)}</code></div>
     </div>
     ${accountFormHTML()}
-    <div class="card pad" id="helperCard"><h3>Helper binaries</h3><div class="muted" style="font-size:13px">Loading…</div></div>
   </div>`);
   w.appendChild(card);
   $('#sf').onsubmit = async (ev) => {
@@ -972,41 +974,6 @@ function viewSettings(w) {
     $('#bkstat', card).textContent = 'Restoring…';
     try { const r = await api('/backup', { data: await f.text() }); alertModal('Restored', r.ok); await loadAll(); renderView(); }
     catch (e) { $('#bkstat', card).textContent = ''; alertModal('Restore failed', e.message); }
-  };
-  loadHelpers($('#helperCard', card));
-}
-
-async function loadHelpers(card) {
-  let list = [];
-  try { list = await api('/helpers'); } catch (e) {}
-  card.innerHTML = `<h3>Helper binaries</h3>
-    <p class="muted" style="font-size:13px;margin:6px 0">Closed binaries the panel uploads to hosts (e.g. the Backhaul Premium core). Upload one per architecture your servers use: <span class="mono">-amd64</span> for x86 servers, <span class="mono">-arm64</span> for ARM servers. A vendor <span class="mono">.tar.gz</span> is unpacked automatically and the architecture is checked. This panel host is <b class="mono">${esc(STATE.hostArch || '')}</b>.</p>
-    <table class="tbl"><thead><tr><th>name</th><th>source</th><th>size</th></tr></thead><tbody>
-    ${list.map(x => `<tr><td class="mono">${esc(x.name)}</td><td>${esc(x.source)}</td><td>${(x.size / 1048576).toFixed(1)} MB</td></tr>`).join('') || '<tr><td colspan=3 class="muted">none</td></tr>'}
-    </tbody></table>
-    <div class="actions" style="margin-top:12px;align-items:center"><span class="muted" style="font-size:12.5px">Backhaul Premium from the vendor:</span>
-      <button class="btn sm" data-fetch="backhaul_premium-amd64">⬇ amd64</button><button class="btn sm" data-fetch="backhaul_premium-arm64">⬇ arm64</button>
-      <span class="faint" style="font-size:11.5px">plain HTTP like the vendor's installer; both mirrors are compared</span></div>
-    <div class="actions" style="margin-top:12px">
-      <input type="text" id="hname" class="inp mono" placeholder="backhaul_premium-amd64" style="flex:1">
-      <input type="file" id="hfile" hidden><button class="btn" id="hpick">Choose file</button>
-      <button class="btn pri" id="hup" disabled>Upload</button>
-    </div><div class="faint" id="hstat" style="font-size:12px;margin-top:6px"></div>`;
-  $$('[data-fetch]', card).forEach(b => b.onclick = () => fetchHelper(b.dataset.fetch, b, () => loadHelpers(card)));
-  const file = $('#hfile', card); let chosen = null;
-  $('#hpick', card).onclick = () => file.click();
-  file.onchange = () => { chosen = file.files[0]; if (chosen) { $('#hstat', card).textContent = chosen.name + ' (' + (chosen.size / 1048576).toFixed(1) + ' MB)'; $('#hup', card).disabled = false; if (!$('#hname', card).value) $('#hname', card).value = chosen.name.replace(/\.(tar\.gz|tgz)$/i, '').replace(/_(amd64|arm64)$/i, '-$1').replace(/[^a-z0-9_.-]/gi, '').toLowerCase(); } };
-  $('#hup', card).onclick = async () => {
-    const name = $('#hname', card).value.trim();
-    if (!chosen || !/^[a-z0-9_.-]+-(amd64|arm64)$/.test(name)) { alertModal('Name', 'Name must look like backhaul_premium-amd64 (…-amd64 or …-arm64).'); return; }
-    $('#hup', card).disabled = true; $('#hstat', card).textContent = 'Uploading…';
-    try {
-      const r = await fetch('/api/helpers/upload?name=' + encodeURIComponent(name), { method: 'POST', headers: { 'X-TP-Upload': '1' }, body: chosen });
-      if (!r.ok) { const txt = await r.text(); let msg = txt; try { msg = JSON.parse(txt).error || txt; } catch (e) {} throw new Error(msg || 'HTTP ' + r.status); }
-      const j = await r.json().catch(() => ({}));
-      if (j.note) alertModal('Uploaded', j.note); else toast('Uploaded');
-      loadHelpers(card);
-    } catch (e) { alertModal('Upload failed', e.message); $('#hup', card).disabled = false; }
   };
 }
 
@@ -1693,7 +1660,7 @@ function manageTunnel(t) {
   const pick = () => { const [mid, fam] = selEl.value.split('|'); return { mid, fam, x: STATE.methods.find(y => y.id === mid) }; };
   // the family switch fills the list with that family's methods (keeping the method when it exists there too)
   const fill = (fam, want) => {
-    selEl.innerHTML = groupedOptions(choices.filter(c => c.fam === fam).map(c => c.m), x => { const v = `${x.id}|${fam}`; return `<option value="${v}"${x.id === want ? ' selected' : ''}>${esc(x.title)} · ${esc(x.encrypt)}${methodMissing(x, t) ? ' ⚠ needs upload' : ''}${x.id === t.active && fam === t.family ? ' ✓ running' : ''}</option>`; });
+    selEl.innerHTML = groupedOptions(choices.filter(c => c.fam === fam).map(c => c.m), x => { const v = `${x.id}|${fam}`; return `<option value="${v}"${x.id === want ? ' selected' : ''}>${esc(x.title)} · ${esc(x.encrypt)}${methodMissing(x, t) ? ' ⚠ core missing' : ''}${x.id === t.active && fam === t.family ? ' ✓ running' : ''}</option>`; });
     $$('[data-fams] button', m).forEach(b => b.classList.toggle('on', b.dataset.f === fam));
   };
   fill(sel.split('|')[1] || t.family, sel.split('|')[0]);
@@ -1704,10 +1671,7 @@ function manageTunnel(t) {
     const miss = methodMissing(x, t);
     warnEl.hidden = !miss;
     if (miss) {
-      warnEl.innerHTML = `⚠ This method needs <b class="mono">${esc(miss)}</b> for this tunnel's servers.
-        ${x.helper === 'backhaul_premium' ? miss.split(', ').map(n => `<button class="btn sm" data-fetch="${esc(n)}">⬇ Fetch ${esc(n)} from the vendor</button>`).join(' ') + ' or ' : ''}upload it under <a href="#" data-goset>Settings → Helper binaries</a>.`;
-      $$('[data-fetch]', warnEl).forEach(b => b.onclick = () => fetchHelper(b.dataset.fetch, b, () => { m.remove(); manageTunnel(t); }));
-      const gs = $('[data-goset]', warnEl); if (gs) gs.onclick = (e) => { e.preventDefault(); m.remove(); STATE.view = 'settings'; paintNav(); renderView(); };
+      warnEl.textContent = '⚠ ' + miss;
     }
     applyBtn.textContent = (t.active === mid && t.family === fam) ? '↻ Re-apply' : (t.active ? `⇄ Switch to this (${famName(fam)})` : `▶ Start (${famName(fam)})`);
   };
@@ -1722,17 +1686,6 @@ function manageTunnel(t) {
   on('[data-trace]', () => { m.remove(); tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'); });
   on('[data-editt]', () => { m.remove(); tunnelModal(t); });
   on('[data-x]', () => m.remove());
-}
-// Download a vendor helper (Backhaul Premium core) on the panel host.
-async function fetchHelper(name, btn, done) {
-  const o = btn.textContent; btn.disabled = true; btn.textContent = 'Downloading…';
-  try {
-    const r = await api('/helpers/fetch', { Name: name });
-    await loadAll();
-    alertModal('Downloaded ' + name, `${(r.size / 1048576).toFixed(1)} MB from ${r.source}\nsha256 ${r.sha256}\n${r.note}`);
-    if (done) done();
-  } catch (e) { alertModal('Download failed', e.message + '\n\nYou can also download it yourself and upload it under Settings → Helper binaries.'); }
-  btn.disabled = false; btn.textContent = o;
 }
 // A tunnel runs one job at a time. When another one is still going, offer to watch or cancel it.
 function busyOrError(t, e) {

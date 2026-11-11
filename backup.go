@@ -28,6 +28,21 @@ func (a *App) backupJSON() ([]byte, error) {
 	return out, err
 }
 
+// backupFileJSON is the backup that leaves the panel host (download, Telegram): the state
+// plus the helpers nobody can download again (tpk-agent), so a new panel gets them back.
+func (a *App) backupFileJSON() ([]byte, error) {
+	var out []byte
+	var err error
+	hs := backupHelpers()
+	a.store.View(func(st *State) {
+		out, err = json.MarshalIndent(struct {
+			*State
+			HelperFiles map[string][]byte `json:"helperFiles,omitempty"`
+		}{st, hs}, "", "  ")
+	})
+	return out, err
+}
+
 func backupName(t time.Time) string {
 	return "tunnel-panel-backup-" + t.In(tehran).Format("2006-01-02-150405") + ".json"
 }
@@ -100,7 +115,7 @@ func (a *App) autoBackup() {
 				a.botMu.Lock()
 				bot := a.bot
 				a.botMu.Unlock()
-				if data, err := os.ReadFile(p); err == nil && bot != nil {
+				if data, err := a.backupFileJSON(); err == nil && bot != nil && p != "" {
 					bot.sendBackup(data, "💾 daily backup")
 				}
 			}
@@ -136,7 +151,16 @@ func (a *App) restoreBackup(data []byte) (string, error) {
 		dropHost(s.ID)
 	}
 	a.restartBot()
-	return fmt.Sprintf("restored: %d servers, %d tunnels (the state before was saved in %s)", len(st.Servers), len(st.Tunnels), a.backupDir()), nil
+	var extra struct {
+		HelperFiles map[string][]byte `json:"helperFiles"`
+	}
+	note := ""
+	if json.Unmarshal(data, &extra) == nil {
+		if got := restoreHelpers(extra.HelperFiles); len(got) > 0 {
+			note = "; helpers restored: " + strings.Join(got, ", ")
+		}
+	}
+	return fmt.Sprintf("restored: %d servers, %d tunnels (the state before was saved in %s)%s", len(st.Servers), len(st.Tunnels), a.backupDir(), note), nil
 }
 
 // replace swaps the whole state (after a restore) and saves it.
@@ -180,7 +204,7 @@ func (s *Server2) backup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"ok": msg})
 		return
 	}
-	data, err := s.app.backupJSON()
+	data, err := s.app.backupFileJSON()
 	if err != nil {
 		httpErr(w, 500, err.Error())
 		return

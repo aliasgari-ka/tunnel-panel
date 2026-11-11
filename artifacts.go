@@ -52,7 +52,7 @@ func hostArch(ctx context.Context, h Host) (string, error) {
 // ensureArtifact returns the bytes for an artifact built for arch, fetching into the cache if needed.
 func ensureArtifact(ctx context.Context, j *Job, a Artifact, arch string) ([]byte, error) {
 	if a.Asset != "" {
-		return helperBytes(a.Asset, arch)
+		return ensureHelper(ctx, jobLogf(j), a.Asset, arch)
 	}
 	fetchMu.Lock()
 	defer fetchMu.Unlock()
@@ -95,16 +95,20 @@ func helperBytes(name, arch string) ([]byte, error) {
 		if b, err := get(); err == nil && len(b) > 0 {
 			// a v1.x Premium core (old [server]/[client] format) can't run the v2 method
 			if name == "backhaul_premium" && !bytes.Contains(b, []byte("anytls")) {
-				return nil, fmt.Errorf("%s is a Backhaul Premium v1.x core (it can't talk to v2): use the \"Backhaul Premium v1 (legacy)\" method on both servers, or upload a v2 core", file)
+				return nil, fmt.Errorf("%s is a Backhaul Premium v1.x core (it can't talk to v2)", file)
 			}
 			return b, nil
 		}
 	}
-	hint := ""
-	if name == "backhaul_premium" {
-		hint = fmt.Sprintf(" (the vendor's backhaul_premium_%s.tar.gz can be uploaded as is)", arch)
+	return nil, fmt.Errorf("helper %s is not available for %s", name, arch)
+}
+
+// jobLogf logs into j (nil-safe).
+func jobLogf(j *Job) func(string, ...any) {
+	if j == nil {
+		return func(string, ...any) {}
 	}
-	return nil, fmt.Errorf("helper %s is not available for %s — upload it as %s-%s under Settings → Helper binaries%s", name, arch, name, arch, hint)
+	return func(f string, a ...any) { j.log("[helpers] "+f, a...) }
 }
 
 var dataDir = "/etc/tunnel-panel"

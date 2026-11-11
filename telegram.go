@@ -1120,7 +1120,7 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		b.sendMsg(chat, b.benchHistoryText(sc), "")
 		return
 	case "home:bk":
-		if data, err := b.app.backupJSON(); err == nil {
+		if data, err := b.app.backupFileJSON(); err == nil {
 			if err := b.sendDocument(chat, backupName(time.Now()), data, "💾 backup — keep it private: it holds the servers' SSH passwords/keys and the tunnels' secrets"); err != nil {
 				b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
 			}
