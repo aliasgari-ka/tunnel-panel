@@ -431,32 +431,19 @@ func igBuild(a string, p map[string]any) (igCmd, error) {
 		}
 		return igCmd{"add site " + site, args, "", 120}, nil
 	case "set":
-		k := g("key")
-		if k == "gcountries" { // Google's allowed WARP countries (ISO codes)
-			v := strings.ToUpper(strings.Join(strings.FieldsFunc(g("val"), func(r rune) bool { return r == ' ' || r == ',' || r == '\t' }), " "))
-			if !igCC.MatchString(v) {
-				return igCmd{}, errors.New("country list: two-letter codes with spaces, like US GB DE")
-			}
-			return igCmd{"Google countries: " + v, []string{"set", "gcountries", v}, "", 120}, nil
+		// the same checks as the Settings tab's save (igOptVal: the agent's own limits, Persian digits)
+		k, v := g("key"), g("val")
+		if strings.EqualFold(strings.TrimSpace(v), "toggle") && igOptSwitch[k] {
+			return igCmd{"set " + k + " toggle", []string{"set", k, "toggle"}, "", 180}, nil
 		}
-		v := strings.ToLower(g("val"))
-		var rx *regexp.Regexp
-		switch k {
-		case "gwarps":
-			rx = regexp.MustCompile(`^[0-9]$`)
-		case "minspeed", "minwarps", "grotate", "musiccheck":
-			rx = regexp.MustCompile(`^[0-9]{1,5}$`)
-		case "autokey", "geosite", "gspread", "warpauto", "gall", "guard", "kwg":
-			rx = regexp.MustCompile(`^(on|off|toggle)$`)
-		case "mode":
-			rx = regexp.MustCompile(`^(balance|failover|toggle)$`)
-		default:
-			return igCmd{}, errors.New("bad setting")
+		val, err := igOptVal(k, v)
+		if err != nil {
+			return igCmd{}, err
 		}
-		if !rx.MatchString(v) {
-			return igCmd{}, fmt.Errorf("bad value for %s: %q", k, v)
+		if k == "gcountries" {
+			return igCmd{"Google countries: " + val, []string{"set", "gcountries", val}, "", 120}, nil
 		}
-		return igCmd{"set " + k + " " + v, []string{"set", k, v}, "", 180}, nil
+		return igCmd{"set " + k + " " + val, []string{"set", k, val}, "", 180}, nil
 	case "speedtest":
 		t := g("target")
 		if t == "" {
