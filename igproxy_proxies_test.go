@@ -321,3 +321,29 @@ func TestIgProxyAddEveryServer(t *testing.T) {
 		t.Errorf("ali's all: %s", w.Body)
 	}
 }
+
+// "Fresh Google IP everywhere": the agent answers 0 whether Google moved or not, and the job
+// read "finished" either way; the summary names each server's outcome and the job fails when a
+// server where Google is on WARP did not move.
+func TestIgRotateSummary(t *testing.T) {
+	var r igRotTally
+	r.add("de", 0, "  Google now uses WARP 3 (fresh exit IP 203.0.113.7) - the old IP's connections were reset")
+	r.add("nl", 0, "  no other WARP works + opens Gemini now - Google stays on WARP 2")
+	r.add("fi", 0, "  Google is not on WARP here (or gspread is ON)")
+	r.add("us", 255, "dial tcp: i/o timeout")
+	got := strings.Join(r.lines(), "\n")
+	for _, w := range []string{"fresh IP: 1 (de)", "not moved - no other WARP opens Gemini there now: 1 (nl)", "nothing to move): 1 (fi)", "error: 1 (us)"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("summary lacks %q:\n%s", w, got)
+		}
+	}
+	if r.ok() {
+		t.Error("a server that did not move counts as done")
+	}
+	var all igRotTally
+	all.add("de", 0, "Google now uses WARP 3 (fresh exit IP x)")
+	all.add("fi", 0, "Google is not on WARP here")
+	if !all.ok() {
+		t.Error("moved + not-on-WARP is a success")
+	}
+}

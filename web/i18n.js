@@ -1174,6 +1174,11 @@ window.TP_FA = {
 "use only this proxy now: they move to all the other proxies.": "الان فقط از همین پراکسی استفاده می‌کنند: به همه پراکسی‌های دیگر منتقل می‌شوند.",
 "Proxy 1 is Google's fallback: the next proxy takes its place.": "پراکسی ۱ جایگزین موقت گوگل است: پراکسی بعدی جایش را می‌گیرد.",
 "✓ read — the boxes below are filled": "✓ خوانده شد — کادرهای پایین پر شدند",
+"Not tested yet": "هنوز تست نشده",
+"Not working": "کار نمی‌کند",
+"When users complain about Gemini: on each server where Google goes through WARP, it moves to a fresh WARP IP now. The summary at the end says where it moved and where not.": "وقتی کاربران از Gemini شکایت دارند: روی هر سروری که Google از WARP می‌رود، همین حالا به یک IP تازه WARP منتقل می‌شود. خلاصهٔ آخر کار می‌گوید کجا منتقل شد و کجا نه.",
+"Move Google to a fresh WARP IP on every server in view": "Google روی همه سرورهای نمایش‌داده‌شده به یک IP تازه WARP برود",
+"Gemini chats open on the old IPs are cut and reconnect on the new one. Servers where Google is not on WARP are left as they are.": "چت‌های باز Gemini روی IPهای قبلی قطع می‌شوند و روی IP تازه وصل می‌شوند. سرورهایی که Google در آن‌ها روی WARP نیست دست نمی‌خورند.",
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title

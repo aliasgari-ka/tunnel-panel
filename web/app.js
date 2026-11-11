@@ -2831,27 +2831,30 @@ function igpxTab() {
   if (IGPX.srv !== IG.cur.id) { IGPX.open = false; IGPX.res = null; IGPX.form = {}; IGPX.ferr = ''; igpxLoad(); return; }
   igpxDraw();
 }
+// a proxy as a row of the WARP tab's kind (.wrow: number, state line, details line, Test + ⋯)
 function igpxRow(r, i) {
   const t = r.test, busy = IGPX.busy[r.n] || IGPX.busy.all;
-  const st = busy ? ['s-run', 'testing…'] : r.bad ? ['s-warn', 'Instagram rejects its IP'] : !t ? ['s-off', 'not tested yet'] : t.ok ? ['s-ok', 'working'] : ['s-bad', 'not working'];
+  const st = busy ? ['Testing…', 'idle', ''] : r.bad ? ['Instagram rejects its IP', 'warn', 'bad'] : !t ? ['Not tested yet', 'idle', ''] : t.ok ? ['Working', 'ok', 'ok'] : ['Not working', 'bad', 'bad'];
   const uses = igpxUses(i, r);
-  const facts = [];
+  const facts = [`<span class="mono" dir="ltr" data-notr>${esc(r.host)}:${esc(r.port)}</span>`];
+  if (r.user) facts.push(`<span class="mono" dir="ltr" data-notr title="user (shortened)">👤 ${esc(r.user)}</span>`);
   if (t && t.ok && !busy) {
-    if (t.loc) facts.push(`<span class="mono" data-notr title="the country the internet sees">${esc(t.loc)}</span>`);
-    if (t.ip) facts.push(`<span class="mono" dir="ltr" data-notr title="exit IP">${esc(t.ip)}</span>`);
+    if (t.ip) facts.push(`<span title="exit IP and the country the internet sees"><span class="mono" dir="ltr" data-notr>${t.loc ? esc(t.loc) + ' · ' : ''}${esc(t.ip)}</span></span>`);
     facts.push(t.ms ? `<span title="time to Instagram through this proxy">Instagram <b class="mono" dir="ltr">${+t.ms} ms</b></span>` : '<span class="bad">Instagram doesn\'t answer</span>');
-    facts.push(t.google ? '<span>Google ✓</span>' : '<span class="bad">Google ✕</span>');
+    facts.push(t.google ? '<span class="good">Google ✓</span>' : '<span class="bad">Google ✕</span>');
   }
-  if (r.music && !busy) facts.push(`<span title="the agent's last Instagram music test through it">${r.music === 'ok' ? 'music ✓' : 'music ✕'}</span>`);
+  if (r.music && !busy) facts.push(r.music === 'ok' ? '<span class="good" title="the agent\'s last Instagram music test through it">music OK</span>' : '<span class="bad" title="the agent\'s last Instagram music test through it">no music</span>');
   if (t && !busy) facts.push(`<span class="faint">tested <span>${esc(ago(t.at))}</span></span>`);
-  const useTxt = (u) => `<span class="igx-use ${u[1]}" title="${u[1] === 'only' ? 'only this proxy' : u[1] === 'pool' ? 'with the other working proxies (fastest first)' : 'until a WARP in an allowed country is found'}">${esc(IGSV[u[0]])}${u[1] === 'only' ? ' · only this one' : u[1] === 'fallback' ? ' · fallback' : ''}</span>`;
-  const menu = ['IG', 'GOOGLE'].filter(g => i[g.toLowerCase()] !== 'proxy' + r.n).map(g => `<button data-use="${g}">Use only this one for ${esc(IGSV[g])}</button>`).join('')
-    + `<button data-copy>Copy address</button><button class="danger" data-del>Delete…</button>`;
-  return `<div class="igx-row${busy ? ' busy' : ''}" data-k="${esc(r.key)}"><span class="igx-dot ${st[0]}" aria-hidden="true"></span>
-    <div class="igx-main"><div class="igx-title"><span class="igx-n">${+r.n}</span><span class="chip">${igpxType(r.type)}</span><span class="mono igx-addr" dir="ltr" data-notr>${esc(r.host)}:${esc(r.port)}</span>${r.user ? `<span class="mono faint igx-user" dir="ltr" data-notr title="user (shortened)">👤 ${esc(r.user)}</span>` : ''}</div>
-    <div class="igx-sub"><span class="igx-st ${st[0]}">${st[1]}</span>${facts.join('')}</div>
-    ${uses.length ? `<div class="igx-uses"><span class="faint">in use for</span>${uses.map(useTxt).join('')}</div>` : ''}</div>
-    <div class="igx-act"><button class="btn sm" data-test ${busy ? 'disabled' : ''}>Test</button><details class="igx-more"><summary class="btn sm" aria-label="More actions" title="More actions">⋯</summary><div class="igx-menu">${menu}</div></details></div></div>`;
+  const roles = uses.map(u => `<span class="chip fo" title="${u[1] === 'only' ? 'only this proxy' : u[1] === 'pool' ? 'with the other working proxies (fastest first)' : 'until a WARP in an allowed country is found'}">${esc(IGSV[u[0]])}${u[1] === 'only' ? ' · only this one' : u[1] === 'fallback' ? ' · fallback' : ''}</span>`).join('');
+  const menu = moreMenu([
+    ...['IG', 'GOOGLE'].filter(g => i[g.toLowerCase()] !== 'proxy' + r.n).map(g => ({ label: 'Use only this one for ' + esc(IGSV[g]), attr: `data-use="${g}"` })),
+    { label: 'Copy address', attr: 'data-copy' },
+    { label: 'Delete proxy ' + (+r.n) + '…', attr: 'data-del', danger: true }]);
+  return `<div class="wrow${uses.length ? ' on' : ''}${t && !t.ok && !busy ? ' dim' : ''}${busy ? ' busy' : ''}" data-k="${esc(r.key)}">
+    <div class="wn mono">${+r.n}</div>
+    <div class="wb"><div class="w1"><span class="igd ${st[2]}"></span><b class="wst ${st[1]}">${st[0]}</b><span class="tag">${igpxType(r.type)}</span>${roles}</div>
+      <div class="w2">${facts.join('')}</div></div>
+    <div class="wa p"><button class="btn sm" data-test ${busy ? 'disabled' : ''}>Test</button>${menu}</div></div>`;
 }
 function igpxDraw() {
   const box = $('#igtab'); if (!box || !IG.cur || IG.tab !== 'proxies' || IGPX.srv !== IG.cur.id) return;
@@ -2863,7 +2866,7 @@ function igpxDraw() {
   if (IGPX.err && !rows) list = `<div class="igx-empty"><div class="big">⚠️</div><b>Couldn't read the proxies</b><p class="muted mono" data-notr>${esc(IGPX.err)}</p><button class="btn" id="igxretry">Try again</button></div>`;
   else if (!rows) list = '<div class="skel" style="height:64px"></div><div class="skel" style="height:64px;margin-top:6px"></div>';
   else if (!n) list = `<div class="igx-empty"><div class="big">🧦</div><b>No proxies on this server yet</b><p class="muted">With a proxy here, Instagram, Google and the others can go out through it (Routes tab). Each proxy is tested before it is added.</p></div>`;
-  else list = `<div class="igx-list">${rows.map(r => igpxRow(r, i)).join('')}</div>`;
+  else list = `<div class="wlist">${rows.map(r => igpxRow(r, i)).join('')}</div>`;
   const others = igList().length;
   const f = IGPX.form;
   box.innerHTML = `<div class="card pad sec igx"><h3>Proxies ${n ? `<span class="chip">${n}</span>` : ''}<span class="grow"></span>
@@ -2933,22 +2936,20 @@ function igpxWire(box) {
       if (all) igLoad(true);
     } catch (e) { IGPX.adding = false; IGPX.ferr = e.message; igpxDraw(); }
   });
-  // one menu open at a time (a click elsewhere closes it: the listener below)
-  $$('.igx-more', box).forEach(d => d.addEventListener('toggle', () => { if (d.open) $$('.igx-more[open]', box).forEach(o => { if (o !== d) o.open = false; }); }));
-  $$('.igx-row', box).forEach(row => {
+  $$('.wrow', box).forEach(row => {
     const r = (IGPX.rows || []).find(x => x.key === row.dataset.k); if (!r) return;
     const name = `${igpxType(r.type)} ${r.host}:${r.port}`;
     $('[data-test]', row).onclick = () => igpxLoad(true, r.n);
-    $('[data-copy]', row).onclick = (e) => { copy(r.host + ':' + r.port, e.target); $('.igx-more', row).open = false; };
+    $('[data-copy]', row).onclick = (e) => { copy(r.host + ':' + r.port, e.target); };
     $$('[data-use]', row).forEach(b => b.onclick = async () => {
-      const g = b.dataset.use; $('.igx-more', row).open = false;
+      const g = b.dataset.use;
       if (!confirm(`${IGSV[g]} goes out only through ${name} from now on (the router reloads for a few seconds). Go on?`)) return;
       row.classList.add('busy');
       try { await api('/igproxy/proxy/cmd', { srv: s.id, key: r.key, do: 'use', svc: g }); toast(`${IGSV[g]} → ${name}`); } catch (e) { toast(e.message); }
       await igpxInfo(); igpxLoad();
     });
     $('[data-del]', row).onclick = async () => {
-      $('.igx-more', row).open = false;
+     
       const u = igpxUses(IG.cur.info || {}, r).filter(x => x[1] === 'only').map(x => IGSV[x[0]]);
       if (!confirm(`Delete ${name} from ${s.name}?` + (u.length ? `\n\n${u.join(', ')} use only this proxy now: they move to all the other proxies.` : '') + (r.n === 1 ? '\n\nProxy 1 is Google\'s fallback: the next proxy takes its place.' : ''))) return;
       row.classList.add('busy');
@@ -2957,7 +2958,6 @@ function igpxWire(box) {
     };
   });
 }
-document.addEventListener('click', (e) => { if (!e.target.closest('.igx-more')) $$('.igx-more[open]').forEach(d => { d.open = false; }); });
 
 // ---- route table: every server × service
 function igMatrix(box) {
@@ -3000,7 +3000,7 @@ function igBulk(box) {
   const card = (i, t, d, id) => `<div class="card pad"><h3 style="margin:0 0 6px">${i} ${t}</h3><p class="muted" style="margin:0 0 12px;font-size:13px">${d}</p><button class="btn pri" data-b="${id}">Run</button></div>`;
   box.innerHTML = `<p class="muted" style="margin-top:0">On every server in view, one after the other.</p><div class="grid cards">
     ${card('🧪', 'Test all', 'Tests every proxy and WARP of every server.', 'test')}
-    ${card('🔄', 'Fresh Google IP everywhere', 'When users complain about Gemini: Google moves to a fresh WARP IP on each server now.', 'rotate')}
+    ${card('🔄', 'Fresh Google IP everywhere', 'When users complain about Gemini: on each server where Google goes through WARP, it moves to a fresh WARP IP now. The summary at the end says where it moved and where not.', 'rotate')}
     ${card('⬆️', 'Update old agents', 'Installs the current agent where an old one runs (a few seconds per server).', 'deploy')}
     ${card('🛠', 'Fix panels', 'Where the x-ui panel diverts Google, adds one rule at the top of its routing.', 'fix')}
     ${card('📜', 'Logs of all', 'The last 40 igproxy log lines of each server.', 'logs')}
@@ -3008,7 +3008,7 @@ function igBulk(box) {
   const nr = { refresh: false };
   const B = {
     test: () => igAct({ srv: 'all', action: 'status_short' }, null, nr),
-    rotate: () => igAct({ srv: 'all', action: 'google_rotate' }),
+    rotate: () => igAct({ srv: 'all', action: 'google_rotate' }, `Move Google to a fresh WARP IP on every server in view (${igList().length}) now? Gemini chats open on the old IPs are cut and reconnect on the new one. Servers where Google is not on WARP are left as they are.`),
     deploy: () => igAct({ srv: 'all', action: 'deploy', old: 1 }, 'Update the agent on the servers with an old one?'),
     fix: () => { const bad = igList().filter(s => s.info.state === 'PANEL'); if (!bad.length) return toast('Every panel lets Google reach igproxy — nothing to fix');
       igAct({ srv: bad.map(s => s.id), action: 'panel_fix' }, bad.map(s => s.name).join(', ') + ' — fix the panel on these? Each panel\'s Xray restarts for 2-3 seconds.'); },

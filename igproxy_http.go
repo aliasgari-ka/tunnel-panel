@@ -201,6 +201,10 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 		}
 		id, err = s.app.igJob(user, title, time.Duration(len(tl))*time.Duration(c.tmo+40)*time.Second, func(ctx context.Context, out func(string)) bool {
 			ok := true
+			var rot *igRotTally
+			if act == "google_rotate" {
+				rot = &igRotTally{}
+			}
 			for _, x := range tl {
 				if ctx.Err() != nil {
 					break
@@ -210,16 +214,26 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 				} else {
 					out("-> " + igLabel(x) + ": igproxy " + strings.Join(c.args, " "))
 				}
-				if rc, _ := s.app.igRun(ctx, x, c.args, c.input, c.tmo, out); rc != 0 {
+				rc, said := s.app.igRun(ctx, x, c.args, c.input, c.tmo, out)
+				if rc != 0 {
 					ok = false
 					if len(tl) == 1 && rc != 255 {
 						out(fmt.Sprintf("(exit code %d)", rc))
 					}
 				}
+				if rot != nil {
+					rot.add(igLabel(x), rc, said)
+				}
 				s.app.igForget(x.ID)
 				if len(tl) > 1 {
 					out("")
 				}
+			}
+			if rot != nil {
+				for _, l := range rot.lines() {
+					out(l)
+				}
+				ok = ok && rot.ok()
 			}
 			return ok
 		})
@@ -465,4 +479,39 @@ func (s *Server2) igRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"job": id})
+}
+
+// igRotTally sums up "Google -> fresh IP" over servers. The agent answers 0 whether Google moved
+// or not (not on WARP there, no other WARP opens Gemini), so the job read "finished" while on
+// some servers - or all - nothing had moved; the summary says which servers moved and which not.
+type igRotTally struct{ moved, stayed, off, failed []string }
+
+func (t *igRotTally) add(name string, rc int, said string) {
+	switch {
+	case rc != 0:
+		t.failed = append(t.failed, name)
+	case strings.Contains(said, "Google now uses WARP"):
+		t.moved = append(t.moved, name)
+	case strings.Contains(said, "Google is not on WARP here"):
+		t.off = append(t.off, name)
+	default: // "only WARP n works here", "no other WARP works + opens Gemini now"
+		t.stayed = append(t.stayed, name)
+	}
+}
+
+// ok: every server where Google is on WARP got a fresh IP
+func (t *igRotTally) ok() bool { return len(t.stayed) == 0 && len(t.failed) == 0 }
+
+func (t *igRotTally) lines() []string {
+	l := []string{"== Summary"}
+	add := func(n []string, what string) {
+		if len(n) > 0 {
+			l = append(l, fmt.Sprintf("%s: %d (%s)", what, len(n), strings.Join(n, ", ")))
+		}
+	}
+	add(t.moved, "OK moved to a fresh IP")
+	add(t.stayed, "!! not moved - no other WARP opens Gemini there now")
+	add(t.off, "Google is not on WARP there (nothing to move)")
+	add(t.failed, "!! not reached / error")
+	return l
 }
