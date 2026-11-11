@@ -133,6 +133,8 @@ func main() {
 	go app.serverMonitor()
 	go app.autoBench()
 	go app.autoBackup()
+	helperRecover = app.recoverHelper // a lost tpk-agent comes back from a server that runs it
+	go app.keepHelpers()
 	go app.resWatch()
 	go app.resumeInterrupted()
 	go app.repairAfterUpdate()

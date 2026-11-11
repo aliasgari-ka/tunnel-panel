@@ -132,7 +132,6 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/gbrowser", gb)
 	mux.HandleFunc("/gbrowser/", gb)
 	g("/api/igproxy/gaccount", "admin", s.gemAcctGet)
-	g("/api/helpers/fetch", "admin", s.helperFetch)
 	g("/api/users", "admin", s.users)
 	g("/api/users/delete", "admin", s.userDelete)
 	g("/api/owner", "admin", s.owner)
@@ -1794,6 +1793,9 @@ func (s *Server2) benchResults(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- helper binaries (e.g. the Backhaul Premium core) ----
+// The panel gets them by itself (helpers_auto.go); /api/helpers only tells the UI what is
+// there. /api/helpers/upload stays as an admin-only escape hatch with no UI (e.g. a newer
+// tpk-agent build): nothing else writes a helper by hand.
 
 var helperNameRe = regexp.MustCompile(`^[a-z0-9_.-]+-(amd64|arm64)$`)
 
@@ -1803,6 +1805,7 @@ func (s *Server2) helpers(w http.ResponseWriter, r *http.Request) {
 		Size   int64  `json:"size"`
 		SHA256 string `json:"sha256"`
 		Source string `json:"source"`
+		Note   string `json:"note,omitempty"`
 	}
 	out := []hv{}
 	seen := map[string]bool{}
@@ -1813,7 +1816,7 @@ func (s *Server2) helpers(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			sum := sha256.Sum256(b)
-			out = append(out, hv{e.Name(), int64(len(b)), hex.EncodeToString(sum[:]), "uploaded"})
+			out = append(out, hv{e.Name(), int64(len(b)), hex.EncodeToString(sum[:]), "uploaded", ""})
 			seen[e.Name()] = true
 		}
 	}
@@ -1827,7 +1830,13 @@ func (s *Server2) helpers(w http.ResponseWriter, r *http.Request) {
 				continue // placeholder (not built for this arch) or not a helper
 			}
 			sum := sha256.Sum256(b)
-			out = append(out, hv{e.Name(), int64(len(b)), hex.EncodeToString(sum[:]), "built-in"})
+			out = append(out, hv{e.Name(), int64(len(b)), hex.EncodeToString(sum[:]), "built-in", ""})
+		}
+	}
+	// a helper the panel lost and could not get back by itself: the method shows this line
+	for file := range recoverableHelpers {
+		if v, ok := helperLost.Load(file); ok && !seen[file] {
+			out = append(out, hv{Name: file, Source: "missing", Note: v.(string)})
 		}
 	}
 	writeJSON(w, out)
@@ -1885,6 +1894,8 @@ func (s *Server2) helperUpload(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err.Error())
 		return
 	}
+	recordHelperSums()
+	helperLost.Delete(name)
 	writeJSON(w, map[string]any{"ok": true, "size": n, "name": name, "note": note})
 }
 
@@ -1938,20 +1949,6 @@ func normalizeHelper(path, name string) error {
 		return fmt.Errorf("this binary is for %s but the name says %s — rename it to %s-%s", got, name[strings.LastIndex(name, "-")+1:], name[:strings.LastIndex(name, "-")], got)
 	}
 	return nil
-}
-
-func (s *Server2) helperFetch(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Name string }
-	if err := readJSON(r, &in); err != nil || !helperNameRe.MatchString(in.Name) {
-		httpErr(w, 400, "name must look like backhaul_premium-arm64")
-		return
-	}
-	res, err := fetchVendorHelper(in.Name)
-	if err != nil {
-		httpErr(w, 502, err.Error())
-		return
-	}
-	writeJSON(w, map[string]any{"ok": true, "source": res.Source, "sha256": res.SHA256, "size": res.Size, "note": res.Note})
 }
 
 var (

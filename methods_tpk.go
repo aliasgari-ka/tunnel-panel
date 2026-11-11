@@ -29,8 +29,9 @@ func init() {
 // TP Tunnel / TP Reverse: the tunnel core of the botping panel ("tunpanel" tp-agent 1.20.9,
 // closed source, linux amd64 only; ARM servers run it under qemu-x86_64). Iran is the server: it listens on the tunnel port and on
 // the users' ports; the foreign server dials it and opens the users' connections locally.
-// The binary isn't in this (public) repository: it is uploaded as the helper tpk-agent-amd64
-// (Settings → Helper binaries, or /etc/tunnel-panel/helpers on the panel host). It is named
+// The binary isn't in this (public) repository: the panel keeps it as the helper
+// tpk-agent-amd64 in /etc/tunnel-panel/helpers and recovers it from a server that runs it
+// when it is lost (helpers_auto.go). It is named
 // tpk-agent because the panel's own helper is already called tp-agent.
 const (
 	tpkBin          = "/opt/tpk/tpk-agent"

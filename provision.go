@@ -67,29 +67,23 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 			continue
 		}
 		if err != nil && art.Asset != "" && vendorHelpers[art.Asset] != nil {
-			// no copy on the panel: get the vendor's build for this arch automatically
-			j.log("[%s] %s-%s is not on the panel yet — downloading the vendor's build", label, art.Asset, arch)
-			if res, ferr := fetchVendorHelper(art.Asset + "-" + arch); ferr == nil {
-				j.log("[%s] got %s-%s (%d KB, sha256 %s…, %s)", label, art.Asset, arch, res.Size/1024, res.SHA256[:12], res.Note)
-				data, err = ensureArtifact(ctx, j, art, arch)
-			} else {
-				j.log("[%s] panel cannot reach the vendor (%v) — trying from the server itself", label, ferr)
-				out, rerr := h.Run(ctx, vendorOnHostScript(art.Asset, arch, art.Dest), nil)
-				if rerr == nil {
-					j.log("[%s] %s", label, lastLine(out))
-					continue // installed directly on the host
-				}
-				// last resort: the amd64 core under an x86-64 emulator on this host
-				if art.Asset == "backhaul_premium" && arch != "amd64" {
-					j.log("[%s] no %s core anywhere (%s) — running the amd64 core under emulation", label, arch, lastLine(out))
-					if eerr := premiumEmulated(ctx, j, label, h, art); eerr == nil {
-						continue
-					} else {
-						return fmt.Errorf("%v; emulation fallback failed: %v", err, eerr)
-					}
-				}
-				return fmt.Errorf("%v; the server's own download failed too: %s", err, lastLine(out))
+			// the panel has no copy and couldn't download one (ensureArtifact tried the vendor)
+			j.log("[%s] %v — trying the vendor from the server itself", label, err)
+			out, rerr := h.Run(ctx, vendorOnHostScript(art.Asset, arch, art.Dest), nil)
+			if rerr == nil {
+				j.log("[%s] %s", label, lastLine(out))
+				continue // installed directly on the host
 			}
+			// last resort: the amd64 core under an x86-64 emulator on this host
+			if art.Asset == "backhaul_premium" && arch != "amd64" {
+				j.log("[%s] no %s core anywhere (%s) — running the amd64 core under emulation", label, arch, lastLine(out))
+				if eerr := premiumEmulated(ctx, j, label, h, art); eerr == nil {
+					continue
+				} else {
+					return fmt.Errorf("%v; emulation fallback failed: %v", err, eerr)
+				}
+			}
+			return fmt.Errorf("%v; the server's own download failed too: %s", err, lastLine(out))
 		}
 		if err != nil {
 			return err
@@ -283,7 +277,7 @@ func (a *App) Prepare(srv *Server) (*Job, error) {
 // glibc, so the panel's own x86-64 loader and libc go along as a small sysroot.
 // qemu-user can't set packet-socket options, so Premium's ipx raw mode needs box64.
 func premiumEmulated(ctx context.Context, j *Job, label string, h Host, art Artifact) error {
-	core, err := helperBytes("backhaul_premium", "amd64")
+	core, err := ensureHelper(ctx, jobLogf(j), "backhaul_premium", "amd64")
 	if err != nil {
 		return fmt.Errorf("the amd64 core isn't on the panel either: %w", err)
 	}
@@ -381,7 +375,7 @@ exec "$Q" %[1]s.arm64 "$@"
 // staticAmd64Emulated installs a static amd64 helper (no libc: TP's Go core) on another
 // CPU behind a wrapper that runs it under qemu-x86_64.
 func staticAmd64Emulated(ctx context.Context, j *Job, label string, h Host, art Artifact) error {
-	core, err := helperBytes(art.Asset, "amd64")
+	core, err := ensureHelper(ctx, jobLogf(j), art.Asset, "amd64")
 	if err != nil {
 		return err
 	}
