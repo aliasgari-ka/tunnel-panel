@@ -29,13 +29,18 @@ func (a *App) backupJSON() ([]byte, error) {
 }
 
 func backupName(t time.Time) string {
-	return "tunnel-panel-backup-" + t.In(tehran).Format("2006-01-02-1504") + ".json"
+	return "tunnel-panel-backup-" + t.In(tehran).Format("2006-01-02-150405") + ".json"
 }
 
 func (a *App) backupDir() string { return filepath.Join(filepath.Dir(a.store.path), "backups") }
 
 // saveLocalBackup writes today's backup next to the state and prunes old ones.
-func (a *App) saveLocalBackup() (string, error) {
+func (a *App) saveLocalBackup() (string, error) { return a.saveLocalBackupAs("") }
+
+// saveLocalBackupAs is saveLocalBackup with tag in the name ("-pre-restore"). It never
+// overwrites a file: two restores in one minute replaced the first one's safety copy (the
+// state before both) with the state the first restore had just brought in.
+func (a *App) saveLocalBackupAs(tag string) (string, error) {
 	data, err := a.backupJSON()
 	if err != nil {
 		return "", err
@@ -44,9 +49,29 @@ func (a *App) saveLocalBackup() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	p := filepath.Join(dir, backupName(time.Now()))
-	if err := os.WriteFile(p, data, 0o600); err != nil {
-		return "", err
+	base := strings.TrimSuffix(backupName(time.Now()), ".json") + tag
+	var p string
+	for n := 1; ; n++ {
+		p = filepath.Join(dir, base+".json")
+		if n > 1 {
+			p = filepath.Join(dir, fmt.Sprintf("%s-%d.json", base, n))
+		}
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(err) && n < 100 {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			os.Remove(p)
+			return "", werr
+		}
+		break
 	}
 	ents, _ := filepath.Glob(filepath.Join(dir, "tunnel-panel-backup-*.json"))
 	sort.Strings(ents)
@@ -100,7 +125,7 @@ func (a *App) restoreBackup(data []byte) (string, error) {
 		return "", fmt.Errorf("a job is still running — wait for it to finish, then restore")
 	}
 	// keep what is there now, just in case
-	if _, err := a.saveLocalBackup(); err != nil {
+	if _, err := a.saveLocalBackupAs("-pre-restore"); err != nil {
 		return "", fmt.Errorf("could not back up the current state first: %v", err)
 	}
 	if err := a.store.replace(st); err != nil {
@@ -187,7 +212,8 @@ func (b *Bot) sendDocument(chat, name string, data []byte, caption string) error
 	mw.Close()
 	resp, err := b.client.Post(b.base+"/bot"+b.token+"/sendDocument", mw.FormDataContentType(), &body)
 	if err != nil {
-		return err
+		// a network error quotes the URL, which holds the token: callers send it to the chat
+		return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), b.token, "<token>"))
 	}
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(resp.Body)
@@ -201,18 +227,49 @@ var backupIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,40}$`)
 
 // checkBackup refuses a backup whose values the panel would never have written itself: they
 // end up in pages, file names and scripts.
+// The same checks the forms run (an account's name is its IG backup folder, the shape's
+// interface and the GitHub prefix / FRP version go into root shell scripts, a tunnel's
+// numbers name its interfaces and subnets), and what only the panel itself sets: one id
+// and one number per tunnel and path, method ids it knows.
 func checkBackup(st *State) error {
+	users := map[string]bool{}
+	for _, u := range st.Users {
+		if !validUsername(u.Username) || users[u.Username] {
+			return fmt.Errorf("account name %q", u.Username)
+		}
+		users[u.Username] = true
+	}
+	owner := func(o string) bool { return o == "" || validUsername(o) }
+	if v := strings.TrimSpace(st.Settings.FRPVersion); v != "" && !frpVerRe.MatchString(v) {
+		return fmt.Errorf("settings: FRP version")
+	}
+	if v := strings.TrimSpace(st.Settings.GitHubProxy); v != "" && !ghProxyRe.MatchString(v) {
+		return fmt.Errorf("settings: GitHub download prefix")
+	}
+	st.Settings.FRPVersion, st.Settings.GitHubProxy = strings.TrimSpace(st.Settings.FRPVersion), strings.TrimSpace(st.Settings.GitHubProxy)
+	servers := map[string]bool{}
 	for _, s := range st.Servers {
-		if s == nil || !backupIDRe.MatchString(s.ID) {
+		if s == nil || !backupIDRe.MatchString(s.ID) || servers[s.ID] {
 			return fmt.Errorf("server id")
 		}
+		servers[s.ID] = true
 		if s.Role != "" && s.Role != "iran" && s.Role != "foreign" {
 			return fmt.Errorf("server %s role", s.ID)
 		}
+		if !owner(s.Owner) || (s.Via != "" && !backupIDRe.MatchString(s.Via)) {
+			return fmt.Errorf("server %s owner / jump host", s.ID)
+		}
 	}
+	knownMethod := func(id string) bool { return id == "" || methodByID[id] != nil }
+	tunnels := map[string]bool{}
+	index := map[int]string{} // tunnel and path number -> the tunnel using it
 	for _, t := range st.Tunnels {
-		if t == nil || !backupIDRe.MatchString(t.ID) || (t.ServerID != "" && !backupIDRe.MatchString(t.ServerID)) || (t.ForeignID != "" && !backupIDRe.MatchString(t.ForeignID)) {
+		if t == nil || !backupIDRe.MatchString(t.ID) || tunnels[t.ID] || (t.ServerID != "" && !backupIDRe.MatchString(t.ServerID)) || (t.ForeignID != "" && !backupIDRe.MatchString(t.ForeignID)) {
 			return fmt.Errorf("tunnel id")
+		}
+		tunnels[t.ID] = true
+		if !owner(t.Owner) {
+			return fmt.Errorf("tunnel %s owner", t.ID)
 		}
 		if t.Family == "" {
 			t.Family = "v4" // from before tunnels had a family
@@ -220,15 +277,42 @@ func checkBackup(st *State) error {
 		if t.Family != "v4" && t.Family != "v6" {
 			return fmt.Errorf("tunnel %s family", t.ID)
 		}
-		if t.Index < 1 || t.Index > 249 { // 250 is the speed test's own tunnel (bench.go), torn down on every run
-			return fmt.Errorf("tunnel %s index %d: must be 1-249 (250 is reserved for the speed test)", t.ID, t.Index)
+		// 250 is the speed test's own tunnel (bench.go), torn down on every run
+		nums := []int{t.Index}
+		pathNum := map[int]bool{}
+		for _, p := range t.Paths {
+			if !knownMethod(p.Method) || p.Method == "" || (p.Family != "v4" && p.Family != "v6") {
+				return fmt.Errorf("tunnel %s: hot-standby path %q", t.ID, p.Method)
+			}
+			if pathNum[p.Index] {
+				return fmt.Errorf("tunnel %s: two hot-standby paths use number %d", t.ID, p.Index)
+			}
+			pathNum[p.Index] = true
+			if p.Index != t.Index {
+				nums = append(nums, p.Index)
+			}
 		}
-		if err := validatePorts(t.Ports, nil); t.Ports != "" && err != nil {
+		for _, n := range nums {
+			if n < 1 || n > 249 {
+				return fmt.Errorf("tunnel %s index %d: must be 1-249 (250 is reserved for the speed test)", t.ID, n)
+			}
+			if other, ok := index[n]; ok {
+				return fmt.Errorf("tunnels %s and %s both use number %d", other, t.ID, n)
+			}
+			index[n] = t.ID
+		}
+		pin, _, _ := strings.Cut(t.HSPin, "|")
+		if !knownMethod(t.Active) || !knownMethod(t.Selected) || !knownMethod(t.Applying) || !knownMethod(pin) ||
+			(t.Failover != nil && !knownMethod(t.Failover.Method)) {
+			return fmt.Errorf("tunnel %s: unknown method", t.ID)
+		}
+		if err := validatePorts(t.Ports, nil); err != nil {
 			return fmt.Errorf("tunnel %s ports: %v", t.ID, err)
 		}
 		if err := validateOptions(t.Options); err != nil {
 			return fmt.Errorf("tunnel %s options: %v", t.ID, err)
 		}
+		t.Shape = normalizeShape(t.Shape)
 	}
 	return nil
 }

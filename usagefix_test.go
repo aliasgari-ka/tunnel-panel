@@ -63,7 +63,7 @@ func TestUsagePartReset(t *testing.T) {
 // TestTrafficParts: the scripts' per-part fields reach the stats.
 func TestTrafficParts(t *testing.T) {
 	a := &App{traffic: newTrafficMon()}
-	a.trafficParse("ir", nil, "N 300 30 eth0+eth1 100/10+200/20\nT p1 7 3 ports 5/1+2/2\nT p2 9 9 ports\nT l3 4 4 iface tp3\nT hs 6 6\n")
+	a.trafficParse("ir", []*Tunnel{{ID: "p1"}, {ID: "p2"}, {ID: "l3"}, {ID: "hs"}}, "N 300 30 eth0+eth1 100/10+200/20\nT p1 7 3 ports 5/1+2/2\nT p2 9 9 ports\nT l3 4 4 iface tp3\nT hs 6 6\n")
 	tm := a.traffic
 	for _, c := range []struct {
 		s    *TrafficStat

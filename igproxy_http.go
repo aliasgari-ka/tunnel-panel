@@ -95,7 +95,8 @@ func (s *Server2) igServers(w http.ResponseWriter, r *http.Request) {
 	cands := []cand{}
 	s.app.store.View(func(st *State) {
 		for _, x := range st.Servers {
-			if x.Igproxy || x.Role == "iran" || !visible(user, admin, x.Owner) {
+			// Role "" is an Iran server, as everywhere else (only "foreign" is a foreign one)
+			if x.Igproxy || x.Role != "foreign" || !visible(user, admin, x.Owner) {
 				continue
 			}
 			cands = append(cands, cand{x.ID, x.Name, x.Owner, orStr(x.IPv4, x.IPv6)})
@@ -247,7 +248,7 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "server not found")
 		return
 	}
-	if in.On && x.Role == "iran" { // the page never offers one; the API took it
+	if in.On && x.Role != "foreign" { // the page never offers one; the API took it ("" = iran)
 		httpErr(w, 400, "IG Routing runs on foreign servers only")
 		return
 	}

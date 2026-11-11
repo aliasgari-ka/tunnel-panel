@@ -69,6 +69,9 @@ func (st *igAlertState) igAlertLines(id string, msgs []string, now time.Time) []
 				delete(fail, p)
 				if st.pathBad[id+p] {
 					delete(st.pathBad, id+p)
+					// its cooldown ends with the recovery: a new failure soon after is news too
+					// (held back by the cooldown it was dropped, and never reported at all)
+					delete(st.sent, id+"/path-"+p)
 					out = append(out, "✅ "+p+" works again for the users")
 				}
 			}
@@ -83,6 +86,14 @@ func (st *igAlertState) igAlertLines(id string, msgs []string, now time.Time) []
 				break
 			}
 			st.sent[k] = now
+			// "no music country" and "back in one" end each other: after one is sent, the
+			// other is news at once, not after its cooldown
+			switch r.key {
+			case "igproxy":
+				delete(st.sent, id+"/igback")
+			case "igback":
+				delete(st.sent, id+"/igproxy")
+			}
 			out = append(out, r.icon+" "+clipTo(m, 170))
 			break
 		}
@@ -155,7 +166,7 @@ func igLogParse(out string, since int64) ([]int64, []string) {
 func (a *App) igAlertLoop() {
 	st := &igAlertState{since: map[string]int64{}, sent: map[string]time.Time{}, pathBad: map[string]bool{}}
 	start := time.Now().Add(-igAlertEvery).UnixMicro() // after a panel restart: not the whole old log
-	for {
+	for round := 0; ; round++ {
 		time.Sleep(igAlertEvery)
 		var list []*Server
 		a.store.View(func(s *State) {
@@ -175,10 +186,16 @@ func (a *App) igAlertLoop() {
 		for i, srv := range list {
 			st.mu.Lock()
 			since, ok := st.since[srv.ID]
-			st.mu.Unlock()
 			if !ok {
+				// first seen now: a server added later reads from about this round on, not
+				// from the panel's start (that read hours of old log as news)
 				since = start
+				if round > 0 {
+					since = time.Now().Add(-igAlertEvery).UnixMicro()
+				}
+				st.since[srv.ID] = since
 			}
+			st.mu.Unlock()
 			wg.Add(1)
 			go func(i int, srv *Server, since int64) {
 				defer wg.Done()
@@ -199,8 +216,6 @@ func (a *App) igAlertLoop() {
 			}
 			if n := len(r.ts); n > 0 {
 				st.since[r.srv.ID] = r.ts[n-1]
-			} else if _, ok := st.since[r.srv.ID]; !ok {
-				st.since[r.srv.ID] = start
 			}
 			if lines := st.igAlertLines(r.srv.ID, r.ms, now); len(lines) > 0 {
 				fmt.Fprintf(&b, "\n%s\n  %s\n", igLabel(r.srv), strings.Join(lines, "\n  "))

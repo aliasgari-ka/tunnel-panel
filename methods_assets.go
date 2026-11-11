@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 func init() {
@@ -259,13 +260,23 @@ func goldenConflict(st *State, t *Tunnel) string {
 	if get("facade") != "dns" {
 		return ""
 	}
+	same := func(opts map[string]string) bool {
+		og, _ := resolveOptions(methodGoldenGRE, opts)
+		return og("facade") == "dns" && og("dnsport") == get("dnsport")
+	}
 	for _, o := range st.Tunnels {
-		if o.ID == t.ID || o.Active != "golden" || o.Family != "v4" || o.ServerID != t.ServerID || o.ForeignID != t.ForeignID {
+		// a hot-standby path ("<tunnel>x<index>") of o is o itself, not a second relay
+		if o.ID == t.ID || strings.HasPrefix(t.ID, o.ID+"x") || o.Active == "" || o.ServerID != t.ServerID || o.ForeignID != t.ForeignID {
 			continue
 		}
-		og, _ := resolveOptions(methodGoldenGRE, o.Options["golden"])
-		if og("facade") == "dns" && og("dnsport") == get("dnsport") {
+		if o.Active == "golden" && o.Family == "v4" && same(o.Options["golden"]) {
 			return o.Name
+		}
+		// a running Golden-GRE standby path of another tunnel relays the same DNS port
+		for _, p := range o.Paths {
+			if p.Method == "golden" && p.Family == "v4" && p.Failed == "" && same(pathTunnel(o, p).Options["golden"]) {
+				return o.Name
+			}
 		}
 	}
 	return ""

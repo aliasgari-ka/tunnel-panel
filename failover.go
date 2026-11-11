@@ -240,6 +240,13 @@ func (a *App) clearFailover(t *Tunnel) {
 	}
 }
 
+// cancelFailback ends a running fail-back check of t (the user stopped it or chose a path).
+func (a *App) cancelFailback(t *Tunnel) {
+	if id, ok := a.failbacks.Load(t.ID); ok {
+		_, _ = a.jobs.cancel(id.(string))
+	}
+}
+
 // routeFamilies lists the address families both of a tunnel's servers can use.
 func (a *App) routeFamilies(t *Tunnel) []string {
 	ir, fg := a.store.Server(t.ServerID), a.store.Server(t.ForeignID)
@@ -325,6 +332,9 @@ func (a *App) applyRoute(t *Tunnel, mid, fam string, keep bool) (*Job, error) {
 	if m == nil {
 		return nil, fmt.Errorf("unknown method")
 	}
+	if !keep {
+		a.cancelFailback(t) // the user's choice: no fail-back moves it elsewhere afterwards
+	}
 	// one consistent read: a Stop or apply running now changes these under the lock
 	var old, prev, pin, applying string
 	var hot, up, running bool
@@ -378,7 +388,29 @@ func (a *App) applyRoute(t *Tunnel, mid, fam string, keep bool) (*Job, error) {
 	if prev != "" && !hot && (prev != mid || old != fam) {
 		go a.restoreOnFail(j, t, prev, old, mid)
 	}
+	if prev != "" && old != fam {
+		go a.restoreFamilyOnFail(j, t, prev, old, fam)
+	}
 	return j, nil
+}
+
+// restoreFamilyOnFail: the new family is saved before the apply; when the apply fails before
+// it took the running method down (a server unreachable, a failed build), that method still
+// runs over the old family on the servers — put the old one back, or the panel builds the
+// next teardown, health check and failover for the wrong family.
+func (a *App) restoreFamilyOnFail(j *Job, t *Tunnel, prev, prevFam, fam string) {
+	for j.snapshot().Status == "running" {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if j.snapshot().Status == "ok" || j.tornDown.Load() {
+		return // it worked, or restoreOnFail / the monitor handle a torn-down one
+	}
+	_ = a.store.Update(func(*State) error {
+		if t.Family == fam && t.Active == prev && a.jobs.running(t.ID) == "" {
+			t.Family = prevFam
+		}
+		return nil
+	})
 }
 
 // restoreOnFail: switching a running tunnel to another method took the old one down, and
@@ -532,11 +564,26 @@ func (a *App) Failback(t *Tunnel) {
 	ctx, cancel := j.context(15 * time.Minute)
 	defer cancel()
 	_ = a.store.Update(func(*State) error { fo.LastCheck = time.Now().Unix(); return nil })
+	a.failbacks.Store(t.ID, j.ID) // a Stop or a hand-picked apply cancels the check
 	ok := a.testPathOnBenchSlot(ctx, j, t, fo.Method, fo.Family)
+	a.failbacks.CompareAndDelete(t.ID, j.ID)
 	a.jobs.done(j)
 	j.finish("ok")
+	if j.cancelled() {
+		return
+	}
 	if !ok {
 		j.log("original %s still down — staying on %s", pathChoice{fo.Method, fo.Family}, pathChoice{t.Active, t.Family})
+		return
+	}
+	// the check ran for up to 15 minutes: the user may have stopped the tunnel, picked a
+	// path by hand or deleted it since — moving it back then restarted a stopped tunnel or
+	// overrode the choice
+	still := false
+	a.store.View(func(st *State) {
+		still = a.store.tunnelLocked(st, t.ID) == t && t.Failover == fo && t.Active != ""
+	})
+	if !still || a.jobs.running(t.ID) != "" {
 		return
 	}
 	// the check above may have used most of its 15 minutes: the move back gets its own time

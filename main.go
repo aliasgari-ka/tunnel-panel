@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 
 	"tunnelpanel/internal/agent"
 )
@@ -186,7 +185,34 @@ func envOr(k, def string) string {
 
 func jsonMarshal(v any) ([]byte, error) { return json.MarshalIndent(v, "", "  ") }
 
+// panelServiceActive: the panel service runs (systemd). It keeps the whole state in memory
+// and writes all of it on its next change, so a reset written beside it was undone within
+// seconds (the traffic and server monitors save all the time).
+var panelServiceActive = func() bool {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	return exec.Command("systemctl", "is-active", "--quiet", "tunnel-panel").Run() == nil
+}
+
 func resetPassword(dir, user, pass string) error {
+	if panelServiceActive() {
+		return fmt.Errorf("the panel is running and would overwrite the change on its next save — stop it first:\n  systemctl stop tunnel-panel\nthen run this again, then:  systemctl start tunnel-panel")
+	}
+	if pass != "" && len(pass) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+	if pass != "" && !validUsername(user) {
+		return fmt.Errorf("a username is 1–32 characters: letters, digits and . _ @ -")
+	}
+	var hash string
+	if pass != "" {
+		h, err := hashPassword(pass)
+		if err != nil {
+			return err
+		}
+		hash = h
+	}
 	store, err := LoadStore(dir)
 	if err != nil {
 		return fmt.Errorf("open data dir %s: %w", dir, err)
@@ -196,31 +222,24 @@ func resetPassword(dir, user, pass string) error {
 		if err := store.Update(func(st *State) error { st.Users, st.SetupCode = nil, code; return nil }); err != nil {
 			return err
 		}
-		fmt.Println("All accounts cleared. Restart the service:  systemctl restart tunnel-panel")
+		fmt.Println("All accounts cleared. Start the service:  systemctl start tunnel-panel")
 		fmt.Println("Then open the panel and create the admin account with this setup code:  " + code)
 		return nil
-	}
-	if len(pass) < 8 {
-		return fmt.Errorf("password must be at least 8 characters")
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
-	if err != nil {
-		return err
 	}
 	err = store.Update(func(st *State) error {
 		for i := range st.Users {
 			if st.Users[i].Username == user {
-				st.Users[i].Hash = string(hash)
+				st.Users[i].Hash = hash
 				st.Users[i].Gen++ // sessions from before the reset end
 				return nil
 			}
 		}
-		st.Users = append(st.Users, User{Username: user, Hash: string(hash)})
+		st.Users = append(st.Users, User{Username: user, Hash: hash, Gen: newGen()})
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Password for %q set. Restart the service:  systemctl restart tunnel-panel\n", user)
+	fmt.Printf("Password for %q set. Start the service:  systemctl start tunnel-panel\n", user)
 	return nil
 }

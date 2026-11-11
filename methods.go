@@ -385,6 +385,8 @@ func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) 
 		return portOr(get("tunnel_port"), d.BasePort), ""
 	case "frp":
 		return portOr(get("bind_port"), d.BasePort), ""
+	case "tpk", "tpk_rev": // Iran listens, the foreign server dials it
+		return portOr(get("port"), d.BasePort), ""
 	case "premium":
 		if get("mode") != "ipx" {
 			return portOr(get("port"), d.BasePort), ""
@@ -600,26 +602,26 @@ fi
 func portForwardV4(ports, targetIP, iface, tag string) string {
 	var b strings.Builder
 	nat, post, fwd, mss := "TP_"+tag, "TP_"+tag+"_P", "TPF_"+tag, "TPM_"+tag
-	fmt.Fprintf(&b, "iptables -t nat -N %[1]s 2>/dev/null || iptables -t nat -F %[1]s\n", nat)
-	fmt.Fprintf(&b, "iptables -t nat -N %[1]s 2>/dev/null || iptables -t nat -F %[1]s\n", post)
-	fmt.Fprintf(&b, "iptables -N %[1]s 2>/dev/null || iptables -F %[1]s\n", fwd)
-	fmt.Fprintf(&b, "iptables -t mangle -N %[1]s 2>/dev/null || iptables -t mangle -F %[1]s\n", mss)
+	fmt.Fprintf(&b, "iptables -w -t nat -N %[1]s 2>/dev/null || iptables -w -t nat -F %[1]s\n", nat)
+	fmt.Fprintf(&b, "iptables -w -t nat -N %[1]s 2>/dev/null || iptables -w -t nat -F %[1]s\n", post)
+	fmt.Fprintf(&b, "iptables -w -N %[1]s 2>/dev/null || iptables -w -F %[1]s\n", fwd)
+	fmt.Fprintf(&b, "iptables -w -t mangle -N %[1]s 2>/dev/null || iptables -w -t mangle -F %[1]s\n", mss)
 	for _, spec := range splitPorts(ports) {
 		dport := strings.ReplaceAll(spec.listen, "-", ":")
 		dst := targetIP
 		if spec.dst != spec.listen {
 			dst = targetIP + ":" + spec.dst
 		}
-		fmt.Fprintf(&b, "for proto in tcp udp; do iptables -t nat -A %s -m addrtype --dst-type LOCAL -p $proto --dport %s -j DNAT --to-destination %s; done\n", nat, dport, dst)
+		fmt.Fprintf(&b, "for proto in tcp udp; do iptables -w -t nat -A %s -m addrtype --dst-type LOCAL -p $proto --dport %s -j DNAT --to-destination %s; done\n", nat, dport, dst)
 	}
-	fmt.Fprintf(&b, "iptables -t nat -A %s -o %s -j MASQUERADE\n", post, iface)
-	fmt.Fprintf(&b, "iptables -A %s -o %s -j ACCEPT\niptables -A %s -i %s -j ACCEPT\n", fwd, iface, fwd, iface)
-	fmt.Fprintf(&b, "iptables -t mangle -A %s -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu\n", mss, iface)
+	fmt.Fprintf(&b, "iptables -w -t nat -A %s -o %s -j MASQUERADE\n", post, iface)
+	fmt.Fprintf(&b, "iptables -w -A %s -o %s -j ACCEPT\niptables -w -A %s -i %s -j ACCEPT\n", fwd, iface, fwd, iface)
+	fmt.Fprintf(&b, "iptables -w -t mangle -A %s -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu\n", mss, iface)
 	// hooks (idempotent)
-	fmt.Fprintf(&b, "iptables -t nat -C PREROUTING -j %[1]s 2>/dev/null || iptables -t nat -A PREROUTING -j %[1]s\n", nat)
-	fmt.Fprintf(&b, "iptables -t nat -C POSTROUTING -j %[1]s 2>/dev/null || iptables -t nat -A POSTROUTING -j %[1]s\n", post)
-	fmt.Fprintf(&b, "iptables -C FORWARD -j %[1]s 2>/dev/null || iptables -I FORWARD -j %[1]s\n", fwd)
-	fmt.Fprintf(&b, "iptables -t mangle -C FORWARD -j %[1]s 2>/dev/null || iptables -t mangle -A FORWARD -j %[1]s\n", mss)
+	fmt.Fprintf(&b, "iptables -w -t nat -C PREROUTING -j %[1]s 2>/dev/null || iptables -w -t nat -A PREROUTING -j %[1]s\n", nat)
+	fmt.Fprintf(&b, "iptables -w -t nat -C POSTROUTING -j %[1]s 2>/dev/null || iptables -w -t nat -A POSTROUTING -j %[1]s\n", post)
+	fmt.Fprintf(&b, "iptables -w -C FORWARD -j %[1]s 2>/dev/null || iptables -w -I FORWARD -j %[1]s\n", fwd)
+	fmt.Fprintf(&b, "iptables -w -t mangle -C FORWARD -j %[1]s 2>/dev/null || iptables -w -t mangle -A FORWARD -j %[1]s\n", mss)
 	return b.String()
 }
 
@@ -648,10 +650,10 @@ exit 0
 
 func portForwardDownV4(tag string) string {
 	nat, post, fwd, mss := "TP_"+tag, "TP_"+tag+"_P", "TPF_"+tag, "TPM_"+tag
-	return fmt.Sprintf(`iptables -t nat -D PREROUTING -j %[1]s 2>/dev/null; iptables -t nat -F %[1]s 2>/dev/null; iptables -t nat -X %[1]s 2>/dev/null
-iptables -t nat -D POSTROUTING -j %[2]s 2>/dev/null; iptables -t nat -F %[2]s 2>/dev/null; iptables -t nat -X %[2]s 2>/dev/null
-iptables -D FORWARD -j %[3]s 2>/dev/null; iptables -F %[3]s 2>/dev/null; iptables -X %[3]s 2>/dev/null
-iptables -t mangle -D FORWARD -j %[4]s 2>/dev/null; iptables -t mangle -F %[4]s 2>/dev/null; iptables -t mangle -X %[4]s 2>/dev/null
+	return fmt.Sprintf(`iptables -w -t nat -D PREROUTING -j %[1]s 2>/dev/null; iptables -w -t nat -F %[1]s 2>/dev/null; iptables -w -t nat -X %[1]s 2>/dev/null
+iptables -w -t nat -D POSTROUTING -j %[2]s 2>/dev/null; iptables -w -t nat -F %[2]s 2>/dev/null; iptables -w -t nat -X %[2]s 2>/dev/null
+iptables -w -D FORWARD -j %[3]s 2>/dev/null; iptables -w -F %[3]s 2>/dev/null; iptables -w -X %[3]s 2>/dev/null
+iptables -w -t mangle -D FORWARD -j %[4]s 2>/dev/null; iptables -w -t mangle -F %[4]s 2>/dev/null; iptables -w -t mangle -X %[4]s 2>/dev/null
 true
 `, nat, post, fwd, mss)
 }

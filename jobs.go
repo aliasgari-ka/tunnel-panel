@@ -199,6 +199,7 @@ type App struct {
 	hsViews     map[string]*hsView     // hot-standby switchers' state, as last read
 	healthCache map[string]string      // tunnel id -> "" healthy / reason, from the monitor
 	foNext      map[string]time.Time   // tunnel id -> next automatic failover allowed
+	failbacks   sync.Map               // tunnel id -> job id of its running fail-back check
 	healthLast  map[string]*healthSnap // tunnel id -> last Health result (statuscache.go)
 	healthBusy  map[string]bool        // tunnel id -> a background Health check is running
 
@@ -497,6 +498,11 @@ func (a *App) apply(t *Tunnel, mid string, keep bool) (*Job, error) {
 
 		j.log("== foreign server (this one) ==")
 		if err := a.deploy(ctx, j, "KH", khHost, t, khP); err != nil {
+			// what the foreign side got (unit installed and enabled, Restart=always) is taken
+			// down again, or it keeps starting at boot while the tunnel shows as stopped
+			j.log("taking the half-applied %s down again on both servers", m.Title)
+			a.applyTeardown(ctx, j, "KH", khHost, t.ForeignID, t, teardownScript(t))
+			a.applyTeardown(ctx, j, "IR", irHost, t.ServerID, t, teardownScript(t))
 			fail("foreign: %v", err)
 			return
 		}
@@ -569,6 +575,7 @@ func (a *App) Stop(t *Tunnel) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.cancelFailback(t) // or it starts the tunnel again on the original path afterwards
 	a.clearHealth(t.ID)
 	_ = a.store.Update(func(*State) error {
 		t.Applying = "" // stopped on purpose: nothing to resume
@@ -684,9 +691,13 @@ func (a *App) pushCh(msg string) {
 		return
 	}
 	go func() {
-		if _, err := b.api("sendMessage", url.Values{"chat_id": {ch}, "text": {esc(msg)},
-			"parse_mode": {"HTML"}, "disable_web_page_preview": {"true"}}); err != nil {
-			b.push(msg + "\n\n(the alert channel refused it: " + err.Error() + ")")
+		// over 4096 characters Telegram refuses the message: a long alert goes in parts
+		for _, part := range splitMsg(esc(msg), tgChunk) {
+			if _, err := b.api("sendMessage", url.Values{"chat_id": {ch}, "text": {part},
+				"parse_mode": {"HTML"}, "disable_web_page_preview": {"true"}}); err != nil {
+				b.push(msg + "\n\n(the alert channel refused it: " + err.Error() + ")")
+				return
+			}
 		}
 	}()
 }

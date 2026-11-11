@@ -16,7 +16,7 @@ func TestBackupRestore(t *testing.T) {
 	a := &App{store: st, jobs: newJobs()}
 	_ = st.Update(func(s *State) error {
 		s.Servers = []*Server{{ID: "ir", Name: "iran-1", IPv4: "10.0.0.1", Password: "pw"}}
-		s.Tunnels = []*Tunnel{{ID: "t1", Name: "one", ServerID: "ir", Index: 1}}
+		s.Tunnels = []*Tunnel{{ID: "t1", Name: "one", ServerID: "ir", Ports: "443", Index: 1}}
 		return nil
 	})
 	data, err := a.backupJSON()

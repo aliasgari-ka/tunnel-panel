@@ -128,6 +128,39 @@ type SSHHost struct {
 	v6    bool // connect to the server's IPv6 address (the IPv4 path is down)
 	mu    sync.Mutex
 	cli   *ssh.Client
+	slots chan struct{} // sessions open at once (see sshSessions)
+}
+
+// sshSessions caps the sessions the panel opens at once on one connection: sshd refuses
+// those beyond MaxSessions (10 by default), and parallel jobs on one server reached that.
+const sshSessions = 8
+
+// session takes a session slot (or gives up when ctx ends) and opens a session; release
+// gives the slot back. A refused channel (MaxSessions, a busy sshd) leaves the connection
+// open: closing it killed every command still running on it — only a dead one is closed.
+func (h *SSHHost) session(ctx context.Context, cli *ssh.Client) (*ssh.Session, func(), error) {
+	h.mu.Lock()
+	if h.slots == nil {
+		h.slots = make(chan struct{}, sshSessions)
+	}
+	slots := h.slots
+	h.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	release := func() { <-slots }
+	sess, err := cli.NewSession()
+	if err != nil {
+		release()
+		var oce *ssh.OpenChannelError
+		if !errors.As(err, &oce) {
+			h.Close()
+		}
+		return nil, nil, err
+	}
+	return sess, release, nil
 }
 
 func newSSHHost(st *Store, srv *Server, dial dialFunc) *SSHHost {
@@ -296,11 +329,11 @@ func (h *SSHHost) Run(ctx context.Context, script string, log func(string)) (str
 	if err != nil {
 		return "", err
 	}
-	sess, err := cli.NewSession()
+	sess, release, err := h.session(ctx, cli)
 	if err != nil {
-		h.Close()
 		return "", err
 	}
+	defer release()
 	defer sess.Close()
 	user := h.srv.SSHUser
 	cmd := "bash -s"
@@ -333,11 +366,11 @@ func (h *SSHHost) WriteFile(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	sess, err := cli.NewSession()
+	sess, release, err := h.session(context.Background(), cli)
 	if err != nil {
-		h.Close()
 		return err
 	}
+	defer release()
 	defer sess.Close()
 	cmd := uploadCmd(path, mode)
 	if h.srv.SSHUser != "" && h.srv.SSHUser != "root" {

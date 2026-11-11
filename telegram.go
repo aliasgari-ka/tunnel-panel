@@ -101,8 +101,105 @@ func htmlToText(s string) string {
 }
 
 func (b *Bot) send(chat, text string) {
-	_, _ = b.api("sendMessage", url.Values{"chat_id": {chat}, "text": {text},
-		"parse_mode": {"HTML"}, "disable_web_page_preview": {"true"}})
+	// Telegram refuses a message over 4096 characters outright: a long one goes in parts
+	for _, part := range splitMsg(text, tgChunk) {
+		_, _ = b.api("sendMessage", url.Values{"chat_id": {chat}, "text": {part},
+			"parse_mode": {"HTML"}, "disable_web_page_preview": {"true"}})
+	}
+}
+
+// getMeRetry is the first wait before getMe is tried again (it doubles up to a minute).
+var getMeRetry = 5 * time.Second
+
+// badToken: Telegram's answer to a token it doesn't know — retrying it never helps.
+func badToken(err error) bool {
+	s := err.Error()
+	return strings.HasPrefix(s, "telegram: ") && (strings.Contains(s, "Unauthorized") || strings.Contains(s, "Not Found"))
+}
+
+// tgChunk is the most a message part holds, in UTF-16 units (Telegram's limit is 4096 after
+// the entities are parsed; the markup counts here too, so this stays on the safe side).
+const tgChunk = 4000
+
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r > 0xFFFF {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
+}
+
+// splitMsg cuts a message into parts of at most max UTF-16 units, at line ends so no HTML
+// tag or entity is broken. A single line longer than max is cut inside, but not in the
+// middle of a tag or an &entity;.
+func splitMsg(s string, max int) []string {
+	if utf16Len(s) <= max {
+		return []string{s}
+	}
+	var out []string
+	var cur strings.Builder
+	curN := 0
+	flush := func() {
+		if p := strings.TrimRight(cur.String(), "\n"); strings.TrimSpace(p) != "" {
+			out = append(out, p)
+		}
+		cur.Reset()
+		curN = 0
+	}
+	for _, line := range strings.SplitAfter(s, "\n") {
+		n := utf16Len(line)
+		if curN > 0 && curN+n > max {
+			flush()
+		}
+		for n > max {
+			cut := cutPoint(line, max)
+			cur.WriteString(line[:cut])
+			flush()
+			line = line[cut:]
+			n = utf16Len(line)
+		}
+		cur.WriteString(line)
+		curN += n
+	}
+	flush()
+	return out
+}
+
+// cutPoint is the byte offset at which a line longer than max UTF-16 units is cut: as far as
+// max allows, moved back before a tag or an entity that would be left open.
+func cutPoint(line string, max int) int {
+	n, i := 0, 0
+	for j, r := range line {
+		w := 1
+		if r > 0xFFFF {
+			w = 2
+		}
+		if n+w > max {
+			break
+		}
+		n += w
+		i = j + len(string(r))
+	}
+	head := line[:i]
+	cut := i
+	if lt := strings.LastIndexByte(head, '<'); lt >= 0 && !strings.Contains(head[lt:], ">") {
+		cut = lt
+	}
+	if amp := strings.LastIndexByte(head[:cut], '&'); amp >= 0 && cut-amp <= 10 && !strings.Contains(head[amp:cut], ";") {
+		cut = amp
+	}
+	if cut <= 0 {
+		cut = i
+	}
+	if cut <= 0 { // max smaller than the first rune: take it whole rather than loop forever
+		_, size := utf8.DecodeRuneInString(line)
+		cut = size
+	}
+	return cut
 }
 
 // push broadcasts a status line to every admin (used for job notifications).
@@ -115,11 +212,28 @@ func (b *Bot) push(text string) {
 }
 
 func (b *Bot) Run() {
-	me, err := b.api("getMe", nil)
-	if err != nil {
+	// a network hiccup at start (DNS, Telegram unreachable for a while) must not leave the
+	// bot dead until the next restart: try again, 5 s → 60 s apart; only a token Telegram
+	// refuses (401 Unauthorized / 404 Not Found) ends it
+	var me json.RawMessage
+	for wait := getMeRetry; ; {
+		var err error
+		if me, err = b.api("getMe", nil); err == nil {
+			break
+		}
 		fmt.Printf("telegram bot: %v\n", err)
 		b.state.Store("error: " + err.Error())
-		return
+		if badToken(err) {
+			return
+		}
+		select {
+		case <-b.stop:
+			return
+		case <-time.After(wait):
+		}
+		if wait *= 2; wait > 60*time.Second {
+			wait = 60 * time.Second
+		}
 	}
 	var who struct {
 		Username string `json:"username"`
@@ -191,9 +305,10 @@ func (b *Bot) Run() {
 
 type chatMember struct {
 	Chat struct {
-		ID    int64  `json:"id"`
-		Type  string `json:"type"`
-		Title string `json:"title"`
+		ID       int64  `json:"id"`
+		Type     string `json:"type"`
+		Title    string `json:"title"`
+		Username string `json:"username"`
 	} `json:"chat"`
 	From struct {
 		ID int64 `json:"id"`
@@ -211,13 +326,15 @@ func (b *Bot) onMember(m *chatMember) {
 	}
 	id := fmt.Sprint(m.Chat.ID)
 	cur := strings.TrimSpace(b.app.settings().TelegramChannel)
+	// a public channel can be saved as @name: that is the same channel as its numeric id
+	same := cur == id || (m.Chat.Username != "" && strings.EqualFold(cur, "@"+m.Chat.Username))
 	switch {
 	case m.New.Status != "administrator":
-		if cur == id && (m.New.Status == "left" || m.New.Status == "kicked") {
+		if same && (m.New.Status == "left" || m.New.Status == "kicked") {
 			_ = b.app.store.Update(func(st *State) error { st.Settings.TelegramChannel = ""; return nil })
 			b.push(fmt.Sprintf("📣 The bot left %q — tunnel and server alerts come here again.", m.Chat.Title))
 		}
-	case cur == "" || cur == id:
+	case cur == "" || same:
 		_ = b.app.store.Update(func(st *State) error { st.Settings.TelegramChannel = id; return nil })
 		b.send(id, esc("📣 Tunnel and server alerts of the panel come to this channel from now on."))
 		b.push(fmt.Sprintf("📣 Alert channel set: %q (%s). Tunnel and server up/down alerts go there now; WARP / Instagram / Gemini alerts stay here, only the important ones.", m.Chat.Title, id))
@@ -319,6 +436,13 @@ func (b *Bot) onText(chat, text string) {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
 		return
+	}
+	// in a group a command comes as /cmd@BotName: the command is the part before '@'
+	if strings.HasPrefix(fields[0], "/") {
+		if cmd, _, ok := strings.Cut(fields[0], "@"); ok {
+			fields[0] = cmd
+			text = strings.Join(fields, " ")
+		}
 	}
 	if w, ok := b.await.LoadAndDelete(chat); ok && !strings.HasPrefix(text, "/") && !isMenuButton(text) {
 		b.typedOption(chat, w.(optWait), strings.TrimSpace(text))
@@ -736,7 +860,10 @@ func (b *Bot) tunnelPage(t *Tunnel) (string, string) {
 				if k == v.Active || k >= len(v.OK) || !v.OK[k] || k >= len(v.Keys) {
 					continue
 				}
-				row = append(row, ikey{Text: "➡ " + p, Data: fmt.Sprintf("hp:%s:%d", t.ID, k)})
+				// the path itself, not its position: the list of running paths shifts as
+				// paths fail or come back, and an index then pinned another path
+				mid, fam, _ := strings.Cut(v.Keys[k], "|")
+				row = append(row, ikey{Text: "➡ " + p, Data: "hp:" + t.ID + ":" + mid + ":" + fam})
 				if len(row) == 2 {
 					rows = append(rows, row)
 					row = nil
@@ -1163,19 +1290,22 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		})
 		text, kb := b.tunnelPage(t)
 		b.edit(chat, msg, text, kb)
-	case "hp": // move the users to running path k, seamlessly
-		k := -1
-		if len(parts) > 2 {
-			k, _ = strconv.Atoi(parts[2])
+	case "hp": // move the users to running path <method>:<family>, seamlessly
+		// (an older button carries an index into the running paths, which shifts: refused)
+		running := false
+		var mid, fam string
+		if len(parts) == 4 {
+			mid, fam = parts[2], parts[3]
+			b.app.store.View(func(*State) { running = hsIndex(t, mid, fam) >= 0 })
 		}
-		good := hsGood(v)
-		if k < 0 || k >= len(good) {
+		if !running {
+			b.sendMsg(chat, "⚠ That path isn't running any more — open the tunnel again for the current ones.", "")
 			return
 		}
 		b.slow(chat, "switching "+v.Name+"…", func() (string, string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
-			r, err := b.app.hsPinTo(ctx, t, good[k].Method+"|"+good[k].Family)
+			r, err := b.app.hsPinTo(ctx, t, mid+"|"+fam)
 			if err != nil {
 				return "⚠ " + esc(err.Error()), ""
 			}
