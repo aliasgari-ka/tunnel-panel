@@ -19,7 +19,13 @@ async function api(path, body, method) {
   if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
   return data;
 }
-function toast(msg) { const t = h(`<div class="toast">${esc(msg)}</div>`); document.body.appendChild(t); setTimeout(() => t.remove(), 2800); }
+function toast(msg) {
+  let box = $('#toasts');
+  if (!box) { box = h('<div id="toasts" role="status" aria-live="polite"></div>'); document.body.appendChild(box); }
+  const t = h(`<div class="toast">${esc(msg)}</div>`); box.appendChild(t);
+  while (box.children.length > 3) box.firstElementChild.remove();
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 200); }, 2600 + Math.min(4000, String(msg).length * 30));
+}
 function copy(text, el) {
   const done = () => { if (el) { const o = el.textContent; el.textContent = 'Copied'; setTimeout(() => el.textContent = o, 1200); } };
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
@@ -163,9 +169,11 @@ function renderShell() {
         <div class="look"><button class="btn ghost sm" id="themeBtn" title="Light / dark">◐</button><button class="btn ghost sm" id="langBtn" data-notr title="${window.tpLang === 'fa' ? 'English' : 'فارسی'}">${window.tpLang === 'fa' ? 'EN' : 'فا'}</button><div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div></div>
         <div class="who"><span class="faint"><b>${esc(STATE.user)}</b>${isAdmin() ? ' <span class="chip own">admin</span>' : ''}${STATE.version ? ` · <span class="mono" title="version">${esc(STATE.version)}</span>` : ''}</span><button class="btn ghost sm" id="logout">Sign out</button></div>
       </div></aside>
+    <div class="sidebg" id="sidebg"></div>
     <main class="main" id="work"></main></div>`);
   document.body.appendChild(shell);
   $$('.nav button', shell).forEach(b => b.onclick = () => { setView(b.dataset.v); paintNav(); renderView(); $('#side').classList.remove('open'); });
+  $('#sidebg').onclick = () => $('#side').classList.remove('open');
   $('#logout').onclick = async () => { await api('/logout', {}); location.reload(); };
   $('#themeBtn').onclick = toggleTheme;
   $('#langBtn').onclick = () => window.tpSetLang && window.tpSetLang(window.tpLang === 'fa' ? 'en' : 'fa');
@@ -177,7 +185,8 @@ function renderShell() {
 }
 function paintNav() { $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.v === STATE.view)); }
 function toggleTheme() {
-  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  const cur = document.documentElement.getAttribute('data-theme') || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   try { localStorage.setItem('tp-theme', next); } catch (e) {}
 }
@@ -186,10 +195,17 @@ try { const t = localStorage.getItem('tp-theme'); if (t) document.documentElemen
 const ACCENTS = ['', '#6d5dfc', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899'];
 function setAccent(c) {
   const r = document.documentElement.style;
-  if (c) { r.setProperty('--accent', c); r.setProperty('--accent-soft', `color-mix(in srgb, ${c} 16%, var(--panel))`); r.setProperty('--accent-fg', '#fff'); }
+  if (c) { r.setProperty('--accent', c); r.setProperty('--accent-soft', `color-mix(in srgb, ${c} 16%, var(--panel))`); r.setProperty('--accent-fg', accentFg(c)); }
   else { r.removeProperty('--accent'); r.removeProperty('--accent-soft'); r.removeProperty('--accent-fg'); }
   try { localStorage.setItem('tp-accent', c); } catch (e) {}
   paintAccent();
+}
+// the text colour on an accent: white where it reads (WCAG contrast ≥ 4.5), else near-black
+function accentFg(c) {
+  const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const [r, g, b] = [1, 3, 5].map(i => lin(parseInt(c.slice(i, i + 2), 16)));
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return 1.05 / (L + 0.05) >= 4.5 ? '#ffffff' : '#0c0f1a';
 }
 function paintAccent() {
   let c = ''; try { c = localStorage.getItem('tp-accent') || ''; } catch (e) {}
@@ -211,6 +227,7 @@ function countUp(root) {
 function renderView() {
   const w = $('#work'); w.innerHTML = '';
   w.classList.remove('enter'); void w.offsetWidth; w.classList.add('enter'); // replay the page-in animation
+  clearTimeout(renderView.t); renderView.t = setTimeout(() => w.classList.remove('enter'), 400); // …once: later redraws don't fade again
   w.classList.remove('igp');
   ({ tunnels: viewTunnels, servers: viewServers, routes: viewRoutes, usage: viewUsage, igproxy: viewIg, bench: viewBench, settings: viewSettings, users: viewUsers }[STATE.view])(w);
   trafficWatch();
@@ -327,7 +344,7 @@ async function viewUsage(w) {
   let date = 0, hr = days === 1 || custom ? r : null;
   const dayOpts = () => { const o = ['<option value="0">Last 24 hours</option>']; for (let i = 0; i < 35; i++) { const d = new Date(Date.now() - i * 864e5); const ds = d.toLocaleDateString('fa-IR-u-nu-latn', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit' }); const en = d.toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', day: '2-digit', month: 'short' }); o.push(`<option value="${i + 1}"${date === i + 1 ? ' selected' : ''}>${i === 0 ? 'Today' : i === 1 ? 'Yesterday' : en} · ${ds}</option>`); } return o.join(''); };
   const drawHours = async (hb, ids) => {
-    hb.innerHTML = `<div class="row" style="gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px"><h3 style="margin:0">${hr && hr.step === 86400 ? 'Day by day' : 'Hour by hour'}</h3>${custom ? '' : `<select data-uhd>${dayOpts()}</select>`}</div><div class="skel" style="height:120px"></div>`;
+    hb.innerHTML = `<div class="uhrow"><h3 style="margin:0">${hr && hr.step === 86400 ? 'Day by day' : 'Hour by hour'}</h3>${custom ? '' : `<select data-uhd>${dayOpts()}</select>`}</div><div class="skel" style="height:120px"></div>`;
     if (!custom) $('[data-uhd]', hb).onchange = (e) => { date = +e.target.value; hr = null; drawHours(hb, ids); };
     if (!hr) { try { hr = await api(date ? '/usage?date=' + Math.floor(Date.now() / 1000 - (date - 1) * 86400) : '/usage?days=1'); } catch (e) { hb.lastChild.outerHTML = `<div class="errtxt">${esc(e.message)}</div>`; return; } }
     if (!hb.isConnected) return;
@@ -457,7 +474,7 @@ async function viewRoutes(w) {
         const carrier = x.opts ? Object.entries(x.opts).map(([k, v]) => `${k} ${v}`).join(', ') : '';
         body = `<span class="rt-rank${x.recommended ? ' top' : ''}">${x.recommended ? '★' : c.pos}</span><span class="rt-num">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} <small>Mbps</small> · ${x.rttMs.toFixed(0)} <small>ms</small></span>${carrier ? `<span class="chip rt-car" title="the default carrier passes nothing here; this one does">${esc(carrier)}</span>` : ''}`;
       } else body = `<button type="button" class="rt-err" data-err="${esc(x.error || 'failed')}" title="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>`;
-      return `<td class="rt-c ${isOff ? 'left' : x && x.ok ? 'good' : x && !x.skipped ? 'bad' : ''}" data-f="${famName(f)}">${sw}${body}</td>`;
+      return `<td class="rt-c ${isOff ? 'left' : x && x.ok ? 'good' : x && !x.skipped ? 'bad' : ''}" data-f="${famName(f)}"><div class="rt-cv">${sw}${body}</div></td>`;
     };
     const methodsTbl = mids.length ? `<table class="rt-tbl"><thead><tr><th>Method</th>${fams.map(f => `<th>${famName(f)}${bench[f] ? ` <span class="faint">· measured ${ageTxt(bench[f].at)}</span>` : ' <span class="faint">· not measured yet</span>'}</th>`).join('')}</tr></thead>
       <tbody>${mids.map((mid, i) => (i === 0 || gOf(mids[i - 1]) !== gOf(mid) ? `<tr class="rt-grp"><td colspan="${fams.length + 1}">${GROUP_ICON[gOf(mid)] || '🔧'} ${esc(gOf(mid))}</td></tr>` : '') +
@@ -481,6 +498,9 @@ async function viewRoutes(w) {
         <div class="actions">${fams.map(f => `<button class="btn sm" data-rb="${f}" title="measure the methods the tunnels run over ${famName(f)} between these two servers, or every method when none runs (each on a temporary tunnel; live tunnels are not touched)">📊 Measure ${famName(f)}</button>`).join('')}</div></div>
       ${p.tunnel ? '' : '<div class="lbl">Tunnels</div>'}<div class="rt-rows">${tunnels}</div>
       <details class="rt-more"${p.tunnel || STATE.routeSel ? ' open' : ''}><summary><span class="lbl">Methods this tunnel may use</span> <span class="faint">${onCount} of ${cellCount} on — speeds and order</span></summary>${sharedNote}${methodsTbl}</details></div>`);
+    // sections opened or closed by hand stay that way through the 30 s repaint
+    const rtOpen = (STATE.rtOpen = STATE.rtOpen || {});
+    $$('details', card).forEach((d, i) => { const k = p.id + '|' + i; if (k in rtOpen) d.open = rtOpen[k]; d.addEventListener('toggle', () => { rtOpen[k] = d.open; }); });
     const setSkip = async (v, on) => {
       const [method, family] = v.split('|');
       try {
@@ -644,7 +664,7 @@ document.addEventListener('toggle', (e) => {
 }, true);
 function renderRes(el, r) {
   if (!r) { el.innerHTML = ''; return; }
-  if (r.error) { el.innerHTML = `<span class="faint" style="font-size:12px" title="${esc(r.error)}">⚠ live load unavailable — ${esc(r.error.split(/[:;—]/)[0].trim())}</span>`; return; }
+  if (r.error) { el.innerHTML = `<span class="faint" style="font-size:12px" title="${esc(r.error)}"><span>⚠ live load unavailable</span> — <span>${esc(r.error.split(/[:;—]/)[0].trim())}</span></span>`; return; }
   const p = (a, b) => b ? 100 * a / b : 0;
   const bar = (label, v, txt, title) => `<div class="rbar${v >= 90 ? ' crit' : v >= 70 ? ' warn' : ''}" title="${esc(title || '')}"><span class="rl">${label}</span><span class="rt"><i style="width:${Math.min(100, v).toFixed(1)}%"></i></span><span class="rv">${v.toFixed(0)}%</span><span class="rx faint">${txt}</span></div>`;
   const mem = p(r.memUsed, r.memTotal), disk = p(r.diskUsed, r.diskTotal);
@@ -1054,7 +1074,7 @@ function panelHostCard() {
     <div class="sh"><div class="sname"><span class="sflag">🖥</span><div><h3>This panel host</h3><small>the machine running this panel</small></div></div><span class="pill on"><span class="led"></span>local</span></div>
     <dl class="kvt">
       <div><dt>IPv4</dt><dd><span class="mono">${esc(st.localIPv4 || 'auto-detecting…')}</span></dd></div>
-      ${st.localIPv6 ? `<div><dt>IPv6</dt><dd><span class="mono">${esc(st.localIPv6)}</span></dd></div>` : ''}
+      ${st.localIPv6 ? `<div class="wide"><dt>IPv6</dt><dd><span class="mono">${esc(st.localIPv6)}</span></dd></div>` : ''}
       <div><dt>Tunnels</dt><dd>${n}</dd></div>
     </dl>
     <div class="nic" data-nic=""></div>
@@ -1145,7 +1165,7 @@ function serverCard(s) {
     <div data-paths="${s.id}"></div>
     <dl class="kvt">
       <div><dt>IPv4</dt><dd><span class="mono">${esc(s.ipv4 || '—')}</span></dd></div>
-      <div><dt>IPv6</dt><dd><span class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</span></dd></div>
+      <div class="wide"><dt>IPv6</dt><dd><span class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</span></dd></div>
       <div><dt>SSH</dt><dd><span class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</span></dd></div>
       <div><dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not installed yet</span>'}</dd></div>
       ${s.lastPath ? `<div><dt>Reached via</dt><dd>${esc(s.lastPath)}</dd></div>` : ''}
@@ -1447,10 +1467,13 @@ async function aiModal() {
     let body = '';
     if (rep && rep.error) body = `<div class="downbar">⚠ ${esc(rep.error)}</div>`;
     else if (rep) {
-      body = `<div data-notr dir="rtl" style="text-align:right;line-height:1.7">
-        <p style="margin:0 0 10px">${esc(rep.summary)}</p>
-        ${(rep.actions || []).length ? `<h3 style="margin:12px 0 6px">پیشنهادهای قابل اعمال</h3>${rep.actions.map((a, i) => `<div class="card pad" style="margin-bottom:8px"><b>${esc(tname(a.tunnel))}</b> — ${a.kind === 'switch_path' ? 'رفتن کاربرها به مسیر <span class="mono">' + esc(a.path) + '</span>' : 'حالت سوییچر: ' + (a.auto ? 'خودکار' : 'دستی')}<div class="faint" style="font-size:13px">${esc(a.why)}</div><div style="margin-top:6px">${a.applied ? `<span class="chip">✓ ${esc(a.result || 'done')}</span>` : `<button class="btn sm pri" data-aiapply="${i}">اعمال</button>`}</div></div>`).join('')}` : ''}
-        ${(rep.findings || []).map(f => `<div class="card pad" style="margin-bottom:8px"><div><span class="chip ${sev[f.severity] || ''}">${f.severity === 'high' ? 'مهم' : f.severity === 'medium' ? 'متوسط' : 'کم'}</span> <b>${esc(f.title)}</b></div><div style="font-size:13.5px;margin-top:4px">${esc(f.detail)}</div>${f.fix ? `<div style="font-size:13.5px;margin-top:4px">🔧 ${esc(f.fix)}</div>` : ''}</div>`).join('')}
+      // the report itself is written in Persian by the model: it reads right to left whatever the
+      // panel's language (data-notr), the panel's own labels follow the panel's language
+      const ai = (t) => `<span data-notr dir="auto">${esc(t)}</span>`;
+      body = `<div class="aireport">
+        <p class="aisum">${ai(rep.summary)}</p>
+        ${(rep.actions || []).length ? `<h3 class="aih">Suggested actions</h3>${rep.actions.map((a, i) => `<div class="card pad aicard"><b>${esc(tname(a.tunnel))}</b> — ${a.kind === 'switch_path' ? 'move the users to the path <span class="mono">' + esc(a.path) + '</span>' : 'switcher mode: ' + (a.auto ? 'automatic' : 'manual')}<div class="faint aiwhy">${ai(a.why)}</div><div style="margin-top:6px">${a.applied ? `<span class="chip">✓ ${esc(a.result || 'done')}</span>` : `<button class="btn sm pri" data-aiapply="${i}">Apply</button>`}</div></div>`).join('')}` : ''}
+        ${(rep.findings || []).map(f => `<div class="card pad aicard"><div><span class="chip ${sev[f.severity] || ''}">${f.severity === 'high' ? 'High' : f.severity === 'medium' ? 'Medium' : 'Low'}</span> <b>${ai(f.title)}</b></div><div class="aitxt">${ai(f.detail)}</div>${f.fix ? `<div class="aitxt">🔧 ${ai(f.fix)}</div>` : ''}</div>`).join('')}
       </div>`;
     }
     box.innerHTML = head + body;
@@ -1991,7 +2014,7 @@ const igRelayOf = (i, v) => { const m = /^proxy(\d+)$/.exec(v || ''); if (!m || 
 const igViaW = (v, i) => { v = v || ''; if (v === 'proxy') return 'Proxy'; if (/^proxy\d+$/.test(v)) { const r = igRelayOf(i, v); return 'Proxy ' + v.slice(5) + (r ? ' · ' + r : ''); } return { warp: 'WARP', warp6: 'WARP IPv6', ipv6: 'IPv6', direct: 'Direct' }[v] || v || '—'; };
 const igViaC = (v) => 'v-' + (String(v || '').replace(/\d+$/, '').replace('warp6', 'warp') || 'direct');
 const igPill = (st) => { const w = IGST[st] || [st, 'bad']; return `<span class="pill ${w[1]}"><span class="led"></span>${esc(w[0])}</span>`; };
-const igChk = (v) => v === 'OK' ? '<i class="igd ok"></i>OK' : v === 'FAIL' ? '<i class="igd bad"></i>fail' : '<i class="igd"></i>—';
+const igChk = (v) => v === 'OK' ? '<i class="igd ok"></i>works' : v === 'FAIL' ? '<i class="igd bad"></i>fail' : '<i class="igd"></i>—';
 const igOwner = (s) => isAdmin() && s.owner ? `<span class="chip">👤 ${esc(s.owner)}</span>` : '';
 const igList = () => ((IG.data && IG.data.servers) || []).filter(s => shownOwner(s.owner));
 const igView = () => isAdmin() ? (STATE.ownerFilter || '') : '';
@@ -2127,7 +2150,12 @@ function igCards() {
   const L = igList().filter(s => (IG.filter !== 'bad' || s.info.state !== 'OK') && (!q || (s.name + ' ' + s.host).toLowerCase().includes(q)));
   const box = $('#igcards'); if (!box) return;
   box.innerHTML = L.length ? L.map(igCard).join('') : '<div class="empty card"><div class="big">🔍</div>No server matches</div>';
-  $$('.scard', box).forEach(c => c.onclick = () => { IG.cur = IG.data.servers.find(x => x.id === c.dataset.id); IG.tab = 'routes'; igRender(); scrollTo(0, 0); });
+  // the cards open like buttons: a click, or Enter / Space on the keyboard
+  $$('.scard', box).forEach(c => {
+    c.tabIndex = 0; c.setAttribute('role', 'button');
+    c.onclick = () => { IG.cur = IG.data.servers.find(x => x.id === c.dataset.id); IG.tab = 'routes'; igRender(); scrollTo(0, 0); };
+    c.onkeydown = (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === c) { e.preventDefault(); c.click(); } };
+  });
 }
 // the country the users' exit gets now, measured by the agent through the users' route:
 // Instagram's country_code and Google's OneGoogle domain
@@ -2144,7 +2172,7 @@ function igCard(s) {
   const i = s.info;
   const svc = (g) => `<div class="svc"><small>${IGSV[g]}</small><b class="${igViaC(i[g.toLowerCase()])}">${igViaW(i[g.toLowerCase()], i)}</b>${igCC(g, i, s)}${g === 'GOOGLE' && /^warp/.test(i.google || '') && i.gcc && i.gcc !== '-' ? `<span class="note mono" style="color:${i.gcc === 'PROXY' ? 'var(--crit)' : 'var(--faint)'}">${i.gcc === 'PROXY' ? 'on a proxy for now' : 'country ' + esc(i.gcc)}</span>` : ''}</div>`;
   const n = igWarpNeed(i);
-  return `<div class="card scard${igBad(i.state) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div>${igPill(i.state)}</div>
+  return `<div class="card scard${igBad(i.state) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><div><h3>${s.country ? flag(s.country) + ' ' : ''}${esc(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div></div>${igPill(i.state)}</div>
     ${i.ig ? `<div class="svcs">${svc('IG')}${svc('GOOGLE')}${svc('YTM')}</div>
     <div class="sfoot"><span>🔗 <b>${+i.caught || 0}</b></span><span>proxies <b>${+i.proxies || 0}</b></span><span>WARP <b>${+i.warps || 0}</b>${n ? `<span class="faint" title="suggested for the 24 h peak"> / ${n.total}</span>` : ''}</span><span class="grow"></span><span>Gemini ${igChk(i.gem)}</span><span>IG ${igChk(i.igp)}</span>${igAccBroken(i) ? '<span class="chip bad" title="Instagram logged the test account out: music is not checked on any exit IP">music check off</span>' : ''}</div>`
     : i.state === 'CHECKING' ? '<div class="skel" style="height:64px;margin-top:10px"></div>' : `<div class="mcrit" style="margin:10px 0 0">${esc(i.err || (IGST[i.state] || [])[0] || '')}</div>`}</div>`;

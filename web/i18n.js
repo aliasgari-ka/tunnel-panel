@@ -929,7 +929,52 @@ window.TP_FA = {
 "tunnels": "تانل‌ها",
 "No foreign server yet.": "هنوز سرور خارجی نیست.",
 "Add an Iran server (entry) and a foreign server (exit), then build a tunnel between them.": "یک سرور ایران (ورودی) و یک سرور خارج (خروجی) اضافه کنید، بعد بینشان تانل بسازید.",
-"A shell on this server in the browser, over the panel's own path to it": "شل این سرور در مرورگر، از همان مسیری که پنل به آن وصل می‌شود"
+"A shell on this server in the browser, over the panel's own path to it": "شل این سرور در مرورگر، از همان مسیری که پنل به آن وصل می‌شود",
+"⚠ live load unavailable": "⚠ بار لحظه‌ای در دسترس نیست",
+"SSH over IPv6 doesn't answer — IPv4 works": "SSH روی IPv6 جواب نمی‌دهد — IPv4 کار می‌کند",
+"SSH over IPv4 doesn't answer — IPv6 works; the panel manages it over IPv6 meanwhile": "SSH روی IPv4 جواب نمی‌دهد — IPv6 کار می‌کند؛ پنل فعلاً از راه IPv6 مدیریتش می‌کند",
+"SSH doesn't answer over IPv4 nor over IPv6": "SSH نه روی IPv4 جواب می‌دهد نه روی IPv6",
+"the SSH port doesn't answer": "پورت SSH جواب نمی‌دهد",
+"the panel host can't reach the internet (1.1.1.1:443, 8.8.8.8:53)": "میزبان پنل به اینترنت دسترسی ندارد (1.1.1.1:443، 8.8.8.8:53)",
+"🧠 Daily AI analysis at": "🧠 تحلیل روزانهٔ هوش مصنوعی در ساعت",
+"(HH:MM, Tehran time — the panel runs the analysis by itself, even with no page open, and sends the summary to the admin chat; blank = 09:30 while a key is set, off = never)": "(HH:MM به وقت تهران — پنل خودش تحلیل را اجرا می‌کند، حتی وقتی هیچ صفحه‌ای باز نیست، و خلاصه را به چت ادمین می‌فرستد؛ خالی = 09:30 وقتی کلید تنظیم شده، off = هرگز)",
+"Claude reviews the tunnels, their paths, outages and the servers' load, and says what to improve": "Claude تانل‌ها، مسیرهایشان، قطعی‌ها و بار سرورها را بررسی می‌کند و می‌گوید چه چیزی بهتر شود",
+"user": "کاربر",
+"admin": "ادمین",
+"okay": "قابل قبول",
+"good": "خوب",
+"strong": "قوی",
+"👤 User — only its own servers and tunnels": "👤 کاربر — فقط سرورها و تانل‌های خودش",
+"🛡 Admin — the whole network": "🛡 ادمین — کل شبکه",
+"🇮🇷 Iran (entry)": "🇮🇷 ایران (ورودی)",
+"🌍 Foreign (exit)": "🌍 خارج (خروجی)",
+"(leave empty to keep it; a new one signs the user out)": "(برای نگه داشتن خالی بگذارید؛ رمز تازه کاربر را از حساب بیرون می‌کند)",
+"(auto; 2-letter override)": "(خودکار؛ یا کد دوحرفی کشور)",
+"no tunnel on this pair yet": "هنوز تانلی روی این جفت نیست",
+"⚠ port clash": "⚠ تداخل پورت",
+"Users stay on the chosen path; they move only when it is down.": "کاربران روی مسیر انتخاب‌شده می‌مانند؛ فقط وقتی قطع شود جابه‌جا می‌شوند.",
+"Suggested actions": "اقدام‌های پیشنهادی",
+"— move the users to the path": "— بردن کاربران به مسیر",
+"— switcher mode: automatic": "— حالت سوییچر: خودکار",
+"— switcher mode: manual": "— حالت سوییچر: دستی",
+"High": "زیاد",
+"Medium": "متوسط",
+"Low": "کم",
+"Apply to tunnel": "اعمال روی تانل",
+"music check off": "بررسی موسیقی خاموش",
+"WARP guard": "محافظ WARP",
+"WARP guard not running": "محافظ WARP اجرا نمی‌شود",
+"Use": "استفاده",
+"Delete": "حذف",
+"OK": "باشه",
+"fail": "خطا",
+"Run": "اجرا",
+"Onto": "روی",
+"works": "سالم",
+"method": "روش",
+"jitter": "جیتر",
+"loss": "افت",
+"score": "امتیاز",
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title
@@ -971,8 +1016,15 @@ window.TP_FA = {
     [/^passed traffic at first \(RTT (\d+) ms\), then stopped passing even new connections([\s\S]*)$/, 'اول ترافیک رد می‌شد (RTT $1 ms)، بعد حتی اتصال‌های تازه هم رد نشدند$2'],
     [/^(✕ )?passed traffic at first \(RTT ([\s\S]*)$/, '$1اول ترافیک رد می‌شد (RTT $2'],
     [/^unit is running but no traffic passes through the tunnel within (\d+)s([\s\S]*)$/, 'سرویس روشن است ولی در $1 ثانیه هیچ ترافیکی از تانل رد نشد$2'],
-    [/^(.+) unreachable \(panel restarted — end time approximate\)$/, '$1 در دسترس نبود (پنل ری‌استارت شد — زمان پایان تقریبی است)'],
-    [/^(.+) unreachable$/, '$1 در دسترس نیست'],
+    [/^(.+) unreachable \(panel restarted — end time approximate\)$/, (m, a) => (T[a] || a) + ' در دسترس نبود (پنل ری‌استارت شد — زمان پایان تقریبی است)'],
+    [/^(.+) unreachable$/, (m, a) => (T[a] || a) + ' در دسترس نیست'],
+    [/^(⚠ )?(Iran|foreign) service: ([\s\S]+)$/, (m, w, f, r) => (w || '') + (f === 'Iran' ? 'سرویس ایران: ' : 'سرویس خارج: ') + tr(r)],
+    [/^belongs to the account (.+)$/, 'متعلق به حساب $1'],
+    [/^needs (\S+)$/, 'نیاز به $1'],
+    [/^● (\d+) connected$/, '● $1 وصل'],
+    [/^● (\d+) down$/, '● $1 قطع'],
+    [/^· measured (.+)$/, (m, a) => '· اندازه‌گیری شده ' + tr(a)],
+    [/^measured (\d+ (?:min|h|d) ago)$/, (m, a) => 'اندازه‌گیری شده ' + tr(a)],
     [/^· (\d+) down$/, '· $1 قطع'],
     [/^of (\d+)$/, 'از $1'],
     [/^(\d+) min ago$/, '$1 دقیقه پیش'],
@@ -1006,8 +1058,17 @@ window.TP_FA = {
   };
   const SKIP = 'script,style,textarea,pre,code,.mono,.log,.logs,.logbox,[data-notr],[contenteditable]';
   const skip = (el) => !el || (el.closest && el.closest(SKIP));
-  const doText = (n) => { if (skip(n.parentElement)) return; const v = tr(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; };
-  const ATTRS = ['title', 'placeholder', 'aria-label'];
+  // arrows point the way the text reads: "Iran → foreign" is drawn right to left here. A node is
+  // flipped once (wrote): a later repaint that sets new text gets flipped again, ours never
+  const FLIP = { '→': '←', '←': '→', '▸': '◂', '◂': '▸' };
+  const wrote = new WeakMap();
+  const doText = (n) => {
+    if (skip(n.parentElement) || wrote.get(n) === n.nodeValue) return;
+    const v = tr(n.nodeValue).replace(/[→←▸◂]/g, c => FLIP[c]);
+    if (v !== n.nodeValue) { n.nodeValue = v; wrote.set(n, v); }
+  };
+  // label: <optgroup>s; data-l: the phone labels of table cells (shown by CSS)
+  const ATTRS = ['title', 'placeholder', 'aria-label', 'label', 'data-l'];
   const doEl = (el) => {
     if (skip(el)) return;
     for (const a of ATTRS) { const v = el.getAttribute(a); if (v) { const t = tr(v); if (t !== v) el.setAttribute(a, t); } }
