@@ -2424,13 +2424,25 @@ async function igAddServer() {
 }
 
 // ---- one server
-const IGTABS = [['routes', 'Routes'], ['proxies', 'Proxies'], ['warp', 'WARP'], ['sites', 'My sites'], ['settings', 'Settings'], ['checks', 'Test account · Gemini · Telegram'], ['tools', 'Tests & diagnosis'], ['server', 'Server']];
+const IGTABS = [['routes', 'Routes'], ['proxies', 'Proxies'], ['warp', 'WARP'], ['sites', 'My sites'], ['settings', 'Settings'], ['checks', 'Test account · Gemini'], ['tools', 'Tests & diagnosis']];
 function igDetail(w) {
   const s = IG.cur, i = s.info || {};
-  w.innerHTML = topbar(s.name, s.host, `<button class="btn" id="igback">← All servers</button><button class="btn" id="igre">↻</button>`);
+  // the agent's own actions (they were the "Server" tab): a ⋯ menu next to Refresh
+  const agentMenu = moreMenu([{ label: 'Install / update agent', attr: 'data-ia="deploy"' },
+    { label: i.paused === 'YES' ? 'Turn back on' : 'Re-apply / restart', attr: 'data-ia="apply"' },
+    i.paused === 'YES' ? null : { label: 'Pause (everything direct)', attr: 'data-ia="pause"' },
+    { label: 'Take off this page', attr: 'data-ia="remove"', danger: true }, { label: 'Uninstall igproxy from the server', attr: 'data-ia="uninstall"', danger: true }]);
+  if (IG.tab === 'server') IG.tab = 'routes';
+  w.innerHTML = topbar(s.name, s.host, `<button class="btn" id="igback">← All servers</button><button class="btn" id="igre">↻</button>${agentMenu}`);
   $$('.topbar h1, .topbar p', w).forEach(x => x.setAttribute('data-notr', '')); // the server's own name and address
   $('#igback', w).onclick = () => { IG.cur = null; igRender(); };
   $('#igre', w).onclick = () => igRefreshAfter({ srv: s.id });
+  $$('[data-ia]', w).forEach(b => b.onclick = () => ({
+    deploy: () => igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`),
+    apply: () => igAct(igS({ action: 'apply' })),
+    pause: () => igAct(igS({ action: 'pause' }), 'Pause igproxy? All traffic goes direct until you turn it back on.'),
+    remove: () => igRemove(false), uninstall: () => igRemove(true),
+  })[b.dataset.ia]());
   w.insertAdjacentHTML('beforeend', `<div class="card pad"><div class="statline">${igPill(i.state)} ${igOwner(s)}
     ${i.ig ? `<span>router <b>${esc(i.router)}</b></span><span>redirect <b>${esc(i.redirect)}</b></span><span>🔗 connections <b>${+i.caught || 0}</b></span>
     <span>active WARP <b class="mono">${esc(i.active)}</b></span><span>Google's WARP <b class="mono">${esc(i.gact)}</b></span>
@@ -2440,11 +2452,11 @@ function igDetail(w) {
     : `<span>${esc(i.err || '')}</span>`}</div>
     ${i.wide === 'ON' ? '<div class="mdesc">Wide catch is on: all web traffic of this server passes the igproxy router and is routed by domain.</div>' : ''}
     ${i.state === 'PANEL' ? '<div class="mcrit" style="margin:10px 0 0">The x-ui panel on this server blocks or diverts Google before igproxy sees it → Tests & diagnosis → Fix panel.</div>' : ''}
-    ${['UPDATE', 'NOAGENT'].includes(i.state) || i.outdated === '1' ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → Server → Install / update.</div>' : ''}
+    ${['UPDATE', 'NOAGENT'].includes(i.state) || i.outdated === '1' ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → ⋯ at the top → Install / update agent.</div>' : ''}
     ${igAccBroken(i) ? `<div class="mwarn" style="margin:10px 0 0">Instagram logged the test account out (${esc(igAccWhy(i))}): no WARP or proxy is checked for Instagram music until a new sessionid is saved → Test account tab.</div>` : ''}</div>
     <div class="seg igtabs">${IGTABS.map(([k, t]) => `<button data-t="${k}" class="${k === IG.tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igtab"></div>`);
   $$('.igtabs button', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.t; igRender(); });
-  if (!i.ig && IG.tab !== 'tools' && IG.tab !== 'server') {
+  if (!i.ig && IG.tab !== 'tools') {
     $('#igtab').innerHTML = `<div class="card empty"><div class="big">${i.state === 'OFFLINE' ? '📡' : '📦'}</div><h3>${esc((IGST[i.state] || [i.state])[0])}</h3>
       <p class="muted">${i.state === 'OFFLINE' ? 'The panel can\'t reach this server right now.' : 'This part works once the agent is installed.'}</p>${i.state === 'OFFLINE' ? '' : `<button class="btn pri" id="igdep">Install / update agent</button>`}</div>`;
     $('#igdep') && ($('#igdep').onclick = () => igAct(igS({ action: 'deploy' })));
@@ -2546,20 +2558,13 @@ const IGTAB = {
      <div class="card pad sec"><h3>Gemini API key ${st(i.gkey)}</h3>
       <p class="muted">With a free aistudio.google.com key each server asks Gemini through its WARP IPs whether the region is blocked.</p>
       <div class="ff"><label class="f">Key (AIza…)<input id="iggk" ${igSecret}></label><label class="f row"><input type="checkbox" id="iggkall"> On every server in view</label></div>
-      <div class="actions" style="margin-top:10px"><button class="btn pri" id="iggkgo">Save</button><button class="btn" id="iggkt">Test on every WARP</button><button class="btn danger" id="iggkdel">Remove</button></div></div>
-     <div class="card pad sec"><h3>Telegram bot ${st(i.tg)}</h3>
-      <p class="muted">Reports outages, repairs and proxy problems. Commands: /status /music /warp. After "Set up", send <b>/start</b> to the bot within 60 seconds.</p>
-      <div class="ff"><label class="f">Token (from BotFather)<input id="igtt" ${igSecret}></label></div>
-      <div class="actions" style="margin-top:10px"><button class="btn pri" id="igtgo">Set up</button><button class="btn" id="igtt2">Test message</button><button class="btn danger" id="igtdel">Remove</button></div></div>`;
+      <div class="actions" style="margin-top:10px"><button class="btn pri" id="iggkgo">Save</button><button class="btn" id="iggkt">Test on every WARP</button><button class="btn danger" id="iggkdel">Remove</button></div></div>`;
     $('#igsidgo').onclick = () => igAct(igS({ action: 'ig_session', sid: $('#igsid').value.trim() }));
     $('#igmt').onclick = () => igAct(igS({ action: 'ig_test' }));
     $('#igsdel').onclick = () => igAct(igS({ action: 'ig_del' }), 'Remove the test account?');
     $('#iggkgo').onclick = () => igAct({ srv: $('#iggkall').checked ? 'all' : IG.cur.id, action: 'gemkey_set', key: $('#iggk').value.trim() });
     $('#iggkt').onclick = () => igAct(igS({ action: 'gemkey_test' }));
     $('#iggkdel').onclick = () => igAct(igS({ action: 'gemkey_del' }), 'Remove the key?');
-    $('#igtgo').onclick = () => igAct(igS({ action: 'tg_setup', token: $('#igtt').value.trim() }));
-    $('#igtt2').onclick = () => igAct(igS({ action: 'tg_test' }));
-    $('#igtdel').onclick = () => igAct(igS({ action: 'tg_del' }), 'Remove the bot?');
   },
   tools() {
     const i = IG.cur.info, nr = { refresh: false };
@@ -2578,23 +2583,6 @@ const IGTAB = {
     $('#igpc').onclick = () => igAct(igS({ action: 'panel_check' }), null, nr);
     $('#igpf').onclick = () => igAct(igS({ action: 'panel_fix' }), 'Add one rule at the top of the panel\'s routing? Its Xray restarts for 2-3 seconds.');
     $('#igpu2').onclick = () => igAct(igS({ action: 'panel_undo' }), 'Remove the igproxy rule from the panel?');
-  },
-  server() {
-    const s = IG.cur, i = s.info || {};
-    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Agent</h3><table class="tbl igt">
-      <tr><td>Server</td><td><b data-notr>${esc(s.name)}</b> <span class="mono faint">${esc(s.host)}</span></td></tr>
-      <tr><td>Agent on this server</td><td class="mono">${esc(i.sum || '—')}</td></tr><tr><td>Agent on the panel</td><td class="mono">${esc(IG.data?.agent || '—')}</td></tr></table>
-      <div class="actions" style="margin-top:12px"><button class="btn pri" id="igsd">Install / update agent</button>
-      <button class="btn" id="igsa">${i.paused === 'YES' ? 'Turn back on' : 'Re-apply / restart'}</button>
-      ${i.paused === 'YES' ? '' : '<button class="btn" id="igsp">Pause (everything direct)</button>'}</div>
-      <p class="muted" style="font-size:13px;margin-bottom:0">Name, address and SSH login are the server's own, under <b>Servers</b>.</p></div>
-     <div class="card pad sec"><h3>Remove</h3><div class="actions"><button class="btn danger" id="igsr">Take off this page</button><button class="btn danger" id="igsu">Uninstall igproxy from the server</button></div>
-      <p class="muted" style="font-size:13px;margin-bottom:0">Taking it off the page leaves igproxy running on the server.</p></div>`;
-    $('#igsd').onclick = () => igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`);
-    $('#igsa').onclick = () => igAct(igS({ action: 'apply' }));
-    $('#igsp') && ($('#igsp').onclick = () => igAct(igS({ action: 'pause' }), 'Pause igproxy? All traffic goes direct until you turn it back on.'));
-    $('#igsr').onclick = () => igRemove(false);
-    $('#igsu').onclick = () => igRemove(true);
   }
 };
 async function igRemove(uninstall) {

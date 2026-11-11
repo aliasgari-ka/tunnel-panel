@@ -573,7 +573,7 @@ window.TP_FA = {
 "Telegram bot": "ربات Telegram",
 "Telegram setup — send /start to the bot now": "راه‌اندازی Telegram — همین حالا /start را به ربات بفرستید",
 "Telegram test message": "پیام تست Telegram",
-"Test account · Gemini · Telegram": "حساب تست · Gemini · Telegram",
+"Test account · Gemini": "حساب تست · Gemini",
 "Test all": "تست همه",
 "Test all (music & speed)": "تست همه (موزیک و سرعت)",
 "Test connection": "تست اتصال",
@@ -1056,6 +1056,7 @@ window.TP_FA = {
 "Instagram's WARPs all leave from one exit IP (": "همهٔ WARPهای Instagram از یک IP خروجی بیرون می‌روند (",
 "). A WARP that comes out with another IP waits on standby and is checked again later.": "). WARPی که IP دیگری بگیرد آماده‌به‌کار می‌ماند و بعداً دوباره بررسی می‌شود.",
 "Asking Google for every WARP… (up to a minute)": "در حال پرسیدن از Google برای هر WARP… (تا یک دقیقه)",
+"The agent here is old or not installed → ⋯ at the top → Install / update agent.": "ایجنت این سرور قدیمی است یا نصب نیست → ⋯ بالای صفحه → نصب / به‌روزرسانی ایجنت.",
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title
