@@ -74,7 +74,8 @@ func (a *App) routes() http.Handler {
 		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
 		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
-		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true}
+		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true,
+		"/api/igproxy/warps": true}
 	g := func(path, kind string, h http.HandlerFunc) {
 		if !reads[path] {
 			h = postOnly(h)
@@ -139,6 +140,7 @@ func (a *App) routes() http.Handler {
 	// IG routing (igproxy.go): each handler keeps an account to its own servers
 	g("/api/igproxy/servers", "self", s.igServers)
 	g("/api/igproxy/info", "self", s.igInfoGet)
+	g("/api/igproxy/warps", "self", s.igWarpsGet)
 	g("/api/igproxy/action", "self", s.igAction)
 	g("/api/igproxy/enable", "self", s.igEnable)
 	g("/api/igproxy/copy", "self", s.igCopy)
