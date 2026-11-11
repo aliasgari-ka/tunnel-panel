@@ -43,14 +43,15 @@ func TestHSReadDownReason(t *testing.T) {
 	if v.Why[0] != "" {
 		t.Errorf("a working path has no reason: %q", v.Why[0])
 	}
-	if v.Why[1] != "running on the Iran server, but no answer comes through it" {
+	// path 1 is Backhaul Premium: its reason also points at the license server (seen 2026-11-11)
+	if v.Why[1] != "running on the Iran server, but no answer comes through it"+premiumDownHint || !strings.Contains(v.Why[1], "License is valid") {
 		t.Errorf("why[1] = %q", v.Why[1])
 	}
 	w := v.Why[2]
 	if !strings.HasPrefix(w, "its core on the Iran server is failed — ") || strings.Contains(w, "65.109.179.143") || strings.Contains(w, "abcd1234") {
 		t.Errorf("why[2] = %q (state first, no address, no secret)", w)
 	}
-	if !strings.HasPrefix(v.Why[3], "last error: 11-Nov [WARN] Heartbeat timeout — the cores") {
+	if !strings.HasPrefix(v.Why[3], "last error: 11-Nov [WARN] Heartbeat timeout — the cores") || strings.Contains(v.Why[3], "License") {
 		t.Errorf("why[3] = %q", v.Why[3])
 	}
 }
