@@ -5,10 +5,9 @@ import (
 	"testing"
 )
 
-// Seen live (xe108 wholesale, Iran→Germany): the route passed the first few PSH+ACK frames of
-// each paqet flow and dropped the rest (353 sent, 12 arrived), so the switcher's checks got no
-// answer and the path stayed ✕. ACK-only frames passed in full on the same servers. The
-// configs now carry the flags, ACK-only by default, the same on both sides.
+// The configs carry the TCP flags, the same on both sides: paqet's own PSH+ACK by default
+// (other flags were no better on xe108, where the route cut some flows whatever the flags),
+// another one when chosen, and nothing else reaches the YAML.
 func TestPaqetTCPFlags(t *testing.T) {
 	srv := &Server{ID: "ir", IPv4: "192.0.2.1"}
 	fsrv := &Server{ID: "kh", IPv4: "198.51.100.2"}
@@ -29,13 +28,13 @@ func TestPaqetTCPFlags(t *testing.T) {
 	}
 	for side, p := range map[string]SidePlan{"Iran": ir, "foreign": kh} {
 		c := tmpl(p)
-		if !strings.Contains(c, "  tcp:\n    local_flag: [\"A\"]\n    remote_flag: [\"A\"]\n") {
-			t.Errorf("%s config: want ACK-only TCP flags by default, got:\n%s", side, c)
+		if !strings.Contains(c, "  tcp:\n    local_flag: [\"PA\"]\n    remote_flag: [\"PA\"]\n") {
+			t.Errorf("%s config: want PSH+ACK TCP flags by default, got:\n%s", side, c)
 		}
 	}
-	ir, _, err = buildPlans(methodPaqet, tun(map[string]map[string]string{"paqet": {"flags": "PA"}}), srv, fsrv, Settings{})
-	if err != nil || !strings.Contains(tmpl(ir), `local_flag: ["PA"]`) {
-		t.Errorf("flags PA not in the config (err %v)", err)
+	ir, _, err = buildPlans(methodPaqet, tun(map[string]map[string]string{"paqet": {"flags": "A"}}), srv, fsrv, Settings{})
+	if err != nil || !strings.Contains(tmpl(ir), `local_flag: ["A"]`) {
+		t.Errorf("flags A not in the config (err %v)", err)
 	}
 	if _, _, err = buildPlans(methodPaqet, tun(map[string]map[string]string{"paqet": {"flags": `A"] ; x`}}), srv, fsrv, Settings{}); err == nil {
 		t.Error("an unknown flags value reached the config")
