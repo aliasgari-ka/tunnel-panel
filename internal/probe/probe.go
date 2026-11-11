@@ -352,17 +352,19 @@ func bwDown(addr string, secs int, max int64) (*BWResult, error) {
 	if _, err := c.Write(req); err != nil {
 		return nil, err
 	}
+	// timed from the request, not from the first byte: a tunnel that holds the data back and
+	// hands it over in one burst (seen live: a reverse pck tunnel, 6 MB in a few ms) measured
+	// 244 Mbit/s on a route where nothing passes 40 — and the hot-standby switcher's speed
+	// checks use this too. The request's one-way trip is a small part of the window.
+	first := time.Now()
 	buf := make([]byte, 256<<10)
 	var r BWResult
-	var first, last time.Time
+	var last time.Time
 	hard := time.Now().Add(time.Duration(secs+15) * time.Second)
 	for {
 		_ = c.SetReadDeadline(minTime(time.Now().Add(5*time.Second), hard))
 		k, err := c.Read(buf)
 		if k > 0 {
-			if first.IsZero() {
-				first = time.Now()
-			}
 			last = time.Now()
 			r.Bytes += int64(k)
 		}
