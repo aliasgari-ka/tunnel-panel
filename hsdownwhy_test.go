@@ -50,7 +50,7 @@ func TestHSReadDownReason(t *testing.T) {
 	if !strings.HasPrefix(w, "its core on the Iran server is failed — ") || strings.Contains(w, "65.109.179.143") || strings.Contains(w, "abcd1234") {
 		t.Errorf("why[2] = %q (state first, no address, no secret)", w)
 	}
-	if v.Why[3] != "last error: 11-Nov [WARN] Heartbeat timeout" {
+	if !strings.HasPrefix(v.Why[3], "last error: 11-Nov [WARN] Heartbeat timeout — the cores") {
 		t.Errorf("why[3] = %q", v.Why[3])
 	}
 }
@@ -81,5 +81,46 @@ func TestHSWhyScript(t *testing.T) {
 	}
 	if hsWhyScript(tn, nil) != "" {
 		t.Error("no paths, no script")
+	}
+}
+
+// Seen live (2026-11-11, every Backhaul Premium ipx/tun path at once): the route stopped
+// passing the carrier, the core's heartbeat timed out and it restarted its transport — and
+// the page showed the last lines of that restart, "tun read error (worker 4) read tun: file
+// already closed", which reads as a broken TUN. The workers' shutdown noise is skipped: the
+// reason is the heartbeat timeout, and it says what that means.
+func TestHSWhyScriptSkipsRestartNoise(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash")
+	}
+	log := `11-Nov 21:55:05 [INFO] Connected remote=10.10.1.2:62916
+11-Nov 21:55:40 [WARN] Heartbeat timeout — Status: Disconnected timeout=25000
+11-Nov 21:55:40 [ERROR] transport failed, restarting error="💔 Heartbeat timeout"
+11-Nov 21:55:40 [ERROR] tun read error (worker 0) error="read tun: file already closed"
+11-Nov 21:55:40 [ERROR] tun read error (worker 4) error="read tun: file already closed"
+11-Nov 21:55:40 [INFO] cleaned up resources
+11-Nov 21:55:44 [INFO] health service listening on 10.10.1.1:40004
+`
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "status"), []byte("0 down 5 - - -\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "log"), []byte(log), 0o644)
+	s := hsWhyScript(&Tunnel{ID: "x"}, []HSPath{{Method: "premium", Index: 1}})
+	fake := `systemctl() { case "$1" in is-active) echo active;; show) echo inv1;; esac; return 0; }
+journalctl() { cat log; }
+`
+	cmd := exec.Command("bash", "-c", fake+s)
+	cmd.Dir = dir
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, b)
+	}
+	got := strings.TrimSpace(string(b))
+	if strings.Contains(got, "file already closed") || !strings.Contains(got, "transport failed, restarting") {
+		t.Fatalf("W line = %q, want the heartbeat timeout, not the restart's shutdown noise", got)
+	}
+	f := strings.Fields(got)
+	why := hsWhyText(f[2], strings.Join(f[3:], " "))
+	if !strings.Contains(why, "Heartbeat timeout") || !strings.Contains(why, "stopped hearing each other") {
+		t.Errorf("why = %q", why)
 	}
 }

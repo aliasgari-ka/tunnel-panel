@@ -1149,7 +1149,10 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 // hsWhyScript: for each path the switcher has down, one line "W <k> <state> <last error>":
 // the state of the path's own unit on the Iran server (none = the path has no unit there)
 // and the last error/warning that unit logged since it last started (its earlier runs are
-// left out: their shutdown errors would read as today's reason).
+// left out: their shutdown errors would read as today's reason). Within a run, a core that
+// restarts its own transport closes its readers too ("read tun: file already closed", every
+// Backhaul Premium ipx/tun path on 2026-11-11): that noise is skipped, so the reason is
+// what made it restart.
 func hsWhyScript(t *Tunnel, good []HSPath) string {
 	if len(good) == 0 {
 		return ""
@@ -1163,7 +1166,7 @@ func hsWhyScript(t *Tunnel, good []HSPath) string {
   awk -v k="$k" '$1 == k && $2 == "down" {f=1} END {exit !f}' status 2>/dev/null || continue
   if ! systemctl cat "$u" >/dev/null 2>&1; then echo "W $k none"; continue; fi
   s=$(systemctl is-active "$u" 2>/dev/null); i=$(systemctl show -p InvocationID --value "$u" 2>/dev/null); l=""
-  [ -n "$i" ] && l=$(journalctl _SYSTEMD_INVOCATION_ID="$i" -o cat --no-pager -n 400 2>/dev/null | grep -aiE 'error|warn|fail|timeout|refused|denied|disconnect|unreachable' | tail -n 1 | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '[:print:]' | cut -c1-220)
+  [ -n "$i" ] && l=$(journalctl _SYSTEMD_INVOCATION_ID="$i" -o cat --no-pager -n 400 2>/dev/null | grep -aiE 'error|warn|fail|timeout|refused|denied|disconnect|unreachable' | grep -aviE 'file already closed|use of closed' | tail -n 1 | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '[:print:]' | cut -c1-220)
   echo "W $k ${s:-unknown} $l"
 done`
 }
@@ -1178,7 +1181,11 @@ func hsWhyText(state, line string) string {
 	switch state {
 	case "active", "none", "reloading":
 		if line != "" {
-			return "last error: " + line
+			r := "last error: " + line
+			if strings.Contains(strings.ToLower(line), "heartbeat timeout") {
+				r += " — the cores on the two servers stopped hearing each other: the route drops this path's packets now (the core keeps retrying)"
+			}
+			return r
 		}
 		if state == "none" {
 			return ""
