@@ -56,6 +56,7 @@ type TrafficStat struct {
 	lastD, lastU uint64
 	haveLast     bool
 	parts        [][2]uint64 // down/up of each counter the totals add up (cards, iptables + ip6tables)
+	epoch        string      // a tunnel's counter marks, one per part ("e:<m>+<m>"; "" = none)
 }
 
 // TrafficSnapshot is what /api/traffic returns.
@@ -201,20 +202,31 @@ func acctScript(t *Tunnel) string {
 			fmt.Fprintf(&rules, "  $ipt -w -A %s -p %s -m conntrack --ctdir ORIGINAL --ctorigdstport %s\n  $ipt -w -A %s -p %s -m conntrack --ctdir REPLY --ctorigdstport %s\n", in, proto, port, out, proto, port)
 		}
 	}
-	return fmt.Sprintf(`d=0; u=0; p=
+	// Each family's chains get a mark (/run/tp-acct/<id>.<ipt>) when they are made: a new mark
+	// tells the usage log those counters start again from 0 even when they already grew past
+	// the last read. A listing that fails prints "-" (never 0: the next good read would count
+	// the chains' whole lifetime again), and then the read is not used.
+	return fmt.Sprintf(`d=0; u=0; p=; e=; bad=; ad=${TP_ACCT_DIR:-/run/tp-acct}
 for ipt in iptables ip6tables; do
   command -v $ipt >/dev/null 2>&1 || continue
+  mk=$ad/%[3]s.$ipt
   # (chains from before the conntrack-based rules are rebuilt once)
   if ! $ipt -w -S %[1]s 2>/dev/null | grep -q ctorigdstport; then
     while $ipt -w -D INPUT -j %[1]s 2>/dev/null; do :; done; while $ipt -w -D OUTPUT -j %[2]s 2>/dev/null; do :; done
     $ipt -w -F %[1]s 2>/dev/null; $ipt -w -X %[1]s 2>/dev/null; $ipt -w -F %[2]s 2>/dev/null; $ipt -w -X %[2]s 2>/dev/null
     $ipt -w -N %[1]s 2>/dev/null; $ipt -w -N %[2]s 2>/dev/null
-%[4]s  fi
-  %[5]s  %[6]s  xd=$($ipt -w -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
-  xu=$($ipt -w -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{printf "%%.0f", s+0}')
-  d=$((d+xd)); u=$((u+xu)); p="$p${p:++}$xd/$xu"
+%[4]s    $ipt -w -nL %[1]s >/dev/null 2>&1 && { mkdir -p $ad; echo "$(date +%%s).$$" > $mk; }
+  fi
+  %[5]s  %[6]s  xd=$($ipt -w -nvxL %[2]s 2>/dev/null | awk 'NR>2{s+=$2}END{if(NR<2)print "-";else printf "%%.0f", s+0}')
+  xu=$($ipt -w -nvxL %[1]s 2>/dev/null | awk 'NR>2{s+=$2}END{if(NR<2)print "-";else printf "%%.0f", s+0}')
+  # chains that were read before and now can't be: the read failed. Never made (no IPv6
+  # in this kernel): this family isn't counted here
+  case "$xd/$xu" in *-*|/*|*/) [ -e $mk ] && bad=1; continue;; esac
+  m=$(cat $mk 2>/dev/null); [ -n "$m" ] || { mkdir -p $ad; m=0; echo 0 > $mk; }
+  d=$((d+xd)); u=$((u+xu)); p="$p${p:++}$xd/$xu"; e="$e${e:++}$m"
 done
-echo "T %[3]s $d $u ports $p"
+[ -z "$bad" ] || { d=-; u=-; }
+echo "T %[3]s $d $u ports $p ep $e"
 `, in, out, t.ID, rules.String(), jumpOnce("$ipt", "INPUT", in), jumpOnce("$ipt", "OUTPUT", out))
 }
 
@@ -227,8 +239,9 @@ func acctDown(t *Tunnel) string {
   while $ipt -w -D OUTPUT -j %[2]s 2>/dev/null; do :; done
   $ipt -w -F %[1]s 2>/dev/null; $ipt -w -X %[1]s 2>/dev/null
   $ipt -w -F %[2]s 2>/dev/null; $ipt -w -X %[2]s 2>/dev/null
+  rm -f ${TP_ACCT_DIR:-/run/tp-acct}/%[3]s.$ipt
 done
-`, in, out)
+`, in, out, t.ID)
 }
 
 // trafficCollect reads every relevant host once, in parallel.
@@ -263,7 +276,7 @@ func (a *App) trafficCollect() {
 	read := func(id string, ts []*Tunnel) {
 		defer wg.Done()
 		defer func() { tm.mu.Lock(); delete(tm.busy, id); tm.mu.Unlock() }()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		var h Host = LocalHost{}
 		if id != "" {
@@ -287,12 +300,23 @@ func (a *App) trafficCollect() {
 				sb.WriteString(hsAcct(t))
 			} else if m := methodByID[t.Active]; m != nil && benchIsL3(m, t.Options[m.ID]) {
 				ifc := trafficIface(t)
-				fmt.Fprintf(&sb, "echo \"T %s $(cat /sys/class/net/%[2]s/statistics/rx_bytes 2>/dev/null || echo -) $(cat /sys/class/net/%[2]s/statistics/tx_bytes 2>/dev/null || echo -) iface %[2]s\"\n", t.ID, ifc)
+				// the interface's index is its counters' mark: a new index = made again from 0
+				fmt.Fprintf(&sb, "echo \"T %s $(cat /sys/class/net/%[2]s/statistics/rx_bytes 2>/dev/null || echo -) $(cat /sys/class/net/%[2]s/statistics/tx_bytes 2>/dev/null || echo -) iface %[2]s ep $(cat /sys/class/net/%[2]s/ifindex 2>/dev/null || echo -)\"\n", t.ID, ifc)
 			} else {
 				sb.WriteString(acctScript(t))
 			}
 		}
 		out, err := h.Run(ctx, sb.String(), nil)
+		if err != nil {
+			// a read cut short (timeout): only its whole lines are used — a last line cut in
+			// the middle of a number would read as a much smaller counter. What wasn't read
+			// is held for the next round (usageLog.recordLocked).
+			if i := strings.LastIndex(out, "\n"); i >= 0 {
+				out = out[:i+1]
+			} else {
+				out = ""
+			}
+		}
 		if err != nil && strings.TrimSpace(out) == "" {
 			a.trafficFail(id, ts, err.Error())
 			return
@@ -504,6 +528,16 @@ func (a *App) trafficParse(serverID string, ts []*Tunnel, out string) {
 		case len(f) >= 4 && f[0] == "T":
 			src := "ports"
 			s := tm.stat(tm.tunnels, f[1])
+			s.epoch = ""
+			for i := 4; i < len(f); i++ { // "... ep <mark>[+<mark>]": the counters' marks
+				if f[i] == "ep" {
+					if i+1 < len(f) && f[i+1] != "-" {
+						s.epoch = "e:" + f[i+1]
+					}
+					f = f[:i]
+					break
+				}
+			}
 			if len(f) >= 5 && f[4] == "iface" {
 				src = "iface"
 			}
@@ -762,15 +796,23 @@ func fmtRate(bps float64) string {
 // fmtBytes renders a byte count for humans.
 func fmtBytes(b uint64) string {
 	f := float64(b)
-	switch {
-	case f >= 1<<40:
-		return fmt.Sprintf("%.2f TB", f/(1<<40))
-	case f >= 1<<30:
-		return fmt.Sprintf("%.2f GB", f/(1<<30))
-	case f >= 1<<20:
-		return fmt.Sprintf("%.1f MB", f/(1<<20))
-	case f >= 1<<10:
-		return fmt.Sprintf("%.0f KB", f/(1<<10))
+	us := []struct {
+		div  float64
+		name string
+		prec int
+	}{{1, "B", 0}, {1 << 10, "KB", 0}, {1 << 20, "MB", 1}, {1 << 30, "GB", 2}, {1 << 40, "TB", 2}}
+	i := 0
+	for i+1 < len(us) && f >= us[i+1].div {
+		i++
 	}
-	return fmt.Sprintf("%d B", b)
+	// a value that rounds to 1024 of its unit is shown in the next one ("1.0 MB", not "1024 KB")
+	if i+1 < len(us) {
+		if v, _ := strconv.ParseFloat(fmt.Sprintf("%.*f", us[i].prec, f/us[i].div), 64); v >= 1024 {
+			i++
+		}
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d B", b)
+	}
+	return fmt.Sprintf("%.*f %s", us[i].prec, f/us[i].div, us[i].name)
 }

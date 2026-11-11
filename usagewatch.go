@@ -33,8 +33,8 @@ func usageWatchCheck(b *usageBucket, pairs map[string][2]string, names map[strin
 	for k, v := range b.Peers {
 		from[strings.SplitN(k, "|", 2)[0]] += v.Down
 	}
-	for id, p := range pairs {
-		if x := b.Tunnels[id]; x != nil {
+	for id, x := range b.Tunnels {
+		if p, ok := usagePairOf(b, pairs, id); ok {
 			up[p[0]] += x.Up
 		}
 	}
@@ -52,7 +52,7 @@ func usageWatchCheck(b *usageBucket, pairs map[string][2]string, names map[strin
 	paid, est := usagePaid(b, pairs)
 	for id, x := range b.Tunnels {
 		used := x.Down + x.Up
-		if est[id] || used < usageWatchMin || pairs[id][0] == "" {
+		if p, _ := usagePairOf(b, pairs, id); est[id] || used < usageWatchMin || p[0] == "" {
 			continue
 		}
 		if c := float64(paid[id]) / float64(used); c > 1.30 || c < 0.80 {
@@ -88,6 +88,14 @@ func (a *App) usageWatchLoop() {
 		}
 		var issues []usageIssue
 		u.mu.Lock()
+		for id, k := range u.Known { // deleted tunnels still in this hour
+			if _, ok := pairs[id]; !ok {
+				if i := strings.LastIndex(k.Pair, "|"); i >= 0 {
+					pairs[id] = [2]string{k.Pair[:i], k.Pair[i+1:]}
+					names[id] = k.Name
+				}
+			}
+		}
 		for _, b := range u.Buckets {
 			if b.Hour == hour {
 				issues = usageWatchCheck(b, pairs, names)

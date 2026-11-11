@@ -929,7 +929,11 @@ window.TP_FA = {
 "tunnels": "تانل‌ها",
 "No foreign server yet.": "هنوز سرور خارجی نیست.",
 "Add an Iran server (entry) and a foreign server (exit), then build a tunnel between them.": "یک سرور ایران (ورودی) و یک سرور خارج (خروجی) اضافه کنید، بعد بینشان تانل بسازید.",
-"A shell on this server in the browser, over the panel's own path to it": "شل این سرور در مرورگر، از همان مسیری که پنل به آن وصل می‌شود"
+"A shell on this server in the browser, over the panel's own path to it": "شل این سرور در مرورگر، از همان مسیری که پنل به آن وصل می‌شود",
+"(deleted)": "(حذف‌شده)",
+"💰 Other tunnels on this server": "💰 تانل‌های دیگر روی این سرور",
+"Hours are kept 35 days: a range that starts earlier is shown day by day, whole Tehran days.": "ساعت‌ها ۳۵ روز نگه داشته می‌شوند: بازه‌ای که زودتر شروع شود روزبه‌روز و با روزهای کامل تهران نشان داده می‌شود.",
+"Only the last 400 days are kept: the range starts at the oldest day kept. Hours are kept 35 days: a range that starts earlier is shown day by day, whole Tehran days.": "فقط ۴۰۰ روز آخر نگه داشته می‌شود: بازه از قدیمی‌ترین روزِ مانده شروع می‌شود. ساعت‌ها ۳۵ روز نگه داشته می‌شوند: بازه‌ای که زودتر شروع شود روزبه‌روز و با روزهای کامل تهران نشان داده می‌شود."
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title
