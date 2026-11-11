@@ -1046,6 +1046,7 @@ window.TP_FA = {
   const PAT = [
     [/^(\d+) tunnels?$/, '$1 تانل'],
     [/^last error: ([\s\S]+)$/, 'آخرین خطا: $1'],
+    [/^the route drops most of its raw TCP frames \(([^)]*)\) — try other TCP flags in Paqet's settings$/, 'مسیر بیشتر فریم‌های TCP خامش را می‌اندازد ($1) — پرچم TCP دیگری در تنظیمات Paqet امتحان کنید'],
     [/^its core on the Iran server is (\S+)( — [\s\S]*)?$/, 'هسته‌اش روی سرور ایران $1 است$2'],
     [/^its core on the Iran server keeps restarting — ([\s\S]*)$/, 'هسته‌اش روی سرور ایران مدام ری‌استارت می‌شود — $1'],
     [/^(\d+) servers? · (\d+) tunnels?$/, '$1 سرور · $2 تانل'],
