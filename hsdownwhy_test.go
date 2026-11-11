@@ -64,7 +64,7 @@ func TestHSWhyScript(t *testing.T) {
 	tn := &Tunnel{ID: "fin"}
 	good := []HSPath{{Method: "a", Index: 65}, {Method: "b", Index: 57}, {Method: "c", Index: 58}}
 	s := hsWhyScript(tn, good)
-	for _, u := range []string{"0:tp-finx65.service", "1:tp-finx57.service", "2:tp-finx58.service"} {
+	for _, u := range []string{"'a|=tp-finx65.service'", "'b|=tp-finx57.service'", "'c|=tp-finx58.service'"} {
 		if !strings.Contains(s, u) {
 			t.Errorf("script misses %s", u)
 		}

@@ -301,14 +301,25 @@ func goldenConflict(st *State, t *Tunnel) string {
 // license servers every 3 seconds.
 const premiumRestartSec = 30
 
+// premiumLicenseBad matches every bad verdict the core can log (the strings in its binary,
+// among them "License rejected", "License status is unknown", "License server returned
+// failure" and "License verification API failed", which used to pass the apply with a note
+// blaming the server's DNS). premiumLicenseServerDown is the part that says the vendor's
+// license service is failing, not this server's license.
+const premiumLicenseBad = `licen[cs]e (ip|does not|has expired|is expired|is invalid|rejected|status (is )?unknown|issue|server returned failure|verification api failed)|invalid license|unknown license`
+const premiumLicenseServerDown = `server returned failure|verification api failed`
+
 const premiumLicenseCheck = `jl() { inv=$(systemctl show -p InvocationID --value $UNIT 2>/dev/null)
   if [ -n "$inv" ]; then journalctl _SYSTEMD_INVOCATION_ID=$inv --no-pager -o cat 2>/dev/null; else journalctl -u $UNIT -n 80 --no-pager -o cat 2>/dev/null; fi; }
 for i in $(seq 1 15); do
-  l=$(jl | sed 's/\x1b\[[0-9;]*m//g' | grep -i -E 'licen[cs]e (is valid|ip|does not|has expired|is expired|is invalid|status unknown|issue)|invalid license|unknown license' | tail -1)
+  l=$(jl | sed 's/\x1b\[[0-9;]*m//g' | grep -i -E 'licen[cs]e is valid|` + premiumLicenseBad + `' | tail -1)
   case "$l" in
     *[Ii]s\ valid*) echo "Backhaul Premium license: valid"; exit 0 ;;
     "") sleep 1 ;;
-    *) echo "Backhaul Premium license problem: $(echo "$l" | sed 's/^.*\] *//') — the license is bound to this server's public IP; check it with the vendor"; exit 1 ;;
+    *) if echo "$l" | grep -qiE '` + premiumLicenseServerDown + `'; then
+         echo "Backhaul Premium license server is failing: $(echo "$l" | sed 's/^.*\] *//') — the vendor's license service doesn't answer properly (not this server's license); try again later"; exit 1
+       fi
+       echo "Backhaul Premium license problem: $(echo "$l" | sed 's/^.*\] *//') — the license is bound to this server's public IP; check it with the vendor"; exit 1 ;;
   esac
 done
 echo "note: no license verdict from the Premium core within 15 s (it validates online: is this server's internet / DNS working?)"

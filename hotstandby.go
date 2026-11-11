@@ -1061,6 +1061,7 @@ func (a *App) hsRead(ctx context.Context, h Host, t *Tunnel, after int64) (*hsVi
 	dir := hsDir(t)
 	good, pin := a.hsGoodNow(t)
 	out, err := h.Run(ctx, fmt.Sprintf(`cd %s 2>/dev/null || exit 3
+echo "K $(cat keys 2>/dev/null | tr '\n' ' ')"
 echo "A $(cat active 2>/dev/null)"
 echo "M $(cat mode 2>/dev/null || echo manual)"
 sed 's/^/S /' status 2>/dev/null
@@ -1069,6 +1070,13 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 %s`, dir, after, unitName(hsUnitTunnel(t)), hsWhyScript(t, good)), nil)
 	if err != nil && !strings.Contains(out, "A ") {
 		return nil, nil, fmt.Errorf("switcher state unreadable: %v", err)
+	}
+	// the switcher's indices are in its own order (keys): while a "paths" job redeploys it,
+	// t.Paths already has the new order and the old switcher still runs
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) > 1 && f[0] == "K" {
+			good = a.hsOrderByKeys(t, good, f[1:])
+		}
 	}
 	v := &hsView{Active: -1, Read: time.Now().Unix()}
 	for _, p := range good {
@@ -1157,29 +1165,51 @@ func hsWhyScript(t *Tunnel, good []HSPath) string {
 	if len(good) == 0 {
 		return ""
 	}
-	var ku strings.Builder
-	for k, p := range good {
-		fmt.Fprintf(&ku, " %d:%s", k, unitName(&Tunnel{ID: t.ID + "x" + strconv.Itoa(p.Index)}))
+	// by key, in the switcher's own order (its keys file): while a "paths" job redeploys the
+	// switcher, t.Paths already has the new order and the old switcher still runs, and a
+	// reason by index went to the wrong path. No keys file (an old switcher): the panel's order.
+	var ku, keys strings.Builder
+	for _, p := range good {
+		key := p.Method + "|" + p.Family
+		fmt.Fprintf(&ku, " %s", shq(key+"="+unitName(&Tunnel{ID: t.ID + "x" + strconv.Itoa(p.Index)})))
+		fmt.Fprintf(&keys, " %s", shq(key))
 	}
-	return `for ku in` + ku.String() + `; do
-  k=${ku%%:*}; u=${ku#*:}
+	return `{ [ -s keys ] && cat keys || printf '%s\n'` + keys.String() + `; } | { k=-1; while read -r key; do
+  k=$((k+1)); u=""
+  for ku in` + ku.String() + `; do [ "${ku%%=*}" = "$key" ] && u=${ku#*=}; done
   awk -v k="$k" '$1 == k && $2 == "down" {f=1} END {exit !f}' status 2>/dev/null || continue
-  if ! systemctl cat "$u" >/dev/null 2>&1; then echo "W $k none"; continue; fi
+  if [ -z "$u" ] || ! systemctl cat "$u" >/dev/null 2>&1; then echo "W $k none"; continue; fi
   s=$(systemctl is-active "$u" 2>/dev/null); i=$(systemctl show -p InvocationID --value "$u" 2>/dev/null); l=""
   [ -n "$i" ] && l=$(journalctl _SYSTEMD_INVOCATION_ID="$i" -o cat --no-pager -n 400 2>/dev/null | grep -aiE 'error|warn|fail|timeout|refused|denied|disconnect|unreachable' | grep -aviE 'file already closed|use of closed' | tail -n 1 | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '[:print:]' | cut -c1-220)
   echo "W $k ${s:-unknown} $l"
-done`
+done; }`
 }
 
 // hsSecretRe: anything in a core's log line that looks like a secret is cut out before the
-// line reaches the page or the admin chat
-var hsSecretRe = regexp.MustCompile(`(?i)(token|psk|secret|passw(or)?d|license|key)(\S*\s*[=:]\s*)\S+`)
+// line reaches the page or the admin chat. Whole words only: it used to cut "no such host"
+// after a hostname with "license" in it, and "tokenizer: unexpected EOF". A quoted value is
+// hidden whole. psk/token/secret/password also hide a value after a plain space ("bad psk
+// "X"", "token X rejected"), which used to reach the page and the chat. Words common in a
+// log line (license, key) hide only what follows "=" or ":".
+var hsSecretRe = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(psk|token|secret|passw(?:or)?d)\b(\s*[=:]\s*|\s+)("[^"]*"|\S+)`),
+	regexp.MustCompile(`(?i)\b((?:license|api)[_-]?key|license|key|[a-z]+_key)\b(\s*[=:]\s*)("[^"]*"|\S+)`),
+}
+
+// hsRedact cuts addresses (aiRedact) and secrets out of a log line.
+func hsRedact(line string) string {
+	line = aiRedact(line)
+	for _, re := range hsSecretRe {
+		line = re.ReplaceAllString(line, "$1$2***")
+	}
+	return line
+}
 
 var hsPaqetLossRe = regexp.MustCompile(`BOTTLENECK: (?:packet_loss|kcp_lost)\W*([0-9.]+% retransmission|[0-9]+ lost segments)`)
 
 // hsWhyText makes the reason a down path shows from its unit's state and last logged error.
 func hsWhyText(state, line string) string {
-	line = strings.TrimSpace(hsSecretRe.ReplaceAllString(aiRedact(line), "$1$3***"))
+	line = strings.TrimSpace(hsRedact(line))
 	// paqet-plus logs its losses as "[ALERT] BOTTLENECK: packet_loss — 82% retransmission"
 	// or "kcp_lost — 894 lost segments": the core runs, but the route drops its frames —
 	// that, not a vague "last error", is what the path shows
@@ -1239,6 +1269,12 @@ func hsEventText(t *Tunnel, good []HSPath, e string) (int64, string) {
 		return at, fmt.Sprintf("🔀 %s switched to %s — %s (%s), %s (Tehran)", t.Name, name(f[3]), name(f[2]), strings.ReplaceAll(reason, "path "+f[2]+" ", ""), clock(time.Unix(at, 0)))
 	case "kernel":
 		return at, fmt.Sprintf("⚙ %s (Iran server): %s", t.Name, reason)
+	case "keep":
+		// a path chosen in the panel or the bot that didn't answer within a minute: the press
+		// did nothing, and that was said nowhere
+		if k := hsRefusedPin(e); k >= 0 {
+			return at, fmt.Sprintf("📌 %s: %s was chosen but doesn't answer — the users stay on %s, %s (Tehran)", t.Name, name(strconv.Itoa(k)), name(f[3]), clock(time.Unix(at, 0)))
+		}
 	}
 	return at, ""
 }
@@ -1296,6 +1332,9 @@ func (a *App) hsReport(t *Tunnel, v *hsView, events []string) {
 		a.healthMu.Unlock()
 	}
 	good, _ := a.hsGoodNow(t)
+	if v != nil { // the events' indices are the switcher's (its keys), as v's are
+		good = a.hsOrderByKeys(t, good, v.Keys)
+	}
 	var seen int64
 	a.store.View(func(*State) { seen = t.HSSeen })
 	newest := seen
@@ -1306,6 +1345,17 @@ func (a *App) hsReport(t *Tunnel, v *hsView, events []string) {
 		}
 		if msg != "" && at > seen {
 			a.pushTInfo(t, msg) // users stay connected through a switch
+			if k := hsRefusedPin(e); k >= 0 && k < len(good) && v != nil && v.Auto {
+				// auto mode: a choice the switcher refused means nothing more, and a 📌 on a
+				// dead path read as if the users were held there
+				key := good[k].Method + "|" + good[k].Family
+				_ = a.store.Update(func(*State) error {
+					if t.HSPin == key {
+						t.HSPin = ""
+					}
+					return nil
+				})
+			}
 		}
 	}
 	if newest > seen {
@@ -1406,7 +1456,18 @@ func (a *App) hsSwitchJob(t *Tunnel, mid, fam string) (*Job, error) {
 		defer a.jobs.done(j)
 		ctx, cancel := j.context(time.Minute)
 		defer cancel()
-		j.log("%s %s is already running as a hot-standby path — switching the users over, no restart", methodTitle(mid), fam)
+		// a path that runs but is down on the switcher: pinning it alone did nothing (the
+		// switcher waits a minute for it to answer, then keeps the users where they are) and
+		// the only way to restart it was a re-apply that cuts everyone — restart only its core
+		if p, down := a.hsPathDown(t, mid, fam); down {
+			j.log("%s is running but down on the switcher — restarting only its core on both servers first; the users stay where they are", p.label())
+			a.hsKickNoted(t, mid+"|"+fam, time.Now())
+			if err := a.hsRestartPath(ctx, t, p); err != nil {
+				j.log("WARN: restarting it: %v", err)
+			}
+		} else {
+			j.log("%s %s is already running as a hot-standby path — switching the users over, no restart", methodTitle(mid), fam)
+		}
 		msg, err := a.hsPinTo(ctx, t, mid+"|"+fam)
 		if err != nil {
 			j.log("ERROR: %v", err)
