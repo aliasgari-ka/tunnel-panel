@@ -109,7 +109,11 @@ func (a *App) diagnoseHot(ctx context.Context, j *Job, t *Tunnel, ir, kh Host) {
 			if i == v.Active {
 				on = "  ← users"
 			}
-			j.log("  %s %s%s", state, label, on)
+			why := ""
+			if i < len(v.Why) && v.Why[i] != "" {
+				why = " — " + v.Why[i]
+			}
+			j.log("  %s %s%s%s", state, label, on, why)
 		}
 		switch {
 		case up == 0:

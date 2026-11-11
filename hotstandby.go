@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1046,22 +1047,30 @@ type hsView struct {
 	Kbps   []int     `json:"kbps"` // last download measurement (-1 = none yet)
 	Keys   []string  `json:"keys"` // "method|family" of each path
 	Pin    int       `json:"pin"`  // the chosen path's index (-1 = the tunnel's own)
+	// Changed: when each path last went up or down (switcher clock; 0 = unknown). Why: for a
+	// path that is down, what is known about it — its core on the Iran server not running,
+	// or the last error that core logged since it started ("" = it runs and logged nothing:
+	// the tunnel is up on the server but no answer comes through it). A ✕ with no reason
+	// read as a panel bug (seen live: Finland, Backhaul Premium ipx/tun).
+	Changed []int64  `json:"changed"`
+	Why     []string `json:"why"`
 }
 
 // hsRead reads the switcher's state and the events since `after` from the Iran server.
 func (a *App) hsRead(ctx context.Context, h Host, t *Tunnel, after int64) (*hsView, []string, error) {
 	dir := hsDir(t)
+	good, pin := a.hsGoodNow(t)
 	out, err := h.Run(ctx, fmt.Sprintf(`cd %s 2>/dev/null || exit 3
 echo "A $(cat active 2>/dev/null)"
 echo "M $(cat mode 2>/dev/null || echo manual)"
 sed 's/^/S /' status 2>/dev/null
 awk -v s=%d '$1 > s' events.log 2>/dev/null | sed 's/^/E /' | tail -n 50
-systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir, after, unitName(hsUnitTunnel(t))), nil)
+systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
+%s`, dir, after, unitName(hsUnitTunnel(t)), hsWhyScript(t, good)), nil)
 	if err != nil && !strings.Contains(out, "A ") {
 		return nil, nil, fmt.Errorf("switcher state unreadable: %v", err)
 	}
 	v := &hsView{Active: -1, Read: time.Now().Unix()}
-	good, pin := a.hsGoodNow(t)
 	for _, p := range good {
 		v.Paths = append(v.Paths, p.label())
 	}
@@ -1074,6 +1083,7 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 		}
 	}
 	v.RTT, v.Loss, v.Kbps = make([]int, len(v.Paths)), make([]float64, len(v.Paths)), make([]int, len(v.Paths))
+	v.Changed, v.Why = make([]int64, len(v.Paths)), make([]string, len(v.Paths))
 	for k := range v.Paths {
 		v.RTT[k], v.Loss[k], v.Kbps[k] = -1, -1, -1
 	}
@@ -1100,6 +1110,9 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 		case "S":
 			if k, err := strconv.Atoi(f[1]); err == nil && k < len(v.OK) && len(f) > 2 {
 				v.OK[k] = f[2] == "ok"
+				if len(f) > 3 {
+					v.Changed[k], _ = strconv.ParseInt(f[3], 10, 64)
+				}
 				if n, ok := num(f, 4); ok {
 					v.RTT[k] = n
 				}
@@ -1116,12 +1129,71 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"`, dir
 			events = append(events, strings.Join(f[1:], " "))
 		case "U":
 			unit = f[1]
+		case "W":
+			if k, err := strconv.Atoi(f[1]); err == nil && k >= 0 && k < len(v.Why) && len(f) > 2 {
+				v.Why[k] = hsWhyText(f[2], strings.Join(f[3:], " "))
+			}
+		}
+	}
+	for k := range v.Why { // a reason only for a path that is down now
+		if v.OK[k] {
+			v.Why[k] = ""
 		}
 	}
 	if unit != "active" {
 		return v, events, fmt.Errorf("the switcher isn't running on the Iran server")
 	}
 	return v, events, nil
+}
+
+// hsWhyScript: for each path the switcher has down, one line "W <k> <state> <last error>":
+// the state of the path's own unit on the Iran server (none = the path has no unit there)
+// and the last error/warning that unit logged since it last started (its earlier runs are
+// left out: their shutdown errors would read as today's reason).
+func hsWhyScript(t *Tunnel, good []HSPath) string {
+	if len(good) == 0 {
+		return ""
+	}
+	var ku strings.Builder
+	for k, p := range good {
+		fmt.Fprintf(&ku, " %d:%s", k, unitName(&Tunnel{ID: t.ID + "x" + strconv.Itoa(p.Index)}))
+	}
+	return `for ku in` + ku.String() + `; do
+  k=${ku%%:*}; u=${ku#*:}
+  awk -v k="$k" '$1 == k && $2 == "down" {f=1} END {exit !f}' status 2>/dev/null || continue
+  if ! systemctl cat "$u" >/dev/null 2>&1; then echo "W $k none"; continue; fi
+  s=$(systemctl is-active "$u" 2>/dev/null); i=$(systemctl show -p InvocationID --value "$u" 2>/dev/null); l=""
+  [ -n "$i" ] && l=$(journalctl _SYSTEMD_INVOCATION_ID="$i" -o cat --no-pager -n 400 2>/dev/null | grep -aiE 'error|warn|fail|timeout|refused|denied|disconnect|unreachable' | tail -n 1 | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '[:print:]' | cut -c1-220)
+  echo "W $k ${s:-unknown} $l"
+done`
+}
+
+// hsSecretRe: anything in a core's log line that looks like a secret is cut out before the
+// line reaches the page or the admin chat
+var hsSecretRe = regexp.MustCompile(`(?i)(token|psk|secret|passw(or)?d|license|key)(\S*\s*[=:]\s*)\S+`)
+
+// hsWhyText makes the reason a down path shows from its unit's state and last logged error.
+func hsWhyText(state, line string) string {
+	line = strings.TrimSpace(hsSecretRe.ReplaceAllString(aiRedact(line), "$1$3***"))
+	switch state {
+	case "active", "none", "reloading":
+		if line != "" {
+			return "last error: " + line
+		}
+		if state == "none" {
+			return ""
+		}
+		return "running on the Iran server, but no answer comes through it"
+	default: // failed, inactive, activating (a restart loop)…
+		r := "its core on the Iran server is " + state
+		if state == "activating" {
+			r = "its core on the Iran server keeps restarting"
+		}
+		if line != "" {
+			r += " — " + line
+		}
+		return r
+	}
 }
 
 // hsEventText turns "epoch switch from to reason…" into a message line.

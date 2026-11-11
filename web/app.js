@@ -1606,7 +1606,7 @@ function hsChip(t) {
   const v = t.hs;
   if (!v || !v.paths || !v.paths.length) return '<span class="chip hs" title="hot standby — starts on the next Start/Re-apply">⚡ standby</span>';
   const n = v.ok.filter(Boolean).length, cur = v.paths[v.active] || '—';
-  return `<span class="chip hs${n ? (n < v.paths.length ? ' part' : '') : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '')).join('\n'))}">⚡ <b class="ltr">${n}/${v.paths.length}</b> <span>paths working</span> · <span>users on</span> <b>${esc(cur)}</b>${v.since ? ` · <span>${ago(v.since)}</span>` : ''}</span>`;
+  return `<span class="chip hs${n ? (n < v.paths.length ? ' part' : '') : ' bad'}" title="${esc(v.paths.map((p, i) => (v.ok[i] ? '✓ ' : '✕ ') + p + (i === v.active ? ' ← users' : '') + (!v.ok[i] && v.why && v.why[i] ? ' — ' + v.why[i] : '')).join('\n'))}">⚡ <b class="ltr">${n}/${v.paths.length}</b> <span>paths working</span> · <span>users on</span> <b>${esc(cur)}</b>${v.since ? ` · <span>${ago(v.since)}</span>` : ''}</span>`;
 }
 function hsBox(t) {
   const v = t.hs;
@@ -1625,6 +1625,13 @@ function hsRows(t) {
   const ok = v.ok || []; // a switcher state read only in part has no ok list
   const q = (i) => {
     const out = [];
+    if (!ok[i]) {
+      // a ✕ says why: down since when, and what its core said (or that it runs but nothing
+      // answers through it) — a bare ✕ read as a panel bug
+      const since = v.changed && v.changed[i] > 0 ? `<span>down</span> · <span>${ago(v.changed[i])}</span>` : '<span>down</span>';
+      const why = v.why && v.why[i] ? v.why[i] : "the switcher's check through this path gets no answer";
+      return `<span class="hq">${since}</span><span class="hw" title="${esc(why)}">${esc(why)}</span>`;
+    }
     if (v.rtt && v.rtt[i] >= 0) out.push(v.rtt[i] + ' ms');
     if (v.loss && v.loss[i] >= 0) out.push(v.loss[i].toFixed(1) + '% loss');
     if (v.kbps && v.kbps[i] > 0) out.push((v.kbps[i] / 1000).toFixed(1) + ' Mbps');

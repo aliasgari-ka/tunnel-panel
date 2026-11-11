@@ -24,6 +24,9 @@ window.TP_FA = {
 "original:": "اصلی:",
 "users on": "کاربران روی",
 "use": "استفاده",
+"the switcher's check through this path gets no answer": "بررسی سوییچر از این مسیر جوابی نمی‌گیرد",
+"running on the Iran server, but no answer comes through it": "روی سرور ایران در حال اجراست، ولی جوابی از آن رد نمی‌شود",
+"its core on the Iran server keeps restarting": "هسته‌اش روی سرور ایران مدام ری‌استارت می‌شود",
 "hot standby": "آماده‌به‌کار",
 "Note": "یادداشت",
 "e.g.": "مثلاً",
@@ -1037,6 +1040,9 @@ window.TP_FA = {
   // messages the server writes, with addresses and numbers inside
   const PAT = [
     [/^(\d+) tunnels?$/, '$1 تانل'],
+    [/^last error: ([\s\S]+)$/, 'آخرین خطا: $1'],
+    [/^its core on the Iran server is (\S+)( — [\s\S]*)?$/, 'هسته‌اش روی سرور ایران $1 است$2'],
+    [/^its core on the Iran server keeps restarting — ([\s\S]*)$/, 'هسته‌اش روی سرور ایران مدام ری‌استارت می‌شود — $1'],
     [/^(\d+) servers? · (\d+) tunnels?$/, '$1 سرور · $2 تانل'],
     [/^(\d+) of (\d+) on — speeds and order$/, '$1 از $2 روشن — سرعت‌ها و ترتیب'],
     [/^updated (.+)$/, 'به‌روز شده $1'],
