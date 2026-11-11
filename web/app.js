@@ -2380,7 +2380,6 @@ const igAccWhy = (i) => (i.igaccst || '').replace(/^broken:?/, '') || 'logged ou
 // WARPs needed for the 24 h peak: one WARP keeps its speed up to ~2500 connections / 5 min, +1 spare (3-10), + Google's own
 const igWarpNeed = (i) => { if (i.wpeak === undefined || i.wpeak === '-' || i.wpeak === '') return null; const p = +i.wpeak || 0, g = (i.gw || '').split(',').filter(Boolean).length;
   const ig = Math.min(10, Math.max(3, Math.ceil(p / 2500) + 1)); return { p, ig, g, total: ig + g, have: +i.warps || 0 }; };
-const igPeakChip = (i) => { const n = igWarpNeed(i); if (!n) return ''; return `<span class="chip ${n.have < n.total ? 'bad' : ''}" title="most user connections on Instagram's WARPs in 24 h (every 5 min); one WARP keeps its speed up to ~2500">peak ${n.p} → ${n.ig} WARP${n.g ? ' + ' + n.g + ' Google' : ''} suggested${i.wauto === 'ON' ? ' (auto)' : ''}</span>`; };
 const igGccChip = (i) => i.gcc === undefined || i.gcc === '-' || i.gcc === '' ? '' : i.gcc === 'PROXY' ? '<span class="chip bad" title="no allowed WARP for Google: Google goes through a proxy for now">no allowed WARP → proxy</span>' : `<span class="chip" title="the country Google sees for its current WARP">${esc(i.gcc)}</span>`;
 
 async function igAddServer() {
@@ -2425,13 +2424,25 @@ async function igAddServer() {
 }
 
 // ---- one server
-const IGTABS = [['routes', 'Routes'], ['proxies', 'Proxies'], ['warp', 'WARP'], ['sites', 'My sites'], ['settings', 'Settings'], ['checks', 'Test account · Gemini · Telegram'], ['tools', 'Tests & diagnosis'], ['server', 'Server']];
+const IGTABS = [['routes', 'Routes'], ['proxies', 'Proxies'], ['warp', 'WARP'], ['sites', 'My sites'], ['settings', 'Settings'], ['checks', 'Test account · Gemini'], ['tools', 'Tests & diagnosis']];
 function igDetail(w) {
   const s = IG.cur, i = s.info || {};
-  w.innerHTML = topbar(s.name, s.host, `<button class="btn" id="igback">← All servers</button><button class="btn" id="igre">↻</button>`);
+  // the agent's own actions (they were the "Server" tab): a ⋯ menu next to Refresh
+  const agentMenu = moreMenu([{ label: 'Install / update agent', attr: 'data-ia="deploy"' },
+    { label: i.paused === 'YES' ? 'Turn back on' : 'Re-apply / restart', attr: 'data-ia="apply"' },
+    i.paused === 'YES' ? null : { label: 'Pause (everything direct)', attr: 'data-ia="pause"' },
+    { label: 'Take off this page', attr: 'data-ia="remove"', danger: true }, { label: 'Uninstall igproxy from the server', attr: 'data-ia="uninstall"', danger: true }]);
+  if (IG.tab === 'server') IG.tab = 'routes';
+  w.innerHTML = topbar(s.name, s.host, `<button class="btn" id="igback">← All servers</button><button class="btn" id="igre">↻</button>${agentMenu}`);
   $$('.topbar h1, .topbar p', w).forEach(x => x.setAttribute('data-notr', '')); // the server's own name and address
   $('#igback', w).onclick = () => { IG.cur = null; igRender(); };
   $('#igre', w).onclick = () => igRefreshAfter({ srv: s.id });
+  $$('[data-ia]', w).forEach(b => b.onclick = () => ({
+    deploy: () => igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`),
+    apply: () => igAct(igS({ action: 'apply' })),
+    pause: () => igAct(igS({ action: 'pause' }), 'Pause igproxy? All traffic goes direct until you turn it back on.'),
+    remove: () => igRemove(false), uninstall: () => igRemove(true),
+  })[b.dataset.ia]());
   w.insertAdjacentHTML('beforeend', `<div class="card pad"><div class="statline">${igPill(i.state)} ${igOwner(s)}
     ${i.ig ? `<span>router <b>${esc(i.router)}</b></span><span>redirect <b>${esc(i.redirect)}</b></span><span>🔗 connections <b>${+i.caught || 0}</b></span>
     <span>active WARP <b class="mono">${esc(i.active)}</b></span><span>Google's WARP <b class="mono">${esc(i.gact)}</b></span>
@@ -2441,11 +2452,11 @@ function igDetail(w) {
     : `<span>${esc(i.err || '')}</span>`}</div>
     ${i.wide === 'ON' ? '<div class="mdesc">Wide catch is on: all web traffic of this server passes the igproxy router and is routed by domain.</div>' : ''}
     ${i.state === 'PANEL' ? '<div class="mcrit" style="margin:10px 0 0">The x-ui panel on this server blocks or diverts Google before igproxy sees it → Tests & diagnosis → Fix panel.</div>' : ''}
-    ${['UPDATE', 'NOAGENT'].includes(i.state) || i.outdated === '1' ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → Server → Install / update.</div>' : ''}
+    ${['UPDATE', 'NOAGENT'].includes(i.state) || i.outdated === '1' ? '<div class="mwarn" style="margin:10px 0 0">The agent here is old or not installed → ⋯ at the top → Install / update agent.</div>' : ''}
     ${igAccBroken(i) ? `<div class="mwarn" style="margin:10px 0 0">Instagram logged the test account out (${esc(igAccWhy(i))}): no WARP or proxy is checked for Instagram music until a new sessionid is saved → Test account tab.</div>` : ''}</div>
     <div class="seg igtabs">${IGTABS.map(([k, t]) => `<button data-t="${k}" class="${k === IG.tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igtab"></div>`);
   $$('.igtabs button', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.t; igRender(); });
-  if (!i.ig && IG.tab !== 'tools' && IG.tab !== 'server') {
+  if (!i.ig && IG.tab !== 'tools') {
     $('#igtab').innerHTML = `<div class="card empty"><div class="big">${i.state === 'OFFLINE' ? '📡' : '📦'}</div><h3>${esc((IGST[i.state] || [i.state])[0])}</h3>
       <p class="muted">${i.state === 'OFFLINE' ? 'The panel can\'t reach this server right now.' : 'This part works once the agent is installed.'}</p>${i.state === 'OFFLINE' ? '' : `<button class="btn pri" id="igdep">Install / update agent</button>`}</div>`;
     $('#igdep') && ($('#igdep').onclick = () => igAct(igS({ action: 'deploy' })));
@@ -2486,19 +2497,19 @@ const IGTAB = {
     igListInto('#igpl', 'proxy_list', false, 'proxy_del');
   },
   warp() {
-    const i = IG.cur.info, gA = i.gw !== undefined ? 'google_use' : null;
-    $('#igtab').innerHTML = `<div class="card pad sec"><h3>WARP accounts <span class="chip">active: <b class="mono">${esc(i.active)}</b></span><span class="chip">Google: <b class="mono">${esc(i.gact)}</b></span>${igPeakChip(i)}<span class="grow"></span><button class="btn sm" id="igwt">Test all (music & speed)</button></h3>
-     <div id="igwl" class="lines"><div class="skel" style="height:80px"></div></div>
-     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igwa">+ New WARP account</button><button class="btn" id="igwr">Google → fresh IP</button></div>
-     <div class="mdesc">Repairing a broken WARP, WARP+ keys and choosing the best WARP (music OK and fastest) are automatic. "Use" = this WARP serves Instagram and Google right now (live).</div></div>
-     ${gA ? `<div class="card pad sec"><h3>Google on WARP <span class="chip">Google's own WARPs: <b class="mono">${esc(i.gw || '—')}</b></span>${igGccChip(i)}<span class="grow"></span><button class="btn sm" id="igwc">Country per WARP</button></h3>
-      <div id="iggcl" class="lines"><div class="faint">"Country per WARP" shows which country Google sees for each WARP.</div></div>
-      <div class="mdesc">"Google" moves only Google to that WARP (Instagram stays) and refuses a WARP outside the group or the allowed countries — those are under Settings.</div></div>` : ''}`;
-    $('#igwa').onclick = () => igAct(igS({ action: 'warp_add' }));
+    const i = IG.cur.info, gA = i.gw !== undefined, id = IG.cur.id;
+    $('#igtab').innerHTML = `<div class="card pad sec igw"><h3>WARP accounts <span id="igwsum" class="wchips"></span><span class="grow"></span>
+       <span class="wact"><button class="btn sm" id="igwt" title="checks every WARP again now">Test all</button><button class="btn sm pri" id="igwa">+ Add WARP</button>
+       ${moreMenu([{ label: 'Google → fresh IP', attr: 'id="igwr"' }, gA && { label: 'Country per WARP (Google)', attr: 'id="igwc"' }])}</span></h3>
+     <div class="wsum">${igWarpSvc(i)}</div>
+     <div id="igwl" class="wlist"></div>
+     <div class="mdesc">Broken WARPs are repaired, WARP+ keys are found and the best WARP (music OK, fastest) is chosen automatically. "Use" moves Instagram — and Google, unless it has its own WARPs — to that WARP now.</div></div>`;
+    $('#igwa').onclick = () => igAct(igS({ action: 'warp_add' }), 'Make a new WARP account on ' + IG.cur.name + '? It takes a minute or two.', { title: 'New WARP account' });
     $('#igwr').onclick = () => igAct(igS({ action: 'google_rotate' }));
-    $('#igwt').onclick = () => igListInto('#igwl', 'warp_list', true, 'warp_del', 'warp_use', gA);
-    if (gA) $('#igwc').onclick = () => igListInto('#iggcl', 'google_countries', true, null, null, gA);
-    igListInto('#igwl', 'warp_ls', false, 'warp_del', 'warp_use', gA);
+    $('#igwt').onclick = async () => { const b = $('#igwt'); b.disabled = true; b.textContent = 'Testing…'; try { await igQuiet(igS({ action: 'warp_list' })); } catch (e) { toast(e.message); } igWarpLoad(id, true); };
+    if (gA) $('#igwc').onclick = () => igWarpCountries(id);
+    igWarpDraw(IG.wcache && IG.wcache[id]);
+    igWarpLoad(id);
   },
   sites() {
     const i = IG.cur.info;
@@ -2547,20 +2558,13 @@ const IGTAB = {
      <div class="card pad sec"><h3>Gemini API key ${st(i.gkey)}</h3>
       <p class="muted">With a free aistudio.google.com key each server asks Gemini through its WARP IPs whether the region is blocked.</p>
       <div class="ff"><label class="f">Key (AIza…)<input id="iggk" ${igSecret}></label><label class="f row"><input type="checkbox" id="iggkall"> On every server in view</label></div>
-      <div class="actions" style="margin-top:10px"><button class="btn pri" id="iggkgo">Save</button><button class="btn" id="iggkt">Test on every WARP</button><button class="btn danger" id="iggkdel">Remove</button></div></div>
-     <div class="card pad sec"><h3>Telegram bot ${st(i.tg)}</h3>
-      <p class="muted">Reports outages, repairs and proxy problems. Commands: /status /music /warp. After "Set up", send <b>/start</b> to the bot within 60 seconds.</p>
-      <div class="ff"><label class="f">Token (from BotFather)<input id="igtt" ${igSecret}></label></div>
-      <div class="actions" style="margin-top:10px"><button class="btn pri" id="igtgo">Set up</button><button class="btn" id="igtt2">Test message</button><button class="btn danger" id="igtdel">Remove</button></div></div>`;
+      <div class="actions" style="margin-top:10px"><button class="btn pri" id="iggkgo">Save</button><button class="btn" id="iggkt">Test on every WARP</button><button class="btn danger" id="iggkdel">Remove</button></div></div>`;
     $('#igsidgo').onclick = () => igAct(igS({ action: 'ig_session', sid: $('#igsid').value.trim() }));
     $('#igmt').onclick = () => igAct(igS({ action: 'ig_test' }));
     $('#igsdel').onclick = () => igAct(igS({ action: 'ig_del' }), 'Remove the test account?');
     $('#iggkgo').onclick = () => igAct({ srv: $('#iggkall').checked ? 'all' : IG.cur.id, action: 'gemkey_set', key: $('#iggk').value.trim() });
     $('#iggkt').onclick = () => igAct(igS({ action: 'gemkey_test' }));
     $('#iggkdel').onclick = () => igAct(igS({ action: 'gemkey_del' }), 'Remove the key?');
-    $('#igtgo').onclick = () => igAct(igS({ action: 'tg_setup', token: $('#igtt').value.trim() }));
-    $('#igtt2').onclick = () => igAct(igS({ action: 'tg_test' }));
-    $('#igtdel').onclick = () => igAct(igS({ action: 'tg_del' }), 'Remove the bot?');
   },
   tools() {
     const i = IG.cur.info, nr = { refresh: false };
@@ -2579,23 +2583,6 @@ const IGTAB = {
     $('#igpc').onclick = () => igAct(igS({ action: 'panel_check' }), null, nr);
     $('#igpf').onclick = () => igAct(igS({ action: 'panel_fix' }), 'Add one rule at the top of the panel\'s routing? Its Xray restarts for 2-3 seconds.');
     $('#igpu2').onclick = () => igAct(igS({ action: 'panel_undo' }), 'Remove the igproxy rule from the panel?');
-  },
-  server() {
-    const s = IG.cur, i = s.info || {};
-    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Agent</h3><table class="tbl igt">
-      <tr><td>Server</td><td><b data-notr>${esc(s.name)}</b> <span class="mono faint">${esc(s.host)}</span></td></tr>
-      <tr><td>Agent on this server</td><td class="mono">${esc(i.sum || '—')}</td></tr><tr><td>Agent on the panel</td><td class="mono">${esc(IG.data?.agent || '—')}</td></tr></table>
-      <div class="actions" style="margin-top:12px"><button class="btn pri" id="igsd">Install / update agent</button>
-      <button class="btn" id="igsa">${i.paused === 'YES' ? 'Turn back on' : 'Re-apply / restart'}</button>
-      ${i.paused === 'YES' ? '' : '<button class="btn" id="igsp">Pause (everything direct)</button>'}</div>
-      <p class="muted" style="font-size:13px;margin-bottom:0">Name, address and SSH login are the server's own, under <b>Servers</b>.</p></div>
-     <div class="card pad sec"><h3>Remove</h3><div class="actions"><button class="btn danger" id="igsr">Take off this page</button><button class="btn danger" id="igsu">Uninstall igproxy from the server</button></div>
-      <p class="muted" style="font-size:13px;margin-bottom:0">Taking it off the page leaves igproxy running on the server.</p></div>`;
-    $('#igsd').onclick = () => igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`);
-    $('#igsa').onclick = () => igAct(igS({ action: 'apply' }));
-    $('#igsp') && ($('#igsp').onclick = () => igAct(igS({ action: 'pause' }), 'Pause igproxy? All traffic goes direct until you turn it back on.'));
-    $('#igsr').onclick = () => igRemove(false);
-    $('#igsu').onclick = () => igRemove(true);
   }
 };
 async function igRemove(uninstall) {
@@ -2605,6 +2592,82 @@ async function igRemove(uninstall) {
     try { const r = await api('/igproxy/action', igS({ action: 'uninstall' })); const res = await igRunJob(r.job, 'Uninstall igproxy'); if (!res.done) return; } catch (e) { return toast(e.message); }
   } else if (!confirm(`Take ${s.name} off the IG routing page? igproxy keeps running on it.`)) return;
   try { await api('/igproxy/enable', { ID: s.id, On: false }); IG.cur = null; toast('Removed'); igLoad(true); } catch (e) { toast(e.message); }
+}
+// ---- WARP tab: one row per WARP account (/igproxy/warps: the agent's state + one Cloudflare trace each)
+const igAgo = (s) => s < 0 ? '' : s < 90 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago';
+const igGw = (i) => (i.gw || '').split(',').filter(x => /^\d+$/.test(x)).map(Number);
+// how Instagram and Google leave now, in words
+function igWarpSvc(i, d) {
+  const bal = i.mode === 'BALANCE', igw = /^warp/.test(i.ig || ''), gw = /^warp/.test(i.google || ''), n = igWarpNeed(i);
+  const pool = d ? d.warps.filter(w => w.state === 'ok' && !igGw(i).includes(w.n)).length : +(i.pool || '').split('/')[0] || 0;
+  const kind = i.ig === 'warp6' ? 'WARP IPv6' : 'WARP';
+  const ig = !igw ? 'not on WARP' : bal ? `${kind} · ${pool} WARP${pool === 1 ? '' : 's'} share it` : `${kind} ${+i.active ? +i.active : '—'}`;
+  const g = !gw ? 'not on WARP' : i.gcc === 'PROXY' ? 'proxy for now' : +i.gact ? `WARP ${+i.gact}` : 'with Instagram';
+  const cell = (k, v, sub, cls) => `<div class="svc"><small>${k}</small><b class="${cls || ''}">${esc(v)}</b>${sub ? `<span class="note">${sub}</span>` : ''}</div>`;
+  return `<div class="svcs">${cell('Instagram', ig, igw ? (i.igcc && i.igcc !== '-' ? `Instagram sees <b class="mono">${esc(i.igcc)}</b>` : '') : `goes ${esc(igViaW(i.ig, i))} → Routes tab`, igw ? 'v-warp' : 'v-direct')}
+    ${cell('Google / Gemini', g, gw ? (i.gcc === 'PROXY' ? 'no WARP in an allowed country' : i.gcc && i.gcc !== '-' ? `Google sees <b class="mono">${esc(i.gcc)}</b>` : '') : `goes ${esc(igViaW(i.google, i))} → Routes tab`, gw && i.gcc !== 'PROXY' ? 'v-warp' : i.gcc === 'PROXY' ? 'v-proxy' : 'v-direct')}
+    ${n ? cell('WARP accounts', `${n.have} · ${n.total} needed`, `busiest 5 min in 24 h: <b class="mono">${n.p}</b> connections → ${n.ig} for Instagram${n.g ? ' + ' + n.g + ' for Google' : ''}${i.wauto === 'ON' ? ' · made automatically' : ''}`, n.have < n.total ? 'wbad' : '') : ''}</div>`;
+}
+const IGWOUT = { ip: 'Standby: different exit IP', ipnew: 'Getting a new IP', music: 'Parked: no Instagram music', down: 'Parked: down' };
+function igWarpRow(i, d, w) {
+  const gws = igGw(i), own = gws.includes(w.n), bal = i.mode === 'BALANCE';
+  const igOn = /^warp/.test(i.ig || '') && !own && w.state === 'ok' && (bal || d.active === w.n);
+  const gOn = /^warp/.test(i.google || '') && i.gcc !== 'PROXY' && (d.gact ? d.gact === w.n : !gws.length && igOn);
+  const st = w.state === 'ok' ? ['Working', 'ok'] : w.state === 'out' ? [IGWOUT[w.why] || 'Not in use: ' + w.why, w.why === 'ip' ? 'idle' : 'warn']
+    : w.state === 'repair' ? ['Being repaired' + (w.fails ? ` (try ${w.fails})` : ''), 'warn'] : ['Down', 'bad'];
+  const v6 = w.ip && w.ip.includes(':');
+  const exit = w.ip ? `<span class="mono" title="${esc(w.ip)}">${w.loc ? esc(w.loc) + ' · ' : ''}${esc(w.ip)}</span> <span class="tag">${v6 ? 'IPv6' : 'IPv4'}</span>`
+    : `<span class="faint">${w.state === 'out' ? 'not tested while on standby' : 'no exit now'}</span>`;
+  const music = w.music === 'ok' ? '<span class="good">music OK</span>' : w.music === 'no' ? `<span class="bad" title="${esc(w.musicWhy || '')}">no music</span>` : w.music === 'down' ? '<span class="bad">was down</span>' : '<span class="faint">music not tested</span>';
+  const test = w.music ? `<span>${music}${w.mbps ? ` · <b class="mono">${w.mbps}</b> Mbps` : ''}</span><span class="faint">${igAgo(w.testAge)}</span>` : '<span class="faint">no speed test yet</span>';
+  const roles = (igOn ? '<span class="chip fo">Instagram</span>' : '') + (gOn ? '<span class="chip fo">Google</span>' : '') + (own && !gOn ? '<span class="chip">Google\'s reserve</span>' : '');
+  const useG = own && i.gw !== undefined, inUse = useG ? gOn : (igOn && (bal || d.active === w.n));
+  const prim = inUse || w.state !== 'ok' ? '' : `<button class="btn sm" data-${useG ? 'wg' : 'wu'}="${w.n}">${useG ? 'Use for Google' : 'Use'}</button>`;
+  const menu = moreMenu([{ label: 'Delete WARP ' + w.n + '…', attr: `data-wd="${w.n}"`, danger: true }]);
+  return `<div class="wrow${igOn || gOn ? ' on' : ''}${w.state === 'ok' ? '' : ' dim'}">
+    <div class="wn mono">${w.n}</div>
+    <div class="wb"><div class="w1"><span class="igd ${st[1] === 'ok' ? 'ok' : st[1] === 'bad' ? 'bad' : ''}"></span><b class="wst ${st[1]}">${st[0]}</b>
+      <span class="tag${w.plus ? ' plus' : ''}">${w.plus ? 'WARP+' : 'Free'}</span>${roles}</div>
+      <div class="w2"><span>${exit}</span>${w.gcc ? `<span>Google sees <b class="mono">${esc(w.gcc)}</b></span>` : ''}${test}</div>
+      ${w.next && w.state === 'ok' ? `<div class="w3">gets a new account soon: ${esc(w.next)}</div>` : ''}${w.old ? '<div class="w3">old account: delete and add again for automatic WARP+ keys</div>' : ''}</div>
+    <div class="wa${prim ? ' p' : ''}">${inUse ? '<span class="inuse" title="in use">✓<span class="t"> in use</span></span>' : prim}${menu}</div></div>`;
+}
+function igWarpDraw(d, err) {
+  const box = $('#igwl'); if (!box || !IG.cur) return;
+  const i = IG.cur.info;
+  if (err && !d) { box.innerHTML = `<div class="mcrit" style="margin:0">Couldn't read the WARPs: ${esc(err)} <button class="btn sm" id="igwrt">Try again</button></div>`; $('#igwrt').onclick = () => { igWarpDraw(); igWarpLoad(IG.cur.id); }; return; }
+  if (!d) { box.innerHTML = '<div class="skel" style="height:64px"></div>'.repeat(Math.min(8, Math.max(2, +i.warps || 3))); return; }
+  const ws = d.warps, ok = ws.filter(w => w.state === 'ok').length, idle = ws.filter(w => w.state === 'out').length, bad = ws.length - ok - idle;
+  $('#igwsum').innerHTML = ws.length ? `<span class="chip">${ws.length} accounts</span><span class="chip">${ok} working</span>${idle ? `<span class="chip">${idle} on standby</span>` : ''}${bad ? `<span class="chip bad">${bad} down</span>` : ''}` : '';
+  $('.igw .wsum').innerHTML = igWarpSvc(i, d);
+  if (!ws.length) { box.innerHTML = '<div class="empty" style="padding:22px 10px"><div class="big">☁️</div>No WARP account on this server yet.<div class="actions" style="justify-content:center;margin-top:10px"><button class="btn pri" id="igwa2">+ Add WARP</button></div></div>'; $('#igwa2').onclick = () => $('#igwa').click(); return; }
+  box.innerHTML = (err ? `<div class="mwarn">Couldn't refresh (${esc(err)}) — showing what was read ${igAgo(Math.round(Date.now() / 1000 - d.at))}.</div>` : '')
+    + (d.sel === 'none' ? '<div class="mwarn">No WARP has Instagram music and the minimum speed now, so the current one is kept. Adding a WARP looks for a better IP.</div>' : '')
+    + ws.map(w => igWarpRow(i, d, w)).join('')
+    + (i.mode === 'BALANCE' && /^warp/.test(i.ig || '') && d.poolIP ? `<div class="mdesc">Instagram's WARPs all leave from one exit IP (<span class="mono">${esc(d.poolIP)}</span>). A WARP that comes out with another IP waits on standby and is checked again later.</div>` : '');
+  $$('[data-wu]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'warp_use', n: b.dataset.wu })));
+  $$('[data-wg]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'google_use', n: b.dataset.wg })));
+  $$('[data-wd]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'warp_del', n: b.dataset.wd }), `Delete WARP ${b.dataset.wd} on ${IG.cur.name}? Its account is removed and the WARPs after it move up one number.`, { title: 'Delete WARP' }));
+}
+async function igWarpLoad(id, fresh) {
+  const here = () => IG.cur && IG.cur.id === id && IG.tab === 'warp';
+  try {
+    const d = await api('/igproxy/warps?id=' + encodeURIComponent(id));
+    IG.wcache = IG.wcache || {}; IG.wcache[id] = d;
+    if (here()) igWarpDraw(d);
+  } catch (e) { if (here()) igWarpDraw(IG.wcache && IG.wcache[id], e.message); }
+  if (fresh && $('#igwt')) { $('#igwt').disabled = false; $('#igwt').textContent = 'Test all'; }
+}
+// "Country per WARP": Google's country for every WARP, asked fresh, written into the rows
+async function igWarpCountries(id) {
+  toast('Asking Google for every WARP… (up to a minute)');
+  try {
+    const out = await igQuiet(igS({ action: 'google_countries' }));
+    const d = IG.wcache && IG.wcache[id]; if (!d) return;
+    out.split('\n').forEach(l => { const m = l.match(/^\s*WARP (\d+)\s+([A-Z]{2}|\?)/); if (m) { const w = d.warps.find(x => x.n === +m[1]); if (w) w.gcc = m[2] === '?' ? '' : m[2]; } });
+    const al = out.match(/allowed for Google:\s*(.*)/);
+    if (IG.cur && IG.cur.id === id && IG.tab === 'warp') { igWarpDraw(d); if (al) toast('Allowed countries for Google: ' + al[1].trim()); }
+  } catch (e) { toast(e.message); }
 }
 async function igListInto(sel, action, slow, delA, useA, gA) {
   const box = $(sel); if (!box) return;
