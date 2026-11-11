@@ -143,6 +143,7 @@ func main() {
 	go app.aiDailyLoop()
 	go gemFwd.serve()
 	go app.gemLoop()
+	go app.gemOneLoop()
 	app.usage = loadUsage()
 	go app.usageLoop()
 	go app.usageWatchLoop()

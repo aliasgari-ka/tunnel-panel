@@ -8,16 +8,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 // gemGoogleDom: Google's OneGoogle domain for a country ("US" -> "com", "GB" -> "co.uk").
@@ -45,25 +41,10 @@ var gemDomRe = regexp.MustCompile(`og[.]qtm[^"]*","([a-z.]{2,8})"`)
 
 // gemDom: the Google country of a socks exit ("ip:port"), from the keyless Gemini page.
 func gemDom(ctx context.Context, socks string) string {
-	d, err := proxy.SOCKS5("tcp", socks, nil, proxy.Direct)
+	_, b, err := gemSocksGet(ctx, socks, gemURL, true)
 	if err != nil {
 		return ""
 	}
-	cd, ok := d.(proxy.ContextDialer)
-	if !ok {
-		return ""
-	}
-	tr := &http.Transport{DialContext: cd.DialContext, TLSHandshakeTimeout: 15 * time.Second}
-	defer tr.CloseIdleConnections()
-	req, _ := http.NewRequestWithContext(ctx, "GET", gemURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	resp, err := (&http.Client{Transport: tr, Timeout: 30 * time.Second}).Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if m := gemDomRe.FindSubmatch(b); m != nil {
 		return string(m[1])
 	}
