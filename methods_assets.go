@@ -315,6 +315,25 @@ echo "note: no license verdict from the Premium core within 15 s (it validates o
 exit 0
 `
 
+// premiumNotrack keeps the ipx carrier out of connection tracking, as BackPack PCK's is. The
+// tcp carrier is hand-made TCP from port 443 to port 443 without a handshake, so to NAT every
+// packet is a new connection: a rule that redirects local HTTPS to a proxy (the IG agent's
+// wide catch, -p tcp --dports 80,443 -j REDIRECT) took every packet the core sent into that
+// proxy instead of to the peer. Seen live 2026-11-11 21:55 UTC: the agent's firewall reload
+// on the foreign servers stopped every Premium ipx path at once, and a restart didn't help.
+func premiumNotrack(peer, tag string) (up, down string) {
+	c := "premium-ipx-" + tag
+	rules := []string{
+		fmt.Sprintf("OUTPUT -p tcp -d %s --sport 443 --dport 443 -m comment --comment %s -j NOTRACK", peer, c),
+		fmt.Sprintf("PREROUTING -p tcp -s %s --sport 443 --dport 443 -m comment --comment %s -j NOTRACK", peer, c),
+	}
+	for _, r := range rules {
+		up += fmt.Sprintf("iptables -w -t raw -C %[1]s 2>/dev/null || iptables -w -t raw -I %[1]s\n", r)
+		down += fmt.Sprintf("while iptables -w -t raw -D %s 2>/dev/null; do :; done\n", r)
+	}
+	return up, down
+}
+
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
@@ -494,8 +513,9 @@ sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
 				// MSS (users' full-size packets don't fit the TUN MTU, handshakes stall).
 				ifc := fmt.Sprintf("bhp%d", d.Idx)
 				up, down := tunFwdRules(ifc, fwdTag(d))
-				sp.Files[dir+"/fw-up.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + up), Mode: 0o755}
-				sp.Files[dir+"/fw-down.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + down), Mode: 0o755}
+				ntUp, ntDown := premiumNotrack(peer, fwdTag(d))
+				sp.Files[dir+"/fw-up.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + ntUp + up), Mode: 0o755}
+				sp.Files[dir+"/fw-down.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + ntDown + down), Mode: 0o755}
 				sp.Unit.ExecStartPre = dir + "/fw-up.sh"
 				sp.Unit.ExecStopPost = dir + "/fw-down.sh"
 			}

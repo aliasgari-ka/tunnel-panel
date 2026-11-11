@@ -43,8 +43,8 @@ func TestHSReadDownReason(t *testing.T) {
 	if v.Why[0] != "" {
 		t.Errorf("a working path has no reason: %q", v.Why[0])
 	}
-	// path 1 is Backhaul Premium: its reason also points at the license server (seen 2026-11-11)
-	if v.Why[1] != "running on the Iran server, but no answer comes through it"+premiumDownHint || !strings.Contains(v.Why[1], "License is valid") {
+	// no license hint: the 2026-11-11 outage was a NAT redirect, not the license (see premiumNotrack)
+	if v.Why[1] != "running on the Iran server, but no answer comes through it" {
 		t.Errorf("why[1] = %q", v.Why[1])
 	}
 	w := v.Why[2]

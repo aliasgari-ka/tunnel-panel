@@ -1132,9 +1132,6 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 		case "W":
 			if k, err := strconv.Atoi(f[1]); err == nil && k >= 0 && k < len(v.Why) && len(f) > 2 {
 				v.Why[k] = hsWhyText(f[2], strings.Join(f[3:], " "))
-				if good[k].Method == "premium" && (f[2] == "active" || f[2] == "reloading") {
-					v.Why[k] += premiumDownHint
-				}
 			}
 		}
 	}
@@ -1173,11 +1170,6 @@ func hsWhyScript(t *Tunnel, good []HSPath) string {
   echo "W $k ${s:-unknown} $l"
 done`
 }
-
-// premiumDownHint: the v2 core checks its license online and passes nothing without a
-// verdict. Seen 2026-11-11: the vendor's license domain was parked, and every Premium path
-// on every route stopped within three minutes while the routes and the v1 core were fine.
-const premiumDownHint = " — Backhaul Premium also stops passing traffic when its license server doesn't answer: check the core's log for \"License is valid\" after a restart"
 
 // hsSecretRe: anything in a core's log line that looks like a secret is cut out before the
 // line reaches the page or the admin chat
