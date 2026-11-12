@@ -135,14 +135,32 @@ tar -xzf bh.tgz backhaul
 install -m0755 backhaul "$OUT"`, ghURL(set, "https://github.com/Musixal/Backhaul/releases/download/v0.7.2/backhaul_linux_${ARCH}.tar.gz"), backhaulSHA256amd64, backhaulSHA256arm64)}
 }
 
+// frpDefault is the FRP release used when Settings leave the version blank. It is pinned
+// (not "latest") so both ends of a tunnel always run the same build: frps and frpc were
+// cached and refreshed separately, so an Iran frps and a foreign frpc could sit on two
+// different releases for a week. Settings can still name another release; that one is
+// checked against its own release's checksum list.
+const frpDefault = "0.72.0"
+
+var frpSHA256 = map[string]string{ // archive sha256 of frpDefault, from the GitHub release
+	"amd64": "daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804",
+	"arm64": "02180b857480302fd934e9ddbd50fe2f73229f99062f88756abc6de9df5e95cf",
+}
+
 func artFRP(set Settings, bin string) Artifact {
-	ver := set.FRPVersion
-	return Artifact{Name: "frp-" + bin + "-" + orStr(ver, "latest"), Dest: "/opt/frp/" + bin, Mode: 0o755, Fetch: fmt.Sprintf(`
+	ver := strings.TrimPrefix(strings.TrimSpace(set.FRPVersion), "v")
+	if ver == "" || ver == frpDefault {
+		return Artifact{Name: "frp-" + bin + "-" + frpDefault, Dest: "/opt/frp/" + bin, Mode: 0o755, Fetch: fmt.Sprintf(`
+f="frp_%[1]s_linux_${ARCH}.tar.gz"
+case "$ARCH" in amd64) want=%[2]s ;; arm64) want=%[3]s ;; *) echo "no pinned frp checksum for $ARCH"; exit 1 ;; esac
+curl -fL --retry 3 -o frp.tgz "%[4]shttps://github.com/fatedier/frp/releases/download/v%[1]s/$f"
+echo "$want  frp.tgz" | sha256sum -c - || { echo "frp archive checksum mismatch — refusing to install it"; exit 1; }
+tar -xzf frp.tgz --strip-components=1
+install -m0755 %[5]s "$OUT"`, frpDefault, frpSHA256["amd64"], frpSHA256["arm64"], set.GitHubProxy, bin)}
+	}
+	return Artifact{Name: "frp-" + bin + "-" + ver, Dest: "/opt/frp/" + bin, Mode: 0o755, Fetch: fmt.Sprintf(`
 VER=%s
-if [ -z "$VER" ]; then
-  VER=$(curl -fsSLI -o /dev/null -w '%%{url_effective}' https://github.com/fatedier/frp/releases/latest | sed 's#.*/tag/v##')
-fi
-case "$VER" in ''|*[!0-9.]*) echo "cannot resolve the frp version (got '$VER'); set it in Settings"; exit 1 ;; esac
+case "$VER" in ''|*[!0-9.]*) echo "bad frp version '$VER'; fix it in Settings"; exit 1 ;; esac
 f="frp_${VER}_linux_${ARCH}.tar.gz"
 curl -fL --retry 3 -o frp.tgz "%shttps://github.com/fatedier/frp/releases/download/v${VER}/$f"
 # the release's own checksum list, straight from github.com (not through the download
@@ -150,17 +168,25 @@ curl -fL --retry 3 -o frp.tgz "%shttps://github.com/fatedier/frp/releases/downlo
 curl -fsSL --retry 3 -o sums "https://github.com/fatedier/frp/releases/download/v${VER}/frp_sha256_checksums.txt" || curl -fsSL --retry 3 -o sums "%shttps://github.com/fatedier/frp/releases/download/v${VER}/frp_sha256_checksums.txt"
 grep " $f\$" sums | head -1 | sed "s# .*#  frp.tgz#" | sha256sum -c - || { echo "frp archive checksum mismatch — refusing to install it"; exit 1; }
 tar -xzf frp.tgz --strip-components=1
-install -m0755 %s "$OUT"`, shq(strings.TrimPrefix(ver, "v")), set.GitHubProxy, set.GitHubProxy, bin)}
+install -m0755 %s "$OUT"`, shq(ver), set.GitHubProxy, set.GitHubProxy, bin)}
+}
+
+// BackPack is pinned for the same reason as FRP (the two ends of a tunnel must not drift
+// onto different releases), with the archive checksums of the release itself.
+const backpackVersion = "v1.8.5"
+
+var backpackSHA256 = map[string]string{
+	"amd64": "e80c4da9bdcece9e7a82305e572fdfde9a395a68a985fdd835c1af8ff248b395",
+	"arm64": "9d9eaa951f8bd3f7b786be94916517c4ec900af0eeaac893b89d03d9867643f4",
 }
 
 func artBackpack(set Settings) Artifact {
-	return Artifact{Name: "backpack-latest", Dest: "/usr/local/bin/backpack", Mode: 0o755, Fetch: fmt.Sprintf(`
-base="%shttps://github.com/AminMGMT/BackPack/releases/latest/download"
-curl -fL --retry 3 -o bp.tgz "$base/backpack_linux_${ARCH}.tar.gz"
-curl -fL --retry 3 -o SHA256SUMS "$base/SHA256SUMS"
-grep "backpack_linux_${ARCH}.tar.gz" SHA256SUMS | head -1 | sed 's# .*#  bp.tgz#' | sha256sum -c -
+	return Artifact{Name: "backpack-" + backpackVersion, Dest: "/usr/local/bin/backpack", Mode: 0o755, Fetch: fmt.Sprintf(`
+case "$ARCH" in amd64) want=%s ;; arm64) want=%s ;; *) echo "no pinned BackPack checksum for $ARCH"; exit 1 ;; esac
+curl -fL --retry 3 -o bp.tgz "%shttps://github.com/AminMGMT/BackPack/releases/download/%s/backpack_linux_${ARCH}.tar.gz"
+echo "$want  bp.tgz" | sha256sum -c - || { echo "BackPack archive checksum mismatch — refusing to install it"; exit 1; }
 tar -xzf bp.tgz backpack
-install -m0755 backpack "$OUT"`, set.GitHubProxy)}
+install -m0755 backpack "$OUT"`, backpackSHA256["amd64"], backpackSHA256["arm64"], set.GitHubProxy, backpackVersion)}
 }
 
 func orStr(a, b string) string {

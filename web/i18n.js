@@ -114,6 +114,7 @@ window.TP_FA = {
 "(auto)": "(خودکار)",
 "(blank = default route)": "(خالی = مسیر پیش‌فرض)",
 "(blank = latest)": "(خالی = آخرین)",
+"(blank = 0.72.0, pinned)": "(خالی = ۰.۷۲.۰، ثابت)",
 "(blank=IPv4)": "(خالی=IPv4)",
 "(comma-separated)": "(با ویرگول جدا کنید)",
 "(deleted)": "(حذف‌شده)",

@@ -79,7 +79,7 @@ func TestHunt3A_PckTunnelPortNotInClash(t *testing.T) {
 func TestHunt3A_FailbackBenchCopyTakesLivePort(t *testing.T) {
 	cacheDir = t.TempDir()
 	_ = os.WriteFile(filepath.Join(cacheDir, "backhaul-v0.7.2-amd64"), []byte("bin"), 0o755)
-	_ = os.WriteFile(filepath.Join(cacheDir, "backpack-latest-amd64"), []byte("bin"), 0o755)
+	_ = os.WriteFile(filepath.Join(cacheDir, "backpack-"+backpackVersion+"-amd64"), []byte("bin"), 0o755)
 	ir, kh := &h3Host{h2Host: h2Host{name: "ir"}}, &h3Host{h2Host: h2Host{name: "kh"}}
 	kh.fn = func(_ context.Context, s string) (string, error, bool) {
 		if strings.Contains(s, "echo OK ") && strings.Contains(s, "probe rtt") {
