@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -311,21 +312,22 @@ func (a *App) deploy(ctx context.Context, j *Job, label string, h Host, t *Tunne
 	if err := pushArtifacts(ctx, j, label, h, p.Artifacts); err != nil {
 		return err
 	}
-	for path, fs := range p.Files {
-		j.log("[%s] write %s", label, path)
-		if err := h.WriteFile(path, fs.Content, fs.Mode); err != nil {
-			return err
+	// the files and the setup in one round trip; only the files that changed are written
+	if len(p.Files) > 0 || p.Setup != "" {
+		setup := ""
+		if p.Setup != "" {
+			setup = "set -e\n" + p.Setup
 		}
-	}
-	if p.Setup != "" {
-		if out, err := h.Run(ctx, "set -e\n"+p.Setup, logf); err != nil {
+		if out, err := runWithFiles(ctx, h, p.Files, setup, logf); err != nil {
+			var we *fileWriteError
+			if errors.As(err, &we) {
+				return err
+			}
 			return withTail(fmt.Errorf("setup: %w", err), out)
 		}
 	}
 	u := unitName(t)
-	if err := h.WriteFile("/etc/systemd/system/"+u, []byte(renderUnit(p.Unit)), 0o644); err != nil {
-		return err
-	}
+	unitFile := map[string]FileSpec{"/etc/systemd/system/" + u: {Content: []byte(renderUnit(p.Unit)), Mode: 0o644}}
 	// the fresh unit carries the current memory settings; a drop-in Repair once added to an
 	// older one would override them with its old values
 	script := fmt.Sprintf(`rm -f /etc/systemd/system/%[1]s.d/90-tunnel-panel-memory.conf
@@ -342,7 +344,8 @@ st=$(systemctl is-active %[1]s)
 echo "unit %[1]s: $st"
 if [ "$st" != active ]; then jl; exit 1; fi
 `, u)
-	out, err := h.Run(ctx, script, logf)
+	// the unit file (written when it changed) and the restart in one round trip
+	out, err := runWithFiles(ctx, h, unitFile, script, quietFiles(logf))
 	if err != nil || p.Check == "" {
 		return withTail(err, out)
 	}

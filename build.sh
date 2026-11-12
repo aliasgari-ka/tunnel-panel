@@ -10,7 +10,7 @@ mkdir -p assets dist
 
 echo "==> building tp-agent for amd64 and arm64"
 for a in amd64 arm64; do
-  CGO_ENABLED=0 GOOS=linux GOARCH="$a" go build -trimpath -ldflags "-s -w" -o "assets/tp-agent-$a" ./cmd/tp-agent
+  CGO_ENABLED=0 GOOS=linux GOARCH="$a" go build -trimpath -buildvcs=false -ldflags "-s -w" -o "assets/tp-agent-$a" ./cmd/tp-agent
 done
 
 echo "==> compiling golden-gre-relay (amd64, arm64)"

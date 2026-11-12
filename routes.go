@@ -306,13 +306,15 @@ func (a *App) hsDropPaths(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, b
 		return nil, fmt.Errorf("switcher: %w", err)
 	}
 	_ = a.store.Update(func(*State) error { t.Paths = append([]HSPath(nil), left...); return nil })
+	var stop []HSPath
 	for _, d := range drop {
 		if d.Failed != "" {
 			continue
 		}
 		j.log("stopping %s (left out on this route)", d.label())
-		a.teardownPaths(ctx, ir, kh, t, []HSPath{d})
+		stop = append(stop, d)
 	}
+	a.teardownPaths(ctx, ir, kh, t, stop) // all at once, on both servers
 	return names, nil
 }
 
@@ -505,13 +507,15 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		a.teardownPaths(ctx, ir, kh, t, up)
 		return fmt.Errorf("switcher: %w", err)
 	}
+	var stop []HSPath
 	for _, d := range drop {
 		if d.Failed != "" {
 			continue // was never up: nothing to stop
 		}
 		j.log("stopping %s (left out on this route)", d.label())
-		a.teardownPaths(ctx, ir, kh, t, []HSPath{d})
+		stop = append(stop, d)
 	}
+	a.teardownPaths(ctx, ir, kh, t, stop) // all at once, on both servers
 	names = append(early, names...)
 	var msg []string
 	if len(names) > 0 {

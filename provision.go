@@ -24,9 +24,27 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 	if len(arts) == 0 {
 		return nil
 	}
-	arch, err := hostArch(ctx, h)
+	// the CPU and what is installed now, in one round trip
+	var check strings.Builder
+	check.WriteString("echo \"TP-ARCH $(uname -m)\"\n")
+	for _, art := range arts {
+		fmt.Fprintf(&check, "sha256sum %s 2>/dev/null || true\n", shq(art.Dest))
+	}
+	out, err := h.Run(ctx, check.String(), nil)
+	arch := ""
+	have := map[string]string{} // dest -> sum on the host
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) == 2 && f[0] == "TP-ARCH" {
+			arch = goArch(f[1])
+		} else if len(f) == 2 && len(f[0]) == 64 {
+			have[f[1]] = f[0]
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("detect arch: %w", err)
+	}
+	if arch == "" {
+		arch = goArch("") // as hostArch: an answer it doesn't know is amd64
 	}
 	type item struct {
 		art  Artifact
@@ -34,7 +52,6 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 		sum  string
 	}
 	var items []item
-	var check strings.Builder
 	for _, art := range arts {
 		data, err := ensureArtifact(ctx, j, art, arch)
 		if err != nil && art.Asset == "backhaul_premium" && arch != "amd64" && premiumEmulatedInPlace(ctx, h, art) {
@@ -90,14 +107,6 @@ func pushArtifacts(ctx context.Context, j *Job, label string, h Host, arts []Art
 		}
 		s := sha256.Sum256(data)
 		items = append(items, item{art, data, hex.EncodeToString(s[:])})
-		fmt.Fprintf(&check, "sha256sum %s 2>/dev/null || true\n", shq(art.Dest))
-	}
-	out, _ := h.Run(ctx, check.String(), nil)
-	have := map[string]string{} // dest -> sum on the host
-	for _, l := range strings.Split(out, "\n") {
-		if f := strings.Fields(l); len(f) == 2 && len(f[0]) == 64 {
-			have[f[1]] = f[0]
-		}
 	}
 	for _, it := range items {
 		if have[it.art.Dest] == it.sum {
