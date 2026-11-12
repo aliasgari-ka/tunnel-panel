@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -20,6 +21,8 @@ type BenchRequest struct {
 	// Running: only the methods the route's tunnels run on the servers now (Methods is
 	// filled from them) — the automatic benchmark and the pages' default
 	Running bool `json:"running,omitempty"`
+	// Auto: started by the automatic benchmark (autobench.go), not by someone on the page
+	Auto    bool `json:"-"`
 	Seconds int  `json:"seconds"` // throughput probe length per method (default 5)
 	MaxMB   int  `json:"maxMB"`   // and at most this much per direction (0 = no cap)
 }
@@ -41,6 +44,10 @@ type BenchResult struct {
 	DownMbps    float64 `json:"downMbps"`  // foreign -> Iran (what users downloading feel)
 	Score       float64 `json:"score"`
 	Recommended bool    `json:"recommended"`
+	// At: when this method was measured (unix). A run of only some methods carries the
+	// others over from earlier runs: without their own time an old result (even the ★ best)
+	// showed as measured by the newest run. 0 = from before this was kept (the run's time).
+	At int64 `json:"at,omitempty"`
 	// Opts: the alternative options (carrier) it works with on this route, when the
 	// defaults passed no traffic; apply and hot standby use them (routeOpts)
 	Opts map[string]string `json:"opts,omitempty"`
@@ -79,13 +86,18 @@ func (a *App) benchResults(iran, foreign, family string) []BenchResult {
 	return best
 }
 
-const benchHistoryMax = 60
+// benchHistoryMax: saved runs, all routes together (the page draws each method's trend from
+// them: at 60 a route had 2-3 points)
+const benchHistoryMax = 120
 
 // recordBench saves a finished run: which Iran server was tested against which foreign
 // server, when, and the ranked results.
 func (a *App) recordBench(req BenchRequest, rs []BenchResult, full bool) {
 	rec := BenchRecord{ID: newID(), At: time.Now().Unix(), IranID: req.IranID, ForeignID: req.ForeignID,
-		Family: req.Family, Results: rs, Full: full, IranName: serverName(a, req.IranID), ForeignName: "this panel host"}
+		Family: req.Family, Results: rs, Full: full, Auto: req.Auto, IranName: serverName(a, req.IranID), ForeignName: "this panel host"}
+	a.benchMu.Lock()
+	delete(a.benchFails, benchKey(req.IranID, req.ForeignID, req.Family))
+	a.benchMu.Unlock()
 	if req.ForeignID != "" {
 		rec.ForeignName = serverName(a, req.ForeignID)
 	}
@@ -96,6 +108,58 @@ func (a *App) recordBench(req BenchRequest, rs []BenchResult, full bool) {
 		}
 		return nil
 	})
+}
+
+// BenchFail is a benchmark of a route that measured nothing: it couldn't start, a server was
+// unreachable, or every method was skipped. Such a run writes no history, so without this the
+// page showed the route's old results as if the last attempt had not happened.
+type BenchFail struct {
+	IranID    string `json:"iranId"`
+	ForeignID string `json:"foreignId"`
+	Family    string `json:"family"`
+	At        int64  `json:"at"`
+	Error     string `json:"error"`
+	Auto      bool   `json:"auto,omitempty"`
+}
+
+// benchFailed remembers the last attempt on a route that measured nothing (until a run of
+// that route records results).
+func (a *App) benchFailed(req BenchRequest, msg string) {
+	fam := req.Family
+	if fam != "v6" {
+		fam = "v4"
+	}
+	a.benchMu.Lock()
+	defer a.benchMu.Unlock()
+	if a.benchFails == nil {
+		a.benchFails = map[string]BenchFail{}
+	}
+	a.benchFails[benchKey(req.IranID, req.ForeignID, fam)] = BenchFail{IranID: req.IranID, ForeignID: req.ForeignID, Family: fam,
+		At: time.Now().Unix(), Error: msg, Auto: req.Auto}
+}
+
+// benchFailList: the routes whose last attempt measured nothing.
+func (a *App) benchFailList() []BenchFail {
+	a.benchMu.Lock()
+	defer a.benchMu.Unlock()
+	out := []BenchFail{}
+	for _, f := range a.benchFails {
+		out = append(out, f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].At > out[j].At })
+	return out
+}
+
+// lastBenchAt: when the route's newest saved run was (0 = never).
+func (a *App) lastBenchAt(iran, foreign, family string) (at int64) {
+	a.store.View(func(st *State) {
+		for _, h := range st.BenchHistory {
+			if h.IranID == iran && h.ForeignID == foreign && h.Family == family {
+				at = max(at, h.At)
+			}
+		}
+	})
+	return
 }
 
 func (a *App) setBench(iran, foreign, family string, rs []BenchResult) {
@@ -179,6 +243,17 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	if req.Family != "v6" {
 		req.Family = "v4"
 	}
+	j, err := a.bench(srv, req)
+	if err != nil && j == nil && !errors.Is(err, errBenchBusy) {
+		a.benchFailed(req, err.Error())
+	}
+	return j, err
+}
+
+// errBenchBusy: another benchmark holds the slot (not a failure of this route).
+var errBenchBusy = errors.New("a benchmark is already running — wait for it to finish")
+
+func (a *App) bench(srv *Server, req BenchRequest) (*Job, error) {
 	if req.Seconds <= 0 || req.Seconds > 20 {
 		req.Seconds = 5
 	}
@@ -210,7 +285,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 	// one benchmark at a time: they all use the same throwaway tunnel slot
 	j, err := a.jobs.start("bench", "bench")
 	if err != nil {
-		return nil, fmt.Errorf("a benchmark is already running — wait for it to finish")
+		return nil, errBenchBusy
 	}
 	a.benchMu.Lock()
 	a.benchRun = &benchActive{Job: j.ID, Req: req}
@@ -226,12 +301,14 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		irHost, ipath, err := a.reach(ctx, srv, j)
 		if err != nil {
 			j.log("ERROR: Iran unreachable: %v", err)
+			a.benchFailed(req, "Iran server unreachable: "+firstLine(err.Error()))
 			j.finish("error")
 			return
 		}
 		khHost, kpath, err := a.foreignHost(ctx, bt, j)
 		if err != nil {
 			j.log("ERROR: foreign unreachable: %v", err)
+			a.benchFailed(req, "foreign server unreachable: "+firstLine(err.Error()))
 			j.finish("error")
 			return
 		}
@@ -262,13 +339,14 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 		// (and so does a full run cut short — cancelled or out of time: its few new results
 		// replaced the whole route's, and hot standby / failover then had 5 methods of 20)
 		earlier := a.benchResults(req.IranID, req.ForeignID, req.Family)
+		earlierAt := a.lastBenchAt(req.IranID, req.ForeignID, req.Family)
 		keepEarlier := len(req.Methods) > 0
 		measured := 0 // methods actually deployed and measured in this run
 		for i, m := range cands {
 			if ctx.Err() != nil {
 				break // cancelled
 			}
-			r := BenchResult{Method: m.ID, Title: m.Title, Kind: "forward"}
+			r := BenchResult{Method: m.ID, Title: m.Title, Kind: "forward", At: time.Now().Unix()}
 			if benchIsL3(m, nil) {
 				r.Kind = "l3"
 			}
@@ -312,7 +390,7 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 					if benchIsL3(m, alt) {
 						kind = "l3"
 					}
-					ar := BenchResult{Method: m.ID, Title: m.Title, Kind: kind}
+					ar := BenchResult{Method: m.ID, Title: m.Title, Kind: kind, At: time.Now().Unix()}
 					err = a.benchOne(ctx, j, bt, m, irHost, khHost, req.Seconds, req.MaxMB, probeOK, probePort, &ar)
 					tried = append(tried, altLabel(alt))
 					if err == nil {
@@ -349,17 +427,20 @@ func (a *App) Bench(req BenchRequest) (*Job, error) {
 			}
 			out = append(out, r)
 			// publish partial results so the page shows progress even after a reload
-			partial := withEarlier(append([]BenchResult(nil), out...), earlier)
+			partial := withEarlier(append([]BenchResult(nil), out...), earlier, earlierAt)
 			rankBench(partial)
 			a.setBench(req.IranID, req.ForeignID, req.Family, partial)
 		}
 		if keepEarlier || ctx.Err() != nil {
-			out = withEarlier(out, earlier)
+			out = withEarlier(out, earlier, earlierAt)
 		}
 		if measured == 0 {
 			// nothing new (all skipped or cancelled at once): the route's results and history
 			// stay as they were, so it doesn't look freshly measured
 			j.log("DONE — nothing was measured")
+			if ctx.Err() == nil {
+				a.benchFailed(req, "nothing was measured: every method was skipped or left out on this route")
+			}
 			j.finish("ok")
 			return
 		}
@@ -622,14 +703,18 @@ func runProbe[T any](ctx context.Context, h Host, args string, timeout int) (T, 
 // rankBench scores results and flags the best. Higher score = better.
 // Throughput dominates (log scale, so 400 vs 500 Mbps matters less than 5 vs 50);
 // latency, jitter and loss subtract. Without a throughput figure it ranks on latency.
-// withEarlier adds the earlier results of methods this run didn't measure.
-func withEarlier(out, earlier []BenchResult) []BenchResult {
+// withEarlier adds the earlier results of methods this run didn't measure, each keeping
+// when it was measured (one saved before results had a time gets at: its run's time).
+func withEarlier(out, earlier []BenchResult, at int64) []BenchResult {
 	have := map[string]bool{}
 	for _, r := range out {
 		have[r.Method] = true
 	}
 	for _, r := range earlier {
 		if !have[r.Method] {
+			if r.At == 0 {
+				r.At = at
+			}
 			out = append(out, r)
 		}
 	}

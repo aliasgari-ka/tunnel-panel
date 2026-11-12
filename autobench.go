@@ -81,12 +81,18 @@ func (a *App) runningMethods(iran, foreign, fam string) []string {
 	return out
 }
 
-// dueRoutes lists the routes in use that are due: the running methods when the newest run
-// is older than every, every method when the newest full run is older than
-// autoBenchFull×every (or nothing runs over that family: there is nothing else to measure).
-func (a *App) dueRoutes(every time.Duration) []dueRoute {
+// routeInUse is a route that carries a running tunnel, with when it was last benchmarked.
+type routeInUse struct {
+	benchRoute
+	last, lastFull int64 // newest run, newest full run (unix; 0 = never)
+	running        []string
+}
+
+// routesInUse lists the routes the automatic benchmark looks after: every route (per address
+// family) of a running tunnel.
+func (a *App) routesInUse() []routeInUse {
 	seen := map[benchRoute]bool{}
-	var out []dueRoute
+	var out []routeInUse
 	var ts []*Tunnel
 	a.store.View(func(st *State) {
 		for _, t := range st.Tunnels {
@@ -102,24 +108,49 @@ func (a *App) dueRoutes(every time.Duration) []dueRoute {
 				continue
 			}
 			seen[r] = true
-			var last, lastFull int64
+			u := routeInUse{benchRoute: r, running: a.runningMethods(r.iran, r.foreign, f)}
 			a.store.View(func(st *State) {
 				for _, h := range st.BenchHistory {
 					if h.IranID == r.iran && h.ForeignID == r.foreign && h.Family == r.family {
-						last = max(last, h.At)
+						u.last = max(u.last, h.At)
 						if h.Full {
-							lastFull = max(lastFull, h.At)
+							u.lastFull = max(u.lastFull, h.At)
 						}
 					}
 				}
 			})
-			running := len(a.runningMethods(r.iran, r.foreign, f)) > 0
-			switch {
-			case time.Since(time.Unix(lastFull, 0)) >= autoBenchFull*every:
-				out = append(out, dueRoute{r, true})
-			case running && time.Since(time.Unix(last, 0)) >= every:
-				out = append(out, dueRoute{r, false})
-			}
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// next says when the route is due: the running methods every `every`, every method each
+// autoBenchFull×every (or only that, when nothing runs over this family).
+func (u routeInUse) next(every time.Duration) (next int64, full bool) {
+	nf := u.lastFull + int64((autoBenchFull * every).Seconds())
+	if len(u.running) == 0 {
+		return nf, true
+	}
+	nr := u.last + int64(every.Seconds())
+	if nf <= nr {
+		return nf, true
+	}
+	return nr, false
+}
+
+// dueRoutes lists the routes in use that are due: the running methods when the newest run
+// is older than every, every method when the newest full run is older than
+// autoBenchFull×every (or nothing runs over that family: there is nothing else to measure).
+func (a *App) dueRoutes(every time.Duration) []dueRoute {
+	var out []dueRoute
+	now := time.Now().Unix()
+	for _, u := range a.routesInUse() {
+		switch {
+		case u.lastFull+int64((autoBenchFull*every).Seconds()) <= now:
+			out = append(out, dueRoute{u.benchRoute, true})
+		case len(u.running) > 0 && u.last+int64(every.Seconds()) <= now:
+			out = append(out, dueRoute{u.benchRoute, false})
 		}
 	}
 	return out
@@ -143,7 +174,10 @@ func (a *App) autoBenchRound() {
 			return // a benchmark (or failback check) is using the slot: next round
 		}
 		if !a.serverReachable(r.iran) || (r.foreign != "" && !a.serverReachable(r.foreign)) {
-			continue // a server is down: nothing useful to measure now
+			// a server is down: nothing useful to measure now (said on the page: the route
+			// otherwise just looked "due" for as long as the server stayed down)
+			a.benchFailed(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Auto: true}, "skipped by the automatic benchmark: a server of this route is unreachable")
+			continue
 		}
 		autoBenchTried.Lock()
 		recent := time.Since(autoBenchTried.at[r]) < every
@@ -154,7 +188,7 @@ func (a *App) autoBenchRound() {
 		if recent {
 			continue // started within the interval and still due: it measured nothing
 		}
-		j, err := a.Bench(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Running: !r.full, Seconds: 3, MaxMB: autoBenchMB})
+		j, err := a.Bench(BenchRequest{IranID: r.iran, ForeignID: r.foreign, Family: r.family, Running: !r.full, Seconds: 3, MaxMB: autoBenchMB, Auto: true})
 		if err != nil {
 			continue
 		}

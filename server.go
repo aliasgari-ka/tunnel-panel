@@ -72,7 +72,7 @@ func (a *App) routes() http.Handler {
 	reads := map[string]bool{"/api/me": true, "/api/mybot": true, "/api/settings": true, "/api/methods": true,
 		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
 		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
-		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
+		"/api/bench/history": true, "/api/bench/status": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true,
 		"/api/igproxy/warps": true, "/api/igproxy/opts": true, "/api/igproxy/health": true, "/api/igproxy/runs": true}
@@ -119,6 +119,8 @@ func (a *App) routes() http.Handler {
 	g("/api/bench/results", "pair", s.benchResults)
 	g("/api/bench/active", "self", s.benchActive)
 	g("/api/bench/history", "self", s.benchHistory)
+	g("/api/bench/status", "self", s.benchStatus)
+	g("/api/bench/auto", "admin", s.benchAuto)
 	g("/api/routes/skip", "self", s.routeSkip)
 	g("/api/repair", "admin", s.repair)
 	g("/api/ai", "admin", s.aiGet)
@@ -1793,6 +1795,70 @@ func (s *Server2) serverPrepare(w http.ResponseWriter, r *http.Request) {
 		j.mu.Unlock()
 	}
 	writeJSON(w, map[string]string{"job": j.ID})
+}
+
+// benchSched is a route the automatic benchmark looks after, and when it is due next.
+type benchSched struct {
+	IranID    string   `json:"iranId"`
+	ForeignID string   `json:"foreignId"`
+	Family    string   `json:"family"`
+	Running   []string `json:"running"`  // the methods its tunnels run (what a normal run measures)
+	Next      int64    `json:"next"`     // unix; 0 = the automatic benchmark is off
+	NextFull  bool     `json:"nextFull"` // that run measures every method
+}
+
+// benchStatus: the automatic benchmark's schedule per route and the routes whose last attempt
+// measured nothing (the page shows both beside the results).
+func (s *Server2) benchStatus(w http.ResponseWriter, r *http.Request) {
+	user, admin := s.who(r)
+	set := s.app.settings()
+	every := autoBenchEvery(set)
+	routes := []benchSched{}
+	for _, u := range s.app.routesInUse() {
+		if !s.pairVisible(user, admin, u.iran, u.foreign) {
+			continue
+		}
+		b := benchSched{IranID: u.iran, ForeignID: u.foreign, Family: u.family, Running: u.running}
+		if b.Running == nil {
+			b.Running = []string{}
+		}
+		if every > 0 {
+			b.Next, b.NextFull = u.next(every)
+		}
+		routes = append(routes, b)
+	}
+	fails := []BenchFail{}
+	for _, f := range s.app.benchFailList() {
+		if s.pairVisible(user, admin, f.IranID, f.ForeignID) {
+			fails = append(fails, f)
+		}
+	}
+	writeJSON(w, map[string]any{"hours": int(every.Hours()), "set": set.AutoBench, "fullEvery": autoBenchFull,
+		"autoMB": autoBenchMB, "maxMB": benchMaxMB, "now": time.Now().Unix(), "routes": routes, "fails": fails})
+}
+
+// benchAuto sets only the automatic benchmark's interval (the page's schedule editor; the
+// Settings page saves it with everything else). Hours: blank = 24, 0 = off, at most 720.
+func (s *Server2) benchAuto(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Hours string `json:"hours"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		httpErr(w, 400, "bad request")
+		return
+	}
+	v := strings.TrimSpace(in.Hours)
+	if v != "" {
+		if n, e := strconv.Atoi(v); e != nil || n < 0 || n > 720 {
+			httpErr(w, 400, "Automatic benchmark: hours must be 0 (off) to 720")
+			return
+		}
+	}
+	if err := s.app.store.Update(func(st *State) error { st.Settings.AutoBench = v; return nil }); err != nil {
+		httpErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"set": v})
 }
 
 func (s *Server2) benchResults(w http.ResponseWriter, r *http.Request) {

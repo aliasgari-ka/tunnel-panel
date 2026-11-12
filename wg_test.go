@@ -141,7 +141,7 @@ func TestWireGuardPortNotProbePort(t *testing.T) {
 // A benchmark of some methods keeps the route's earlier results for the others.
 func TestBenchWithEarlier(t *testing.T) {
 	earlier := []BenchResult{{Method: "gre", OK: true, Score: 80}, {Method: "wg", OK: false}}
-	out := withEarlier([]BenchResult{{Method: "wg", OK: true, Score: 90}}, earlier)
+	out := withEarlier([]BenchResult{{Method: "wg", OK: true, Score: 90}}, earlier, 0)
 	if len(out) != 2 || out[0].Method != "wg" || !out[0].OK || out[1].Method != "gre" {
 		t.Errorf("got %+v", out)
 	}

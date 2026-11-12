@@ -2047,126 +2047,279 @@ function tunnelModal(t) {
 }
 
 /* ---------------- benchmark ---------------- */
-// The benchmark runs on the server; the page only watches it. benchWatch survives
-// navigation, and /bench/active lets a fresh page (or reload) re-attach to a running job.
-let benchTimer = null;
+// One card per route (Iran server → foreign server), one section per address family: which
+// methods work there now, best first, the users' method marked, failures folded under one line
+// each, each method's trend as a sparkline. The benchmark runs on the server; the page only
+// watches it (BN.job survives navigation, /bench/active re-attaches after a reload).
+let benchTimer = null, benchPoll = null;
+const BN = { job: null, req: null, view: {}, fam: '', route: '' };
+const bnKey = (i, f) => i + '|' + (f || '');
+const bnAge = (u) => { const s = Math.max(0, Math.floor(Date.now() / 1000) - u); return s < 90 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
+const bnIn = (u) => { const s = u - Math.floor(Date.now() / 1000); return s <= 600 ? 'within 10 min' : s < 3600 ? `in ${Math.round(s / 60)} min` : s < 86400 ? `in ${Math.round(s / 3600)} h` : `in ${Math.round(s / 86400)} d`; };
+const bnMb = (v) => v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(0) : v > 0 ? v.toFixed(1) : '0';
+// the methods a route+family can measure: all that fit it, less the ones left out on the route (and spoof, never measured)
+const bnAll = (fam, skip, k) => STATE.methods.filter(m => m.id !== 'spoof' && m.families.includes(fam) && !(skip[k] || []).includes(m.id + '|' + fam));
+function bnSpark(pts) {
+  if (pts.length < 2) return '';
+  const vs = pts.map(p => p.v), mx = Math.max(...vs, 1), w = 64, hh = 18;
+  const xy = pts.map((p, i) => [(i / (pts.length - 1)) * w, hh - 2 - (p.v / mx) * (hh - 4)]);
+  const d = xy.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
+  const last = xy[xy.length - 1];
+  const tip = pts.map(p => `${new Date(p.at * 1000).toLocaleDateString()} ↓${bnMb(p.v)}`).join(' · ');
+  return `<svg class="bn-spark" viewBox="0 0 ${w} ${hh}" preserveAspectRatio="none" aria-hidden="true"><title>${esc(tip)}</title><path d="${d}"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="1.8"/></svg>`;
+}
 function viewBench(w) {
-  w.innerHTML = topbar('Route benchmark', 'Measure the tunnels running between two servers (or every method) and compare them.');
-  const card = h(`<div class="grid" style="gap:16px">
-    <form class="card pad ff" id="bf" style="max-width:640px">
-      <div class="two">
-        <label class="f">Iran server<select name="iran">${[...iranServers(), ...(STATE.shared || []).filter(s => (s.role || 'iran') === 'iran')].map(s => `<option value="${s.id}"${s.shared ? '' : ' data-notr'}>${esc(serverLabel(s))}${s.shared ? ' · shared' : ''}</option>`).join('')}</select></label>
-        <label class="f">Foreign server<select name="foreign">${panelHostOpt()}${[...foreignServers(), ...(STATE.shared || []).filter(s => s.role === 'foreign')].map(s => `<option value="${s.id}"${s.shared ? '' : ' data-notr'}>${esc(serverLabel(s))}${s.shared ? ' · shared' : ''}</option>`).join('')}</select></label>
-      </div>
-      <div class="two">
-        <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>
-        <label class="f">Throughput probe (s)<input name="seconds" type="number" class="mono" value="5"></label>
-      </div>
-      <label class="f">Methods<select name="scope"><option value="running">Only the ones running on this route (every method if none runs)</option><option value="all">All methods</option></select></label>
-      <div class="faint" style="font-size:12px">Each method is deployed on a temporary tunnel, measured, then removed. It runs on the server — you can leave this page and come back.</div>
-      <div style="display:flex;gap:8px"><button class="btn pri" id="brun">Run benchmark</button><button type="button" class="btn danger" id="bcancel" hidden>■ Cancel</button></div>
-    </form>
-    <div id="blogcard"></div><div id="bres"></div><div id="bhist"></div></div>`);
-  w.appendChild(card);
-  const form = $('#bf');
-  const cur = () => { const fd = Object.fromEntries(new FormData(form)); return { iran: fd.iran, foreign: fd.foreign || '', family: fd.family }; };
-  form.onchange = () => { if (!benchTimer) showBenchResults(cur()); };
-  form.onsubmit = async (ev) => {
-    ev.preventDefault();
-    const fd = Object.fromEntries(new FormData(form));
-    try { const r = await api('/bench/start', { iranId: fd.iran, foreignId: fd.foreign, family: fd.family, running: fd.scope !== 'all', seconds: parseInt(fd.seconds || '5', 10) }); benchWatch(r.job, cur()); }
-    catch (e) { alertModal('Error', e.message); }
-  };
-  loadBenchHistory();
-  // re-attach to a running benchmark, else show the stored results of the selected route
-  api('/bench/active').then(a => {
-    const q = (a && a.req) || {};
-    // a running benchmark always re-attaches; a finished one only for the route on screen
-    const same = q.iranId === cur().iran;
-    if (a && a.job && (a.running || same)) {
-      if (q.iranId) form.iran.value = q.iranId;
-      form.foreign.value = q.foreignId || '';
-      if (q.family) form.family.value = q.family;
-      benchWatch(a.job, { iran: q.iranId, foreign: q.foreignId || '', family: q.family || 'v4' });
-    } else showBenchResults(cur());
-  }).catch(() => showBenchResults(cur()));
+  w.innerHTML = topbar('Benchmark', 'Which methods work on each route right now, and which is best — measured on a temporary tunnel, live tunnels are not touched.',
+    '<button class="btn sm" id="bnpair">＋ Another pair</button>');
+  w.appendChild(h(`<div class="bn"><div id="bnauto"></div><div id="bnrun"></div>
+    <div class="bn-filters"><label class="bn-sel"><span>Route</span><select id="bnroute"><option value="">All routes</option></select></label>
+      <div class="seg" id="bnfam"><button data-f="" class="on">All</button><button data-f="v4">IPv4</button><button data-f="v6">IPv6</button></div></div>
+    <div id="bnlist"><div class="skel" style="height:160px"></div></div><div id="bnfoot"></div></div>`));
+  $$('#bnfam button', w).forEach(b => { b.classList.toggle('on', b.dataset.f === BN.fam); b.onclick = () => { BN.fam = b.dataset.f; $$('#bnfam button').forEach(x => x.classList.toggle('on', x === b)); bnPaint(); }; });
+  $('#bnroute', w).onchange = (e) => { BN.route = e.target.value; bnPaint(); };
+  $('#bnpair', w).onclick = () => bnPairModal();
+  bnLoad();
+  // re-attach to a running (or just finished) benchmark
+  api('/bench/active').then(a => { if (a && a.job && (a.running || BN.job === a.job)) bnWatch(a.job, a.req || {}); }).catch(() => {});
+  if (benchPoll) clearInterval(benchPoll);
+  benchPoll = setInterval(() => { if (STATE.view !== 'bench' || !$('#bnlist')) { clearInterval(benchPoll); benchPoll = null; return; } if (!document.hidden && !benchTimer) bnLoad(); }, 30000);
 }
-// History: which Iran server was tested against which foreign server, when, and the winner.
-async function loadBenchHistory() {
-  let hs = [];
-  try { hs = await api('/bench/history'); } catch (e) {}
-  const box = $('#bhist');
-  if (!box) return;
-  if (!hs.length) { box.innerHTML = ''; return; }
-  const fl = (id, d) => { const s = serverById(id); return s && s.country ? flag(s.country) : d; };
-  const rows = hs.map((r, i) => {
-    const best = (r.results || []).find(x => x.recommended);
-    const ok = (r.results || []).filter(x => x.ok).length;
-    const dt = new Date(r.at * 1000);
-    return `<tr><td class="mono" style="white-space:nowrap">${dt.toLocaleDateString()} ${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-      <td>${fl(r.iranId, '🇮🇷')} ${nm(r.iranName)} <span class="faint">→</span> ${fl(r.foreignId, r.foreignId ? '🌍' : '🖥')} ${r.foreignId ? nm(r.foreignName) : esc(r.foreignName)}</td>
-      <td>${r.family === 'v6' ? 'IPv6' : 'IPv4'}</td>
-      <td>${best ? `<b>${esc(best.title)}</b> <span class="faint">↓${best.downMbps.toFixed(0)} ↑${best.upMbps.toFixed(0)} Mbps · ${best.rttMs.toFixed(0)} ms</span>` : '<span class="faint">no method worked</span>'}</td>
-      <td class="faint">${ok}/${(r.results || []).length} ok</td>
-      <td><button class="btn sm" data-hv="${i}">View</button></td></tr>`;
-  }).join('');
-  box.innerHTML = `<div class="card pad"><div style="display:flex;justify-content:space-between;align-items:center"><h3>History</h3>${isAdmin() ? '<button class="btn sm ghost danger" id="bhclear">Clear history</button>' : ''}</div>
-    <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>when</th><th>route</th><th>family</th><th>best</th><th>methods</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
-  $$('[data-hv]', box).forEach(b => b.onclick = () => {
-    const r = hs[+b.dataset.hv];
-    renderBenchTable(r.results || [], { iran: r.iranId, foreign: r.foreignId, family: r.family },
-      `${nm(r.iranName)} → ${r.foreignId ? nm(r.foreignName) : esc(r.foreignName)} · ${r.family} · ${new Date(r.at * 1000).toLocaleString()}`);
-    $('#bres').scrollIntoView({ behavior: 'smooth', block: 'start' });
+let BND = null; // the page's data: history, schedule, switches, live results of the running route
+async function bnLoad() {
+  let hist = [], st = {}, skip = {};
+  try { [hist, st, skip] = await Promise.all([api('/bench/history'), api('/bench/status').catch(() => ({})), api('/routes/skip').catch(() => ({}))]); } catch (e) {}
+  let live = null;
+  if (BN.job && BN.req && BN.req.iranId) {
+    try { live = await api(`/bench/results?iran=${encodeURIComponent(BN.req.iranId)}&foreign=${encodeURIComponent(BN.req.foreignId || '')}&family=${BN.req.family || 'v4'}`); } catch (e) {}
+  }
+  BND = { hist: hist || [], st: st || {}, skip: skip || {}, live };
+  bnPaint();
+}
+// the routes the page shows: the visible tunnels' pairs, the measured pairs and the scheduled ones
+function bnRoutes() {
+  const { hist, st } = BND, pairs = new Map();
+  const add = (iran, foreign) => { const k = bnKey(iran, foreign); if (!pairs.has(k)) pairs.set(k, { k, iran, foreign: foreign || '', tunnels: [] }); return pairs.get(k); };
+  STATE.tunnels.filter(t => shownOwner(t.owner)).forEach(t => add(t.serverId, t.foreignId).tunnels.push(t));
+  const ownOk = (id) => shownOwner((serverById(id) || {}).owner);
+  hist.filter(r => ownOk(r.iranId)).forEach(r => add(r.iranId, r.foreignId));
+  (st.routes || []).filter(r => ownOk(r.iranId)).forEach(r => add(r.iranId, r.foreignId));
+  if (BN.req && BN.req.iranId && ownOk(BN.req.iranId)) add(BN.req.iranId, BN.req.foreignId);
+  const hasFam = (id, f) => { const s = id ? serverById(id) : null, g = STATE.settings || {}; return f === 'v4' ? !!(s ? s.ipv4 : true) : !!(s ? s.ipv6 : g.localIPv6); };
+  const out = [...pairs.values()].map(p => {
+    p.fams = ['v4', 'v6'].filter(f => (hasFam(p.iran, f) && hasFam(p.foreign, f)) || hist.some(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f));
+    p.users = p.tunnels.filter(t => t.active).length;
+    p.label = `${serverName(p.iran)} → ${p.foreign ? serverName(p.foreign) : 'this panel host'}`;
+    return p;
   });
-  // only the admin may clear it (the server refuses others); an error is said, not swallowed
-  if ($('#bhclear', box)) $('#bhclear', box).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; try { await api('/bench/history', { Clear: true }); loadBenchHistory(); } catch (er) { alertModal('Error', er.message); } };
+  return out.sort((a, b) => (b.users > 0) - (a.users > 0) || a.label.localeCompare(b.label));
 }
-function benchWatch(job, fd) {
+// what the route's tunnels run over fam: the users' method(s) and the hot-standby paths kept ready
+function bnUse(p, fam) {
+  const users = new Set(), standby = new Set();
+  p.tunnels.filter(t => t.active).forEach(t => {
+    const hs = t.hs;
+    if (t.hotStandby && hs && hs.keys && hs.keys.length) {
+      hs.keys.forEach((k, i) => { const [m, f] = k.split('|'); if (f !== fam) return; if (i === hs.active) users.add(m); else if ((hs.ok || [])[i]) standby.add(m); });
+    } else if (t.family === fam) users.add(t.active);
+  });
+  users.forEach(m => standby.delete(m));
+  return { users, standby };
+}
+function bnPaint() {
+  const list = $('#bnlist');
+  if (!list || !BND) return;
+  const { hist, st, skip } = BND;
+  const routes = bnRoutes();
+  // the route picker
+  const sel = $('#bnroute');
+  if (BN.route && !routes.some(p => p.k === BN.route)) BN.route = '';
+  sel.innerHTML = `<option value="">All routes (${routes.length})</option>` + routes.map(p => `<option value="${esc(p.k)}" data-notr>${esc(p.label)}</option>`).join('');
+  sel.value = BN.route;
+  bnAutoCard();
+  const shown = routes.filter(p => !BN.route || p.k === BN.route);
+  if (!shown.length) { list.innerHTML = `<div class="card empty"><div class="big">📊</div><h3>No routes yet</h3><p class="muted">Add a tunnel, or measure a pair of servers with “＋ Another pair”.</p></div>`; bnFoot(); return; }
+  list.innerHTML = '';
+  shown.forEach(p => { try { list.appendChild(bnCard(p)); } catch (e) { console.error(e); list.appendChild(h(`<div class="card pad bn-card"><b data-notr>${esc(p.label)}</b><div class="faint">couldn't be drawn: ${esc(e.message)}</div></div>`)); } });
+  bnFoot();
+}
+function bnCard(p) {
+  const { hist, st, skip } = BND;
+  const fams = p.fams.filter(f => !BN.fam || f === BN.fam);
+  const fl = (id, d) => { const s = id ? serverById(id) : null; return s && s.country ? flag(s.country) : d; };
+  const tnames = p.tunnels.map(t => `<span class="chip" data-notr>${esc(t.name)}</span>`).join('');
+  const card = h(`<div class="card bn-card"><div class="bn-head">
+      <div class="bn-route">${fl(p.iran, '🇮🇷')} ${srvNm(p.iran)} <span class="faint">→</span> ${fl(p.foreign, p.foreign ? '🌍' : '🖥')} ${srvNm(p.foreign, 'this panel host')}</div>
+      <div class="bn-tn">${p.users ? `<span class="pill on"><span class="led"></span>${p.users === 1 ? 'tunnel running' : `${p.users} tunnels running`}</span>` : p.tunnels.length ? '<span class="pill off">tunnel stopped</span>' : '<span class="pill off">no tunnel</span>'}${tnames}</div></div></div>`);
+  if (!fams.length) card.appendChild(h(`<div class="bn-fam"><div class="faint">${BN.fam ? `No ${famName(BN.fam)} on this route.` : 'These two servers have no address family in common.'}</div></div>`));
+  fams.forEach(f => card.appendChild(bnFamSection(p, f)));
+  $$('[data-err]', card).forEach(b => b.onclick = () => alertModal('Why it failed', b.dataset.err));
+  $$('[data-apply]', card).forEach(b => b.onclick = () => applyBenchToTunnel({ iran: p.iran, foreign: p.foreign, family: b.dataset.fam }, b.dataset.apply));
+  $$('[data-run]', card).forEach(b => b.onclick = () => bnRunModal(p, b.dataset.run));
+  $$('[data-hv]', card).forEach(b => b.onclick = () => { BN.view[p.k + '|' + b.dataset.fam] = b.dataset.hv || undefined; bnPaint(); });
+  return card;
+}
+function bnFamSection(p, f) {
+  const { hist, st, skip } = BND;
+  const runs = hist.filter(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f); // newest first
+  const running = BN.req && BN.req.iranId === p.iran && (BN.req.foreignId || '') === p.foreign && (BN.req.family || 'v4') === f;
+  const busy = !!BN.job && BN.running;
+  const vk = p.k + '|' + f, pick = BN.view[vk] && runs.find(r => r.id === BN.view[vk]);
+  // the run shown: a past one picked from the history, the live one while it runs, else the newest
+  let run = pick || runs[0] || null, results = run ? run.results || [] : [];
+  if (!pick && running && BND.live && BND.live.length) { results = BND.live; run = { at: Math.max(...BND.live.map(r => r.at || 0)) || Math.floor(Date.now() / 1000), live: true }; }
+  const sched = (st.routes || []).find(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f);
+  const fail = (st.fails || []).find(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f);
+  const { users, standby } = bnUse(p, f);
+  const every = (st.hours || 24) * 3600, now = Math.floor(Date.now() / 1000);
+  // freshness of the newest run
+  let fresh;
+  if (!run) fresh = '<span class="pill off">never measured</span>';
+  else if (run.live) fresh = '<span class="pill acc">measuring now…</span>';
+  else { const age = now - run.at, c = pick ? 'acc' : age > 7 * 86400 ? 'bad' : age > 2 * every ? 'warn' : 'on'; fresh = `<span class="pill ${c}" title="${esc(new Date(run.at * 1000).toLocaleString())}">${pick ? 'past run · ' : ''}measured ${bnAge(run.at)}</span>`; }
+  const ok = results.filter(r => r.ok), bad = results.filter(r => !r.ok && !r.skipped), skipped = results.filter(r => r.skipped);
+  const top = Math.max(1, ...ok.map(r => r.downMbps || 0));
+  // each method's ↓ over the saved runs (oldest first; a result carried into a later run counts once)
+  const trend = (mid) => {
+    const pts = [], seen = new Set();
+    runs.slice().reverse().forEach(r => { const x = (r.results || []).find(y => y.method === mid && y.ok); if (!x) return; const at = x.at || r.at; if (seen.has(at)) return; seen.add(at); pts.push({ at, v: x.downMbps || 0 }); });
+    return pts.slice(-12);
+  };
+  const carrier = (x) => x.opts ? Object.entries(x.opts).map(([k, v]) => `${k} ${v}`).join(', ') : '';
+  const rows = ok.map((x, i) => {
+    const old = x.at && run.at && run.at - x.at > 300; // carried over from an earlier run
+    const tags = (users.has(x.method) ? '<span class="chip bn-u">👥 users on it</span>' : '') + (standby.has(x.method) ? '<span class="chip bn-s">⚡ standby</span>' : '') + (carrier(x) ? `<span class="chip" title="the default carrier passes nothing here; this one does" data-notr>${esc(carrier(x))}</span>` : '');
+    return `<div class="bn-row${i === 0 ? ' best' : ''}${users.has(x.method) ? ' users' : ''}">
+      <span class="bn-rk">${i === 0 ? '★' : i + 1}</span>
+      <div class="bn-m"><b>${esc(methodTitle(x.method))}</b>${tags ? `<span class="bn-tags">${tags}</span>` : ''}${old ? `<small class="bn-old" title="this run didn't measure it: its result is from an earlier run">⏱ <span>measured ${bnAge(x.at)}</span></small>` : ''}</div>
+      <div class="bn-sp"><div class="bn-bar"><i style="width:${Math.max(3, Math.round((x.downMbps || 0) / top * 100))}%"></i></div>
+        <span class="bn-n"><b>↓ ${bnMb(x.downMbps || 0)}</b> <span class="faint">↑ ${bnMb(x.upMbps || 0)}</span> <small>Mbps</small></span></div>
+      <span class="bn-lat"><b>${(x.rttMs || 0).toFixed(0)}</b> <small>ms</small>${x.lossKnown ? ` <span class="${x.lossPct >= 5 ? 'bn-bad' : 'faint'}">· ${x.lossPct.toFixed(0)}% <small>loss</small></span>` : ''}</span>
+      <span class="bn-tr">${bnSpark(trend(x.method))}</span>
+      <button class="btn sm ghost" data-apply="${esc(x.method)}" data-fam="${f}" title="Switch one of this route's tunnels to this method">Apply</button></div>`;
+  }).join('');
+  // the users' method failed (or wasn't measured) in this run: said first, it is what matters
+  const usersWarn = [...users].filter(m => !ok.some(x => x.method === m) && run && !run.live).map(m => {
+    const x = results.find(y => y.method === m);
+    return `<div class="bn-warn">⚠ <span>Users are on ${esc(methodTitle(m))}, but in this run it</span> ${x ? (x.skipped ? '<span>was not measured</span>' : `<button class="bn-why" data-err="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>`) : '<span>was not measured</span>'}</div>`;
+  }).join('');
+  const failBox = fail && (!run || run.live || fail.at > run.at) ? `<div class="bn-warn bad">✕ <span>${fail.auto ? 'Automatic run' : 'Last run'} ${bnAge(fail.at)} measured nothing:</span> <button class="bn-why" data-err="${esc(fail.error)}">${esc(shortErr(fail.error))}</button></div>` : '';
+  const fails = bad.length || skipped.length ? `<details class="bn-fails"><summary>${bad.length ? `<span class="bn-bad">✕ ${bad.length} failed</span>` : ''}${bad.length && skipped.length ? ' · ' : ''}${skipped.length ? `<span class="faint">${skipped.length} not measured</span>` : ''}</summary>
+      ${bad.map(x => `<div class="bn-f"><b>${esc(methodTitle(x.method))}</b>${users.has(x.method) ? '<span class="chip bn-u">👥 users on it</span>' : ''}<button class="bn-why" data-err="${esc(x.error || 'failed')}" title="show the whole error">${esc(shortErr(x.error))}</button></div>`).join('')}
+      ${skipped.length ? `<div class="bn-f sk"><span class="faint">Not measured:</span> ${skipped.map(x => `<span class="chip" title="${esc(x.error || '')}">${esc(methodTitle(x.method))}</span>`).join('')}</div>` : ''}</details>` : '';
+  // cost of a run: each method moves at most maxMB each way
+  const k = bnKey(p.iran, p.foreign), maxMB = st.maxMB || 6;
+  const nRun = (sched && sched.running && sched.running.length) || [...users, ...standby].length;
+  const nAll = bnAll(f, BND.skip, k).length;
+  const runBtn = `<button class="btn sm ${run ? '' : 'pri'}" data-run="${f}"${busy ? ' disabled title="one benchmark at a time — wait for the running one"' : ''}>▶ Run benchmark</button>`;
+  const cost = `<small class="faint bn-cost">≤ ${(nRun || nAll) * 2 * maxMB} MB</small>`;
+  let next = '';
+  if (sched && st.hours) next = `<span>${sched.next <= now ? '🤖 due for the automatic run now' : '🤖 next automatic run ' + bnIn(sched.next)}${sched.nextFull ? ' · every method' : ''}</span>`;
+  else if (st.hours === 0) next = '<span>🤖 automatic benchmark is off</span>';
+  else if (!sched) next = '<span>🤖 not measured automatically: no tunnel runs here</span>';
+  const hl = runs.slice(0, 8).map(r => {
+    const b = (r.results || []).find(x => x.recommended), n = (r.results || []).filter(x => x.ok).length;
+    const on = (pick ? pick.id : (runs[0] || {}).id) === r.id && !(running && BND.live);
+    return `<button class="bn-h${on ? ' on' : ''}" data-hv="${r.id === (runs[0] || {}).id ? '' : esc(r.id)}" data-fam="${f}"><span class="mono">${new Date(r.at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })} ${new Date(r.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><b>${b ? esc(methodTitle(b.method)) : '—'}</b><small class="faint">${n}/${(r.results || []).length} ok${r.full ? ' · all' : ''}${r.auto ? ' · 🤖' : ''}</small></button>`;
+  }).join('');
+  return h(`<div class="bn-fam${running && busy ? ' live' : ''}">
+    <div class="bn-fh"><b class="bn-fn">${famName(f)}</b>${fresh}<span class="bn-sp1"></span>${cost}${runBtn}</div>
+    ${failBox}${usersWarn}
+    ${ok.length ? `<div class="bn-rows">${rows}</div>` : run ? '<div class="bn-none">No method worked in this run.</div>' : '<div class="bn-none faint">Not measured yet — run the benchmark to see which methods work here.</div>'}
+    ${fails}
+    <div class="bn-meta">${next}${runs.length > 1 ? `<details class="bn-hist"${pick ? ' open' : ''}><summary>History · ${runs.length} runs</summary><div class="bn-hl">${hl}</div></details>` : ''}</div></div>`);
+}
+// the automatic benchmark: how often, what it costs, editable here (admin)
+function bnAutoCard() {
+  const box = $('#bnauto'); if (!box || !BND) return;
+  const st = BND.st, hrs = st.hours, now = Math.floor(Date.now() / 1000);
+  const due = (st.routes || []).filter(r => r.next).sort((a, b) => a.next - b.next)[0];
+  const fails = (st.fails || []).length;
+  box.innerHTML = `<div class="card bn-auto"><div class="bn-ai">🤖</div><div class="bn-at">
+      <b>${hrs ? `Automatic benchmark every ${hrs} h` : 'Automatic benchmark is off'}</b>
+      <small>${hrs ? `only the methods running on each route, at most ${st.autoMB || 3} MB each way per method; every method once in ${(st.fullEvery || 7) * hrs} h` : 'routes are measured only when you run the benchmark'}</small>${due ? `<small class="bn-nx">${due.next <= now ? 'a route is due now' : 'next ' + bnIn(due.next)}</small>` : ''}</div>
+      ${fails ? `<span class="pill bad" title="routes whose last run measured nothing — see the route">${fails === 1 ? '1 route failed' : `${fails} routes failed`}</span>` : ''}
+      ${isAdmin() ? `<form class="bn-edit" id="bnaf"><label><span>every</span><input name="hours" class="mono" inputmode="numeric" value="${esc(st.set || '')}" placeholder="24" aria-label="hours"><span>h</span></label><button class="btn sm">Save</button></form>` : ''}</div>`;
+  const f = $('#bnaf', box);
+  if (f) f.onsubmit = oneAtATime(f, async () => { try { await api('/bench/auto', { hours: f.hours.value.trim() }); toast('Saved'); if (STATE.settings) STATE.settings.autoBench = f.hours.value.trim(); bnLoad(); } catch (e) { alertModal('Automatic benchmark', e.message); } });
+}
+function bnFoot() {
+  const box = $('#bnfoot'); if (!box) return;
+  box.innerHTML = `<div class="bn-legend faint">↓ = foreign → Iran (what users downloading feel), ↑ = Iran → foreign · ★ best · 👥 the method users are on now · ⚡ kept ready by hot standby · the line = ↓ in the last runs</div>
+    ${isAdmin() && BND.hist.length ? '<button class="btn sm ghost danger" id="bhclear">Clear history</button>' : ''}`;
+  const c = $('#bhclear', box);
+  if (c) c.onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; try { await api('/bench/history', { Clear: true }); bnLoad(); } catch (er) { alertModal('Error', er.message); } };
+}
+// one dialog to start a run: which methods, what it costs at most, how long each probe
+function bnRunModal(p, fam) {
+  const st = BND.st, maxMB = st.maxMB || 6, k = bnKey(p.iran, p.foreign);
+  const sched = (st.routes || []).find(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === fam);
+  const { users, standby } = bnUse(p, fam);
+  const runN = (sched && sched.running && sched.running.length) || [...users, ...standby].length, allN = bnAll(fam, BND.skip, k).length;
+  const m = modal(`<h2>Run benchmark</h2><p class="muted" style="margin-top:4px"><span data-notr>${esc(p.label)}</span> · ${famName(fam)}</p>
+    <form class="ff" id="bnrf">
+      <label class="bn-opt"><input type="radio" name="scope" value="running" ${runN ? 'checked' : 'disabled'}><span><b>The methods in use</b><small>${runN ? `${runN} methods · ≤ ${runN * 2 * maxMB} MB` : 'no tunnel runs here — nothing in use'}</small></span></label>
+      <label class="bn-opt"><input type="radio" name="scope" value="all" ${runN ? '' : 'checked'}><span><b>Every method</b><small>${allN} methods · ≤ ${allN * 2 * maxMB} MB · about ${Math.max(1, Math.round(allN * 1.5))} min</small></span></label>
+      <details class="bn-adv"><summary>Advanced</summary><label class="f">Throughput probe per method (seconds)<input name="seconds" type="number" min="1" max="20" class="mono" value="5"></label></details>
+      <div class="faint" style="font-size:12px">Each method runs on a temporary tunnel, is measured, then removed — live tunnels are not touched. At most ${maxMB} MB each way per method. It runs on the server: you can leave this page.</div>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" id="bncx">Cancel</button><button class="btn pri">▶ Start</button></div></form>`);
+  $('#bncx', m).onclick = () => m.remove();
+  const f = $('#bnrf', m);
+  f.onsubmit = oneAtATime(f, async () => {
+    const req = { iranId: p.iran, foreignId: p.foreign, family: fam, running: f.scope.value !== 'all', seconds: parseInt(f.seconds.value || '5', 10) };
+    try { const r = await api('/bench/start', req); m.remove(); bnWatch(r.job, req); } catch (e) { alertModal('Benchmark', e.message); }
+  });
+}
+// any pair of servers (also one with no tunnel, or the panel host): what the old form did
+function bnPairModal() {
+  const opt = (s) => `<option value="${s.id}"${s.shared ? '' : ' data-notr'}>${esc(serverLabel(s))}${s.shared ? ' · shared' : ''}</option>`;
+  const m = modal(`<h2>Benchmark a pair of servers</h2><form class="ff" id="bnpf">
+    <label class="f">Iran server<select name="iran">${[...iranServers(), ...(STATE.shared || []).filter(s => (s.role || 'iran') === 'iran')].map(opt).join('')}</select></label>
+    <label class="f">Foreign server<select name="foreign">${[...foreignServers(), ...(STATE.shared || []).filter(s => s.role === 'foreign')].map(opt).join('')}${panelHostOpt()}</select></label>
+    <label class="f">Family<select name="family"><option value="v4">IPv4</option><option value="v6">IPv6</option></select></label>
+    <div class="actions" style="justify-content:flex-end"><button class="btn pri">Next</button></div></form>`);
+  const f = $('#bnpf', m);
+  f.onsubmit = (ev) => { ev.preventDefault(); const iran = f.iran.value, foreign = f.foreign.value || '', fam = f.family.value; m.remove();
+    bnRunModal({ k: bnKey(iran, foreign), iran, foreign, tunnels: STATE.tunnels.filter(t => t.serverId === iran && (t.foreignId || '') === foreign), label: `${serverName(iran)} → ${foreign ? serverName(foreign) : 'this panel host'}` }, fam); };
+}
+function bnWatch(job, req) {
+  BN.job = job; BN.req = req; BN.running = true;
   if (benchTimer) clearInterval(benchTimer);
   const tick = async () => {
     let j;
     try { j = await api('/jobs?id=' + job); } catch (e) { return; }
-    if (STATE.view !== 'bench') { if (j.status !== 'running') { clearInterval(benchTimer); benchTimer = null; } return; }
-    const lc = $('#blogcard'), btn = $('#brun');
-    if (!lc) return;
-    if (!$('#blog', lc)) lc.innerHTML = `<div class="card pad"><h3 id="bhead"></h3><div class="logbox" id="blog" style="height:240px"></div></div>`;
-    const log = $('#blog', lc);
-    const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
-    log.innerHTML = (j.lines || []).map(l => `<div class="ln ${/ERROR|FAILED/.test(l) ? 'err' : /DONE|best| ok:/.test(l) ? 'ok' : ''}">${esc(l)}</div>`).join('');
-    if (stick) log.scrollTop = log.scrollHeight;
-    $('#bhead', lc).textContent = j.status === 'running' ? 'Running… (continues on the server if you leave)' : (j.status === 'ok' ? 'Finished' : j.status === 'cancelled' ? 'Cancelled' : 'Stopped with an error');
-    if (btn) { btn.disabled = j.status === 'running'; btn.textContent = j.status === 'running' ? 'Benchmark running…' : 'Run benchmark'; }
-    const cb = $('#bcancel');
-    if (cb) { cb.hidden = j.status !== 'running'; cb.onclick = async () => { cb.disabled = true; try { await api('/jobs/cancel', { ID: job }); toast('Benchmark cancelled — cleaning up'); } catch (e) { alertModal('Cancel', e.message); } cb.disabled = false; }; }
-    showBenchResults(fd);
-    if (j.status !== 'running') { clearInterval(benchTimer); benchTimer = null; loadBenchHistory(); }
+    const done = j.status !== 'running';
+    BN.running = !done;
+    if (done) { clearInterval(benchTimer); benchTimer = null; }
+    if (STATE.view !== 'bench' || !$('#bnrun')) return;
+    bnRunCard(j, req, job);
+    if (done) { await bnLoad(); return; }
+    // while it runs only the route's results change
+    try { if (BND) { BND.live = await api(`/bench/results?iran=${encodeURIComponent(req.iranId)}&foreign=${encodeURIComponent(req.foreignId || '')}&family=${req.family || 'v4'}`); bnPaint(); } else await bnLoad(); } catch (e) {}
   };
-  benchTimer = setInterval(tick, 1500); tick();
+  benchTimer = setInterval(tick, 2000); tick();
 }
-async function showBenchResults(fd) {
-  let res = [];
-  try { res = await api(`/bench/results?iran=${encodeURIComponent(fd.iran || '')}&foreign=${encodeURIComponent(fd.foreign || '')}&family=${fd.family}`); } catch (e) {}
-  renderBenchTable(res || [], fd, '');
-}
-function renderBenchTable(res, fd, caption) {
-  const box = $('#bres');
-  if (!box) return; // user left the page
-  if (!res || !res.length) { box.innerHTML = ''; return; }
-  const n = (v) => v > 0 ? v.toFixed(v < 10 ? 1 : 0) : '—';
-  const rows = res.map(r => {
-    if (!r.ok) return `<tr class="${r.skipped ? 'skip' : 'fail'}"><td>${esc(r.title)}</td>
-      <td colspan="6" class="${r.skipped ? 'faint' : 'errtxt'}" style="white-space:normal;font-size:12.5px">${r.skipped ? 'skipped — ' : '✕ '}${esc(r.error || 'failed')}</td><td></td></tr>`;
-    return `<tr class="${r.recommended ? 'best' : ''}">
-    <td>${r.recommended ? '★ ' : ''}${esc(r.title)} <span class="faint" style="font-size:11px">${r.kind === 'l3' ? 'L3' : 'port-fwd'}</span></td>
-    <td>${n(r.downMbps)}</td><td>${n(r.upMbps)}</td><td>${r.rttMs.toFixed(1)}</td>
-    <td>${r.jitterMs.toFixed(1)}</td><td>${r.lossKnown ? r.lossPct.toFixed(0) + '%' : '<span class="faint" title="ICMP loss is only measurable on L3 tunnels">n/a</span>'}</td>
-    <td>${r.score.toFixed(0)}</td>
-    <td><button class="btn sm pri" data-use="${r.method}">Apply to tunnel</button></td></tr>`;
-  }).join('');
-  box.innerHTML = `<div class="card pad"><h3>Results${caption ? ` <span class="faint" style="font-weight:500;font-size:13px">· ${caption}</span>` : ''}</h3>
-    <div style="overflow-x:auto"><table class="tbl bench"><thead><tr><th>method</th><th>↓ Mbps</th><th>↑ Mbps</th><th>RTT ms</th><th>jitter</th><th>loss</th><th>score</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="faint" style="font-size:12px;margin-top:8px">↓ = foreign → Iran (what users downloading feel), ↑ = Iran → foreign. Measured over TCP through the tunnel itself.</div></div>`;
-  $$('[data-use]', box).forEach(b => b.onclick = () => applyBenchToTunnel(fd, b.dataset.use));
+// the running benchmark: route, progress, the method being measured, cancel, the log folded
+function bnRunCard(j, req, job) {
+  const box = $('#bnrun'); if (!box) return;
+  const lines = j.lines || [];
+  let i = 0, n = 0, cur = '';
+  lines.forEach(l => { const mm = /── \[(\d+)\/(\d+)\] (.+) ──/.exec(l); if (mm) { i = +mm[1]; n = +mm[2]; cur = mm[3]; } });
+  const running = j.status === 'running';
+  const label = `${serverName(req.iranId)} → ${req.foreignId ? serverName(req.foreignId) : 'this panel host'}`;
+  const last = [...lines].reverse().find(l => /^DONE/.test(l)) || '';
+  const state = running ? '' : j.status === 'ok' ? 'Finished' : j.status === 'cancelled' ? 'Cancelled' : 'Stopped with an error';
+  const err = !running && j.status !== 'ok' && j.status !== 'cancelled' ? [...lines].reverse().find(l => /ERROR/.test(l)) : '';
+  const old = $('details', box), open = old ? old.open : false, log = $('.logbox', box), stick = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  box.innerHTML = `<div class="card bn-runc ${running ? 'on' : j.status === 'ok' ? 'ok' : 'bad'}">
+    <div class="bn-rh"><b>${running ? 'Benchmark running' : esc(state)}</b><span data-notr>${esc(label)}</span><span>· ${famName(req.family)}</span>
+      <span class="bn-sp1"></span>${running ? '<button class="btn sm danger" id="bncancel">■ Cancel</button>' : '<button class="btn sm ghost" id="bnclose">✕</button>'}</div>
+    ${running ? `<div class="bn-prog"><i style="width:${n ? Math.round((i - 0.5) / n * 100) : 3}%"></i></div><div class="bn-now"><span>${n ? `Method ${i} of ${n}` : 'Preparing…'}</span>${cur ? ` · <b data-notr>${esc(cur)}</b>` : ''} <span class="faint">· continues on the server if you leave</span></div>` : `<div class="bn-now">${err ? `<span class="bn-bad" data-notr>${esc(err)}</span>` : last ? `<span data-notr>${esc(last)}</span>` : ''}</div>`}
+    <details${open ? ' open' : ''}><summary class="faint">Log</summary><div class="logbox" style="height:200px">${lines.map(l => `<div class="ln ${/ERROR|FAILED/.test(l) ? 'err' : /DONE|best| ok:/.test(l) ? 'ok' : ''}">${esc(l)}</div>`).join('')}</div></details></div>`;
+  const lb = $('.logbox', box); if (lb && stick) lb.scrollTop = lb.scrollHeight;
+  const cb = $('#bncancel', box);
+  if (cb) cb.onclick = async () => { cb.disabled = true; try { await api('/jobs/cancel', { ID: job }); toast('Benchmark cancelled — cleaning up'); } catch (e) { alertModal('Cancel', e.message); cb.disabled = false; } };
+  const cl = $('#bnclose', box);
+  if (cl) cl.onclick = () => { box.innerHTML = ''; BN.job = null; BN.req = null; bnLoad(); };
 }
 function applyBenchToTunnel(fd, method) {
   const opts = STATE.tunnels.filter(t => t.serverId === fd.iran && (t.foreignId || '') === (fd.foreign || ''));

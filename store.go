@@ -25,7 +25,7 @@ type Settings struct {
 	AgentConnect  string `json:"agentConnect"`
 	TelegramTok   string `json:"telegramTok"`
 	TelegramAdmin string `json:"telegramAdmin"` // numeric chat id(s), comma-separated
-	// AutoBench: hours between automatic benchmarks of every route in use ("" = 12, "0" = off)
+	// AutoBench: hours between automatic benchmarks of every route in use ("" = 24, "0" = off)
 	AutoBench string `json:"autoBench"`
 	// TelegramBackup "on": the daily backup is also sent to the admin chat
 	TelegramBackup string `json:"telegramBackup"`
@@ -272,6 +272,8 @@ type BenchRecord struct {
 	Results     []BenchResult `json:"results"`
 	// Full: every method was measured (not only the running ones, nor a run cut short)
 	Full bool `json:"full,omitempty"`
+	// Auto: the automatic benchmark ran it (not someone on the page)
+	Auto bool `json:"auto,omitempty"`
 }
 
 type Store struct {
