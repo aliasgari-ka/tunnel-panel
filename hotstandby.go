@@ -92,7 +92,9 @@ func pathTunnel(t *Tunnel, p HSPath) *Tunnel {
 			opts[p.Method] = map[string]string{}
 		}
 		for a, b := range p.Opts {
-			opts[p.Method][a] = b
+			if !t.manualOpt(p.Method, a) { // a value set by hand wins over the path's own
+				opts[p.Method][a] = b
+			}
 		}
 	}
 	pt := &Tunnel{ID: t.ID + "x" + strconv.Itoa(p.Index), Name: t.Name + " · " + p.label(), ServerID: t.ServerID, ForeignID: t.ForeignID,

@@ -2050,25 +2050,29 @@ async function saveTunnel(t, patch) {
 // click, nothing half-typed); text and number fields on "Save & apply" (or Enter), so a
 // rebuild never starts in the middle of typing a port. The server validates first, rebuilds
 // only this method's paths, moves users off a path while it is rebuilt and puts the previous
-// options back when the new ones break a path that worked; progress and the result show here.
+// A value set by hand (✋) stays as set: no rollback, nothing automatic replaces it; a path
+// that doesn't answer with it is shown failing with the reason, and ↺ Defaults gives the
+// choice back to the panel. Progress and the result show here.
 function renderOpts(box, t, mid, status) {
   const m = STATE.methods.find(x => x.id === mid);
   if (!m || !m.fields?.length) { box.innerHTML = `<div class="opts one"><div class="muted">No options for this method.</div></div>`; return; }
   const saved = (t.options && t.options[mid]) || {};
+  const manual = new Set((t.optsManual && t.optsManual[mid]) || []);
+  const hand = (f) => manual.has(f.key) ? ' <span class="faint" title="set by you — kept as it is; nothing automatic changes it">✋</span>' : '';
   const field = (f) => {
     const v = saved[f.key] !== undefined ? saved[f.key] : f.default;
     const help = f.help ? `<small class="fhelp">${esc(f.help)}</small>` : '';
-    if (f.type === 'bool') return `<label class="row f" style="grid-column:1/-1"><input type="checkbox" data-k="${f.key}"${String(v) === 'true' ? ' checked' : ''}> ${esc(f.label)}${help}</label>`;
-    if (f.type === 'select') return `<label class="f">${esc(f.label)}<select data-k="${f.key}">${f.options.map(o => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>${help}</label>`;
-    return `<label class="f">${esc(f.label)}<input data-k="${f.key}" class="mono" value="${esc(v)}"${f.type === 'number' ? ` inputmode="numeric" placeholder="${esc(f.default || 'auto')}"` : ''}>${help}</label>`;
+    if (f.type === 'bool') return `<label class="row f" style="grid-column:1/-1"><input type="checkbox" data-k="${f.key}"${String(v) === 'true' ? ' checked' : ''}> ${esc(f.label)}${hand(f)}${help}</label>`;
+    if (f.type === 'select') return `<label class="f">${esc(f.label)}${hand(f)}<select data-k="${f.key}">${f.options.map(o => `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>${help}</label>`;
+    return `<label class="f">${esc(f.label)}${hand(f)}<input data-k="${f.key}" class="mono" value="${esc(v)}"${f.type === 'number' ? ` inputmode="numeric" placeholder="${esc(f.default || 'auto')}"` : ''}>${help}</label>`;
   };
   const basic = m.fields.filter(f => !f.advanced), adv = m.fields.filter(f => f.advanced);
   const advOpen = !!$('details.advopts[open]', box);
   box.innerHTML = `<div class="opts${basic.length < 2 ? ' one' : ''}">${basic.map(field).join('')}
     ${adv.length ? `<details class="advopts" style="grid-column:1/-1"${advOpen ? ' open' : ''}><summary>🎛 Advanced tuning <span class="faint">(${adv.length}) — the defaults are what this method always used</span></summary><div class="opts inner">${adv.map(field).join('')}</div></details>` : ''}
-    <div class="faint" style="grid-column:1/-1;font-size:12px">${t.active ? 'Changes apply at once: a list or switch as soon as you pick it, text fields with Save &amp; apply. Only this method is rebuilt; users on it move to another path meanwhile, and a change that breaks it is undone on its own.' : 'The tunnel is stopped: options are saved and used when it starts.'}</div>
+    <div class="faint" style="grid-column:1/-1;font-size:12px">${t.active ? 'Changes apply at once: a list or switch as soon as you pick it, text fields with Save &amp; apply. Only this method is rebuilt; users on it move to another path meanwhile. What you set (✋) stays as you set it.' : 'The tunnel is stopped: options are saved and used when it starts.'}</div>
     <div class="ostat" data-ost style="grid-column:1/-1;font-size:12.5px"${status ? '' : ' hidden'}>${status || ''}</div>
-    <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px"><button class="btn sm ghost" data-reset title="back to the method's defaults (applied when you press Save &amp; apply)">↺ Defaults</button><button class="btn sm pri" data-save>Save &amp; apply</button></div></div>`;
+    <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px"><button class="btn sm ghost" data-reset title="back to the method's defaults, applied now — the panel chooses again (the benchmark's carrier for this route)">↺ Defaults</button><button class="btn sm pri" data-save>Save &amp; apply</button></div></div>`;
   const ost = $('[data-ost]', box);
   const show = (html) => { ost.hidden = !html; ost.innerHTML = html || ''; };
   const busy = (on) => $$('[data-k],[data-save],[data-reset]', box).forEach(el => el.disabled = on);
@@ -2077,15 +2081,17 @@ function renderOpts(box, t, mid, status) {
   const same = (a, b) => m.fields.every(f => val(a, f) === val(b, f));
   const wireLog = (el, jid) => { const lb = $('[data-olog]', el); if (lb) lb.onclick = (e) => { e.preventDefault(); openLog(t, jid); }; };
   let sending = false;
-  const apply = async () => {
+  const apply = async (reset) => {
     if (sending) return;
-    const opts = read();
-    if (same(opts, saved)) { show('<span class="muted">Nothing changed.</span>'); return; }
+    reset = reset === true;
+    const opts = reset ? {} : read();
+    if (!reset && same(opts, saved)) { show('<span class="muted">Nothing changed.</span>'); return; }
     sending = true; busy(true); show('<span class="muted">Saving…</span>');
     let r;
-    try { r = await api('/tunnels/options', { ID: t.id, Method: mid, Options: opts }); }
+    try { r = await api('/tunnels/options', { ID: t.id, Method: mid, Options: opts, Reset: reset }); }
     catch (e) { sending = false; busy(false); show(`<span style="color:var(--crit)">✕ ${esc(e.message)}</span>`); return; }
     t.options = { ...(t.options || {}), [mid]: opts };
+    if (reset) t.optsManual = { ...(t.optsManual || {}), [mid]: [] };
     if (!r.job) { sending = false; renderOpts(box, t, mid, `<span style="color:var(--good)">✓ ${esc(r.note || 'Saved')}</span>`); return; }
     // the job's progress, inline: its last line while it runs, the result at the end
     const jid = r.job;
@@ -2100,22 +2106,23 @@ function renderOpts(box, t, mid, status) {
         wireLog(ost, jid);
         setTimeout(tick, 2000); return;
       }
-      // the result, with the options as stored now (a rollback put the previous ones back)
+      // the result, with the options as stored now and the hand-set marks
       try { await loadAll(); } catch (e) {}
-      const nt = STATE.tunnels.find(x => x.id === t.id); if (nt) Object.assign(t, { options: nt.options, paths: nt.paths, hs: nt.hs });
-      const res = lines.filter(l => / ✓ | ✕ |DONE|ROLLED BACK|ERROR/.test(l)).slice(-4).map(clean);
-      const ok = j && j.status === 'ok', back = lines.some(l => /ROLLED BACK/.test(l));
+      const nt = STATE.tunnels.find(x => x.id === t.id); if (nt) Object.assign(t, { options: nt.options, optsManual: nt.optsManual, paths: nt.paths, hs: nt.hs });
+      const res = lines.filter(l => / ✓ | ✕ |DONE|FAILING|ERROR/.test(l)).slice(-4).map(clean);
+      const ok = j && j.status === 'ok', failing = lines.some(l => /FAILING/.test(l));
       sending = false;
-      renderOpts(box, t, mid, `<div style="color:var(${ok ? '--good' : '--crit'})">${ok ? '✓ Applied' : back ? '↩ Rolled back to the previous options' : '✕ Not applied'}</div>${res.map(l => `<div class="faint mono" style="font-size:11.5px" data-notr>${esc(l)}</div>`).join('')}<a href="#" data-olog>log</a>`);
+      renderOpts(box, t, mid, `<div style="color:var(${ok ? '--good' : '--crit'})">${ok ? '✓ Applied' : failing ? "✕ Doesn't work with these options — kept as you set them; users stay on a working path" : '✕ Not applied'}</div>${res.map(l => `<div class="faint mono" style="font-size:11.5px" data-notr>${esc(l)}</div>`).join('')}<a href="#" data-olog>log</a>${ok ? '' : ' <button class="btn sm ghost" data-odef>↺ Back to defaults</button>'}`);
       wireLog(box, jid);
       jobEnded();
     };
     tick();
   };
-  $('[data-reset]', box).onclick = () => m.fields.forEach(f => { const el = $(`[data-k="${f.key}"]`, box); if (!el) return; if (el.type === 'checkbox') el.checked = String(f.default) === 'true'; else el.value = f.default; });
-  $('[data-save]', box).onclick = apply;
-  $$('select[data-k],input[type=checkbox][data-k]', box).forEach(el => el.onchange = apply);
-  $$('input[data-k]:not([type=checkbox])', box).forEach(el => el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(); } });
+  $('[data-reset]', box).onclick = () => apply(true);
+  $('[data-save]', box).onclick = () => apply(false);
+  const od = $('[data-odef]', box); if (od) od.onclick = () => apply(true);
+  $$('select[data-k],input[type=checkbox][data-k]', box).forEach(el => el.onchange = () => apply(false));
+  $$('input[data-k]:not([type=checkbox])', box).forEach(el => el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(false); } });
 }
 function tunnelModal(t) {
   t = t || {};

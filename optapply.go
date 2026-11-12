@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Options saved on a tunnel's method take effect at once: Save options (the options form)
+// Options saved on a tunnel's method take effect at once: Save & apply (the options form)
 // stores them and starts a job that rebuilds only what runs with that method — the method's
 // hot-standby paths (both families), or the tunnel itself when it runs that method without
 // hot standby. Before, Save only stored them and the running path kept its old settings
@@ -18,8 +18,11 @@ import (
 //
 // Hot standby: users on a path being rebuilt are moved to another working path first, the
 // path is torn down and deployed with the new options, the switcher has to see it answer,
-// then the users go back where they were. A path that worked before and doesn't with the
-// new options gets the previous options back, at once and on its own.
+// then the users go back where they were. A key the user set is marked manual (OptsManual)
+// and stays as set: no rollback, and nothing automatic (the benchmark's carrier, a path's
+// own options) replaces it. A path that doesn't answer with it is reported as failing, with
+// the reason; the users stay on a working path. ↺ Defaults clears the manual marks.
+
 
 // optWaitUp is how long a rebuilt path has to answer the switcher's checks.
 var optWaitUp = 90 * time.Second
@@ -82,6 +85,48 @@ func optPathOpts(own map[string]string, changed []string) map[string]string {
 	return out
 }
 
+// manualOpt: key of method mid was set by hand (see OptsManual).
+func (t *Tunnel) manualOpt(mid, key string) bool {
+	for _, k := range t.OptsManual[mid] {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// markManual adds keys to mid's hand-set keys (reset: clears them). Copy-on-write, inside
+// store.Update (pathTunnel and routeOpts read the list without the lock).
+func (t *Tunnel) markManual(mid string, keys []string, reset bool) {
+	nm := make(map[string][]string, len(t.OptsManual)+1)
+	for k, v := range t.OptsManual {
+		nm[k] = v
+	}
+	if reset {
+		delete(nm, mid)
+	} else {
+		nm[mid] = optUnion(nm[mid], keys)
+	}
+	if len(nm) == 0 {
+		nm = nil
+	}
+	t.OptsManual = nm
+}
+
+// optUnion is a and b without repeats, sorted.
+func optUnion(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range append(append([]string(nil), a...), b...) {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // withOpts is a copy of t with method mid's options set to o (and the paths given), for
 // building plans without touching the stored tunnel.
 func withOpts(t *Tunnel, mid string, o map[string]string, paths []HSPath) *Tunnel {
@@ -102,6 +147,7 @@ func (s *Server2) tunnelOptions(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		ID, Method string
 		Options    map[string]string
+		Reset      bool // ↺ Defaults: the method's defaults, nothing marked manual
 	}
 	if err := readJSON(r, &in); err != nil {
 		httpErr(w, 400, "bad request")
@@ -117,7 +163,7 @@ func (s *Server2) tunnelOptions(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "tunnel not found")
 		return
 	}
-	res, code, err := s.app.SaveOptions(t, in.Method, in.Options)
+	res, code, err := s.app.SaveOptions(t, in.Method, in.Options, in.Reset)
 	if err != nil {
 		httpErr(w, code, err.Error())
 		return
@@ -159,12 +205,12 @@ func (a *App) optUseOf(t *Tunnel, mid string) optUse {
 // SaveOptions validates, stores and applies method mid's options on t. The result has
 // "job" when something is rebuilt, "note" otherwise. A value that is refused, or a plan
 // that can't be built with it, changes nothing.
-func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string) (map[string]string, int, error) {
+func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string, reset bool) (map[string]string, int, error) {
 	m := methodByID[mid]
 	if m == nil {
 		return nil, 400, fmt.Errorf("unknown method %q", mid)
 	}
-	if opts == nil {
+	if opts == nil || reset {
 		opts = map[string]string{}
 	}
 	if err := validateOptions(map[string]map[string]string{mid: opts}); err != nil {
@@ -175,11 +221,16 @@ func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string) (map[st
 	}
 	var prev map[string]string
 	var cand *Tunnel
+	var wasManual []string
 	a.store.View(func(*State) {
-		prev = t.Options[mid]
+		prev, wasManual = t.Options[mid], t.OptsManual[mid]
 		cand = withOpts(t, mid, opts, append([]HSPath(nil), t.Paths...))
 	})
 	changed := optChanged(m, prev, opts)
+	if reset {
+		// the manual marks go too: what was set by hand may now be what the benchmark picks
+		changed = optUnion(changed, wasManual)
+	}
 	u := a.optUseOf(t, mid)
 	// the plans are built with the new values before anything is stored: one that can't be
 	// built (a port another tunnel holds, a value the method can't use) is refused here
@@ -207,6 +258,7 @@ func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string) (map[st
 		}
 		no[mid] = opts
 		t.Options = no
+		t.markManual(mid, changed, reset)
 		if len(changed) > 0 {
 			// the user's values win on the paths of this method from now on (see optPathOpts)
 			np := append([]HSPath(nil), t.Paths...)
@@ -223,6 +275,28 @@ func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string) (map[st
 	if err != nil {
 		return nil, 400, err
 	}
+	if reset && len(changed) > 0 {
+		// back to defaults: the benchmark's pick for this route applies again where it has one
+		for _, p := range u.run {
+			ro := a.routeOpts(cand, p.Method, p.Family)
+			_ = a.store.Update(func(*State) error {
+				for i := range t.Paths {
+					if t.Paths[i].Index != p.Index || len(ro) == 0 {
+						continue
+					}
+					o := map[string]string{}
+					for k, v := range ro {
+						o[k] = v
+					}
+					for k, v := range t.Paths[i].Opts {
+						o[k] = v
+					}
+					t.Paths[i].Opts = o
+				}
+				return nil
+			})
+		}
+	}
 	out := map[string]string{"ok": "1"}
 	switch {
 	case len(changed) == 0:
@@ -234,7 +308,6 @@ func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string) (map[st
 			out["note"] = "Saved, but not applied: " + err.Error()
 			return out, 200, nil
 		}
-		go a.optPlainRollback(j, t, mid, prev, opts)
 		out["job"] = j.ID
 		return out, 200, nil
 	case len(u.run)+len(u.fail) > 0:
@@ -260,40 +333,20 @@ func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string) (map[st
 	return out, 200, nil
 }
 
-// optPlainRollback: a tunnel without hot standby was re-applied with new options; when
-// that failed, it goes back to the options it ran with (and is re-applied with them).
-func (a *App) optPlainRollback(j *Job, t *Tunnel, mid string, prev, next map[string]string) {
-	for j.snapshot().Status == "running" {
-		time.Sleep(time.Second)
+// optWhy is what is known about a path that doesn't answer: its deploy error, else what
+// the switcher read about its core on the Iran server.
+func optWhy(v *hsView, key, deployErr string) string {
+	if deployErr != "" {
+		return deployErr
 	}
-	if j.snapshot().Status != "error" {
-		return // it worked, or was cancelled
-	}
-	back := false
-	_ = a.store.Update(func(*State) error {
-		if !reflect.DeepEqual(t.Options[mid], next) {
-			return nil // saved again meanwhile: that newer choice stays
+	if v != nil {
+		for k, kk := range v.Keys {
+			if kk == key && k < len(v.Why) && v.Why[k] != "" {
+				return v.Why[k]
+			}
 		}
-		no := make(map[string]map[string]string, len(t.Options))
-		for k, v := range t.Options {
-			no[k] = v
-		}
-		no[mid] = prev
-		t.Options = no
-		back = true
-		return nil
-	})
-	if !back {
-		return
 	}
-	j.log("↩ ROLLED BACK — %s failed with the new options; the previous options are saved again and the tunnel is re-applied with them", methodTitle(mid))
-	for i := 0; i < 30 && a.jobs.running(t.ID) != ""; i++ {
-		time.Sleep(time.Second)
-	}
-	a.pushTInfo(t, fmt.Sprintf("↩ %s: %s didn't come up with the new options — back to the previous ones", t.Name, methodTitle(mid)))
-	if _, err := a.ApplyRoute(t, mid, ""); err != nil {
-		a.pushTInfo(t, fmt.Sprintf("⚠ %s: re-applying %s with the previous options: %v", t.Name, methodTitle(mid), err))
-	}
+	return "it runs on both servers but nothing comes through it on this route"
 }
 
 // optPathsState reads the switcher once: which path the users are on ("method|family")
@@ -488,7 +541,7 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 		}
 	})
 	before := withOpts(t, m.ID, prev, oldPaths)
-	users, wasOK, _ := a.optPathsState(ctx, ir, t)
+	users, _, _ := a.optPathsState(ctx, ir, t)
 	mine := map[string]bool{}
 	var keys []string
 	for _, p := range u.run {
@@ -545,60 +598,14 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 	a.store.View(func(*State) { after = withOpts(t, m.ID, next, append([]HSPath(nil), t.Paths...)) })
 	errs := a.optRebuild(ctx, j, srv, ir, kh, before, after, u.run, m)
 	okNow, v := a.optWait(ctx, ir, t, keys)
-	// a path that answered before and doesn't now: the new options broke it
-	var broke, still, up []string
+	// the user's values stay whatever happens: a path that doesn't answer with them is shown
+	// as failing, with the reason, and the switcher keeps the users on a working path
+	var up, down []string
 	for _, k := range keys {
-		switch {
-		case okNow[k] && errs[k] == "":
+		if okNow[k] && errs[k] == "" {
 			up = append(up, k)
-		case wasOK == nil || wasOK[k]:
-			broke = append(broke, k)
-		default:
-			still = append(still, k)
-		}
-	}
-	if len(broke) > 0 && ctx.Err() == nil {
-		j.log("✕ %s answered before and doesn't with the new options — putting the previous options back", strings.Join(broke, ", "))
-		rolled := false
-		_ = a.store.Update(func(*State) error {
-			if !reflect.DeepEqual(t.Options[m.ID], next) {
-				return nil
-			}
-			no := make(map[string]map[string]string, len(t.Options))
-			for k, v := range t.Options {
-				no[k] = v
-			}
-			no[m.ID] = prev
-			t.Options = no
-			np := append([]HSPath(nil), t.Paths...)
-			for i := range np {
-				if o, ok := oldByIdx[np[i].Index]; ok {
-					np[i].Opts = o.Opts
-				}
-			}
-			t.Paths = np
-			rolled = true
-			return nil
-		})
-		if !rolled {
-			j.log("the options were saved again meanwhile — that newer choice stays")
 		} else {
-			var cur *Tunnel
-			a.store.View(func(*State) { cur = withOpts(t, m.ID, prev, append([]HSPath(nil), t.Paths...)) })
-			a.optRebuild(ctx, j, srv, ir, kh, after, cur, u.run, m)
-			okBack, vb := a.optWait(ctx, ir, t, broke)
-			for _, k := range broke {
-				if okBack[k] {
-					j.log("  ✓ %s answers again with the previous options (%s)", k, optPathStat(vb, k))
-				} else {
-					j.log("  ✕ %s doesn't answer with the previous options yet either", k)
-				}
-			}
-			restore()
-			j.log("ROLLED BACK — %s didn't work on this route with the new options (%s); the previous options are saved and running again", m.Title, strings.Join(changed, ", "))
-			a.pushTInfo(t, fmt.Sprintf("↩ %s: %s didn't come up with the new options (%s) — back to the previous ones", t.Name, m.Title, strings.Join(changed, ", ")))
-			j.finish("error")
-			return
+			down = append(down, k)
 		}
 	}
 	// a path that couldn't start last time: tried again with the new options
@@ -619,21 +626,26 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 			j.log("  ✕ %v", err)
 		}
 	}
+	// back to the users' choice even when the path doesn't answer: the switcher moves them
+	// only to a path that answers, so they stay on the working one and go back (manual mode)
+	// once it does
 	restore()
 	for _, k := range up {
-		j.log("  ✓ %s answers with the new options (%s)", k, optPathStat(v, k))
+		j.log("  ✓ %s answers with your options (%s)", k, optPathStat(v, k))
 	}
-	for _, k := range still {
-		why := orStr(errs[k], "no answer through it")
-		j.log("  ✕ %s still doesn't answer (%s) — it didn't before the change either, so your options are kept", k, why)
+	for _, k := range down {
+		j.log("  ✕ %s doesn't answer with these options: %s — your options are kept (nothing puts other ones back); ↺ Defaults returns to the method's defaults", k, optWhy(v, k, errs[k]))
 	}
 	switch {
 	case len(keys) == 0:
 		j.log("DONE — options saved")
-	case len(up) == len(keys):
-		j.log("DONE — %s runs with the new options on %d path(s)", m.Title, len(up))
+	case len(down) == 0:
+		j.log("DONE — %s runs with your options on %d path(s)", m.Title, len(up))
 	default:
-		j.log("DONE — options saved; %d of %d path(s) answer", len(up), len(keys))
+		j.log("FAILING — options saved and running, but %d of %d path(s) don't answer with them; the users stay on a working path", len(down), len(keys))
+		a.pushTInfo(t, fmt.Sprintf("⚠ %s: %s doesn't answer with the options you set (%s) — kept as you set them; users stay on a working path", t.Name, m.Title, strings.Join(changed, ", ")))
+		j.finish("error")
+		return
 	}
 	j.finish("ok")
 }

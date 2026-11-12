@@ -1232,6 +1232,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			in.Active, in.Secrets, in.Failover = "", nil, nil
 			// the panel's own bookkeeping never comes from the request
 			in.Paths, in.Applying, in.HSPin, in.HSSeen, in.HSOff = nil, "", "", 0, nil
+			in.OptsManual = nil
 			if !admin {
 				in.Owner = user
 			} else if in.Owner != "" && !accountExists(st, in.Owner) {

@@ -92,6 +92,10 @@ type Tunnel struct {
 	Active    string                       `json:"active"`    // active method id ("" = stopped)
 	Selected  string                       `json:"selected"`
 	Options   map[string]map[string]string `json:"options"` // per-method options (kept when switching)
+	// OptsManual: per method, the option keys the user set by hand (the options form, the
+	// bot). Those values stay whatever happens: nothing automatic (the benchmark's carrier,
+	// a path's own options, hot standby, Repair) replaces them; "↺ Defaults" clears the list.
+	OptsManual map[string][]string `json:"optsManual,omitempty"`
 	Note      string                       `json:"note"`
 	LastJob   string                       `json:"lastJob"`
 	Updated   int64                        `json:"updated"`
@@ -159,6 +163,12 @@ func (t *Tunnel) clone() Tunnel {
 			in[a] = b
 		}
 		cp.Options[k] = in
+	}
+	if t.OptsManual != nil {
+		cp.OptsManual = make(map[string][]string, len(t.OptsManual))
+		for k, v := range t.OptsManual {
+			cp.OptsManual[k] = append([]string(nil), v...)
+		}
 	}
 	cp.Paths = make([]HSPath, len(t.Paths))
 	for i, p := range t.Paths {
