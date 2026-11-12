@@ -25,7 +25,8 @@ const (
 	serverEvery   = 10 * time.Second
 	serverFull    = 6 // rounds between connects to the SSH ports a live connection doesn't cover
 	sshTimeout    = 3 * time.Second
-	maxOutageLogs = 300
+	maxOutageLogs = 300 // server, tunnel and panel outages kept
+	maxFamilyLogs = 150 // and IPv4-only / IPv6-only ones, apart (trimOutages)
 )
 
 // probePlan says which SSH ports this round connects to: a family the panel's own open
@@ -109,12 +110,75 @@ func tcpUp(addr string, tries int, pause time.Duration) (bool, time.Time) {
 
 func (a *App) addOutage(o Outage) {
 	_ = a.store.Update(func(st *State) error {
-		st.Outages = append(st.Outages, o)
-		if n := len(st.Outages); n > maxOutageLogs {
-			st.Outages = append([]Outage(nil), st.Outages[n-maxOutageLogs:]...)
+		st.Outages = trimOutages(append(st.Outages, o))
+		return nil
+	})
+}
+
+// familyOutage: one address family's SSH down while the other answers — the server is up.
+func familyOutage(kind string) bool { return kind == "ssh-v4" || kind == "ssh-v6" }
+
+// trimOutages keeps the newest maxOutageLogs real outages (server, tunnel, panel) and the
+// newest maxFamilyLogs IPv4/IPv6-only ones, each counted on its own: one server whose IPv4
+// flapped took 176 of the 300 places in a week and pushed the real outages out of the log.
+// Open outages are never dropped.
+func trimOutages(all []Outage) []Outage {
+	var real, fam int
+	for _, o := range all {
+		if familyOutage(o.Kind) {
+			fam++
+		} else {
+			real++
+		}
+	}
+	if real <= maxOutageLogs && fam <= maxFamilyLogs {
+		return all
+	}
+	out := make([]Outage, 0, len(all))
+	for _, o := range all { // oldest first
+		if o.End != 0 {
+			if familyOutage(o.Kind) && fam > maxFamilyLogs {
+				fam--
+				continue
+			}
+			if !familyOutage(o.Kind) && real > maxOutageLogs {
+				real--
+				continue
+			}
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
+// takeOpenOutages returns the outages of these kinds a restart of the panel left open, for
+// the monitor to take up again: the same entry ends when its server or tunnel is back (or
+// goes on). Before, a restart closed each one with the restart's time as its end and, when
+// the server was still down, the monitor opened a new one and alerted again — one IPv4
+// outage of two days was 66 entries, one per restart. Only those keep says are gone (their
+// server or tunnel deleted or stopped) are closed now, and a second open entry of a target
+// (left by the old way) is closed into the first.
+func (a *App) takeOpenOutages(kinds map[string]bool, keep func(st *State, o *Outage) bool) []Outage {
+	var out []Outage
+	now := time.Now().Unix()
+	_ = a.store.Update(func(st *State) error {
+		seen := map[string]bool{}
+		for i := range st.Outages {
+			o := &st.Outages[i]
+			if o.End != 0 || !kinds[o.Kind] {
+				continue
+			}
+			if keep(st, o) && !seen[o.Target] {
+				seen[o.Target] = true
+				out = append(out, *o)
+				continue
+			}
+			o.End = now
+			o.Reason += " (panel restarted — end time approximate)"
 		}
 		return nil
 	})
+	return out
 }
 
 func (a *App) endOutage(id string, end time.Time) {
@@ -167,20 +231,34 @@ func (a *App) serverReachable(id string) bool {
 
 func (a *App) serverMonitor() {
 	m := &serverMon{state: map[string]*srvState{}}
+	m.resume(a)
 	a.srvMon = m
-	// close outages left open by a restart of the panel: their real end is unknown
-	_ = a.store.Update(func(st *State) error {
-		for i := range st.Outages {
-			if st.Outages[i].End == 0 {
-				st.Outages[i].End = time.Now().Unix()
-				st.Outages[i].Reason += " (panel restarted — end time approximate)"
-			}
-		}
-		return nil
-	})
 	for {
 		a.serverRound(m)
 		time.Sleep(serverEvery)
+	}
+}
+
+// resume takes up the server outages a restart left open (takeOpenOutages): the server is
+// taken for down until its first check, which ends the same entry or lets it go on.
+func (m *serverMon) resume(a *App) {
+	kinds := map[string]bool{"server": true, "ssh-v4": true, "ssh-v6": true, "panel": true}
+	open := a.takeOpenOutages(kinds, func(st *State, o *Outage) bool {
+		if o.Kind == "panel" {
+			return true
+		}
+		id, _, _ := strings.Cut(o.Target, "/")
+		for _, s := range st.Servers {
+			if s.ID == id {
+				return true
+			}
+		}
+		return false
+	})
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, o := range open {
+		m.state[o.Target] = &srvState{down: true, since: time.Unix(o.Start, 0), outageID: o.ID}
 	}
 }
 
