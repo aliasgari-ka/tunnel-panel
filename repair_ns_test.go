@@ -69,7 +69,8 @@ func TestRepairNS(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	t.Logf("   before repair: okok=%q brkn=%q", health("okok"), health("brkn"))
 	step("the broken tunnel is seen as broken", health("brkn") != "")
-	j, err := a.Repair("test")
+	_ = st.Update(func(s *State) error { s.RepairAuto = repairAutoAll; return nil }) // everything, as before
+	j, err := a.RepairAuto("test")
 	if err != nil {
 		t.Fatal(err)
 	}

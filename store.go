@@ -263,6 +263,11 @@ type State struct {
 	Cleanups []Cleanup `json:"cleanups,omitempty"`
 	// LastVersion is the panel version that ran last (a new one repairs tunnels once)
 	LastVersion string   `json:"lastVersion,omitempty"`
+	// LastRepair: the last Repair run and what became of each tunnel (repair.go)
+	LastRepair *RepairRun `json:"lastRepair,omitempty"`
+	// RepairAuto: what the automatic Repair after an update may do: "" = only the fixes
+	// nobody notices, "all" = everything, "off" = nothing
+	RepairAuto string `json:"repairAuto,omitempty"`
 	Outages     []Outage `json:"outages,omitempty"` // servers/tunnels down, newest last
 	// OutagesFrom: the outage log is complete from here (cleared, or older entries trimmed)
 	OutagesFrom int64 `json:"outagesFrom,omitempty"`

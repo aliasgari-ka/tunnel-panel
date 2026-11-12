@@ -1820,7 +1820,7 @@ function serverModal(s) {
 // Summary strip, then tunnels grouped by their Iran server.
 function viewTunnels(w) {
   w.innerHTML = topbar('Tunnels', 'Each tunnel links one Iran server to one foreign server. Pick a connection method and switch any time.',
-    `${isAdmin() ? '' : '<!--'}<button class="btn" id="aiTun" title="Claude reviews the tunnels, their paths, outages and the servers' load, and says what to improve">🧠 AI analysis</button><button class="btn" id="repairTun" title="Apply again every running tunnel that has a problem (down, dead hot-standby paths, an older switcher or Golden relay); servers that are down are left alone">🛠 Repair</button>${isAdmin() ? '' : '-->'}<button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
+    `${isAdmin() ? '' : '<!--'}<button class="btn" id="aiTun" title="Claude reviews the tunnels, their paths, outages and the servers' load, and says what to improve">🧠 AI analysis</button>${isAdmin() ? '' : '-->'}<button class="btn" id="repairTun" title="Check what is wrong on the running tunnels and choose what to fix — the check changes nothing">🛠 Repair</button><button class="btn pri" id="addTun"${iranServers().length ? '' : ' disabled title="Add an Iran server first"'}>+ New tunnel</button>`);
   // everything on this page follows the View selector (an admin looking at one account sees
   // that account's numbers and chips, not the whole panel's)
   const mine = STATE.tunnels.filter(t => shownOwner(t.owner));
@@ -1890,9 +1890,7 @@ function viewTunnels(w) {
   }
   $('#addTun').onclick = () => { if (iranServers().length) tunnelModal(); };
   if ($('#aiTun')) $('#aiTun').onclick = () => aiModal();
-  if ($('#repairTun')) $('#repairTun').onclick = async () => {
-    try { const r = await api('/repair', {}); openLog({ id: 'repair', name: 'Repair' }, r.job); } catch (e) { alertModal('Repair', e.message); }
-  };
+  if ($('#repairTun')) $('#repairTun').onclick = () => repairModal();
 }
 // Compact card: who ⇄ who, state, live traffic and the three everyday buttons.
 // Everything else (method, options, tests) lives in the Manage window.
@@ -1945,6 +1943,7 @@ function tunnelCard(t) {
         t.active ? { label: '🚀 Speed test', attr: 'data-speedtest' } : null,
         t.active ? { label: '🩺 Diagnose', attr: 'data-diag' } : null,
         t.active ? { label: '🔎 Trace connections (30 s)', attr: 'data-trace' } : null,
+        t.active ? { label: '🛠 Repair', attr: 'data-repair' } : null,
         isAdmin() ? { label: '👤 Account…', attr: 'data-own' } : null,
         { label: '✎ Edit tunnel', attr: 'data-edit' },
         { label: '🗑 Delete tunnel', attr: 'data-del', danger: true }])}
@@ -1959,6 +1958,7 @@ function tunnelCard(t) {
   on('[data-speedtest]', () => tunnelJob(t, '/tunnels/speedtest', 'Speed test'));
   on('[data-diag]', () => tunnelJob(t, '/tunnels/diagnose', 'Diagnose'));
   on('[data-trace]', () => tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'));
+  on('[data-repair]', () => repairModal(t.id));
   on('[data-edit]', () => tunnelModal(t));
   on('[data-own]', () => ownerModal('tunnel', t.id));
   hsWire(t, card);
@@ -2004,6 +2004,136 @@ async function aiModal() {
   let next = null;
   const load = () => api('/ai').then(paint).catch(e => { box.innerHTML = `<div class="downbar">⚠ ${esc(e.message)}</div>`; });
   load();
+}
+// Repair: a check first (it changes nothing), then only what was chosen (repair.go). Items
+// that cut or move users start unchecked and need a second, explicit OK. only = one tunnel.
+function repairModal(only) {
+  const tn = only ? (STATE.tunnels.find(t => t.id === only) || {}).name : '';
+  const m = modal(`<h2>🛠 Repair${tn ? ` · <span data-notr>${esc(tn)}</span>` : ''}</h2><p class="muted rp-sub">First a check — it changes nothing. Then choose what to fix.</p><div data-rp></div><div data-rpauto></div>`, true);
+  const box = $('[data-rp]', m), autoBox = $('[data-rpauto]', m);
+  let poll = null;
+  const alive = () => box.isConnected;
+  const IMP = { none: ['no impact', 'ok'], blip: ['brief blip', 'warn'], users: ['users moved', 'bad'] };
+  const SIDE = { iran: 'Iran', foreign: 'foreign', both: 'both sides' };
+  const chips = (it) => `<span class="chip rp-imp ${(IMP[it.impact] || IMP.users)[1]}">${(IMP[it.impact] || IMP.users)[0]}</span><span class="chip rp-side">${SIDE[it.side] || esc(it.side)}</span>`;
+  const notMine = (t) => isAdmin() && t.owner && t.owner !== STATE.user;
+  // the paths a path update adds (+) and removes (−): method names, kept as they are
+  const det = (it) => it.detail ? `<span class="rp-det" data-notr dir="ltr" title="${esc(it.detail)}">${esc(it.detail)}</span>` : '';
+
+  // ---- the check ----
+  const check = async () => {
+    clearTimeout(poll);
+    box.innerHTML = `<div class="rp-wait"><span class="spin"></span><span>Checking the tunnels… (up to a minute)</span></div>`;
+    let r;
+    try { r = await api('/repair/check', only ? { IDs: [only] } : {}); } catch (e) { if (alive()) box.innerHTML = `<div class="downbar">⚠ ${esc(e.message)}</div>`; return; }
+    if (alive()) paintCheck(r.tunnels || []);
+  };
+  const paintCheck = (ts) => {
+    const fix = ts.filter(t => t.state === 'fix'), ok = ts.filter(t => t.state === 'ok'), skip = ts.filter(t => t.state === 'skip');
+    const row = (t) => `<div class="rp-t" data-t="${esc(t.id)}">
+        <label class="rp-h"><input type="checkbox" data-tall><b data-notr>${esc(t.name)}</b>${t.owner ? `<span class="chip">👤 <span data-notr>${esc(t.owner)}</span></span>` : ''}<span class="grow"></span><span class="chip warn">${t.items.length === 1 ? '1 to fix' : t.items.length + ' to fix'}</span></label>
+        ${notMine(t) ? `<div class="rp-note">left unchecked: it belongs to another account — their choice</div>` : ''}
+        ${t.items.map(it => `<label class="rp-i"><input type="checkbox" data-k="${esc(it.kind)}" data-imp="${esc(it.impact)}"${it.impact !== 'users' && !notMine(t) ? ' checked' : ''}><span class="rp-x"><span>${esc(it.text)}</span>${det(it)}</span><span class="rp-c">${chips(it)}</span></label>`).join('')}
+        ${t.note ? `<div class="rp-note">${esc(t.note)}</div>` : ''}</div>`;
+    box.innerHTML = `
+      <div class="rp-sum"><span class="chip ${fix.length ? 'warn' : 'ok'}">${fix.length} to fix</span><span class="chip ok">${ok.length} fine</span>${skip.length ? `<span class="chip">${skip.length} left alone</span>` : ''}
+        <span class="grow"></span>${fix.length > 1 ? `<button class="btn sm ghost" data-all>Select all</button><button class="btn sm ghost" data-none>None</button>` : ''}</div>
+      ${fix.length ? fix.map(row).join('') : `<div class="rp-allok">✅ Nothing to fix</div>`}
+      ${ok.length ? `<div class="rp-ok"><div class="rp-lbl">Nothing to fix</div>${ok.map(t => `<div class="rp-okr"><span class="rp-dot ok"></span><span data-notr>${esc(t.name)}</span>${t.note ? `<span class="rp-note">${esc(t.note)}</span>` : ''}</div>`).join('')}</div>` : ''}
+      ${skip.length ? `<div class="rp-ok"><div class="rp-lbl">Left alone</div>${skip.map(t => `<div class="rp-okr"><span class="rp-dot"></span><span data-notr>${esc(t.name)}</span><span class="rp-note">${esc(t.note || '')}</span></div>`).join('')}</div>` : ''}
+      <div class="rp-foot"><div data-rpwarn></div><div class="actions"><button class="btn ghost" data-again>↻ Check again</button><span class="grow"></span>${fix.length ? `<button class="btn pri" data-fix>Fix selected</button>` : ''}</div></div>`;
+    const sync = () => {
+      $$('.rp-t', box).forEach(c => {
+        const items = $$('[data-k]', c), on = items.filter(x => x.checked).length, all = $('[data-tall]', c);
+        all.checked = on === items.length; all.indeterminate = on > 0 && on < items.length;
+      });
+      const n = $$('[data-k]:checked', box).length, b = $('[data-fix]', box);
+      if (b) { b.disabled = !n; b.textContent = n ? `Fix selected (${n})` : 'Fix selected'; }
+      $('[data-rpwarn]', box).innerHTML = '';
+    };
+    $$('[data-tall]', box).forEach(a => a.onchange = () => { $$('[data-k]', a.closest('.rp-t')).forEach(x => x.checked = a.checked); sync(); });
+    $$('[data-k]', box).forEach(x => x.onchange = sync);
+    const setAll = (v) => { $$('[data-k]', box).forEach(x => x.checked = v); sync(); };
+    if ($('[data-all]', box)) { $('[data-all]', box).onclick = () => setAll(true); $('[data-none]', box).onclick = () => setAll(false); }
+    $('[data-again]', box).onclick = check;
+    if ($('[data-fix]', box)) $('[data-fix]', box).onclick = () => {
+      const picks = {}, users = [];
+      $$('.rp-t', box).forEach(c => {
+        const ks = $$('[data-k]:checked', c);
+        if (!ks.length) return;
+        picks[c.dataset.t] = ks.map(x => x.dataset.k);
+        if (ks.some(x => x.dataset.imp === 'users')) users.push($('.rp-h b', c).textContent);
+      });
+      if (!Object.keys(picks).length) return;
+      if (!users.length) { start(picks, false); return; }
+      // the explicit OK for the items that cut or move users
+      const w = $('[data-rpwarn]', box);
+      w.innerHTML = `<div class="rp-warn"><b>⚠ Users will be cut or moved</b><div>These tunnels are applied again: their users drop for a moment while it runs.</div><div class="rp-names" data-notr>${users.map(esc).join(' · ')}</div>
+        <div class="actions"><button class="btn sm ghost" data-wno>Cancel</button><button class="btn sm danger" data-wyes>Yes, fix and move the users</button></div></div>`;
+      $('[data-wno]', w).onclick = () => { w.innerHTML = ''; };
+      $('[data-wyes]', w).onclick = () => start(picks, true);
+
+    };
+    sync();
+  };
+
+  // ---- the run ----
+  const start = async (picks, allowUsers) => {
+    try { await api('/repair/apply', { Picks: picks, AllowUsers: allowUsers }); follow(); }
+    catch (e) { alertModal('Repair', e.message); }
+  };
+  const RES = { waiting: ['…', 'waiting'], running: ['⟳', 'working…'], fixed: ['✅', 'fixed'], failed: ['❌', 'failed'], skipped: ['⏭', 'left alone'], fine: ['✓', 'nothing to fix'] };
+  const ST = { done: '✓', failed: '✕', left: '–' };
+  const paintRun = (run, live) => {
+    const n = (k) => run.tunnels.filter(t => t.result === k).length;
+    const doneN = run.tunnels.filter(t => !['waiting', 'running'].includes(t.result)).length;
+    return `<div class="rp-sum">${live ? `<span class="spin"></span><span>Fixing…</span><span>${doneN} / ${run.tunnels.length}</span>` : `<span class="chip ok">${n('fixed')} fixed</span>${n('failed') ? `<span class="chip bad">${n('failed')} failed</span>` : ''}${n('skipped') ? `<span class="chip">${n('skipped')} left alone</span>` : ''}${n('fine') ? `<span class="chip">${n('fine')} fine</span>` : ''}`}
+        <span class="grow"></span><span class="faint rp-when">${run.auto ? '🤖 ' : ''}<span>${esc(run.why)}</span> · <span>${ago(run.started)}</span></span></div>
+      ${run.tunnels.map(t => { const r = RES[t.result] || RES.waiting; return `<div class="rp-t rp-r ${esc(t.result)}"><div class="rp-h"><span class="rp-ic">${r[0]}</span><b data-notr>${esc(t.name)}</b><span class="grow"></span><span class="chip ${t.result === 'failed' ? 'bad' : t.result === 'fixed' ? 'ok' : ''}">${r[1]}</span></div>
+        ${(t.results || []).map(it => `<div class="rp-i rp-ri ${esc(it.status)}"><span class="rp-st">${ST[it.status] || ''}</span><span class="rp-x"><span>${esc(it.text)}</span>${det(it)}${it.why && it.why !== 'not chosen' ? `<span class="rp-why">${esc(it.why)}</span>` : ''}</span><span class="rp-c">${chips(it)}</span></div>`).join('')}
+        ${!(t.results || []).length && t.done && t.result !== 'running' ? `<div class="rp-note">${esc(t.done)}</div>` : ''}</div>`; }).join('')}`;
+  };
+  const follow = async () => {
+    clearTimeout(poll);
+    if (!alive()) return;
+    let s;
+    try { s = await api('/repair/status'); } catch (e) { box.innerHTML = `<div class="downbar">⚠ ${esc(e.message)}</div>`; return; }
+    if (!alive()) return;
+    const run = s.run, live = run && !run.ended;
+    if (!run) { check(); return; }
+    let log = '';
+    try { const j = await api('/jobs?id=' + encodeURIComponent(run.job)); log = (j.lines || []).slice(-60).join('\n'); } catch (e) {}
+    const open = !!($('details.rp-log', box) || {}).open;
+    box.innerHTML = paintRun(run, live) + `<details class="rp-log"${open ? ' open' : ''}><summary>Job log</summary><pre class="pre mono">${esc(log)}</pre></details>
+      <div class="actions rp-foot"><span class="grow"></span>${live ? '' : `<button class="btn pri" data-again>↻ Check again</button>`}</div>`;
+    if ($('[data-again]', box)) $('[data-again]', box).onclick = check;
+    paintAuto(s);
+    if (live) poll = setTimeout(follow, 2000);
+  };
+
+  // ---- the automatic Repair after an update (admin) ----
+  const paintAuto = (s) => {
+    if (!isAdmin() || !('auto' in s)) { autoBox.innerHTML = ''; return; }
+    const l = s.last;
+    const cnt = (k) => l ? l.tunnels.filter(t => t.result === k).length : 0;
+    const wait = l ? l.tunnels.filter(t => (t.results || []).some(i => i.status === 'left' && /needs your OK/.test(i.why || ''))).length : 0;
+    autoBox.innerHTML = `<div class="rp-auto"><label class="f">Automatic Repair after an update<select data-amode>
+        <option value="">Only fixes nobody notices; the rest waits for your OK</option>
+        <option value="all">Everything (users may be moved)</option>
+        <option value="off">Off</option></select></label>
+      ${l ? `<div class="rp-last"><span class="faint">Last run:</span> ${l.auto ? '🤖 ' : ''}<span>${esc(l.why)}</span> · <span>${ago(l.started)}</span> <span class="chip ok">${cnt('fixed')} fixed</span>${cnt('failed') ? `<span class="chip bad">${cnt('failed')} failed</span>` : ''}${wait ? `<span class="chip warn">${wait} need your OK</span>` : ''} <button class="btn sm ghost" data-lastv>Details</button></div>` : ''}</div>`;
+    const sel = $('[data-amode]', autoBox); sel.value = s.auto || '';
+    sel.onchange = async () => { try { await api('/repair/auto', { Mode: sel.value }); toast('Saved'); } catch (e) { alertModal('Repair', e.message); } };
+    const lv = $('[data-lastv]', autoBox);
+    if (lv) lv.onclick = () => { clearTimeout(poll); box.innerHTML = paintRun(l, false) + `<div class="actions rp-foot"><span class="grow"></span><button class="btn pri" data-again>↻ Check now</button></div>`; $('[data-again]', box).onclick = check; };
+  };
+
+  // a run in progress is followed; otherwise the check starts at once
+  api('/repair/status').then(s => {
+    if (!alive()) return;
+    paintAuto(s);
+    if (s.run && !s.run.ended) follow(); else check();
+  }).catch(() => check());
 }
 async function applyMethod(t, mid, fam) {
   try { const r = await api('/tunnels/apply', { ID: t.id, Method: mid, Family: fam || t.family }); openLog(t, r.job); return true; }
