@@ -1921,8 +1921,12 @@ function hsRows(t) {
       // a ✕ says why: down since when, and what its core said (or that it runs but nothing
       // answers through it) — a bare ✕ read as a panel bug
       const since = v.changed && v.changed[i] > 0 ? `<span>down</span> · <span>${ago(v.changed[i])}</span>` : '<span>down</span>';
+      // the cause the panel proved (downcause.go), with its evidence and what to do; until
+      // it is known, the switcher's own line and a note that the panel is looking
+      const c = v.cause && v.cause[i];
+      if (c) return `<span class="hq">${since}</span>${hsCauseHtml(c, v.keys && v.keys[i], i !== v.active)}`;
       const why = v.why && v.why[i] ? v.why[i] : "the switcher's check through this path gets no answer";
-      return `<span class="hq">${since}</span><span class="hw" title="${esc(why)}">${esc(why)}</span>`;
+      return `<span class="hq">${since}</span><span class="hw" title="${esc(why)}">${esc(why)}</span><span class="hw faint" data-notr>${L('finding the exact cause…', 'در حال پیدا کردن علت دقیق…')}</span>`;
     }
     if (v.rtt && v.rtt[i] >= 0) out.push(v.rtt[i] + ' ms');
     if (v.loss && v.loss[i] >= 0) out.push(v.loss[i].toFixed(1) + '% loss');
@@ -1932,13 +1936,23 @@ function hsRows(t) {
   return `<div class="hsl">${v.paths.map((p, i) =>
     `<div class="${ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}"><span class="hi">${ok[i] ? '✓' : '✕'}</span><span class="hm"><span class="hn">${esc(p)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}</span>${q(i)}</span>${i === v.active ? '<b class="hu">← users</b>' : (ok[i] && v.keys ? `<button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}${hsRowMenu(v, ok, i)}</div>`).join('')}</div>`;
 }
-// a path's ⋯ menu: Remove — not the users' path (move them first) nor the last working one
+// a down path's proven cause: one sentence naming the side; the evidence and what to do on expand
+function hsCauseHtml(c, key, canRestart) {
+  const fa = window.tpLang === 'fa';
+  const side = { iran: L('Iran', 'ایران'), foreign: L('foreign', 'خارج'), route: L('route', 'مسیر'), panel: L('panel', 'پنل') }[c.side];
+  const ev = (c.evidence || []).map(e => `<li>${esc(e)}</li>`).join('');
+  const btn = c.restart && canRestart && key ? ` <button type="button" class="btn sm ghost" data-hsrestart="${esc(key)}">↻ ${L('Restart path', 'ری‌استارت مسیر')}</button>` : '';
+  const act = c.action ? `<div class="hca" data-notr>→ ${esc(fa ? c.actionFa : c.action)}${btn}</div>` : '';
+  return `<details class="hcz"><summary><span class="hct" data-notr>${side ? `<b class="hcs">${esc(side)}</b> ` : ''}${esc(fa ? c.textFa : c.text)}</span> <span class="faint" data-notr>${L('evidence', 'شواهد')} ▸</span></summary>${ev ? `<ul data-notr dir="ltr">${ev}</ul>` : ''}${act}<div class="faint" data-notr>${L('checked', 'بررسی شد')} · ${ago(c.at)}</div></details>`;
+}
+// a path's ⋯ menu: Restart (a down standby path); Remove — not the users' path (move them first) nor the last working one
 function hsRowMenu(v, ok, i) {
   if (!v.keys || !v.keys[i]) return '';
   const working = ok.filter(Boolean).length;
   const why = i === v.active ? 'The users are on this path — move them to another one with “use” first.'
     : (ok[i] && working <= 1) ? 'The last working path can\'t be removed.' : '';
-  return moreMenu([why
+  const rs = !ok[i] && i !== v.active ? { label: '↻ ' + L('Restart path', 'ری‌استارت مسیر'), attr: `data-hsrestart="${esc(v.keys[i])}" title="${esc(L("restart only this path's cores on both servers — the users and the other paths are left alone", 'فقط هسته‌های این مسیر روی هر دو سرور ری‌استارت می‌شود — کاربران و مسیرهای دیگر دست نمی‌خورند'))}"` } : null;
+  return moreMenu([rs, why
     ? { label: '🗑 Remove path', attr: `disabled title="${esc(why)}"`, danger: true }
     : { label: '🗑 Remove path', attr: `data-hsrm="${esc(v.keys[i])}" data-hsname="${esc(v.paths[i])}"`, danger: true },
     why ? { label: `<span class="hwhy">${esc(why)}</span>`, attr: 'disabled' } : null]);
@@ -1953,6 +1967,11 @@ function hsOffFold(t) {
 }
 function hsWire(t, m) {
   $$('[data-hsrm]', m).forEach(b => b.onclick = () => hsRemoveConfirm(t, b.dataset.hsrm, b.dataset.hsname));
+  $$('[data-hsrestart]', m).forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); b.disabled = true;
+    try { const r = await api('/tunnels/hsrestart', { ID: t.id, Path: b.dataset.hsrestart }); openLog(t, r.job); }
+    catch (er) { alertModal('Restart path', er.message); b.disabled = false; }
+  });
   $$('[data-hsrestore]', m).forEach(b => b.onclick = async () => {
     b.disabled = true;
     try { const r = await api('/tunnels/hsrestore', { ID: t.id, Path: b.dataset.hsrestore }); await loadAll(); renderView(); if (r.job) openLog(t, r.job); else toast('put back — it starts on the next Start/Re-apply'); }

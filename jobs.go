@@ -200,6 +200,7 @@ type App struct {
 	srvMon      *serverMon // the SSH-port server monitor (nil until it runs)
 	healthMu    sync.Mutex
 	hsViews     map[string]*hsView     // hot-standby switchers' state, as last read
+	dc          dcState                // the cause finder's results for down paths (downcause.go)
 	hsKicks     map[string]hsKick      // "tunnel id|method|family" -> the panel's last restarts of a down path (hskick.go)
 	healthCache map[string]string      // tunnel id -> "" healthy / reason, from the monitor
 	foNext      map[string]time.Time   // tunnel id -> next automatic failover allowed
