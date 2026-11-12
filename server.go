@@ -1132,7 +1132,13 @@ func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 			if t.Active != "" {
 				up = uptimeOf(st.Outages, "tunnel", t.ID, from, now)
 			}
-			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, s.app.hsViewCause(t.ID), hp, up})
+			// the switcher's view only while it runs: the last one read is kept after a Stop (or
+			// hot standby turned off), and the pages showed users "now" on a path of a stopped tunnel
+			var hv *hsView
+			if t.Active != "" && t.HotStandby {
+				hv = s.app.hsViewCause(t.ID)
+			}
+			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, hv, hp, up})
 		}
 	})
 	writeJSON(w, out)
@@ -1694,8 +1700,18 @@ func (a *App) logRedactor(user string) *strings.Replacer {
 // ---- benchmark ----
 
 func (s *Server2) benchStart(w http.ResponseWriter, r *http.Request) {
-	var in BenchRequest
-	if err := readJSON(r, &in); err != nil {
+	// Then: the other address family, measured on the server right after this one (one
+	// "Measure" on the Routes page covers IPv4 and IPv6; one benchmark runs at a time)
+	var body struct {
+		BenchRequest
+		Then string `json:"then"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		httpErr(w, 400, "bad request")
+		return
+	}
+	in := body.BenchRequest
+	if body.Then != "" && body.Then != "v4" && body.Then != "v6" {
 		httpErr(w, 400, "bad request")
 		return
 	}
@@ -1710,10 +1726,24 @@ func (s *Server2) benchStart(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
-	if user, admin := s.who(r); !admin {
+	user, admin := s.who(r)
+	if !admin {
 		j.mu.Lock()
 		j.Owner = user // lets this user follow the job
 		j.mu.Unlock()
+	}
+	if first := map[bool]string{true: "v6", false: "v4"}[in.Family == "v6"]; body.Then != "" && body.Then != first {
+		next := in
+		next.Family = body.Then
+		go benchThen(j, func() (*Job, error) {
+			nj, err := s.app.Bench(next)
+			if nj != nil && !admin {
+				nj.mu.Lock()
+				nj.Owner = user
+				nj.mu.Unlock()
+			}
+			return nj, err
+		}, benchThenWait)
 	}
 	writeJSON(w, map[string]string{"job": j.ID})
 }

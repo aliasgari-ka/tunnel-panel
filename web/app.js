@@ -645,201 +645,317 @@ async function viewUsage(w) {
 const niceStep = (v) => { const e = 10 ** Math.floor(Math.log10(Math.max(v, 1e-9))), m = v / e; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * e; };
 
 /* ---------------- routes ---------------- */
-// One card per Iran ⇄ foreign pair: its tunnels and every path they run (hot standby: each
-// path ✓/✕ and the one users are on), and the order the next Re-apply / hot standby /
-// failover uses — the pair's latest benchmark ranking, per address family.
+// One tunnel at a time: where its users are now, the paths it keeps ready (each ✓/✕, quality,
+// use / on-off), the methods it doesn't run (folded) and one Measure for IPv4 and IPv6. The
+// tunnels are listed on the side (a chip strip on a phone); the pick is remembered.
 const ageTxt = (u) => { const s = Math.floor(Date.now() / 1000) - u; return s < 3600 ? `${Math.max(1, Math.floor(s / 60))} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
+// the switcher's view older than this is not "now": the Iran server stopped answering
+const RX_STALE = 120;
+// where a running tunnel's users are: the switcher's path (hot standby), else its own method
+function rxUsersOn(t) {
+  if (!t.active) return null;
+  const v = t.hotStandby ? t.hs : null;
+  if (v && v.keys && v.active >= 0 && v.keys[v.active]) { const [mid, fam] = v.keys[v.active].split('|'); return { mid, fam, i: v.active, v }; }
+  if (t.hotStandby) return { reading: true };
+  return { mid: t.active, fam: t.family };
+}
+// the tunnel's status, in the Tunnels page's words and colours
+function rxState(t) {
+  if (!t.active) return { cls: 'off', txt: 'stopped' };
+  if (t.health === null || t.health === undefined) return { cls: 'unk', txt: 'not checked yet' };
+  if (t.health) return { cls: 'bad', txt: 'down', why: t.health };
+  return { cls: 'ok', txt: 'connected' };
+}
 let routesTok = 0;
 async function viewRoutes(w) {
   const tok = ++routesTok; // a newer draw of the page wins (an older one finishing later took its timer)
-  w.innerHTML = topbar('Routes', 'Each tunnel: the paths its users are on, and which methods it may use — switch them on or off, and measure them.');
+  w.innerHTML = topbar('Routes', 'Pick a tunnel: where its users are, the paths it keeps ready and the methods it may use.');
   const box = h('<div class="grid" style="gap:18px"><div class="skel" style="height:120px"></div><div class="skel" style="height:220px"></div></div>');
   w.appendChild(box);
-  let hist = [], skip = {};
-  try { [hist, skip] = await Promise.all([api('/bench/history'), api('/routes/skip')]); } catch (e) {}
+  let hist = [], skip = {}, bst = {};
+  try { [hist, skip, bst] = await Promise.all([api('/bench/history'), api('/routes/skip'), api('/bench/status').catch(() => ({}))]); } catch (e) {}
   if (tok !== routesTok || !box.isConnected) return;
   const pairs = new Map();
   const key = (i, f) => i + '|' + (f || '');
   STATE.tunnels.filter(t => shownOwner(t.owner)).forEach(t => { const k = key(t.serverId, t.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: t.serverId, foreign: t.foreignId || '', tunnels: [] }); pairs.get(k).tunnels.push(t); });
   hist.filter(r => shownOwner((serverById(r.iranId) || {}).owner)).forEach(r => { const k = key(r.iranId, r.foreignId); if (!pairs.has(k)) pairs.set(k, { iran: r.iranId, foreign: r.foreignId || '', tunnels: [] }); });
-  box.innerHTML = '';
-  if (!pairs.size) { box.appendChild(h('<div class="card empty"><div class="big">🔀</div>No tunnels or benchmarks yet.</div>')); return; }
-  const srvLabel = (id, fb) => { const s = id ? serverById(id) : null; return s ? `${s.country ? flag(s.country) : ''} ${nm(s.name)}` : fb; };  const hasFam = (id, f) => { const s = id ? serverById(id) : null; const st = STATE.settings; return f === 'v4' ? !!(s ? s.ipv4 : st.localIPv4 || true) : !!(s ? s.ipv6 : st.localIPv6); };
-  // one card per tunnel (a measured pair with no tunnel gets one too); a switch re-draws the
-  // cards in place (the page keeps its scroll)
-  let repaint = () => {};
-  const buildCard = (p) => {
-    const fams = ['v4', 'v6'].filter(f => hasFam(p.iran, f) && hasFam(p.foreign, f));
-    const off = skip[key(p.iran, p.foreign)] || [];
-    const adminPair = sharedPair(p.iran, p.foreign);
-    const bench = {};
-    ['v4', 'v6'].forEach(f => { bench[f] = hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f); });
+  if (!pairs.size) { box.innerHTML = ''; box.appendChild(h('<div class="card empty"><div class="big">🔀</div>No tunnels or benchmarks yet.</div>')); return; }
+  const hasFam = (id, f) => { const s = id ? serverById(id) : null; const st = STATE.settings; return f === 'v4' ? !!(s ? s.ipv4 : st.localIPv4 || true) : !!(s ? s.ipv6 : st.localIPv6); };
+  const fl = (id, d) => { const s = id ? serverById(id) : null; return s && s.country ? flag(s.country) : d; };
+  const mTitle = (mid) => methodTitle(mid) || mid;
+  const maxMB = bst.maxMB || 6;
 
-    // 1. tunnels: one line each; a hot-standby tunnel folds its paths away
-    let up = 0, down = 0;
-    const tunnels = p.tunnels.map(t => {
-      let st, cls;
-      if (!t.active) { st = 'stopped'; cls = 'off'; }
-      else if (t.health === null || t.health === undefined) { st = 'not checked yet'; cls = 'unk'; }
-      else if (t.health) { st = t.health; cls = 'bad'; down++; }
-      else { st = 'connected'; cls = 'ok'; up++; }
-      let hs = '';
-      if (t.hotStandby && t.hs && t.hs.paths) {
-        t.hs.ok = t.hs.ok || []; // a switcher state read only in part has no ok list
-        const n = t.hs.ok.filter(Boolean).length;
-        hs = `<details class="rt-hs"${p.tunnel ? ' open' : ''}><summary>⚡ users on <b>${esc(t.hs.paths[t.hs.active] || '—')}</b> · ${n}/${t.hs.paths.length} paths working${t.hsAuto ? ' · 🤖 auto' : ''} <span class="faint">▸ paths</span></summary><div class="hsl">${t.hs.paths.map((x, i) => `<div class="${t.hs.ok[i] ? 'ok' : 'bad'}${i === t.hs.active ? ' cur' : ''}">${t.hs.ok[i] ? '✓' : '✕'} ${esc(x)}${i === t.hs.active ? ' <b>← users</b>' : ''}</div>`).join('')}</div></details>`;
-      } else if (t.hotStandby) {
-        // running with paths but no switcher state read yet (just after a panel restart): say so
-        hs = t.active && (t.paths || []).length
-          ? `<div class="faint rt-hs">⚡ hot standby: ${t.paths.length} paths — reading which one the users are on…</div>`
-          : '<div class="faint rt-hs">⚡ hot standby: its paths start on the next Start/Re-apply</div>';
-      }
-      return `<div class="rt-row ${cls}"><span class="sd ${cls === 'ok' ? 'ok' : cls === 'bad' ? 'bad' : ''}"></span>
-        ${p.tunnel ? '<span class="faint">now</span>' : `<b class="rt-name" data-notr>${esc(t.name)}</b><span class="faint mono">:${esc(t.ports)}</span>`}
-        <span class="rt-mth">${esc(methodTitle(t.active || t.selected) || '—')} · ${famName(t.family)}</span>
-        <span class="rt-st ${cls}">${esc(st)}</span>${hs}</div>`;
-    }).join('') || '<div class="faint" style="font-size:12.5px">no tunnel on this pair yet</div>';
-
-    // 2. methods: one row each, IPv4 and IPv6 side by side, best first
-    const rank = {}; // method -> {fam: {pos, r}}
-    fams.forEach(f => {
-      const r = bench[f]; if (!r) return;
-      let pos = 0;
-      r.results.forEach(x => { (rank[x.method] = rank[x.method] || {})[f] = { pos: x.ok ? ++pos : 0, r: x }; });
-    });
-    off.forEach(v => { const [mid, f] = v.split('|'); if (fams.includes(f)) (rank[mid] = rank[mid] || {})[f] = (rank[mid] || {})[f] || { pos: 0, r: null }; });
-    // every method the route can carry is listed, measured or not: the choice of what this route
-    // uses must not wait for a benchmark
-    STATE.methods.filter(m => m.id !== 'spoof' && fams.some(f => m.families.includes(f))).forEach(m => { rank[m.id] = rank[m.id] || {}; });
-    // a method's best position on either family (left out or failed: at the end)
-    const best = (mid) => Math.min(999, ...fams.filter(f => !off.includes(mid + '|' + f)).map(f => (rank[mid][f] && rank[mid][f].pos) || 999));
-    // grouped by method family (all Backhaul cores together), best first within a family
-    const gOf = (mid) => groupOf(STATE.methods.find(x => x.id === mid));
-    const mids = Object.keys(rank).sort((a, b) => groupRank(gOf(a)) - groupRank(gOf(b)) || best(a) - best(b) || methodTitle(a).localeCompare(methodTitle(b)));
-    // a cell = an on/off switch (does this route use the method on this family?) + what the
-    // last benchmark measured
-    const cell = (mid, f) => {
-      const m = STATE.methods.find(x => x.id === mid);
-      if (m && !m.families.includes(f)) return `<td class="rt-c na" data-f="${famName(f)}"><span class="faint">—</span></td>`;
-      const isOff = off.includes(mid + '|' + f);
-      const sw = adminPair ? '' : `<label class="rt-sw" title="${isOff ? 'not used on this route — turn on to let hot standby and failover use it' : 'used on this route (hot standby, failover, benchmark) — turn off to leave it out'}"><input type="checkbox" data-use="${esc(mid)}|${f}"${isOff ? '' : ' checked'}><i></i></label>`;
-      const c = rank[mid][f], x = c && c.r;
-      let body;
-      if (isOff) body = '<span class="faint">off</span>';
-      else if (!x) body = '<span class="faint">not measured</span>';
-      else if (x.skipped) body = '<span class="faint">not measurable</span>';
-      else if (x.ok) {
-        const carrier = x.opts ? Object.entries(x.opts).map(([k, v]) => `${k} ${v}`).join(', ') : '';
-        body = `<span class="rt-rank${x.recommended ? ' top' : ''}">${x.recommended ? '★' : c.pos}</span><span class="rt-num">↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} <small>Mbps</small> · ${x.rttMs.toFixed(0)} <small>ms</small></span>${carrier ? `<span class="chip rt-car" title="the default carrier passes nothing here; this one does">${esc(carrier)}</span>` : ''}`;
-      } else body = `<button type="button" class="rt-err" data-err="${esc(x.error || 'failed')}" title="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>`;
-      return `<td class="rt-c ${isOff ? 'left' : x && x.ok ? 'good' : x && !x.skipped ? 'bad' : ''}" data-f="${famName(f)}"><div class="rt-cv">${sw}${body}</div></td>`;
-    };
-    const methodsTbl = mids.length ? `<table class="rt-tbl"><thead><tr><th>Method</th>${fams.map(f => `<th>${famName(f)}${bench[f] ? ` <span class="faint">· measured ${ageTxt(bench[f].at)}</span>` : ' <span class="faint">· not measured yet</span>'}</th>`).join('')}</tr></thead>
-      <tbody>${mids.map((mid, i) => (i === 0 || gOf(mids[i - 1]) !== gOf(mid) ? `<tr class="rt-grp"><td colspan="${fams.length + 1}">${GROUP_ICON[gOf(mid)] || '🔧'} ${esc(gOf(mid))}</td></tr>` : '') +
-        `<tr><td class="rt-mn">${esc(methodTitle(mid))}</td>${fams.map(f => cell(mid, f)).join('')}</tr>`).join('')}</tbody></table>
-      ${adminPair ? '<div class="faint rt-leg">These servers belong to the admin, who decides which methods this route uses.</div>' : ''}<div class="faint rt-leg">Switch on = the route's tunnels may use it (hot standby keeps it ready, failover can move users to it); off = never used here. ★ best measured · numbers = the order they're tried · tap ✕ for the whole error · 📊 measures the running ones (every method when none runs)${fams.some(f => !bench[f]) ? ' — not measured yet: you can still choose' : ''}</div>`
-      : '<div class="faint" style="font-size:12.5px">No method can run between these two servers over the address families they have.</div>';
-
-    const cells = mids.flatMap(mid => { const m = STATE.methods.find(x => x.id === mid); return fams.filter(f => !m || m.families.includes(f)).map(f => mid + '|' + f); });
-    const cellCount = cells.length, onCount = cells.filter(c => !off.includes(c)).length;
-    const summary = [`${p.tunnels.length} tunnel${p.tunnels.length === 1 ? '' : 's'}`];
-    if (up) summary.push(`<span class="ok">● ${up} connected</span>`);
-    if (down) summary.push(`<span class="bad">● ${down} down</span>`);
-    // a tunnel's card is titled with the tunnel (what people look for); a measured pair with no
-    // tunnel keeps the servers as its title
-    const route = `${srvLabel(p.iran, 'Iran')} <span class="faint">→</span> ${srvLabel(p.foreign, '🖥 this panel host')}`;
-    const title = p.tunnel ? `<h3 data-notr>${esc(p.tunnel.name)}</h3><div class="rt-sum">${route} · <span class="mono">:${esc(p.tunnel.ports)}</span></div>`
-      : `<h3>${route}</h3><div class="rt-sum">${summary.join(' · ')} · measured, no tunnel yet</div>`;
-    const sharedNote = p.shared && p.shared.length ? `<div class="faint rt-leg" style="margin:0 0 6px">These switches belong to the server pair, so they also apply to ${p.shared.map(nm).join(', ')}.</div>` : '';
-    const card = h(`<div class="card rt-card">
-      <div class="rt-head"><div>${title}</div>
-        <div class="actions">${fams.map(f => `<button class="btn sm" data-rb="${f}" title="measure the methods the tunnels run over ${famName(f)} between these two servers, or every method when none runs (each on a temporary tunnel; live tunnels are not touched)">📊 Measure ${famName(f)}</button>`).join('')}</div></div>
-      ${p.tunnel ? '' : '<div class="lbl">Tunnels</div>'}<div class="rt-rows">${tunnels}</div>
-      <details class="rt-more"${p.tunnel || STATE.routeSel ? ' open' : ''}><summary><span class="lbl">Methods this tunnel may use</span> <span class="faint">${onCount} of ${cellCount} on — speeds and order</span></summary>${sharedNote}${methodsTbl}</details></div>`);
-    // sections opened or closed by hand stay that way through the 30 s repaint
-    const rtOpen = (STATE.rtOpen = STATE.rtOpen || {});
-    $$('details', card).forEach((d, i) => { const k = p.id + '|' + i; if (k in rtOpen) d.open = rtOpen[k]; d.addEventListener('toggle', () => { rtOpen[k] = d.open; }); });
-    const setSkip = async (v, on) => {
-      const [method, family] = v.split('|');
-      try {
-        skip = await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on });
-        repaint(); // the other tunnels on this pair show the same switches
-        toast(on ? `${methodTitle(method)} (${famName(family)}) left out on this route — running hot-standby tunnels stop it within seconds` : `${methodTitle(method)} (${famName(family)}) is back on this route — running hot-standby tunnels start it within seconds`);
-      } catch (er) { repaint(); alertModal('Routes', er.message); } // the switch goes back to what is saved
-    };
-    $$('[data-use]', card).forEach(b => b.onchange = () => setSkip(b.dataset.use, !b.checked));
-    $$('[data-err]', card).forEach(b => b.onclick = () => alertModal('Why it failed', b.dataset.err));
-    $$('[data-rb]', card).forEach(b => b.onclick = async () => {
-      try { const r = await api('/bench/start', { iranId: p.iran, foreignId: p.foreign, family: b.dataset.rb, running: true, seconds: 3 }); toast('Benchmark started'); openLog({ id: 'bench', name: 'Benchmark · ' + famName(b.dataset.rb) }, r.job); } catch (er) { alertModal('Benchmark', er.message); }
-    });
-    return card;
-  };
-  // one item per tunnel, in the Tunnels page's order (tunnels on the same pair share its
-  // switches); measured pairs with no tunnel come last, under "Other routes"
-  const items = [], others = [];
+  // one item per tunnel, in the Tunnels page's order; a measured pair with no tunnel is an
+  // item of its own at the end ("measured, no tunnel")
+  const items = [];
   [...pairs.values()].forEach(p => {
-    if (!p.tunnels.length) { others.push({ ...p, id: 'p:' + key(p.iran, p.foreign) }); return; }
-    p.tunnels.forEach(t => items.push({ ...p, tunnels: [t], tunnel: t, id: t.id, shared: p.tunnels.filter(x => x !== t).map(x => x.name) }));
+    if (!p.tunnels.length) { items.push({ ...p, id: 'p:' + key(p.iran, p.foreign), pairOnly: true, shared: [] }); return; }
+    p.tunnels.forEach(t => items.push({ ...p, tunnel: t, id: t.id, pairTunnels: p.tunnels, shared: p.tunnels.filter(x => x !== t).map(x => x.name) }));
   });
-  items.sort((a, b) => tunnelOrder(a.tunnel, b.tunnel));
-  const valid = (id) => id === '' || id === 'other' || items.some(x => x.id === id);
-  if (STATE.routeSel === undefined) { try { STATE.routeSel = localStorage.getItem('tp-routesel') || ''; } catch (e) { STATE.routeSel = ''; } }
-  if (!valid(STATE.routeSel)) STATE.routeSel = '';
-  const dot = (t) => !t.active ? '' : t.health ? '<i class="bad">●</i>' : t.health === '' ? '<i class="ok">●</i>' : '';
-  // like the Servers page: the routes listed by Iran server on the side, the picked one beside it
-  const row = (it) => {
-    const t = it.tunnel, s = serverById(it.foreign);
-    return `<button type="button" class="srow${STATE.routeSel === it.id ? ' on' : ''}" data-rsel="${it.id}" title="${esc(serverName(it.iran))} → ${esc(it.foreign ? serverName(it.foreign) : 'this panel host')}">
-      <span class="sflag">${s && s.country ? flag(s.country) : '🛰'}</span>
-      <span class="sinfo"><b data-notr>${esc(t.name)}</b><small>→ ${srvNm(it.foreign, 'panel host')} · ${t.active ? esc(methodTitle(t.active)) : 'stopped'}</small></span>
-      <span class="smeta rt-dots">${dot(t)}</span></button>`;
+  items.sort((a, b) => (!!a.pairOnly - !!b.pairOnly) || (a.tunnel && b.tunnel ? tunnelOrder(a.tunnel, b.tunnel) : serverName(a.iran).localeCompare(serverName(b.iran))));
+
+  // ---- the list (side on a wide screen) and the chip strip (phone) ----
+  const dotCls = (it) => it.pairOnly ? '' : rxState(it.tunnel).cls;
+  const label = (it) => it.pairOnly ? `${srvNm(it.iran)} → ${srvNm(it.foreign, 'panel host')}` : nm(it.tunnel.name);
+  const subOf = (it) => {
+    if (it.pairOnly) return '<span>measured, no tunnel</span>';
+    const u = rxUsersOn(it.tunnel);
+    return `<span>→</span> ${srvNm(it.foreign, 'panel host')} · ${!it.tunnel.active ? '<span>stopped</span>' : u && u.mid ? `<bdi>${esc(mTitle(u.mid))}</bdi>` : '<span>reading…</span>'}`;
   };
-  const rgroups = [];
-  items.forEach(it => { let g = rgroups.find(x => x.id === it.iran); if (!g) rgroups.push(g = { id: it.iran, items: [] }); g.items.push(it); });
-  rgroups.sort((x, y) => serverName(x.id).localeCompare(serverName(y.id)));
-  const picker = h(`<aside class="card srvlist">
-    <button type="button" class="srow${STATE.routeSel === '' ? ' on' : ''}" data-rsel=""><span class="sflag">🌐</span><span class="sinfo"><b>All tunnels</b><small>${items.length} tunnel${items.length === 1 ? '' : 's'}</small></span></button>
-    ${rgroups.map(g => { const s = serverById(g.id); return `<div class="sgrp"><div class="sgh"><span>${s && s.country ? flag(s.country) : '🇮🇷'} ${srvNm(g.id)} <span class="count">${g.items.length}</span></span></div>${g.items.map(row).join('')}</div>`; }).join('')}
-    ${others.length ? `<button type="button" class="srow${STATE.routeSel === 'other' ? ' on' : ''}" data-rsel="other"><span class="sflag">📊</span><span class="sinfo"><b>Other routes</b><small>measured, no tunnel</small></span></button>` : ''}</aside>`);
-  const split = h('<div class="srvsplit usplit"><div class="srvdetail"></div></div>');
+  const row = (it) => `<button type="button" class="srow rx-row" data-rsel="${esc(it.id)}" data-q="${esc((it.tunnel ? it.tunnel.name + ' ' : '') + serverName(it.iran) + ' ' + (it.foreign ? serverName(it.foreign) : '')).toLowerCase()}">
+      <span class="rx-cc">${it.pairOnly ? '📊' : esc(((serverById(it.foreign) || {}).country || '').toUpperCase()) || '🛰'}</span>
+      <span class="sinfo"><b>${label(it)}</b><small>${subOf(it)}</small></span><span class="rx-dot ${dotCls(it)}"></span></button>`;
+  const groups = [];
+  items.forEach(it => { const gk = it.pairOnly ? '~' : it.iran; let g = groups.find(x => x.id === gk); if (!g) groups.push(g = { id: gk, items: [] }); g.items.push(it); });
+  groups.sort((x, y) => (x.id === '~') - (y.id === '~') || serverName(x.id).localeCompare(serverName(y.id)));
+  items.splice(0, items.length, ...groups.flatMap(g => g.items)); // chips, ↑/↓ and the default pick follow the list
+  const listHTML = () => groups.map(g => `<div class="sgrp"><div class="sgh"><span>${g.id === '~' ? '<span>Measured, no tunnel</span>' : `${fl(g.id, '🇮🇷')} ${srvNm(g.id)}`}</span><span class="count">${g.items.length}</span></div>${g.items.map(row).join('')}</div>`).join('');
+  // the pick: remembered; an old "All tunnels" / "Other routes" pick or a deleted tunnel → the first
+  let sel = recall('tp-routesel');
+  if (!items.some(x => x.id === sel)) sel = items[0].id;
+  const cur = () => items.find(x => x.id === sel) || items[0];
+  const picker = h(`<aside class="card srvlist rx-list">${items.length > 6 ? '<input class="sq" type="search" data-rq placeholder="Search tunnels…" aria-label="Search tunnels">' : ''}<div data-rl>${listHTML()}</div></aside>`);
+  const strip = h(`<div class="rx-strip" role="tablist"><button type="button" class="rx-all" data-rall aria-label="All tunnels">☰</button><div class="rx-chips">${items.map(it => `<button type="button" class="rx-chip" role="tab" data-rsel="${esc(it.id)}"><i class="rx-dot ${dotCls(it)}"></i>${it.pairOnly ? '📊 ' + srvNm(it.iran) : nm(it.tunnel.name)}</button>`).join('')}</div></div>`);
+  const split = h('<div class="srvsplit usplit rx"><div class="srvdetail"></div></div>');
   box.replaceWith(split);
   split.prepend(picker);
-  $('.srvdetail', split).appendChild(box);
-  const paint = () => {
-    $$('[data-rsel]', picker).forEach(b => b.classList.toggle('on', b.dataset.rsel === STATE.routeSel));
-    items.forEach(it => { const d = $(`[data-rsel="${it.id}"] .rt-dots`, picker); if (d) d.innerHTML = dot(it.tunnel); }); // the list's ● follow the refresh too
-    // on a phone the tiles are one row: keep the chosen one in sight
-    box.innerHTML = '';
-    const shown = STATE.routeSel === '' ? items : STATE.routeSel === 'other' ? others : items.filter(x => x.id === STATE.routeSel);
-    shown.forEach(p => {
-      // one route that can't be drawn must not hide the ones after it
-      try { box.appendChild(buildCard(p)); }
-      catch (e) { box.appendChild(h(`<div class="card rt-card"><h3>${srvNm(p.iran)} → ${srvNm(p.foreign)}</h3><div class="faint">${p.tunnels.map(t => nm(t.name)).join(' · ')} — this route couldn't be drawn (${esc(e.message)})</div></div>`)); console.error(e); }
-    });
+  const detail = $('.srvdetail', split);
+  detail.appendChild(strip);
+  const card = h('<div></div>');
+  detail.appendChild(card);
+  const q = $('[data-rq]', picker);
+  if (q) q.oninput = () => { const s = q.value.trim().toLowerCase(); $$('[data-rsel]', picker).forEach(b => { b.hidden = !!s && !b.dataset.q.includes(s); }); $$('.sgrp', picker).forEach(g => { g.hidden = !$$('[data-rsel]', g).some(b => !b.hidden); }); };
+
+  // ---- the picked tunnel ----
+  const benchOf = (p, f) => hist.find(x => x.iranId === p.iran && (x.foreignId || '') === p.foreign && x.family === f);
+  // a method's last measurement on the route: rank among the ones that worked, numbers or why it failed
+  const measured = (p, mid, f) => {
+    const r = benchOf(p, f); if (!r) return null;
+    let pos = 0;
+    for (const x of r.results) { if (x.ok) pos++; if (x.method === mid) return { x, pos: x.ok ? pos : 0, at: r.at }; }
+    return null;
   };
-  $$('[data-rsel]', picker).forEach(b => b.onclick = () => { STATE.routeSel = b.dataset.rsel; try { localStorage.setItem('tp-routesel', STATE.routeSel); } catch (e) {} paint(); if (window.innerWidth <= 860) box.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
-  repaint = paint;
+  const benchTxt = (m) => {
+    if (!m) return '<span class="faint">not measured</span>';
+    const x = m.x;
+    if (x.skipped) return '<span class="faint">not measurable</span>';
+    if (x.ok) return `<span class="rt-rank${x.recommended ? ' top' : ''}" title="its place in the last benchmark">${x.recommended ? '★' : m.pos}</span><span class="rx-num" data-notr>↓${x.downMbps.toFixed(0)} ↑${x.upMbps.toFixed(0)} <small>Mbps</small> · ${x.rttMs.toFixed(0)} <small>ms</small></span>`;
+    return `<button type="button" class="rt-err" data-err="${esc(x.error || 'failed')}" title="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>`;
+  };
+  const sw = (p, k, admin) => { if (admin) return ''; const isOff = (skip[key(p.iran, p.foreign)] || []).includes(k);
+    return `<label class="rt-sw" title="${isOff ? 'off: never used on this route — turn on to keep it ready' : 'on: kept ready (hot standby, failover) — turn off to leave it out on this route'}"><input type="checkbox" data-use="${esc(k)}"${isOff ? '' : ' checked'} aria-label="use on this route"><i></i></label>`; };
+  const famChip = (f) => `<span class="rx-fam">${famName(f)}</span>`;
+
+  const build = (it) => {
+    const p = it, t = it.tunnel;
+    const fams = ['v4', 'v6'].filter(f => hasFam(p.iran, f) && hasFam(p.foreign, f));
+    const off = skip[key(p.iran, p.foreign)] || [];
+    const admin = sharedPair(p.iran, p.foreign);
+    const now = Math.floor(Date.now() / 1000);
+
+    // header: name, the route, the status, Measure
+    const st = t ? rxState(t) : null;
+    const route = `<span class="rx-end">${fl(p.iran, '🇮🇷')} ${srvNm(p.iran)}</span><span class="rx-arr">→</span><span class="rx-end">${fl(p.foreign, '🖥')} ${srvNm(p.foreign, 'panel host')}</span>${t ? `<span class="faint mono">:${esc(t.ports)}</span>` : ''}`;
+    const head = `<div class="rx-h"><div class="rx-ht"><h3>${t ? nm(t.name) : '<span>Measured, no tunnel</span>'}</h3><div class="rx-route">${route}</div></div>
+      <div class="rx-ha">${st ? `<span class="pill ${st.cls === 'ok' ? 'on' : 'off'} rx-st ${st.cls}"${st.why ? ` title="${esc(st.why)}"` : ''}><span class="led"></span>${esc(st.txt)}</span>` : ''}${fams.length ? '<button type="button" class="btn sm" data-measure>📊 Measure</button>' : ''}</div></div>`;
+
+    // 1. where the users are
+    let hero = '';
+    if (t) {
+      const u = rxUsersOn(t);
+      if (!u) hero = `<div class="rx-hero off"><div class="rx-hl">The tunnel is stopped</div><div class="faint">${t.selected ? `<span>Starts on</span> <b>${esc(mTitle(t.selected))}</b> · ` : ''}<span>Start it on the Tunnels page.</span></div></div>`;
+      else if (u.reading) hero = `<div class="rx-hero"><div class="rx-hl">⚡ <span>Reading which path the users are on…</span></div></div>`;
+      else {
+        const v = u.v, i = u.i;
+        const q = [];
+        if (v) {
+          if (v.kbps && v.kbps[i] > 0) q.push(`<bdi><b>${(v.kbps[i] / 1000).toFixed(1)}</b> Mbps</bdi>`);
+          if (v.rtt && v.rtt[i] >= 0) q.push(`<bdi><b>${v.rtt[i]}</b> ms</bdi>`);
+          if (v.loss && v.loss[i] >= 0) q.push(`<bdi><b>${v.loss[i].toFixed(1)}%</b></bdi> <span>loss</span>`);
+        }
+        const m = measured(p, u.mid, u.fam);
+        if (!q.length && m && m.x.ok) q.push(`<span>measured</span> <bdi><b>↓${m.x.downMbps.toFixed(0)}</b> Mbps</bdi> · <bdi><b>${m.x.rttMs.toFixed(0)}</b> ms</bdi>`);
+        const stale = v && v.read && now - v.read > RX_STALE;
+        const pathOk = v ? !!(v.ok || [])[i] : st.cls !== 'bad';
+        const since = v && v.since ? `<span>since</span> <span>${ago(v.since)}</span>` : t.failover && t.failover.since ? `<span>since</span> <span>${ago(t.failover.since)}</span>` : '';
+        const mode = t.hotStandby ? `<span class="chip">${t.hsAuto ? '🤖 <span>auto switching</span>' : '✋ <span>manual switching</span>'}</span>` : t.noFailover ? '<span class="chip">Off: nothing switches.</span>' : '<span class="chip">🔁 <span>Failover after 5 min down</span></span>';
+        const own = t.active + '|' + t.family, onOwn = u.mid + '|' + u.fam === own;
+        hero = `<div class="rx-hero ${pathOk && !stale ? 'ok' : 'bad'}">
+          <div class="rx-hk">👥 <span>Users are on</span></div>
+          <div class="rx-hl"><b><bdi>${esc(mTitle(u.mid))}</bdi></b> ${famChip(u.fam)}${since ? `<span class="rx-since">${since}</span>` : ''}</div>
+          <div class="rx-hq">${q.length ? `<span class="rx-qv">${q.join(' · ')}</span>` : ''}${mode}${!onOwn ? `<span class="chip" title="the method the tunnel was started with">⚙ <span>own method:</span> <bdi>${esc(mTitle(t.active))}</bdi> ${famName(t.family)}</span>` : ''}${t.failover ? `<span class="chip fo" title="${esc(t.failover.reason || '')}">🔁 <span>on a backup path</span></span>` : ''}</div>
+          ${stale ? `<div class="rx-warn">⚠ <span>Last read</span> <span>${ago(v.read)}</span> — <span>the Iran server isn't answering: this may no longer be true.</span></div>` : ''}
+          ${!pathOk && v && v.why && v.why[i] ? `<div class="rx-warn">⚠ ${esc(v.why[i])}</div>` : st.why ? `<div class="rx-warn">⚠ ${esc(st.why)}</div>` : ''}</div>`;
+      }
+    }
+
+    // 2. the paths it keeps ready (hot standby), or the one it runs
+    const inPaths = new Set();
+    let paths = '';
+    if (t && t.active) {
+      const v = t.hotStandby ? t.hs : null;
+      const rows = [];
+      if (v && v.keys && v.paths) {
+        const ok = v.ok || [];
+        v.keys.forEach((k, i) => {
+          inPaths.add(k);
+          const [mid, f] = k.split('|');
+          const qual = [];
+          if (ok[i]) {
+            if (v.kbps && v.kbps[i] > 0) qual.push(`<bdi>${(v.kbps[i] / 1000).toFixed(1)} Mbps</bdi>`);
+            if (v.rtt && v.rtt[i] >= 0) qual.push(`<bdi>${v.rtt[i]} ms</bdi>`);
+            if (v.loss && v.loss[i] >= 0) qual.push(`<bdi>${v.loss[i].toFixed(1)}%</bdi> <span>loss</span>`);
+          }
+          const why = !ok[i] ? `<span class="rx-why" title="${esc(v.why && v.why[i] ? v.why[i] : "the switcher's check through this path gets no answer")}"><span>down</span>${v.changed && v.changed[i] > 0 ? ` · <span>${ago(v.changed[i])}</span>` : ''} — ${esc(v.why && v.why[i] ? v.why[i] : "the switcher's check through this path gets no answer")}</span>` : '';
+          const act = i === v.active ? '<b class="rx-users">👥 <span>users</span></b>' : ok[i] ? `<button type="button" class="btn sm" data-hspin="${esc(k)}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '';
+          rows.push({ cls: (ok[i] ? 'ok' : 'bad') + (i === v.active ? ' cur' : ''), icon: ok[i] ? '✓' : '✕', mid, f, k, line: qual.length ? `<span class="rx-qn" title="now, as the switcher measures it">${qual.join(' · ')}</span>` : why, act, bench: measured(p, mid, f), pin: i === v.pin });
+        });
+        (t.paths || []).filter(x => x.failed && !inPaths.has(x.method + '|' + x.family)).forEach(x => {
+          const k = x.method + '|' + x.family; inPaths.add(k);
+          rows.push({ cls: 'bad', icon: '✕', mid: x.method, f: x.family, k, line: `<span class="rx-why" title="${esc(x.failed)}"><span>didn't start</span> — ${esc(x.failed)}</span>`, act: '', bench: measured(p, x.method, x.family) });
+        });
+      } else if (!t.hotStandby) {
+        const k = t.active + '|' + t.family; inPaths.add(k);
+        const sc = rxState(t);
+        rows.push({ cls: (sc.cls === 'bad' ? 'bad' : 'ok') + ' cur', icon: sc.cls === 'bad' ? '✕' : '✓', mid: t.active, f: t.family, k, line: sc.why ? `<span class="rx-why">${esc(sc.why)}</span>` : '', act: '<b class="rx-users">👥 <span>users</span></b>', bench: measured(p, t.active, t.family) });
+      }
+      const nOk = rows.filter(r => r.icon === '✓').length;
+      paths = rows.length ? `<section class="rx-sec"><div class="rx-sh"><b>${t.hotStandby ? '⚡ <span>Paths kept ready</span>' : '<span>Path</span>'}</b>${t.hotStandby ? `<span class="count">${nOk}/${rows.length} <span>working</span></span>` : ''}</div>
+        <div class="rx-paths">${rows.map(r => `<div class="rx-p ${r.cls}"><span class="rx-i">${r.icon}</span>
+          <span class="rx-pm"><span class="rx-pn"><bdi>${esc(mTitle(r.mid))}</bdi> ${famChip(r.f)}${r.pin ? ' <span class="faint">📌 <span>chosen</span></span>' : ''}</span><span class="rx-pq">${r.line}</span></span>
+          <span class="rx-pb" title="the last benchmark">${benchTxt(r.bench)}</span><span class="rx-pa">${r.act}${t.hotStandby ? sw(p, r.k, admin) : ''}</span></div>`).join('')}</div>${t.hotStandby ? hsOffFold(t) : ''}</section>` : '';
+    }
+
+    // 3. the methods it doesn't run: folded, the ones on first, then by the last benchmark
+    const cells = [];
+    STATE.methods.filter(m => m.id !== 'spoof').forEach(m => fams.forEach(f => { if (m.families.includes(f) && !inPaths.has(m.id + '|' + f)) cells.push({ mid: m.id, f, k: m.id + '|' + f, off: off.includes(m.id + '|' + f), b: measured(p, m.id, f) }); }));
+    const score = (c) => c.b && c.b.x.ok ? c.b.pos : c.b && !c.b.x.skipped ? 500 : 900;
+    cells.sort((a, b) => a.off - b.off || score(a) - score(b) || mTitle(a.mid).localeCompare(mTitle(b.mid)));
+    const nOn = cells.filter(c => !c.off).length;
+    const famAge = fams.map(f => { const r = benchOf(p, f); return `<span>${famName(f)}</span>: ${r ? `<span>measured</span> <span>${ageTxt(r.at)}</span>` : '<span>not measured yet</span>'}`; }).join(' · ');
+    const others = cells.length ? `<details class="rx-sec rx-more"${it.pairOnly ? ' open' : ''}><summary><b>${t && t.active ? '<span>Other methods</span>' : '<span>Methods on this route</span>'}</b> <span class="count">${cells.length}</span> <span class="faint">${nOn} <span>on</span></span><span class="rx-chev">▾</span></summary>
+      <div class="rx-paths">${cells.map(c => `<div class="rx-p${c.off ? ' left' : ''}"><span class="rx-i faint">${c.off ? '–' : '○'}</span>
+        <span class="rx-pm"><span class="rx-pn"><bdi>${esc(mTitle(c.mid))}</bdi> ${famChip(c.f)}</span>${c.off ? '<span class="rx-pq faint">off on this route</span>' : ''}</span>
+        <span class="rx-pb" title="the last benchmark">${benchTxt(c.b)}</span><span class="rx-pa">${sw(p, c.k, admin)}</span></div>`).join('')}</div>
+      <div class="faint rt-leg">${famAge}</div></details>` : '';
+
+    const notes = [];
+    if (admin) notes.push('These servers belong to the admin, who decides which methods this route uses.');
+    else if (it.shared.length) notes.push(`<span>The switches belong to the server pair: they also apply to</span> ${it.shared.map(nm).join(', ')}.`);
+    if (!admin) notes.push('Switch on = kept ready on this route (hot standby, failover); off = never used here. ★ best measured · numbers = the order they are tried.');
+    const el = h(`<div class="card rt-card rx-card">${head}${hero}${paths}${others}<div class="faint rt-leg rx-legend">${notes.map(x => `<div>${x}</div>`).join('')}</div></div>`);
+
+    // folds opened or closed by hand stay so through the refresh
+    const rtOpen = (STATE.rtOpen = STATE.rtOpen || {});
+    $$('details', el).forEach((d, i) => { const k2 = p.id + '|' + i; if (k2 in rtOpen) d.open = rtOpen[k2]; d.addEventListener('toggle', () => { rtOpen[k2] = d.open; }); });
+    $$('[data-use]', el).forEach(b => b.onchange = () => setSkip(p, b.dataset.use, !b.checked, b));
+    $$('[data-err]', el).forEach(b => b.onclick = () => alertModal('Why it failed', b.dataset.err));
+    const ms = $('[data-measure]', el); if (ms) ms.onclick = () => rxMeasure(p, fams, maxMB, skip);
+    if (t) hsWire(t, el);
+    return el;
+  };
+  // a switch: saved for the server pair; the users' path can't be switched off (they'd be cut)
+  const setSkip = async (p, v, on, input) => {
+    const [method, family] = v.split('|');
+    const t = p.tunnel, u = t ? rxUsersOn(t) : null;
+    if (on && u && u.mid === method && u.fam === family && t.hotStandby) {
+      input.checked = true;
+      const msg = 'The users are on this path — move them to another one with “use” first.';
+      return alertModal('Routes', window.tpT ? tpT(msg) : msg);
+    }
+    input.disabled = true;
+    try {
+      skip = await api('/routes/skip', { iran: p.iran, foreign: p.foreign, method, family, skip: on });
+      toast(on ? `${mTitle(method)} (${famName(family)}) left out on this route — running hot-standby tunnels stop it within seconds` : `${mTitle(method)} (${famName(family)}) is back on this route — running hot-standby tunnels start it within seconds`);
+    } catch (er) { alertModal('Routes', er.message); } // the switch goes back to what is saved
+    paint();
+  };
+
+  const paint = () => {
+    $$('[data-rsel]', split).forEach(b => b.classList.toggle('on', b.dataset.rsel === sel));
+    $$('[data-rsel]', strip).forEach(b => b.setAttribute('aria-selected', b.dataset.rsel === sel ? 'true' : 'false'));
+    items.forEach(it => {
+      $$(`[data-rsel="${CSS.escape(it.id)}"] .rx-dot`, split).forEach(d => { d.className = 'rx-dot ' + dotCls(it); });
+      const s = $(`.rx-row[data-rsel="${CSS.escape(it.id)}"] small`, picker); if (s) s.innerHTML = subOf(it);
+    });
+    card.innerHTML = '';
+    // one tunnel that can't be drawn must not leave the page empty
+    try { card.appendChild(build(cur())); }
+    catch (e) { card.appendChild(h(`<div class="card rt-card"><div class="faint">${esc(e.message)}</div></div>`)); console.error(e); }
+  };
+  const pick = (id) => {
+    sel = id; remember('tp-routesel', id); paint();
+    const c = $(`.rx-chip[data-rsel="${CSS.escape(id)}"]`, strip); if (c) c.scrollIntoView({ block: 'nearest', inline: 'center' });
+    if (window.innerWidth <= 860) strip.scrollIntoView({ block: 'start' });
+  };
+  $$('[data-rsel]', split).forEach(b => b.onclick = () => pick(b.dataset.rsel));
+  // phone: every tunnel in a sheet, with search
+  $('[data-rall]', strip).onclick = () => {
+    const m = modal(`<h2>Routes</h2><input class="inp" type="search" data-mq placeholder="Search tunnels…" style="margin:8px 0"><div class="rx-sheet">${listHTML()}</div>`);
+    $$('[data-rsel]', m).forEach(b => { b.classList.toggle('on', b.dataset.rsel === sel); b.onclick = () => { m.remove(); pick(b.dataset.rsel); }; });
+    const mq = $('[data-mq]', m);
+    mq.oninput = () => { const s = mq.value.trim().toLowerCase(); $$('[data-rsel]', m).forEach(b => { b.hidden = !!s && !b.dataset.q.includes(s); }); $$('.sgrp', m).forEach(g => { g.hidden = !$$('[data-rsel]', g).some(b => !b.hidden); }); };
+  };
+  // ↑/↓ on the list steps through the tunnels
+  picker.addEventListener('keydown', (e) => {
+    if (!['ArrowDown', 'ArrowUp'].includes(e.key) || e.target === q) return;
+    const vis = items.filter(it => { const b = $(`[data-rsel="${CSS.escape(it.id)}"]`, picker); return b && !b.hidden; });
+    const i = vis.findIndex(x => x.id === sel), n = vis[Math.max(0, Math.min(vis.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (n) { e.preventDefault(); pick(n.id); const b = $(`[data-rsel="${CSS.escape(n.id)}"]`, picker); b && b.focus(); }
+  });
   paint();
-  // health, the users' path and new benchmark results come in while the page is open (it
-  // showed what was true when it was opened); not while a field or switch is being used
+  { const c = $(`.rx-chip[data-rsel="${CSS.escape(sel)}"]`, strip); if (c) c.scrollIntoView({ block: 'nearest', inline: 'center' }); }
+  // health, the users' path and new results come in while the page is open; not while a
+  // switch or field is being used
   if (routesTimer) clearInterval(routesTimer);
   const timer = setInterval(async () => {
-    if (tok !== routesTok || STATE.view !== 'routes' || !box.isConnected) { clearInterval(timer); if (routesTimer === timer) routesTimer = null; return; }
-    if (document.hidden || (document.activeElement && box.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))) return;
+    if (tok !== routesTok || STATE.view !== 'routes' || !split.isConnected) { clearInterval(timer); if (routesTimer === timer) routesTimer = null; return; }
+    if (document.hidden || document.querySelector('.modal') || (document.activeElement && split.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName) && document.activeElement !== q)) return;
     try {
-      const [list, h2] = await Promise.all([api('/tunnels'), api('/bench/history')]);
-      if (tok !== routesTok || !box.isConnected) return;
-      (Array.isArray(list) ? list : []).forEach(n => { const t = STATE.tunnels.find(x => x.id === n.id); if (t) Object.assign(t, { hs: n.hs, failover: n.failover, health: n.health, active: n.active }); });
-      // a reload of the state elsewhere (a job ending, a save) replaced STATE.tunnels' objects:
-      // the cards follow the current ones, not the ones the page was opened with
-      items.forEach(it => { const t = STATE.tunnels.find(x => x.id === it.tunnel.id); if (t) { it.tunnel = t; it.tunnels = [t]; } });
-      hist = h2 || hist;
+      const [list, h2, s2] = await Promise.all([api('/tunnels'), api('/bench/history'), api('/routes/skip')]);
+      if (tok !== routesTok || !split.isConnected) return;
+      // the whole tunnel, not a few fields: a Stop, a failover to the other family or hot
+      // standby turned off elsewhere showed the old state until the page was opened again
+      (Array.isArray(list) ? list : []).forEach(n => { const t = STATE.tunnels.find(x => x.id === n.id); if (t) { Object.keys(t).forEach(k => { if (!(k in n)) delete t[k]; }); Object.assign(t, n); } });
+      items.forEach(it => { if (!it.tunnel) return; const t = STATE.tunnels.find(x => x.id === it.tunnel.id); if (t) it.tunnel = t; });
+      hist = h2 || hist; skip = s2 || skip;
       const y = window.scrollY; paint(); window.scrollTo(0, y);
     } catch (e) {}
-  }, 30000);
+  }, 15000);
   routesTimer = timer;
 }
 let routesTimer = null;
+// one Measure for the route: the families picked (IPv4 then IPv6, on the server) and what it costs
+function rxMeasure(p, fams, maxMB, skip) {
+  const k = bnKey(p.iran, p.foreign);
+  const use = Object.fromEntries(fams.map(f => { const { users, standby } = bnUse({ tunnels: p.pairTunnels || p.tunnels || [] }, f); return [f, users.size + standby.size]; }));
+  const all = Object.fromEntries(fams.map(f => [f, bnAll(f, skip, k).length]));
+  const m = modal(`<h2>📊 Measure this route</h2><p class="muted" style="margin-top:4px">${srvNm(p.iran)} → ${srvNm(p.foreign, 'panel host')}</p>
+    <form class="ff" id="rxmf">
+      <div class="rx-fams">${fams.map(f => `<label class="ochk"><input type="checkbox" name="f" value="${f}" checked> ${famName(f)}</label>`).join('')}</div>
+      <label class="bn-opt"><input type="radio" name="scope" value="running" checked><span><b>The methods in use</b><small data-cost="running"></small></span></label>
+      <label class="bn-opt"><input type="radio" name="scope" value="all"><span><b>Every method</b><small data-cost="all"></small></span></label>
+      <div class="faint" style="font-size:12px">Each method runs on a temporary tunnel, is measured, then removed — live tunnels are not touched. It runs on the server: you can leave this page.</div>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" data-no>Cancel</button><button class="btn pri">▶ Start</button></div></form>`);
+  const f = $('#rxmf', m);
+  const picked = () => $$('[name=f]', f).filter(x => x.checked).map(x => x.value);
+  const cost = () => {
+    const fs = picked();
+    const n = (sc) => fs.reduce((a, x) => a + (sc === 'running' ? (use[x] || all[x]) : all[x]), 0);
+    $('[data-cost=running]', f).textContent = `${n('running')} methods · ≤ ${n('running') * 2 * maxMB} MB`;
+    $('[data-cost=all]', f).textContent = `${n('all')} methods · ≤ ${n('all') * 2 * maxMB} MB · about ${Math.max(1, Math.round(n('all') * 1.5))} min`;
+    $('button.pri', f).disabled = !fs.length;
+  };
+  $$('[name=f]', f).forEach(x => x.onchange = cost); cost();
+  $('[data-no]', m).onclick = () => m.remove();
+  f.onsubmit = oneAtATime(f, async () => {
+    const fs = picked(); if (!fs.length) return;
+    const req = { iranId: p.iran, foreignId: p.foreign, family: fs[0], running: f.scope.value !== 'all', seconds: 3 };
+    if (fs[1]) req.then = fs[1];
+    try { const r = await api('/bench/start', req); m.remove(); toast(fs[1] ? `Benchmark started — ${famName(fs[0])}, then ${famName(fs[1])}` : 'Benchmark started'); openLog({ id: 'bench', name: 'Benchmark · ' + fs.map(famName).join(' + ') }, r.job); }
+    catch (er) { alertModal('Benchmark', er.message); }
+  });
+}
 // the Tunnels page's order (running first, then the ones with a problem, then by name), the
 // Routes page uses it too
 function tunnelOrder(x, y) { return (!!y.active - !!x.active) || (!!(y.active && y.health) - !!(x.active && x.health)) || x.name.localeCompare(y.name); }
