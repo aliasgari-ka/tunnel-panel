@@ -945,6 +945,21 @@ func (b *Bot) saveOption(t *Tunnel, m *Method, key, val string) error {
 			return err
 		}
 		t.setOption(m.ID, key, val)
+		// set by hand: it stays (see OptsManual); "" = back to the default, automatic again
+		if val == "" {
+			var keep []string
+			for _, k := range t.OptsManual[m.ID] {
+				if k != key {
+					keep = append(keep, k)
+				}
+			}
+			t.markManual(m.ID, nil, true)
+			if len(keep) > 0 {
+				t.markManual(m.ID, keep, false)
+			}
+		} else {
+			t.markManual(m.ID, []string{key}, false)
+		}
 		return nil
 	})
 }

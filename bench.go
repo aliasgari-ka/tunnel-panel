@@ -830,6 +830,9 @@ func (a *App) routeOpts(t *Tunnel, mid, fam string) map[string]string {
 		}
 		out := map[string]string{}
 		for k, v := range r.Opts {
+			if t.manualOpt(mid, k) {
+				continue // set by hand: the benchmark's pick never replaces it
+			}
 			cur := t.Options[mid][k]
 			if f := methodField(m, k); cur == "" || (f != nil && cur == f.Default) {
 				out[k] = v
