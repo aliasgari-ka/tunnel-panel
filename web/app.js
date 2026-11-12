@@ -656,8 +656,9 @@ const niceStep = (v) => { const e = 10 ** Math.floor(Math.log10(Math.max(v, 1e-9
 // use / on-off), the methods it doesn't run (folded) and one Measure for IPv4 and IPv6. The
 // tunnels are listed on the side (a chip strip on a phone); the pick is remembered.
 const ageTxt = (u) => { const s = Math.floor(Date.now() / 1000) - u; return s < 3600 ? `${Math.max(1, Math.floor(s / 60))} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
-// the switcher's view older than this is not "now": the Iran server stopped answering
-const RX_STALE = 120;
+// the switcher's view older than this is not "now" (the monitor reads it every minute, a pass
+// over every tunnel takes up to ~90 s): the Iran server stopped answering
+const RX_STALE = 180;
 // where a running tunnel's users are: the switcher's path (hot standby), else its own method
 function rxUsersOn(t) {
   if (!t.active) return null;
