@@ -1100,11 +1100,11 @@ func isMasked(s string) bool { return s == "" || s == "********" }
 func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 	type tv struct {
 		Tunnel
-		Families []string `json:"families"`        // address families both of its servers can use
-		Clash    string   `json:"clash,omitempty"` // a port another tunnel on this Iran server holds
-		HS       *hsView  `json:"hs,omitempty"`    // hot standby: the switcher's state
-		Health   *string  `json:"health"`          // monitor's last verdict: "" ok, a reason, null = not checked yet
-		Up       *UptimeView `json:"up,omitempty"` // the users' uptime (running tunnels; uptime.go)
+		Families []string    `json:"families"`        // address families both of its servers can use
+		Clash    string      `json:"clash,omitempty"` // a port another tunnel on this Iran server holds
+		HS       *hsView     `json:"hs,omitempty"`    // hot standby: the switcher's state
+		Health   *string     `json:"health"`          // monitor's last verdict: "" ok, a reason, null = not checked yet
+		Up       *UptimeView `json:"up,omitempty"`    // the users' uptime (running tunnels; uptime.go)
 	}
 	out := []tv{}
 	user, admin := s.who(r)
