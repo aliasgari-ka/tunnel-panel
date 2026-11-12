@@ -2600,25 +2600,273 @@ const IGTAB = {
     $('#iggkt').onclick = () => igAct(igS({ action: 'gemkey_test' }));
     $('#iggkdel').onclick = () => igAct(igS({ action: 'gemkey_del' }), 'Remove the key?');
   },
-  tools() {
-    const i = IG.cur.info, nr = { refresh: false };
-    $('#igtab').innerHTML = `<div class="card pad sec"><h3>Tests</h3><div class="actions">
-      <button class="btn" data-a="status">Full test (every proxy and WARP)</button><button class="btn" data-a="speedtest">Speed test of every exit</button>
-      <button class="btn" data-a="diag">Diagnose Gemini / Google</button><button class="btn" data-a="gemusers">Gemini users</button><button class="btn" data-a="logs">Logs</button></div></div>
-     <div class="card pad sec"><h3>Traffic: domain → exit</h3><div class="ff"><label class="f">Only lines containing<input id="igtw" class="inp mono" placeholder="google, instagram …"></label></div>
-      <div class="actions" style="margin-top:10px"><button class="btn" id="igrec">Last 40 connections</button><button class="btn pri" id="igwatch">Live (60 s)</button></div></div>
-     <div class="card pad sec"><h3>The x-ui / xray panel on this server <span class="chip mono">${esc(i.panel || '-')}</span></h3>
-      <p class="muted">If the panel blocks Google or sends it to another exit, igproxy never sees it. "Fix" adds one rule at the top of the panel's routing (tested first, backed up, undone automatically if it fails).</p>
-      <div class="actions"><button class="btn" id="igpc">Check</button><button class="btn pri" id="igpf">Fix</button><button class="btn danger" id="igpu2">Undo</button></div></div>`;
-    const P = { status: { action: 'status' }, speedtest: { action: 'speedtest', target: 'all' }, diag: { action: 'diag' }, gemusers: { action: 'gemusers', n: 10 }, logs: { action: 'logs', n: 150 } };
-    $$('#igtab [data-a]').forEach(b => b.onclick = () => igAct(igS(P[b.dataset.a]), null, nr));
-    $('#igrec').onclick = () => igAct(igS({ action: 'recent', word: $('#igtw').value.trim() }), null, nr);
-    $('#igwatch').onclick = () => igAct(igS({ action: 'watch', word: $('#igtw').value.trim() }), null, { refresh: false, title: 'Live traffic (60 s) — open the app on a phone now' });
-    $('#igpc').onclick = () => igAct(igS({ action: 'panel_check' }), null, nr);
-    $('#igpf').onclick = () => igAct(igS({ action: 'panel_fix' }), 'Add one rule at the top of the panel\'s routing? Its Xray restarts for 2-3 seconds.');
-    $('#igpu2').onclick = () => igAct(igS({ action: 'panel_undo' }), 'Remove the igproxy rule from the panel?');
-  }
+  tools() { igtTab(); }
 };
+// ---- Tests & diagnosis: "Run checks" (light: each service through the users' route and every exit,
+// a few KB) as a ✓ / ✗ list with what to do; the heavier tests with what they cost and their last
+// result; the traffic as a table; the x-ui panel in one line (Fix only when it needs one).
+const IGT = { srv: '', h: null, err: '', busy: 0, pwhy: '' };
+const igtGet = (k, id) => { try { return JSON.parse(recall('tp-igt-' + k + '-' + id) || 'null'); } catch (e) { return null; } };
+const igtPut = (k, id, v) => remember('tp-igt-' + k + '-' + id, JSON.stringify(v));
+const igtExitName = (k) => k === 'direct' ? "Server's own IP" : k === 'ipv6' ? "Server's own IPv6" : /^warp\d+$/.test(k) ? 'WARP ' + k.slice(4) : /^proxy\d+$/.test(k) ? 'Proxy ' + k.slice(5) : k;
+// the services that leave through an exit now (clear cases only: BALANCE spreads Instagram over the pool)
+function igtRoles(i, k) {
+  const out = [];
+  for (const [g, name] of [['ig', 'Instagram'], ['google', 'Google']]) {
+    const v = i[g] || '';
+    let on = k === v || (k === 'direct' && v === 'direct');
+    if (/^warp\d+$/.test(k) && /^warp/.test(v)) {
+      const n = +k.slice(4);
+      on = g === 'google' && +i.gact ? +i.gact === n : i.mode !== 'BALANCE' && +i.active === n && (g === 'ig' || !igGw(i).length);
+    }
+    if (on) out.push(name);
+  }
+  return out;
+}
+const IGTWOUT = { ip: 'standby: different exit IP', ipnew: 'standby: getting a new IP', music: 'parked: no Instagram music', down: 'parked: down' };
+const igtIcon = (c) => ({ ok: '✓', bad: '✕', warn: '!', idle: '–', wait: '…' })[c];
+const igtRow = (c, name, chips, det, why, btn) => `<div class="wrow trow ${c}"><div class="wn">${igtIcon(c)}</div><div class="wb"><div class="w1"><b>${name}</b>${chips || ''}</div>
+  ${det ? `<div class="w2">${det}</div>` : ''}${why ? `<div class="w3">${why}</div>` : ''}</div>${btn ? `<div class="wa">${btn}</div>` : ''}</div>`;
+const igtTo = (tab, label) => `<button class="btn sm" data-igto="${tab}">${label}</button>`;
+const igtMs = (ms) => ms ? `<span><b class="mono">${ms}</b> ms</span>` : '';
+const igtLoc = (loc, ip) => loc || ip ? `<span class="mono" title="${esc(ip || '')}">${esc(loc || '')}${loc && ip ? ' · ' : ''}${esc(ip || '')}</span>` : '';
+// a service's line: through the users' route, as a phone gets it
+function igtSvc(i, s) {
+  const via = (g) => `<span class="chip">${esc(igViaW(i[g], i))}</span>`;
+  if (s.k === 'RELAY') return igtRow('warn', 'Services through the users\' route', '', '', esc(s.why), `<button class="btn sm" data-igdo="deploy">Update agent</button>`);
+  const g = s.k === 'IG' ? 'ig' : 'google', name = { IG: 'Instagram', GOOGLE: 'Google', GEMINI: 'Gemini' }[s.k] || s.k;
+  const cc = s.k === 'IG' ? i.igcc : i.gcc;
+  const det = [igtMs(s.ms), igSet(cc) && cc !== 'PROXY' ? `<span>${s.k === 'IG' ? 'Instagram' : 'Google'} sees <b class="mono">${esc(cc)}</b></span>` : ''].join('');
+  let btn = '';
+  if (!s.ok) btn = s.k === 'IG' ? igtTo(/^warp/.test(i.ig || '') ? 'warp' : /^proxy/.test(i.ig || '') ? 'proxies' : 'routes', /^warp/.test(i.ig || '') ? 'WARP tab' : /^proxy/.test(i.ig || '') ? 'Proxies tab' : 'Routes tab') : '<button class="btn sm" data-tt="diag">Diagnose</button>';
+  return igtRow(s.ok ? 'ok' : 'bad', name, via(g), det, s.ok ? '' : esc(s.why), btn);
+}
+function igtExit(i, e, spd, id) {
+  const c = e.ok ? (e.warn ? 'warn' : 'ok') : e.idle ? 'idle' : 'bad';
+  const roles = igtRoles(i, e.k).map(r => `<span class="chip fo">${r}</span>`).join('');
+  const sp = spd && spd.m && spd.m[e.k];
+  const det = [igtLoc(e.loc, e.ip), igtMs(e.ms), sp ? `<span title="1 connection · 8 parallel = what is left of the line">⚡ <b class="mono">${esc(sp.one)}</b> · <b class="mono">${esc(sp.par)}</b> <span class="faint">${igAgo(Math.round(Date.now() / 1000 - sp.at))}</span></span>` : ''].join('');
+  let why = e.idle ? esc(IGTWOUT[e.why] || 'standby: ' + e.why) : esc(e.why || ''), btn = '';
+  if (c === 'bad' || c === 'warn') {
+    if (/^warp/.test(e.k)) btn = igtTo('warp', 'WARP tab');
+    else if (/^proxy/.test(e.k)) btn = igtTo('proxies', 'Proxies tab');
+    else if (e.k === 'direct') why += ' <span>— the server itself has no internet?</span>';
+  }
+  const tgt = e.k === 'direct' ? 'd' : e.k === 'ipv6' ? '6' : e.k.replace(/^warp/, 'w').replace(/^proxy/, 'p');
+  const menu = e.ok ? moreMenu([{ label: 'Speed test of this exit', attr: `data-sp1="${tgt}"` }]) : '';
+  return igtRow(c, igtExitName(e.k), roles, det, why, btn + menu);
+}
+// the summary of a result: [level, headline]
+function igtSum(h) {
+  const bad = h.svcs.filter(s => !s.ok).length + h.exits.filter(e => !e.ok && !e.idle).length, warn = h.exits.filter(e => e.ok && e.warn).length;
+  return bad ? ['bad', bad === 1 ? '1 problem' : bad + ' problems'] : warn ? ['warn', warn === 1 ? '1 thing to look at' : warn + ' things to look at'] : ['on', 'Everything works'];
+}
+function igtHealthDraw() {
+  const box = $('#igth'); if (!box || !IG.cur) return;
+  const i = IG.cur.info, id = IG.cur.id, h = IGT.h, spd = igtGet('spd', id);
+  const run = $('#igtrun');
+  if (IGT.busy) {
+    const t = Math.round((Date.now() - IGT.busy) / 1000), est = Math.max(8, Math.round(((h && h.took) || 15000) / 1000));
+    run.disabled = true; run.innerHTML = `Checking… <span class="mono">${t} s</span>`;
+    $('#igtbar').hidden = false; $('#igtbar i').style.width = Math.min(95, t / est * 90) + '%';
+  } else { run.disabled = false; run.textContent = h ? 'Run again' : 'Run checks'; $('#igtbar').hidden = true; }
+  $('#igtwhen').innerHTML = h ? `<span>${igAgo(Math.round(Date.now() / 1000 - h.at))}</span> · <span class="mono">${Math.round(h.took / 1000)} s</span>` : 'not run yet';
+  if (!h) {
+    // before the first run: the agent's own check of the users' route (every minute)
+    const ag = (v, name, g) => igtRow(v === 'OK' ? 'ok' : v === 'FAIL' ? 'bad' : 'idle', name, `<span class="chip">${esc(igViaW(i[g], i))}</span>`, '<span class="faint">checked by the server every minute</span>', v === 'FAIL' ? 'doesn\'t open on the users\' route' : '', '');
+    box.innerHTML = (IGT.err ? `<div class="mcrit">${esc(IGT.err)}</div>` : '')
+      + `<div class="wlist">${ag(i.igp, 'Instagram', 'ig')}${ag(i.gem, 'Google / Gemini', 'google')}</div>
+      <div class="mdesc" style="margin-top:10px">"Run checks" opens Instagram, Google and Gemini the way a user's phone does, and checks every exit (server IP, IPv6, each WARP and proxy) — about 15 seconds and a few KB of traffic.</div>`;
+    return;
+  }
+  const [lvl, head] = igtSum(h);
+  const idle = h.exits.filter(e => e.idle).length;
+  box.innerHTML = (IGT.err ? `<div class="mcrit">Couldn't run the checks: ${esc(IGT.err)} — showing the last result.</div>` : '')
+    + `<div class="igt-head ${lvl}"><span class="igst-dot"></span><b>${head}</b><span class="faint"><span>${h.svcs.length} services · ${h.exits.length} exits</span>${idle ? ` <span>(${idle} on standby)</span>` : ''}</span></div>
+    <h4 class="igt-h">Services — the way users get them</h4><div class="wlist">${h.svcs.map(s => igtSvc(i, s)).join('')}</div>
+    <h4 class="igt-h">Exits</h4><div class="wlist g2">${h.exits.map(e => igtExit(i, e, spd, id)).join('')}</div>
+    ${h.err ? `<div class="mwarn" style="margin-top:8px">${esc(h.err)}</div>` : ''}`;
+  $$('[data-sp1]', box).forEach(b => b.onclick = () => igtHeavy('speedtest', b.dataset.sp1));
+}
+async function igtRunChecks() {
+  if (IGT.busy || !IG.cur) return;
+  const id = IG.cur.id; IGT.busy = Date.now(); IGT.err = '';
+  const tick = setInterval(() => { if (IG.cur && IG.cur.id === id && IG.tab === 'tools') igtHealthDraw(); else clearInterval(tick); }, 1000);
+  igtHealthDraw();
+  try { const h = await api('/igproxy/health/run', { id }); if (IGT.srv === id) IGT.h = h; } catch (e) { if (IGT.srv === id) IGT.err = e.message; }
+  clearInterval(tick); IGT.busy = 0;
+  if (IG.cur && IG.cur.id === id && IG.tab === 'tools') { igtHealthDraw(); igtTestsDraw(); igtPanelDraw(); }
+}
+// the heavier tests: what each costs, when it last ran; its output is kept to show again
+// exits a speed test goes through: the last check's list, else server IP + proxies + WARPs
+const igtExits = (i) => IGT.h && IGT.h.exits.length ? IGT.h.exits.length : 1 + (+i.proxies || 0) + (+i.warps || 0);
+function igtTests(i) {
+  const n = igtExits(i);
+  return [
+    ['status', 'Full test', 'routes, settings, every proxy and WARP tested', '≈ 1 min'],
+    ['speedtest', 'Speed test', 'download speed of every exit', `${n} exits · ≈ ${Math.max(1, Math.round(n * 20 / 60))} min · up to ~${n * 300 >= 1000 ? (n * 0.3).toFixed(1) + ' GB' : n * 300 + ' MB'}`, 1],
+    ['diag', 'Diagnose Gemini / Google', 'every step of Google\'s path, with what to do', '≈ 1 min'],
+    ['gemusers', 'Gemini users', 'users\' Gemini connections per exit, last 10 min', 'instant'],
+    ['logs', 'Logs', 'the agent\'s last 150 lines', 'instant'],
+  ];
+}
+function igtTestsDraw() {
+  const box = $('#igtx'); if (!box || !IG.cur) return;
+  const i = IG.cur.info, id = IG.cur.id;
+  box.innerHTML = igtTests(i).map(([k, t, d, cost, heavy]) => {
+    const last = igtGet('o-' + k, id);
+    return `<div class="igt-t"><button class="igt-tb" data-tt="${k}"><b>${t}</b><small>${d}</small><span class="igt-cost${heavy ? ' heavy' : ''}">${heavy ? '⚠ ' : ''}${cost}</span></button>
+      ${last ? `<div class="igt-last"><span class="${last.st === 'ok' ? '' : 'bad'}"><span>${last.st === 'ok' ? 'last run' : last.st === 'cancelled' ? 'stopped' : 'failed'}</span> <span>${igAgo(Math.round(Date.now() / 1000 - last.at))}</span></span><button class="lnk" data-tl="${k}">show</button></div>` : ''}</div>`;
+  }).join('');
+  $$('[data-tl]', box).forEach(b => b.onclick = () => { const l = igtGet('o-' + b.dataset.tl, id); if (l) igtShow(igtTests(i).find(x => x[0] === b.dataset.tl)[1] + ' — ' + IG.cur.name, l); });
+}
+// a kept output, read-only, in the same drawer as a running job
+function igtShow(title, l) {
+  const d = h(`<div class="drawer"><div class="panel"><div class="dh"><div style="display:flex;gap:10px;align-items:center;min-width:0"><span class="pill ${l.st === 'ok' ? 'on' : 'bad'}"><span class="led"></span>${igAgo(Math.round(Date.now() / 1000 - l.at))}</span><b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</b></div>
+    <div class="actions"><button class="btn sm" data-c title="Copy the output">⧉</button><button class="btn sm" data-x>Close ✕</button></div></div><div class="logbox">${l.out.split('\n').map(x => `<div class="ln ${igColor(x)}">${esc(x) || '&nbsp;'}</div>`).join('')}</div></div></div>`);
+  document.body.appendChild(d);
+  const close = () => { d.remove(); document.removeEventListener('keydown', key); }, key = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', key);
+  $('[data-x]', d).onclick = close; d.onclick = (e) => { if (e.target === d) close(); }; $('[data-c]', d).onclick = (e) => copy(l.out, e.target);
+}
+// speed test lines: "  WARP 3   182ms   95 Mbps   410 Mbps"
+function igtSpeedParse(out, id) {
+  const old = igtGet('spd', id) || { m: {} }, at = Math.round(Date.now() / 1000);
+  let n = 0;
+  out.split('\n').forEach(l => {
+    const m = l.match(/^\s*(DIRECT|IPv6|PROXY \d+|WARP \d+)\s+(\S+)\s+(fail|\d+ Mbps)\s+(fail|\d+ Mbps)\s*$/);
+    if (!m) return;
+    const k = m[1] === 'DIRECT' ? 'direct' : m[1] === 'IPv6' ? 'ipv6' : m[1].toLowerCase().replace(' ', '');
+    old.m[k] = { ping: m[2], one: m[3], par: m[4], at }; n++;
+  });
+  if (n) igtPut('spd', id, old);
+}
+async function igtHeavy(k, target) {
+  const i = IG.cur.info, id = IG.cur.id, name = IG.cur.name;
+  const P = { status: { action: 'status' }, speedtest: { action: 'speedtest', target: target || 'all' }, diag: { action: 'diag' }, gemusers: { action: 'gemusers', n: 10 }, logs: { action: 'logs', n: 150 } }[k];
+  if (k === 'speedtest') {
+    const n = target ? 1 : igtExits(i);
+    if (!confirm(`Speed test of ${target ? 'this exit' : 'every exit (' + n + ')'} on ${name}? It downloads for about 20 s per exit — up to ~${n * 300} MB of traffic — and users on this server share the line meanwhile.`)) return;
+  }
+  try {
+    const r = await api('/igproxy/action', igS(P));
+    const res = await igRunJob(r.job, igJobTitle(igS(P)) || k);
+    if (res.done) {
+      if (!target) igtPut('o-' + k, id, { at: Math.round(Date.now() / 1000), st: res.status, out: res.out.slice(-60000) });
+      if (k === 'speedtest') igtSpeedParse(res.out, id);
+    }
+  } catch (e) { toast(e.message); }
+  if (IG.cur && IG.cur.id === id && IG.tab === 'tools') { igtTestsDraw(); igtHealthDraw(); }
+}
+// ---- traffic: domain → exit, as a table; filter chips + own words; Live with pause / stop
+const IGTF = [['', 'All'], ['google gemini gstatic youtube ytimg googlevideo', 'Google'], ['instagram fbcdn facebook', 'Instagram']];
+const igtXName = (x) => /^warp\d+$/.test(x) ? 'WARP ' + x.slice(4) : /^proxy\d+$/.test(x) ? 'Proxy ' + x.slice(5) : /^v6p\d+$/.test(x) ? 'IPv6 ' + x.slice(3) : { direct: 'Direct', ipv6: 'IPv6', block: 'Blocked' }[x] || x;
+const igtXCls = (x) => /^warp/.test(x) ? 'v-warp' : /^proxy/.test(x) ? 'v-proxy' : /^(ipv6|v6p)/.test(x) ? 'v-ipv6' : 'v-direct';
+function igtParse(lines) {
+  const rows = [], notes = [];
+  for (const l of lines) {
+    const m = l.match(/^\s*\d{4}\/\d\d\/\d\d (\d\d:\d\d:\d\d)\s+(\S+)\s+->\s+(\S+)\s*(.*)$/);
+    if (m) rows.push({ t: m[1], d: m[2].replace(/^(tcp|udp):/, '').replace(/:(443|80)$/, ''), x: m[3], who: m[4].trim() });
+    else if (/^\s*!!/.test(l)) notes.push(l.replace(/^\s*!!\s*/, ''));
+  }
+  return { rows, notes };
+}
+const IGTR = { srv: '', f: '', w: '', rows: [], notes: [], mode: '', job: '', paused: false, buf: 0, end: 0 };
+const igtWords = () => [IGTR.f, IGTR.w].join(' ').trim();
+function igtTrafficDraw() {
+  const box = $('#igtrt'); if (!box) return;
+  const live = IGTR.mode === 'live' && IGTR.job;
+  $$('#igtrf button').forEach(b => b.classList.toggle('on', b.dataset.f === IGTR.f));
+  $('#igrec').disabled = !!live;
+  $('#igwatch').outerHTML = live ? `<span class="igt-live" id="igwatch"><span class="pill acc"><span class="led"></span>live <span class="mono">${Math.max(0, Math.round((IGTR.end - Date.now()) / 1000))}</span> s</span>
+      <button class="btn sm" id="igtp">${IGTR.paused ? '▶ Resume' : '⏸ Pause'}</button><button class="btn sm danger" id="igts">■ Stop</button></span>`
+    : `<button class="btn sm pri" id="igwatch">▶ Live 60 s</button>`;
+  if (live) { $('#igtp').onclick = () => { IGTR.paused = !IGTR.paused; IGTR.buf = 0; igtTrafficDraw(); }; $('#igts').onclick = () => api('/jobs/cancel', { ID: IGTR.job }).catch(e => toast(e.message)); }
+  else $('#igwatch').onclick = igtLive;
+  if (!IGTR.mode) { box.innerHTML = '<div class="faint igt-empty">Which exit each site leaves through. "Last 40" shows what already happened; "Live" shows new connections for 60 s — open the app on a phone meanwhile.</div>'; return; }
+  const rows = IGTR.rows.slice(-300).reverse();
+  box.innerHTML = (IGTR.notes.length ? `<div class="mwarn">${IGTR.notes.map(esc).join('<br>')}</div>` : '')
+    + (IGTR.paused && IGTR.buf ? `<div class="faint igt-empty"><span>paused ·</span> <b class="mono">${IGTR.buf}</b> <span>new connections waiting</span></div>` : '')
+    + (rows.length ? `<div class="igt-tr"><table class="tbl"><thead><tr><th>Time</th><th>Site</th><th>Exit</th><th>Who</th></tr></thead><tbody>${rows.map(r => `<tr${r.who === 'user' ? '' : ' class="faint"'}><td class="mono" data-l="Time">${esc(r.t)}</td><td class="mono igt-d" data-l="Site">${esc(r.d)}</td>
+        <td data-l="Exit"><b class="${igtXCls(r.x)}">${esc(igtXName(r.x))}</b></td><td data-l="Who">${r.who === 'user' ? 'user' : 'test'}</td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="faint igt-empty">${live ? 'Waiting for connections…' : 'No connection' + (igtWords() ? ' with these words' : '') + '.'}</div>`);
+}
+async function igtRecent() {
+  const id = IG.cur.id; IGTR.mode = 'recent'; IGTR.rows = []; IGTR.notes = [];
+  const b = $('#igrec'); b.disabled = true; b.textContent = 'Reading…';
+  try { const p = igtParse((await igQuiet(igS({ action: 'recent', word: igtWords() }))).split('\n')); if (IGTR.srv === id) Object.assign(IGTR, p); }
+  catch (e) { IGTR.notes = [e.message]; }
+  if (IG.cur && IG.cur.id === id && IG.tab === 'tools') { const b2 = $('#igrec'); if (b2) b2.textContent = 'Last 40'; igtTrafficDraw(); }
+}
+async function igtLive() {
+  const id = IG.cur.id;
+  let r; try { r = await api('/igproxy/action', igS({ action: 'watch', word: igtWords() })); } catch (e) { toast(e.message); return; }
+  Object.assign(IGTR, { mode: 'live', job: r.job, rows: [], notes: [], paused: false, buf: 0, end: Date.now() + 62000 });
+  igtTrafficDraw();
+  let fails = 0;
+  for (;;) {
+    await new Promise(s => setTimeout(s, 1000));
+    const here = IG.cur && IG.cur.id === id && IG.tab === 'tools' && STATE.view === 'igproxy' && IGTR.job === r.job;
+    if (!here) { api('/jobs/cancel', { ID: r.job }).catch(() => {}); if (IGTR.job === r.job) IGTR.job = ''; return; }
+    let j; try { j = await api('/jobs?id=' + r.job); fails = 0; } catch (e) { if (++fails < 6) continue; IGTR.notes = [e.message]; IGTR.job = ''; igtTrafficDraw(); return; }
+    const p = igtParse(igLines(j));
+    if (IGTR.paused) IGTR.buf = Math.max(0, p.rows.length - IGTR.rows.length); else { IGTR.rows = p.rows; IGTR.notes = p.notes; }
+    if (j.status !== 'running') { IGTR.rows = p.rows; IGTR.notes = p.notes; IGTR.job = ''; IGTR.paused = false; igtTrafficDraw(); return; }
+    igtTrafficDraw();
+  }
+}
+// ---- the x-ui / xray panel on this server: one line; Fix only when it gets in Google's way, Undo only after a fix
+const IGPANEL = { OK: ['ok', 'passes Google to igproxy'], FIXED: ['ok', 'fixed: its first rule sends Google to igproxy'], SOME: ['bad', 'sends part of Google elsewhere first'],
+  V6: ['bad', 'sends Google over IPv6 (blocked) — random failures'], MARK: ['bad', 'marks Google traffic so igproxy never catches it'], AWAY: ['bad', 'sends Google to another exit first'],
+  BLOCK: ['bad', 'blocks Google'], NONE: ['idle', 'no x-ui / xray panel on this server'], ERR: ['warn', 'its config couldn\'t be read'] };
+function igtPanelDraw() {
+  const box = $('#igtp2'); if (!box || !IG.cur) return;
+  const i = IG.cur.info, st = IGPANEL[i.panel] || ['idle', 'not checked yet'], bad = st[0] === 'bad';
+  const why = IGT.pwhy || (IGT.h && IGT.h.panelWhy) || '';
+  box.innerHTML = `<div class="igt-pl ${st[0]}"><span class="igd ${st[0] === 'ok' ? 'ok' : bad ? 'bad' : ''}"></span><div class="igt-pt"><b>x-ui / xray panel</b> <span class="igt-ps">${st[1]}</span>
+    <span class="igt-i" tabindex="0" title="If the panel on this server blocks Google or sends it to another exit, igproxy never sees it. Fix adds one rule at the top of the panel's routing: tested first, backed up, and undone automatically if the panel doesn't come back.">ⓘ</span>
+    ${why && i.panel !== 'OK' ? `<small class="mono">${esc(why)}</small>` : ''}</div>
+    <div class="igt-pa"><button class="btn sm" id="igpc">Check</button>${bad ? '<button class="btn sm pri" id="igpf">Fix</button>' : ''}${i.panel === 'FIXED' ? '<button class="btn sm danger" id="igpu2">Undo</button>' : ''}</div></div>`;
+  $('#igpc').onclick = async () => {
+    const b = $('#igpc'), id = IG.cur.id; b.disabled = true; b.textContent = 'Checking…';
+    try {
+      const out = await igQuiet(igS({ action: 'panel_check' })), m = out.match(/panel: ([A-Z]+)(?: - (.*))?/);
+      if (m && IG.cur && IG.cur.id === id) { IG.cur.info.panel = m[1]; IGT.pwhy = (m[2] || '').trim(); }
+      else if (!m) toast(out.trim().split('\n').pop() || 'no answer');
+    } catch (e) { toast(e.message); }
+    if (IG.cur && IG.cur.id === id && IG.tab === 'tools') igtPanelDraw();
+  };
+  if ($('#igpf')) $('#igpf').onclick = () => igAct(igS({ action: 'panel_fix' }), 'Add one rule at the top of the panel\'s routing? Its Xray restarts for 2-3 seconds.');
+  if ($('#igpu2')) $('#igpu2').onclick = () => igAct(igS({ action: 'panel_undo' }), 'Remove the igproxy rule from the panel?');
+}
+function igtTab() {
+  const id = IG.cur.id;
+  if (IGT.srv !== id) { Object.assign(IGT, { srv: id, h: null, err: '', busy: 0, pwhy: '' }); }
+  if (IGTR.srv !== id) { if (IGTR.job) api('/jobs/cancel', { ID: IGTR.job }).catch(() => {}); Object.assign(IGTR, { srv: id, f: '', w: '', rows: [], notes: [], mode: '', job: '', paused: false, buf: 0 }); }
+  $('#igtab').innerHTML = `<div class="card pad sec igt">
+      <h3>Health check <span class="faint igt-when" id="igtwhen"></span><span class="grow"></span><button class="btn pri" id="igtrun">Run checks</button></h3>
+      <div class="igt-bar" id="igtbar" hidden><i></i></div><div id="igth"></div></div>
+    <div class="card pad sec igt"><h3>More tests <span class="faint igt-when">open in a side panel; the last result is kept</span></h3><div class="igt-tests" id="igtx"></div></div>
+    <div class="card pad sec igt"><h3>Traffic <span class="faint igt-when">site → exit</span></h3>
+      <div class="igt-tbar"><div class="seg iso-seg" id="igtrf">${IGTF.map(([w, t]) => `<button data-f="${w}">${t}</button>`).join('')}</div>
+        <input id="igtw" class="inp" dir="ltr" placeholder="other words: site.com …" spellcheck="false" autocapitalize="off" value="${esc(IGTR.w)}">
+        <button class="btn sm" id="igrec">Last 40</button><button class="btn sm pri" id="igwatch">▶ Live 60 s</button></div>
+      <div id="igtrt"></div></div>
+    <div class="card pad sec igt" id="igtp2"></div>`;
+  $('#igtrun').onclick = igtRunChecks;
+  $$('#igtrf button').forEach(b => b.onclick = () => { IGTR.f = b.dataset.f; igtTrafficDraw(); if (IGTR.mode === 'recent') igtRecent(); });
+  $('#igtw').oninput = (e) => { IGTR.w = e.target.value.trim(); };
+  $('#igtw').onkeydown = (e) => { if (e.key === 'Enter' && !IGTR.job) igtRecent(); };
+  $('#igrec').onclick = igtRecent;
+  $('#igtab').addEventListener('click', (e) => { const b = e.target.closest('[data-tt]'); if (b) igtHeavy(b.dataset.tt); });
+  // the fix buttons inside the list (open a tab / update the agent)
+  $('#igtab').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-igto]'); if (t) { e.preventDefault(); IG.tab = t.dataset.igto; igRender(); return; }
+    const d = e.target.closest('[data-igdo]'); if (d) igAct(igS({ action: d.dataset.igdo }), `Install / update the agent on ${IG.cur.name}? A few seconds without routing; settings and WARPs are kept.`);
+  });
+  igtHealthDraw(); igtTestsDraw(); igtTrafficDraw(); igtPanelDraw();
+  if (!IGT.h && !IGT.busy) api('/igproxy/health?id=' + encodeURIComponent(id)).then(h => { if (h && h.at && IGT.srv === id && !IGT.h) { IGT.h = h; if (IG.tab === 'tools') { igtHealthDraw(); igtPanelDraw(); } } }).catch(() => {});
+}
 async function igRemove(uninstall) {
   const s = IG.cur;
   if (uninstall) {

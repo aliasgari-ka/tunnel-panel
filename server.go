@@ -75,7 +75,7 @@ func (a *App) routes() http.Handler {
 		"/api/bench/history": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true,
-		"/api/igproxy/warps": true, "/api/igproxy/opts": true}
+		"/api/igproxy/warps": true, "/api/igproxy/opts": true, "/api/igproxy/health": true}
 	g := func(path, kind string, h http.HandlerFunc) {
 		if !reads[path] {
 			h = postOnly(h)
@@ -143,6 +143,8 @@ func (a *App) routes() http.Handler {
 	g("/api/igproxy/info", "self", s.igInfoGet)
 	g("/api/igproxy/warps", "self", s.igWarpsGet)
 	g("/api/igproxy/opts", "self", s.igOptsGet)
+	g("/api/igproxy/health", "self", s.igHealthGet)
+	g("/api/igproxy/health/run", "self", s.igHealthRun)
 	g("/api/igproxy/opts/save", "self", s.igOptsSave)
 	g("/api/igproxy/action", "self", s.igAction)
 	g("/api/igproxy/proxies", "self", s.igProxyList)
