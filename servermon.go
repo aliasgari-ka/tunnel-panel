@@ -110,7 +110,9 @@ func tcpUp(addr string, tries int, pause time.Duration) (bool, time.Time) {
 
 func (a *App) addOutage(o Outage) {
 	_ = a.store.Update(func(st *State) error {
-		st.Outages = trimOutages(append(st.Outages, o))
+		var cut int64
+		st.Outages, cut = trimOutagesCut(append(st.Outages, o))
+		st.OutagesFrom = max(st.OutagesFrom, cut)
 		return nil
 	})
 }
@@ -123,6 +125,14 @@ func familyOutage(kind string) bool { return kind == "ssh-v4" || kind == "ssh-v6
 // flapped took 176 of the 300 places in a week and pushed the real outages out of the log.
 // Open outages are never dropped.
 func trimOutages(all []Outage) []Outage {
+	out, _ := trimOutagesCut(all)
+	return out
+}
+
+// trimOutagesCut also says up to when the log is no longer complete: the end of the newest
+// server/tunnel/panel outage it dropped (0 = none dropped) — uptime counts from there.
+func trimOutagesCut(all []Outage) ([]Outage, int64) {
+	var cut int64
 	var real, fam int
 	for _, o := range all {
 		if familyOutage(o.Kind) {
@@ -132,7 +142,7 @@ func trimOutages(all []Outage) []Outage {
 		}
 	}
 	if real <= maxOutageLogs && fam <= maxFamilyLogs {
-		return all
+		return all, 0
 	}
 	out := make([]Outage, 0, len(all))
 	for _, o := range all { // oldest first
@@ -143,12 +153,13 @@ func trimOutages(all []Outage) []Outage {
 			}
 			if !familyOutage(o.Kind) && real > maxOutageLogs {
 				real--
+				cut = max(cut, o.End)
 				continue
 			}
 		}
 		out = append(out, o)
 	}
-	return out
+	return out, cut
 }
 
 // takeOpenOutages returns the outages of these kinds a restart of the panel left open, for
@@ -231,6 +242,7 @@ func (a *App) serverReachable(id string) bool {
 
 func (a *App) serverMonitor() {
 	m := &serverMon{state: map[string]*srvState{}}
+	a.markOutagesFrom()
 	m.resume(a)
 	a.srvMon = m
 	for {

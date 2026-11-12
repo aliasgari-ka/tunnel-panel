@@ -901,6 +901,20 @@ details.tshape>.ff{margin-top:10px;padding:12px;background:var(--panel-2);border
 .srow.on .sflag{background:var(--panel);box-shadow:var(--shadow)}
 .srow.on::before{content:"";position:absolute;inset-inline-start:-1px;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--accent)}
 .srow .sinfo small{margin-top:1px}
+/* uptime (uptime.go) */
+.srow .sinfo small.upl{font-size:11px;font-variant-numeric:tabular-nums;white-space:normal;overflow:visible;text-overflow:clip}
+.upl .ok,.upbox .ok{color:var(--good)}.upl .warn,.upbox .warn{color:var(--warn)}.upl .bad,.upbox .bad,.sdown .bad{color:var(--crit)}
+.upl span{white-space:nowrap}
+.srow .sinfo small.upl.down{color:var(--crit);font-weight:600}
+.upbox{margin:10px 0 4px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;font-size:13px}
+.upbox.down{border-color:var(--crit);background:var(--crit-soft)}
+.uph{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}.uph .upp{display:flex;gap:10px;margin-inline-start:auto;font-size:12px;font-variant-numeric:tabular-nums}
+.upm{font-size:12px;margin-top:3px}
+.upd summary{cursor:pointer;font-size:12px;margin-top:4px}
+.upr{display:grid;grid-template-columns:auto 1fr;gap:0 12px;font-size:12px;padding:4px 0;border-top:1px dashed var(--line)}.upr .faint{grid-column:1/-1}
+.sdown{padding:10px 12px;margin-bottom:12px;border-color:var(--crit)}
+.sdr{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;width:100%;text-align:start;background:none;border:0;padding:6px 0;border-top:1px solid var(--line);color:inherit;font:inherit;cursor:pointer}
+.sdr:hover b:first-child{text-decoration:underline}
 .srvdetail .scard,.tdet .tc{--cp:20px;padding:var(--cp);gap:16px}
 .srvdetail .sh,.tdet .tc-h{margin:calc(-1*var(--cp)) calc(-1*var(--cp)) 0;padding:18px var(--cp) 16px;border-bottom:1px solid var(--line);border-radius:var(--radius) var(--radius) 0 0;align-items:center;
   background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 10%,var(--panel)),var(--panel) 72%)}
