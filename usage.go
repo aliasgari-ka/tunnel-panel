@@ -618,7 +618,7 @@ func usageCoef(hours []*usageBucket, pairs map[string][2]string) map[string]floa
 	for _, b := range hours {
 		p, est := usagePaid(b, pairs)
 		for id, v := range p {
-			if x := b.Tunnels[id]; x != nil && !est[id] {
+			if x := b.Tunnels[id]; x != nil && !est[id] && !usagePaidShort(v, x.Down+x.Up) {
 				paid[id] += float64(v)
 				used[id] += float64(x.Down + x.Up)
 			}
@@ -639,6 +639,12 @@ func usageCoef(hours []*usageBucket, pairs map[string][2]string) map[string]floa
 func usagePaidEst(b *usageBucket, pairs map[string][2]string, coef map[string]float64) (map[string]uint64, map[string]bool) {
 	paid, est := usagePaid(b, pairs)
 	for id, x := range b.Tunnels {
+		if !est[id] && usagePaidShort(paid[id], x.Down+x.Up) {
+			// the foreign-server count missed most of it (2026-11-12: xe108's users went by
+			// another path from 11:00 and its route's count fell to ×0.1 while the Iran card
+			// still took it all in): estimated, not a total below its traffic
+			est[id], paid[id] = true, x.Down+x.Up // priced below at its coefficient when it has one
+		}
 		if x.Down+x.Up == 0 || (!est[id] && paid[id] > 0) {
 			continue
 		}
@@ -655,6 +661,13 @@ func usagePaidEst(b *usageBucket, pairs map[string][2]string, coef map[string]fl
 		}
 	}
 	return paid, est
+}
+
+// usagePaidShort: a measured price well below what the users moved is a count that missed
+// the traffic, not a cheap hour — the Iran server takes in at least the users' upload and
+// what their downloads came in as. (A small hour is left as measured: its counts are rough.)
+func usagePaidShort(paid, used uint64) bool {
+	return used >= 256<<20 && float64(paid) < 0.9*float64(used)
 }
 
 // usagePaid splits one bucket's paid bytes between the tunnels on it. pairs: tunnel id ->

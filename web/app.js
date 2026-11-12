@@ -349,7 +349,9 @@ async function viewUsage(w) {
   else if (rng.live && rng.f > 0) rng.t = nowU;
   if (!(rng.f > 0 && rng.t > rng.f)) rng = { q: 'today', f: today, t: nowU };
   // the range, and how far back "the period before" is: the same span, one span earlier
-  const [f0, t0] = rk === '24h' ? [hourS - 23 * 3600, nowU] : rk === '7d' ? [today - 6 * 86400, nowU] : rk === '30d' ? [today - 29 * 86400, nowU] : [rng.f, rng.t];
+  // "24 hours" is the 24 whole hours before this one and this hour so far: a range of at least
+  // a day (23 h and some minutes made the per-day average larger than the total)
+  const [f0, t0] = rk === '24h' ? [hourS - 24 * 3600, nowU] : rk === '7d' ? [today - 6 * 86400, nowU] : rk === '30d' ? [today - 29 * 86400, nowU] : [rng.f, rng.t];
   const owners = isAdmin() && new Set(STATE.tunnels.map(t => t.owner || '')).size > 1;
   let by = recall('tp-usage-by');
   if (!['iran', 'foreign', 'tunnel', 'owner'].includes(by) || (by === 'owner' && !owners)) by = 'iran';
@@ -463,7 +465,7 @@ async function viewUsage(w) {
 
   // the steps of the chart: the hours, or the days (Tehran) they make
   const hourly = r.step === 3600;
-  const gran = !hourly ? 'd' : USAGE.gran === 'h' || USAGE.gran === 'd' ? (r.n <= 24 ? 'h' : USAGE.gran) : r.n <= 72 ? 'h' : 'd';
+  const gran = !hourly ? 'd' : USAGE.gran === 'h' || USAGE.gran === 'd' ? (r.n <= 25 ? 'h' : USAGE.gran) : r.n <= 72 ? 'h' : 'd';
   const bins = [];
   {
     const raw = Array.from({ length: r.n }, (_, i) => ({ t: r.from + i * r.step, d: 0, u: 0, p: 0 }));
@@ -476,21 +478,26 @@ async function viewUsage(w) {
     });
   }
   // the date and the hours each isolated: "20 آبان" beside "23:00–00:00" read in either direction
-  const binLbl = (b, long) => b.step === 86400 ? `<bdi>${fmtD(b.t, long ? { weekday: 'short', ...dOpt } : dOpt)}</bdi>` : (long || r.n > 24 ? `<bdi>${fmtD(b.t, dOpt)}</bdi> ` : '') + `<bdi>${fmtD(b.t, hOpt)}${long ? '–' + fmtD(b.t + 3600, hOpt) : ''}</bdi>`;
+  const binLbl = (b, long) => b.step === 86400 ? `<bdi>${fmtD(b.t, long ? { weekday: 'short', ...dOpt } : dOpt)}</bdi>` : (long || r.n > 25 ? `<bdi>${fmtD(b.t, dOpt)}</bdi> ` : '') + `<bdi>${fmtD(b.t, hOpt)}${long ? '–' + fmtD(b.t + 3600, hOpt) : ''}</bdi>`;
   // the busiest hour and day
   const busy = (list) => list.reduce((a, b) => (!a || tot(b) > tot(a) ? b : a), null);
   const hoursB = hourly ? Array.from({ length: r.n }, (_, i) => ({ t: r.from + i * 3600, step: 3600, d: 0, u: 0, p: 0 })) : [];
   if (hourly) scope.forEach(t => (t.series || []).forEach((s, i) => { if (s) { hoursB[i].d += s.d || 0; hoursB[i].u += s.u || 0; } }));
   const daysB = gran === 'd' ? bins : [];
   const bh = busy(hoursB), bd = busy(daysB.filter(b => b.t + 86400 <= nowU || daysB.length === 1));
-  const spanDays = Math.max(1 / 24, (tEnd - Math.max(r.from, r.started || 0)) / 86400);
+  // the span the numbers cover, exactly: from the range's start (or when counting started) to its end
+  const spanS = Math.max(3600, tEnd - Math.max(r.from, r.started || 0)), spanDays = spanS / 86400;
+  const [uD, uH, uM] = fa ? [' روز', ' ساعت', ' دقیقه'] : [' d', ' h', ' min'];
+  const spanTxt = spanS >= 2 * 86400 ? `${Math.floor(spanS / 86400)}${uD} ${Math.floor(spanS % 86400 / 3600)}${uH}` : `${Math.floor(spanS / 3600)}${uH} ${Math.floor(spanS % 3600 / 60)}${uM}`;
+  // tunnels with traffic here whose pay is (partly) estimated: no count of their foreign server
+  const estN = scope.filter(t => t.cur.est && tot(t.cur) > 0).length, usedN = scope.filter(t => tot(t.cur) > 0).length;
 
   // the four numbers
   const kpis = `<div class="ukpi4">
     <div class="card pad"><small>Σ Traffic</small><b>${fmtBytes(tot(cur))}</b><span class="umini"><bdi class="dl">⬇ ${fmtBytes(cur.d)}</bdi> · <bdi class="ul">⬆ ${fmtBytes(cur.u)}</bdi></span>${delta(tot(cur), tot(prev), 1)}</div>
-    <div class="card pad paid"><small>💰 You pay for</small><b>${cur.est ? '≈ ' : ''}${fmtBytes(cur.p)}</b><span class="umini"><b class="${coefCls(cur)}">${coefTxt(cur)}</b> <span>of the traffic</span></span>${delta(cur.p, prev.p, 1)}</div>
-    <div class="card pad"><small>📆 Per day</small><b>${fmtBytes(cur.p / spanDays)}</b><span class="umini"><span>paid, on average</span></span><span class="umini"><span>≈</span> <bdi>${fmtBytes(cur.p / spanDays * 30)}</bdi> <span>per 30 days</span></span></div>
-    <div class="card pad"><small>⏰ Busiest</small>${bh && tot(bh) > 0 ? `<b class="ubusy"><bdi data-notr>${fmtD(bh.t, hOpt)}–${fmtD(bh.t + 3600, hOpt)}</bdi></b><span class="umini"><bdi data-notr>${r.n > 24 ? fmtD(bh.t, dOpt) + ' · ' : ''}</bdi><bdi>${fmtBytes(tot(bh))}</bdi> <span>in that hour</span></span>` : bd && tot(bd) > 0 ? `<b class="ubusy"><bdi data-notr>${fmtD(bd.t, dOpt)}</bdi></b><span class="umini"><bdi>${fmtBytes(tot(bd))}</bdi> <span>that day</span></span>` : '<b>—</b>'}${bh && bd && daysB.length > 1 && tot(bd) > 0 ? `<span class="umini"><span>busiest day:</span> <bdi data-notr>${fmtD(bd.t, dOpt)}</bdi> · <bdi>${fmtBytes(tot(bd))}</bdi></span>` : ''}</div></div>`;
+    <div class="card pad paid"><small>💰 You pay for</small><b>${cur.est ? '≈ ' : ''}${fmtBytes(cur.p)}</b><span class="umini"><b class="${coefCls(cur)}">${coefTxt(cur)}</b> <span>of the traffic</span></span>${estN ? `<span class="umini" title="No count of their foreign server for some hours: those hours are priced at the tunnel's own coefficient (or ×1)"><span>≈ estimated for</span> <bdi>${estN}/${usedN}</bdi> <span>tunnels</span></span>` : ''}${delta(cur.p, prev.p, 1)}</div>
+    <div class="card pad"><small>📆 Per day</small><b>${fmtBytes(cur.p / spanDays)}</b><span class="umini"><span>${spanDays < 1 ? 'at this pace — the range is shorter than a day:' : 'paid, on average over'}</span> <bdi data-notr>${spanTxt}</bdi></span><span class="umini"><span>≈</span> <bdi>${fmtBytes(cur.p / spanDays * 30)}</bdi> <span>per 30 days</span></span></div>
+    <div class="card pad"><small>⏰ Busiest</small>${bh && tot(bh) > 0 ? `<b class="ubusy"><bdi data-notr>${fmtD(bh.t, hOpt)}–${fmtD(bh.t + 3600, hOpt)}</bdi></b><span class="umini"><bdi data-notr>${r.n > 25 ? fmtD(bh.t, dOpt) + ' · ' : ''}</bdi><bdi>${fmtBytes(tot(bh))}</bdi> <span>in that hour</span></span>` : bd && tot(bd) > 0 ? `<b class="ubusy"><bdi data-notr>${fmtD(bd.t, dOpt)}</bdi></b><span class="umini"><bdi>${fmtBytes(tot(bd))}</bdi> <span>that day</span></span>` : '<b>—</b>'}${bh && bd && daysB.length > 1 && tot(bd) > 0 ? `<span class="umini"><span>busiest day:</span> <bdi data-notr>${fmtD(bd.t, dOpt)}</bdi> · <bdi>${fmtBytes(tot(bd))}</bdi></span>` : ''}</div></div>`;
 
   // the chart: download + upload stacked, what you pay for as a line; hover (or touch) a step for its numbers
   const chart = () => {
@@ -593,7 +600,7 @@ async function viewUsage(w) {
     ${kpis}
     <div class="card pad uchartc"><div class="uhrow"><h3>${gran === 'd' ? 'Day by day' : 'Hour by hour'}</h3>
       <span class="ulegk"><span><i class="kd"></i>⬇ Download</span><span><i class="ku"></i>⬆ Upload</span><span><i class="kp"></i>💰 You pay for</span></span>
-      ${hourly && r.n > 24 ? `<div class="seg sm" data-ugr><button class="${gran === 'h' ? 'on' : ''}" data-g="h">By hour</button><button class="${gran === 'd' ? 'on' : ''}" data-g="d">By day</button></div>` : ''}</div>
+      ${hourly && r.n > 25 ? `<div class="seg sm" data-ugr><button class="${gran === 'h' ? 'on' : ''}" data-g="h">By hour</button><button class="${gran === 'd' ? 'on' : ''}" data-g="d">By day</button></div>` : ''}</div>
       ${chart()}
       <details class="utd"><summary>Show as a table</summary><div data-utbl></div></details></div>
     <div class="ugrid2">${breakdown()}
