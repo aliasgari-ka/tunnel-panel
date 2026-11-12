@@ -247,6 +247,8 @@ type State struct {
 	// IgproxyImported: the server lists and backups of the old igpanel (port 2083) were read once
 	IgproxyImported bool      `json:"igproxyImported,omitempty"`
 	AIReport        *AIReport `json:"aiReport,omitempty"` // the last AI analysis
+	// IgRuns: each account's last run of each IG Routing action over several servers ("user|action")
+	IgRuns map[string]*IgRun `json:"igRuns,omitempty"`
 }
 
 // FailoverState is the original path of a tunnel that was moved to a backup.

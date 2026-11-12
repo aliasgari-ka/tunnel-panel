@@ -2299,7 +2299,7 @@ async function igLoad(fresh) {
 }
 // a job's output: lines without the panel's time stamp
 const igLines = (j) => (j.lines || []).map(l => l.replace(/^\d\d:\d\d:\d\d /, ''));
-const igColor = (l) => /^\s*(!!|ERR|.*\b(FAIL|DOWN|failed|rejected|not )\b)/i.test(l) ? 'err' : /^\s*(==|->)/.test(l) ? 'ir' : /\b(OK|added|saved|applied|removed|updated|installed|fixed)\b/.test(l) ? 'ok' : '';
+const igColor = (l) => /^<< ✓/.test(l) ? 'ok' : /^<< [!✕]/.test(l) ? 'err' : /^<< /.test(l) ? '' : /^\s*(!!|ERR|.*\b(FAIL|DOWN|failed|rejected|not )\b)/i.test(l) ? 'err' : /^\s*(==|->)/.test(l) ? 'ir' : /\b(OK|added|saved|applied|removed|updated|installed|fixed)\b/.test(l) ? 'ok' : '';
 function igRunJob(jobId, title, onDone) {
   return new Promise(res => {
     const d = h(`<div class="drawer"><div class="panel"><div class="dh"><div style="display:flex;gap:10px;align-items:center;min-width:0"><span class="pill acc" id="ijst"><span class="led"></span>running</span><b style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</b></div>
@@ -3389,63 +3389,282 @@ function igpxWire(box) {
   });
 }
 
-// ---- route table: every server × service
+// ---- route table: every server × service. Changes wait in IG.pend (not in the page: a refresh of
+// the list redrew the table and threw them away) until one Apply; each cell has a dot from the
+// agent's own checks and from what the server can really do (paused, no proxy, no WARP …).
+const IGSHORT = { IG: ['📸', 'Instagram'], GOOGLE: ['✨', 'Google'], YTM: ['🎵', 'YT Music'], ADULT: ['🔞', 'Adult'], SPOTIFY: ['🎧', 'Spotify'], SCLOUD: ['☁️', 'SoundCloud'], CUSTOM: ['🌐', 'My sites'] };
+const igViaS = (v) => { v = v || ''; if (v === 'proxy') return 'Proxy'; if (/^proxy\d+$/.test(v)) return 'Proxy ' + v.slice(5); return { warp: 'WARP', warp6: 'WARP IPv6', ipv6: 'IPv6', direct: 'Direct' }[v] || v || '—'; };
+// [dot class, why] of one service's route on one server: '' = nothing to say (direct, not checked)
+function igCellHealth(s, g, v) {
+  const i = s.info || {};
+  if (v !== 'direct') {
+    if (i.paused === 'YES') return ['bad', "igproxy is paused here: it leaves through the server's own IP"];
+    if (i.router !== 'active' || i.redirect !== 'ON') return ['bad', "The router isn't running here: it leaves through the server's own IP"];
+    if (/^proxy/.test(v) && !(+i.proxies > 0)) return ['bad', 'No proxy on this server: it leaves direct until one is added'];
+    if (/^proxy\d+$/.test(v) && +v.slice(5) > +i.proxies) return ['bad', 'There is no such proxy on this server'];
+    if (/^warp/.test(v) && !(+i.warps > 0)) return ['bad', 'No WARP account on this server'];
+    if (IGWIDE.includes(g) && i.wide === 'OFF') return ['bad', 'Wide catch is off on this server (its kernel lacks the iptables modules): it leaves direct'];
+  }
+  if (g === 'GOOGLE' && /^warp/.test(v) && i.gcc === 'PROXY') return ['warn', 'No allowed WARP for Google: it goes through a proxy for now'];
+  const ck = g === 'IG' ? i.igp : g === 'GOOGLE' ? i.gem : '';
+  if (ck === 'OK') return ['ok', g === 'IG' ? 'Instagram opens on this route (checked every minute)' : 'Gemini opens on this route (checked every minute)'];
+  if (ck === 'FAIL') return ['bad', g === 'IG' ? "Instagram doesn't open on this route (checked every minute)" : "Gemini doesn't open on this route (checked every minute)"];
+  return v === 'direct' ? ['', ''] : ['none', 'not checked by the agent'];
+}
+const igMatCur = (s, g) => (s.info || {})[g.toLowerCase()] || 'direct';
+const igMatVal = (s, g) => ((IG.pend || {})[s.id] || {})[g] || igMatCur(s, g);
+function igMatOpts(s, g, cur) {
+  const n = +s.info.proxies || 0, o = ['direct', 'warp']; if (!IGWIDE.includes(g)) o.push('warp6', 'ipv6'); o.push('proxy'); for (let k = 1; k <= n; k++) o.push('proxy' + k);
+  if (cur && !o.includes(cur)) o.push(cur);
+  return o;
+}
+function igPendSet(s, g, v) {
+  IG.pend = IG.pend || {};
+  const p = IG.pend[s.id] = IG.pend[s.id] || {};
+  if (v === igMatCur(s, g)) delete p[g]; else p[g] = v;
+  if (!Object.keys(p).length) delete IG.pend[s.id];
+}
+const igPendList = (L) => L.flatMap(s => Object.entries((IG.pend || {})[s.id] || {}).map(([g, v]) => ({ s, g, v })));
+// the "all servers" choice of one column: who changes, who is left as is and why
+function igAllPlan(L, g, v) {
+  const ch = [], same = [], skip = [];
+  L.forEach(s => {
+    if (!igMatOpts(s, g, '').includes(v)) skip.push([s, /^proxy\d+$/.test(v) ? `has ${+s.info.proxies || 0} proxies` : 'not possible here']);
+    else if (igMatCur(s, g) === v) same.push(s); else ch.push(s);
+  });
+  return { ch, same, skip };
+}
 function igMatrix(box) {
   if (!IG.data) { box.innerHTML = '<div class="skel" style="height:200px"></div>'; return; }
-  const L = igList().filter(s => s.info.ig), maxp = Math.max(0, ...L.map(s => +s.info.proxies || 0));
+  const L = igList().filter(s => s.info.ig), off = igList().filter(s => !s.info.ig);
   if (!L.length) { box.innerHTML = '<div class="card empty"><div class="big">🔀</div>No server with a running agent to route.</div>'; return; }
-  box.innerHTML = `<div class="card pad mat"><div class="actions" style="justify-content:flex-end;margin-bottom:6px"><button class="btn pri" id="igmApply" disabled>Apply changes</button></div>
-    <table class="tbl igt"><thead><tr><th>Server</th>${Object.keys(IGSV).map(g => `<th>${IGSV[g]}</th>`).join('')}</tr></thead><tbody>
-    <tr><td><b>All servers →</b></td>${Object.keys(IGSV).map(g => `<td data-l="${IGSV[g]}"><select data-all="${g}"><option value="">—</option>${igViaOpts(g, '', maxp)}</select></td>`).join('')}</tr>
-    ${L.map(s => `<tr><td><b data-notr>${esc(s.name)}</b> ${igOwner(s)} ${s.info.state === 'OK' ? '' : igPill(s.info.state)}</td>${Object.keys(IGSV).map(g => { const v = s.info[g.toLowerCase()]; return `<td data-l="${IGSV[g]}"><select data-s="${esc(s.id)}" data-g="${g}" data-cur="${esc(v)}">${igViaOpts(g, v, +s.info.proxies || 0, s.info)}</select></td>`; }).join('')}</tr>`).join('')}</tbody>
-    </table><div class="mdesc">The "All servers" row sets one service on every row (not applied yet). Servers that are offline or without the agent aren't in the table.</div></div>`;
-  const mark = () => { let n = 0; $$('select[data-s]', box).forEach(x => { const c = x.value !== x.dataset.cur; x.classList.toggle('chg', c); n += c; }); $('#igmApply').disabled = !n; $('#igmApply').textContent = n ? `Apply ${n} change${n > 1 ? 's' : ''}` : 'Apply changes'; };
-  $$('select[data-s]', box).forEach(x => x.onchange = mark);
-  // a choice a server doesn't have (Proxy 3 where it has two) leaves that row as it was
-  $$('select[data-all]', box).forEach(x => x.onchange = () => { if (!x.value) return; $$(`select[data-g="${x.dataset.all}"][data-s]`, box).forEach(y => { if ([...y.options].some(o => o.value === x.value)) y.value = x.value; }); mark(); });
-  $('#igmApply').onclick = async () => {
-    const ch = $$('select[data-s]', box).filter(x => x.value !== x.dataset.cur).map(x => ({ srv: x.dataset.s, svc: x.dataset.g, via: x.value }));
-    if (!ch.length || !confirm(`Apply ${ch.length} route change${ch.length > 1 ? 's' : ''}?`)) return;
-    // one after the other: two changes on one server at once would race
-    const label = (c) => ((IG.data.servers.find(s => s.id === c.srv) || {}).name || c.srv) + ' · ' + IGSV[c.svc] + ' → ' + igViaW(c.via);
-    const left = []; // what was not applied, and why: said at the end (the rest used to be dropped silently)
-    for (let k = 0; k < ch.length; k++) {
-      const c = ch[k];
-      let r; try { r = await api('/igproxy/action', { srv: c.srv, action: 'route', svc: c.svc, via: c.via }); } catch (e) { left.push(label(c) + ' — ' + e.message); continue; }
-      const res = await igRunJob(r.job, 'Route — ' + ((IG.data.servers.find(s => s.id === c.srv) || {}).name || '') + ' · ' + IGSV[c.svc]);
-      if (!res.done) {
-        left.push(label(c) + ' — not finished when the window closed (it may still be running)');
-        ch.slice(k + 1).forEach(x => left.push(label(x) + ' — not started'));
-        break;
-      }
-      if (res.status !== 'ok') left.push(label(c) + ' — ' + (res.status === 'cancelled' ? 'stopped' : 'failed'));
-    }
-    igLoad(true);
-    if (left.length) alertModal('Route changes not applied', left.join('\n'));
+  IG.pend = IG.pend || {}; IG.allSel = IG.allSel || {};
+  // pending changes of servers no longer here (other View, agent gone) are dropped
+  Object.keys(IG.pend).forEach(id => { if (!L.some(s => s.id === id)) delete IG.pend[id]; });
+  const phone = matchMedia('(max-width: 720px)').matches, more = recall('tp-igmore') === '1';
+  const cols = more ? Object.keys(IGSV) : ['IG', 'GOOGLE', 'YTM'];
+  const cell = (s, g) => {
+    const v = igMatVal(s, g), cur = igMatCur(s, g), chg = v !== cur, [hc, ht] = igCellHealth(s, g, v);
+    const tip = (chg ? `now: ${igViaW(cur, s.info)} → after Apply: ${igViaW(v, s.info)}` : igViaW(v, s.info)) + (ht ? ' · ' + ht : '');
+    return `<span class="mc${v === 'direct' && !chg ? ' q' : ''}${chg ? ' chg' : ''}" title="${esc(tip)}"><i class="igd ${chg ? 'pend' : hc}"></i><select data-s="${esc(s.id)}" data-g="${g}" class="${igViaC(v)}" aria-label="${esc(IGSV[g])}">${igMatOpts(s, g, cur).map(o => `<option value="${o}"${o === v ? ' selected' : ''}>${esc(igViaS(o))}</option>`).join('')}</select></span>`;
+  };
+  // the folded services in one cell: only the ones not direct
+  const rest = (s) => {
+    const x = IGWIDE.filter(g => igMatVal(s, g) !== 'direct' || (IG.pend[s.id] || {})[g]);
+    return x.length ? x.map(g => { const v = igMatVal(s, g), [hc] = igCellHealth(s, g, v); return `<span class="mrest${(IG.pend[s.id] || {})[g] ? ' chg' : ''}" title="${esc(IGSV[g] + ': ' + igViaW(v, s.info))}">${IGSHORT[g][0]} <b class="${igViaC(v)}">${esc(igViaS(v))}</b>${hc === 'bad' || hc === 'warn' ? `<i class="igd ${hc}"></i>` : ''}</span>`; }).join('') : '<span class="faint">all direct</span>';
+  };
+  const allSel = (g) => {
+    const v = IG.allSel[g] || '', pl = v && igAllPlan(L, g, v);
+    const opts = ['direct', 'warp', 'warp6', 'ipv6', 'proxy'].concat(Array.from({ length: Math.max(0, ...L.map(s => +s.info.proxies || 0)) }, (_, k) => 'proxy' + (k + 1))).filter(o => !(IGWIDE.includes(g) && ['warp6', 'ipv6'].includes(o)));
+    return `<span class="mc all${v ? ' chg' : ''}"><select data-all="${g}" aria-label="${esc(IGSV[g])}"><option value="">all…</option>${opts.map(o => `<option value="${o}"${o === v ? ' selected' : ''}>${esc(igViaS(o))}</option>`).join('')}</select></span>${pl ? `<small class="mprev" title="${esc(pl.skip.map(([s, w]) => s.name + ': ' + w).join('\n'))}"><b data-notr>${pl.ch.length}</b> <span>to change</span>${pl.skip.length ? ` · <b data-notr>${pl.skip.length}</b> <span>left as is</span>` : ''}</small>` : ''}`;
+  };
+  const srvDot = (s) => { const w = IGST[s.info.state] || [s.info.state, 'bad']; return `<i class="igd ${w[1] === 'on' ? 'ok' : w[1] === 'warn' ? 'warn' : w[1] === 'acc' ? 'none' : 'bad'}" title="${esc(w[0])}"></i>`; };
+  const P = igPendList(L), nsrv = new Set(P.map(x => x.s.id)).size;
+  const R = (IG.runs || {}).routes;
+  const lastRun = R ? `<button class="linkb" data-igrlast title="the result of the last Apply"><span>last Apply</span> <span>${esc(igAgo(Date.now() / 1000 - (R.end || R.at)))}</span> ${igRunSum(R)}</button>` : '';
+  const head = `<div class="mhead"><span class="mlegend"><span><i class="igd ok"></i>works</span><span><i class="igd bad"></i>fails</span><span><i class="igd none"></i>not checked</span><span><i class="igd pend"></i>not applied yet</span></span><span class="grow"></span>${lastRun}
+    <button class="btn sm" data-igmore>${more ? 'Fewer services' : 'All services'}</button></div>`;
+  const bar = P.length ? `<div class="mbar"><span><b data-notr>${P.length}</b> <span>${P.length > 1 ? 'changes' : 'change'}</span> · <b data-notr>${nsrv}</b> <span>${nsrv > 1 ? 'servers' : 'server'}</span></span><span class="grow"></span><button class="btn sm" data-igreset>Reset</button><button class="btn sm pri" data-igrev>Review & apply</button></div>` : '';
+  const offTxt = off.length ? `<div class="mdesc"><span>Not in the table (offline or no agent):</span> <span data-notr>${esc(off.map(s => s.name).join(', '))}</span></div>` : '';
+  if (phone) {
+    box.innerHTML = `<div class="card pad mat mlist">${head}
+      <details class="mall"${Object.values(IG.allSel).some(Boolean) ? ' open' : ''}><summary>Set one service on every server</summary><div class="mrows">${cols.map(g => `<div class="mrow"><span class="ml">${IGSHORT[g][0]} ${esc(IGSV[g])}</span><span class="mv">${allSel(g)}</span></div>`).join('')}</div></details>
+      ${L.map(s => `<div class="msrv${IG.pend[s.id] ? ' chg' : ''}"><div class="mname">${srvDot(s)}<b data-notr>${esc(s.name)}</b> ${igOwner(s)}</div><div class="mrows">${cols.map(g => `<div class="mrow"><span class="ml">${IGSHORT[g][0]} ${esc(IGSV[g])}</span><span class="mv">${cell(s, g)}</span></div>`).join('')}
+        ${more ? '' : `<div class="mrow"><span class="ml faint">Others</span><span class="mv mrestc">${rest(s)}</span></div>`}</div></div>`).join('')}
+      ${offTxt}${bar}</div>`;
+  } else {
+    box.innerHTML = `<div class="card pad mat">${head}<div class="mscroll"><table class="mtab"><thead><tr><th class="ms">Server</th>${cols.map(g => `<th title="${esc(IGSV[g])}"><span class="mi">${IGSHORT[g][0]}</span> ${esc(IGSHORT[g][1])}</th>`).join('')}${more ? '' : `<th title="${esc(IGWIDE.map(g => IGSV[g]).join(' · '))}">Others</th>`}</tr></thead><tbody>
+      <tr class="mallr"><th class="ms">All servers →</th>${cols.map(g => `<td>${allSel(g)}</td>`).join('')}${more ? '' : '<td></td>'}</tr>
+      ${L.map(s => `<tr${IG.pend[s.id] ? ' class="chg"' : ''}><th class="ms">${srvDot(s)}<b data-notr>${esc(s.name)}</b>${isAdmin() && s.owner ? ` <small class="faint" data-notr>${esc(s.owner)}</small>` : ''}</th>${cols.map(g => `<td>${cell(s, g)}</td>`).join('')}${more ? '' : `<td class="mrestc">${rest(s)}</td>`}</tr>`).join('')}</tbody></table></div>
+      ${offTxt}${bar}</div>`;
+  }
+  const redraw = () => { const y = scrollY; igMatrix(box); scrollTo(0, y); };
+  $$('select[data-s]', box).forEach(x => x.onchange = () => { const s = L.find(s => s.id === x.dataset.s); igPendSet(s, x.dataset.g, x.value); redraw(); });
+  $$('select[data-all]', box).forEach(x => x.onchange = () => {
+    const g = x.dataset.all, v = x.value; IG.allSel[g] = v;
+    // back to "all…": the column's changes are undone; a value: every server that can take it gets it
+    L.forEach(s => igPendSet(s, g, v && igMatOpts(s, g, '').includes(v) ? v : igMatCur(s, g)));
+    redraw();
+  });
+  $$('[data-igmore]', box).forEach(b => b.onclick = () => { remember('tp-igmore', more ? '' : '1'); redraw(); });
+  $$('[data-igreset]', box).forEach(b => b.onclick = () => { IG.pend = {}; IG.allSel = {}; redraw(); });
+  $$('[data-igrev]', box).forEach(b => b.onclick = () => igMatReview(L, box));
+  $$('[data-igrlast]', box).forEach(b => b.onclick = () => igResults(R.job, 'Route changes', { stored: R }));
+  if (!IG.runs) igRunsLoad().then(() => { if (IG.sub === 'matrix' && box.isConnected && IG.runs.routes) redraw(); });
+  if (!IG.mqWired) { IG.mqWired = true; matchMedia('(max-width: 720px)').addEventListener('change', () => { if (STATE.view === 'igproxy' && !IG.cur && IG.sub === 'matrix') igRender(); }); }
+}
+// the changes, grouped by server, before they go out
+function igMatReview(L, box) {
+  const P = igPendList(L), by = [];
+  P.forEach(x => { const b = by.find(b => b.s === x.s); b ? b.l.push(x) : by.push({ s: x.s, l: [x] }); });
+  const warn = (x) => { const [hc, ht] = igCellHealth(x.s, x.g, x.v); return hc === 'bad' ? `<small class="bad">${esc(ht)}</small>` : ''; };
+  const m = modal(`<h2>Apply route changes</h2>
+    <div class="igrv">${by.map(b => `<div class="igrv-s"><b data-notr>${esc(b.s.name)}</b>${b.l.map(x => `<div class="igrv-r"><span class="igrv-g">${IGSHORT[x.g][0]} ${esc(IGSV[x.g])}</span><span class="${igViaC(igMatCur(x.s, x.g))}">${esc(igViaS(igMatCur(x.s, x.g)))}</span><span class="faint">→</span><b class="${igViaC(x.v)}">${esc(igViaS(x.v))}</b>${warn(x)}</div>`).join('')}</div>`).join('')}</div>
+    <p class="muted" style="font-size:12.5px">Each server's router restarts for a few seconds per change. Afterwards every server is read again and each change is checked against what the agent really uses.</p>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="igrvno">Cancel</button><button class="btn pri" id="igrvgo">Apply</button></div>`, true);
+  $('#igrvno', m).onclick = () => m.remove();
+  $('#igrvgo', m).onclick = async () => {
+    const b = $('#igrvgo', m); if (b.disabled) return; b.disabled = true;
+    let r; try { r = await api('/igproxy/routes', { changes: P.map(x => ({ srv: x.s.id, svc: x.g, via: x.v })) }); } catch (e) { b.disabled = false; return toast(e.message); }
+    m.remove(); IG.pend = {}; IG.allSel = {};
+    igResults(r.job, 'Route changes', { onDone: () => { igRunsLoad(); igLoad(true); } });
+    if (box.isConnected) igMatrix(box);
   };
 }
 
-// ---- every server at once
-function igBulk(box) {
-  const card = (i, t, d, id) => `<div class="card pad"><h3 style="margin:0 0 6px">${i} ${t}</h3><p class="muted" style="margin:0 0 12px;font-size:13px">${d}</p><button class="btn pri" data-b="${id}">Run</button></div>`;
-  box.innerHTML = `<p class="muted" style="margin-top:0">On every server in view, one after the other.</p><div class="grid cards">
-    ${card('🧪', 'Test all', 'Tests every proxy and WARP of every server.', 'test')}
-    ${card('🔄', 'Fresh Google IP everywhere', 'When users complain about Gemini: on each server where Google goes through WARP, it moves to a fresh WARP IP now. The summary at the end says where it moved and where not.', 'rotate')}
-    ${card('⬆️', 'Update old agents', 'Installs the current agent where an old one runs (a few seconds per server).', 'deploy')}
-    ${card('🛠', 'Fix panels', 'Where the x-ui panel diverts Google, adds one rule at the top of its routing.', 'fix')}
-    ${card('📜', 'Logs of all', 'The last 40 igproxy log lines of each server.', 'logs')}
-    ${card('👥', 'Gemini users', 'Gemini connections of the last 10 minutes, per exit.', 'gem')}</div>`;
-  const nr = { refresh: false };
-  const B = {
-    test: () => igAct({ srv: 'all', action: 'status_short' }, null, nr),
-    rotate: () => igAct({ srv: 'all', action: 'google_rotate' }, `Move Google to a fresh WARP IP on every server in view (${igList().length}) now? Gemini chats open on the old IPs are cut and reconnect on the new one. Servers where Google is not on WARP are left as they are.`),
-    deploy: () => igAct({ srv: 'all', action: 'deploy', old: 1 }, 'Update the agent on the servers with an old one?'),
-    fix: () => { const bad = igList().filter(s => s.info.state === 'PANEL'); if (!bad.length) return toast('Every panel lets Google reach igproxy — nothing to fix');
-      igAct({ srv: bad.map(s => s.id), action: 'panel_fix' }, bad.map(s => s.name).join(', ') + ' — fix the panel on these? Each panel\'s Xray restarts for 2-3 seconds.'); },
-    logs: () => igAct({ srv: 'all', action: 'logs', n: 40 }, null, nr),
-    gem: () => igAct({ srv: 'all', action: 'gemusers', n: 10 }, null, nr),
+// ---- one panel for the result of a job over several servers: a row per server (✓ / ! / ✕ and what
+// it did, its own lines a click away), progress while it runs; the whole log is still one click away.
+// The job's lines: ">> N servers", then per server "== name", its output, "<< ✓ name — what it did".
+function igParseRun(lines) {
+  const R = { total: 0, rows: [], post: [] };
+  let cur = null;
+  lines.forEach(l => {
+    let m;
+    if ((m = /^>> (\d+) servers?$/.exec(l))) { R.total = +m[1]; return; }
+    if ((m = /^== (.+)$/.exec(l)) && m[1] !== 'Summary') { cur = { name: m[1], st: '', say: '', lines: [] }; R.rows.push(cur); return; }
+    if ((m = /^<< (✓|!|✕|–) (.+?)(?: — ([\s\S]*))?$/.exec(l))) {
+      let row = cur && cur.name === m[2] ? cur : R.rows.find(r => r.name === m[2] && !r.st);
+      if (!row) { row = { name: m[2], lines: [] }; R.rows.push(row); }
+      row.st = { '✓': 'ok', '!': 'warn', '✕': 'fail', '–': 'skip' }[m[1]]; row.say = m[3] || ''; cur = null; return;
+    }
+    if (!l.trim()) return;
+    if (cur) cur.lines.push(l); else if (R.rows.length) R.post.push(l);
+  });
+  return R;
+}
+const IGRST = { ok: ['ok', '✓'], warn: ['warn', '!'], fail: ['bad', '✕'], skip: ['none', '–'] };
+const igRunSum = (r) => {
+  if (r.status === 'running') return '<span class="rsum"><span class="acc">running…</span></span>';
+  const c = { ok: 0, warn: 0, fail: 0, skip: 0 }; (r.res || []).forEach(x => { c[x.st] = (c[x.st] || 0) + 1; });
+  return `<span class="rsum">${c.ok ? `<span class="ok" title="done">✓<b data-notr>${c.ok}</b></span>` : ''}${c.warn ? `<span class="warn" title="needs a look">!<b data-notr>${c.warn}</b></span>` : ''}${c.fail ? `<span class="bad" title="failed">✕<b data-notr>${c.fail}</b></span>` : ''}${c.skip ? `<span class="faint" title="nothing to do there">–<b data-notr>${c.skip}</b></span>` : ''}${r.status === 'cancelled' ? '<span class="faint">stopped</span>' : ''}</span>`;
+};
+async function igRunsLoad() { try { IG.runs = await api('/igproxy/runs'); } catch (e) { IG.runs = IG.runs || {}; } return IG.runs; }
+function igResults(jobId, title, opt = {}) {
+  const d = h(`<div class="drawer igres"><div class="panel"><div class="dh"><div class="igr-t"><span class="pill acc" id="irst"><span class="led"></span>running…</span><b>${esc(title)}</b></div>
+    <div class="actions"><button class="btn sm" id="ircopy" title="Copy the output">⧉</button><button class="btn danger sm" id="irstop" title="Stop the job (servers already done stay done)">Stop the job</button><button class="btn sm" id="irclose">Close ✕</button></div></div>
+    <div class="igr-prog" id="irprog"></div><div class="igr-body"><div id="irrows" class="igr-rows"></div><div id="irpost"></div>
+    <details class="igr-raw"><summary>The whole log</summary><div class="logbox" id="irlog"></div></details></div></div></div>`);
+  document.body.appendChild(d);
+  let closed = false, txt = '', fails = 0, last = [[], 'running'];
+  const open = new Set();
+  const close = () => { if (closed) return; closed = true; d.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  $('#irclose', d).onclick = close; d.onclick = (e) => { if (e.target === d) close(); };
+  $('#ircopy', d).onclick = (e) => copy(txt, e.target);
+  $('#irstop', d).onclick = () => api('/jobs/cancel', { ID: jobId }).catch(e => toast(e.message));
+  $('#irrows', d).onclick = (e) => { const b = e.target.closest('.igr-h'); if (!b) return; const k = +b.parentElement.dataset.k; open.has(k) ? open.delete(k) : open.add(k); draw(...last); };
+  const draw = (ls, status) => {
+    last = [ls, status]; txt = ls.join('\n');
+    const R = igParseRun(ls), running = status === 'running';
+    const done = R.rows.filter(r => r.st).length, total = R.total || R.rows.length;
+    $('#irprog', d).innerHTML = total ? `<div class="igr-bar"><i style="width:${Math.round(100 * done / Math.max(1, total))}%"></i></div><span class="igr-n"><b data-notr>${done}</b> / <b data-notr>${total}</b> <span>servers</span></span>` : '';
+    $('#irrows', d).innerHTML = R.rows.map((r, k) => {
+      const st = r.st ? IGRST[r.st] : running ? ['run', '…'] : ['bad', '✕'], say = r.st ? r.say : running ? (r.lines[r.lines.length - 1] || 'running…') : 'did not finish';
+      return `<div class="igr-r ${st[0]}${open.has(k) ? ' open' : ''}" data-k="${k}"><button class="igr-h" aria-expanded="${open.has(k)}"><span class="igr-st">${st[1]}</span><b data-notr>${esc(r.name)}</b><span class="igr-say">${esc(say)}</span><span class="igr-c">▸</span></button>
+        ${open.has(k) ? `<div class="logbox igr-log">${r.lines.map(l => `<div class="ln ${igColor(l)}">${esc(l)}</div>`).join('') || '<span class="faint">—</span>'}</div>` : ''}</div>`;
+    }).join('') || (running ? '<div class="skel" style="height:44px"></div>' : '<div class="faint">No per-server result in this job.</div>');
+    $('#irpost', d).innerHTML = R.post.length ? `<div class="igr-post">${R.post.map(l => `<div class="ln ${igColor(l)}">${esc(l)}</div>`).join('')}</div>` : '';
+    const lb = $('#irlog', d), stick = lb.scrollTop + lb.clientHeight >= lb.scrollHeight - 30;
+    lb.innerHTML = ls.map(l => `<div class="ln ${igColor(l)}">${esc(l) || '&nbsp;'}</div>`).join('');
+    if (stick) lb.scrollTop = lb.scrollHeight;
+    if (!running) {
+      $('#irstop', d)?.remove();
+      const bad = R.rows.some(r => r.st === 'fail' || r.st === 'warn' || !r.st);
+      $('#irst', d).className = 'pill ' + (status === 'ok' && !bad ? 'on' : status === 'cancelled' ? 'warn' : 'bad');
+      $('#irst', d).innerHTML = '<span class="led"></span>' + (status === 'cancelled' ? 'stopped' : status === 'ok' && !bad ? 'finished' : 'finished with problems');
+    }
   };
-  $$('[data-b]', box).forEach(b => b.onclick = B[b.dataset.b]);
+  // a stored run whose job the panel no longer has (restarted, or long ago): its saved rows
+  const M = { ok: '✓', warn: '!', fail: '✕', skip: '–' };
+  const fromStored = (r) => [`>> ${(r.res || []).length} servers`].concat((r.res || []).flatMap(x => ['== ' + x.name, `<< ${M[x.st] || '✕'} ${x.name}${x.say ? ' — ' + x.say : ''}`]));
+  const tick = async () => {
+    if (closed) return;
+    let j; try { j = await api('/jobs?id=' + jobId); fails = 0; } catch (e) {
+      if (closed) return;
+      if (opt.stored) { draw(fromStored(opt.stored), opt.stored.status === 'running' ? 'error' : opt.stored.status); $('#irlog', d).insertAdjacentHTML('afterbegin', '<div class="ln">(the full log of this run is gone: the panel restarted or ran many jobs since)</div>'); return; }
+      if (++fails < 6) { setTimeout(tick, 2000); return; }
+      toast(e.message); $('#irstop', d)?.remove(); $('#irst', d).className = 'pill bad'; $('#irst', d).innerHTML = '<span class="led"></span>no answer from the panel'; return;
+    }
+    if (closed) return;
+    draw(igLines(j), j.status);
+    if (j.status !== 'running') { if (opt.onDone) opt.onDone(j); return; }
+    setTimeout(tick, 900);
+  };
+  tick();
+}
+const igBulkRedraw = () => igRunsLoad().then(() => { if (STATE.view === 'igproxy' && !IG.cur && IG.sub === 'bulk' && $('#igbody')) igBulkDraw($('#igbody')); });
+async function igActRes(p, title, onDone) {
+  if (p.srv === 'all' && p.view === undefined) p = Object.assign({ view: igView() }, p);
+  let r; try { r = await api('/igproxy/action', p); } catch (e) { return toast(e.message); }
+  igResults(r.job, title, { onDone: () => { igBulkRedraw(); if (onDone) onDone(); } });
+  igBulkRedraw();
+}
+// before a job that changes servers: the servers it will touch (ticked), the ones it leaves and why
+function igBulkConfirm(o) {
+  return new Promise(res => {
+    const m = modal(`<h2>${o.icon} ${esc(o.title)}</h2><p class="muted" style="font-size:13px;margin-top:0">${esc(o.text)}</p>
+      <div class="igbc"><small>Runs on</small>${o.on.map(s => `<label class="igbc-s"><input type="checkbox" value="${esc(s.id)}" checked><b data-notr>${esc(s.name)}</b>${s.note ? `<span class="faint" data-notr>${esc(s.note)}</span>` : ''}</label>`).join('')}</div>
+      ${o.left.length ? `<div class="igbc left"><small>Left as they are</small>${o.left.map(([s, w]) => `<div class="igbc-s"><span data-notr>${esc(s.name)}</span><span class="faint">${esc(w)}</span></div>`).join('')}</div>` : ''}
+      <div class="actions" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="igbcno">Cancel</button><button class="btn pri" id="igbcgo">${esc(o.go)}</button></div>`, true);
+    const go = $('#igbcgo', m), done = (v) => { m.remove(); res(v); };
+    $$('.igbc input', m).forEach(x => x.onchange = () => { go.disabled = !$$('.igbc input:checked', m).length; });
+    $('#igbcno', m).onclick = () => done(null);
+    $('.mclose', m).onclick = () => done(null);
+    go.onclick = () => done($$('.igbc input:checked', m).map(x => x.value));
+  });
+}
+
+// ---- every server at once: one compact list; each action says when it last ran and what it found,
+// the ones that change servers first say which servers they touch
+const IGBULK = [
+  { id: 'test', act: 'status_short', icon: '🧪', name: 'Test all', hint: 'Tests every proxy and WARP of every server.' },
+  { id: 'gem', act: 'gemusers', icon: '👥', name: 'Gemini users', hint: 'Gemini connections of the last 10 minutes, per exit.', p: { n: 10 } },
+  { id: 'logs', act: 'logs', icon: '📜', name: 'Logs of all', hint: 'The last 40 igproxy log lines of each server.', p: { n: 40 } },
+  { id: 'rotate', act: 'google_rotate', icon: '🔄', name: 'Fresh Google IP everywhere', change: true,
+    hint: 'When users complain about Gemini: on each server where Google goes through WARP, it moves to a fresh WARP IP now. The summary at the end says where it moved and where not.' },
+  { id: 'deploy', act: 'deploy', icon: '⬆️', name: 'Update old agents', change: true, hint: 'Installs the current agent where an old one runs (a few seconds per server).' },
+  { id: 'fix', act: 'panel_fix', icon: '🛠', name: 'Fix panels', change: true, hint: 'Where the x-ui panel diverts Google, adds one rule at the top of its routing.' },
+];
+const igPanelBad = (s) => s.info.state === 'PANEL' || ['BLOCK', 'AWAY', 'MARK', 'V6', 'SOME'].includes(s.info.panel);
+function igBulk(box) {
+  igBulkDraw(box);
+  igBulkRedraw();
+}
+function igBulkDraw(box) {
+  const L = igList(), runs = IG.runs || {};
+  const row = (b) => {
+    const r = runs[b.act];
+    const last = r ? `<button class="linkb igb-last" data-last="${b.id}" title="open the result">${r.status === 'running' ? '' : `<span>${esc(igAgo(Date.now() / 1000 - (r.end || r.at)))}</span>`} ${igRunSum(r)}</button>` : '<span class="faint igb-last">never run</span>';
+    return `<div class="igb-row${b.change ? ' chg' : ''}"><span class="igb-i">${b.icon}</span><div class="igb-d"><b>${esc(b.name)}</b><small title="${esc(b.hint)}">${esc(b.hint)}</small></div>${last}
+      <button class="btn sm${b.change ? '' : ' pri'}" data-b="${b.id}">${r && r.status === 'running' ? 'Follow' : b.change ? 'Run…' : 'Run'}</button></div>`;
+  };
+  box.innerHTML = `<div class="card pad igb"><div class="igb-sec"><small>Read only</small><span class="faint"><span>on every server in view, one after the other</span> · <b data-notr>${L.length}</b></span></div>
+    ${IGBULK.filter(b => !b.change).map(row).join('')}
+    <div class="igb-sec"><small>Changes servers</small><span class="faint">asks first and shows which servers</span></div>
+    ${IGBULK.filter(b => b.change).map(row).join('')}</div>`;
+  $$('[data-last]', box).forEach(x => x.onclick = () => { const b = IGBULK.find(b => b.id === x.dataset.last), r = runs[b.act]; igResults(r.job, b.name, { stored: r }); });
+  $$('[data-b]', box).forEach(x => x.onclick = () => igBulkRun(IGBULK.find(b => b.id === x.dataset.b)));
+}
+async function igBulkRun(b) {
+  const L = igList(), r = (IG.runs || {})[b.act];
+  if (r && r.status === 'running') return igResults(r.job, b.name, { stored: r });
+  if (!b.change) return igActRes(Object.assign({ srv: 'all', action: b.act }, b.p || {}), b.name);
+  const live = L.filter(s => s.info.ig), on = [], st = (s) => (IGST[s.info.state] || [s.info.state])[0];
+  let left = b.id === 'deploy' ? [] : L.filter(s => !s.info.ig).map(s => [s, st(s)]), text = '', extra = {};
+  if (b.id === 'rotate') {
+    live.forEach(s => /^warp/.test(s.info.google || '') ? on.push({ id: s.id, name: s.name, note: igSet(s.info.gact) ? 'WARP ' + s.info.gact : '' }) : left.push([s, 'Google is not on WARP here']));
+    text = 'Gemini chats open on the old IPs are cut and reconnect on the new one. Servers where Google is not on WARP are left as they are.';
+  } else if (b.id === 'deploy') {
+    L.forEach(s => ['UPDATE', 'NOAGENT'].includes(s.info.state) || s.info.outdated === '1' ? on.push({ id: s.id, name: s.name, note: s.info.sum || '' }) : left.push([s, s.info.ig ? 'runs the current agent' : st(s)]));
+    text = 'Each server routes everything direct for a few seconds; settings and WARPs are kept.'; extra = { old: 1 };
+  } else if (b.id === 'fix') {
+    live.forEach(s => igPanelBad(s) ? on.push({ id: s.id, name: s.name, note: 'x-ui ' + (s.info.panel || '') }) : left.push([s, s.info.panel === 'OK' ? 'its panel passes Google' : 'no x-ui panel']));
+    text = "Each panel's Xray restarts for 2-3 seconds.";
+  }
+  if (!on.length) return toast(b.id === 'rotate' ? 'Google is not on WARP on any server in view — nothing to move' : b.id === 'deploy' ? 'Every server runs the current agent' : 'Every panel lets Google reach igproxy — nothing to fix');
+  const ids = await igBulkConfirm({ icon: b.icon, title: b.name, text, on, left, go: b.id === 'rotate' ? 'Move Google' : b.id === 'deploy' ? 'Update' : 'Fix' });
+  if (ids && ids.length) igActRes(Object.assign({ srv: ids, action: b.act }, extra), b.name, () => igLoad(true));
 }
 
 // ---- backup / copy settings
