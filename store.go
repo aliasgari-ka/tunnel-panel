@@ -120,6 +120,10 @@ type Tunnel struct {
 	// card's ⋯ → Remove). Auto mode, Repair and the retry never add them back; "put back"
 	// on the card takes one off this list again (hsremove.go).
 	HSOff []string `json:"hsOff,omitempty"`
+	// PathNet: per path ("method|family"), the kernel settings of its interface set in the
+	// card's path settings (pathnet.go). Net is a path's own, on its pseudo tunnel only.
+	PathNet map[string]PathNet `json:"pathNet,omitempty"`
+	Net     *PathNet           `json:"-"`
 	// Applying is the method an apply is bringing up, from the moment it tears the old one
 	// down until it ends. Still set at start-up = the panel stopped in the middle (restart,
 	// update) and the tunnel was left down: resumeInterrupted brings it back.
@@ -168,6 +172,12 @@ func (t *Tunnel) clone() Tunnel {
 		cp.OptsManual = make(map[string][]string, len(t.OptsManual))
 		for k, v := range t.OptsManual {
 			cp.OptsManual[k] = append([]string(nil), v...)
+		}
+	}
+	if t.PathNet != nil {
+		cp.PathNet = make(map[string]PathNet, len(t.PathNet))
+		for k, v := range t.PathNet {
+			cp.PathNet[k] = v
 		}
 	}
 	cp.Paths = make([]HSPath, len(t.Paths))

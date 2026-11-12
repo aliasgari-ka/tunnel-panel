@@ -111,6 +111,8 @@ func (a *App) routes() http.Handler {
 	g("/api/tunnels/hsmode", "tunnel", s.tunnelHSMode)
 	g("/api/tunnels/hspin", "tunnel", s.tunnelHSPin)
 	g("/api/tunnels/hsremove", "tunnel", s.tunnelHSRemove)
+	g("/api/tunnels/pathnet", "tunnel", s.tunnelPathNet)          // a hot-standby path's kernel settings, applied live
+	g("/api/tunnels/pathnet/info", "tunnel", s.tunnelPathNetInfo) // what both servers run that path with now
 	g("/api/tunnels/hsrestore", "tunnel", s.tunnelHSRestore)
 	g("/api/tunnels/hsrestart", "tunnel", s.tunnelHSRestart)
 	g("/api/traffic", "self", s.trafficGet)
@@ -1253,7 +1255,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			in.Active, in.Secrets, in.Failover = "", nil, nil
 			// the panel's own bookkeeping never comes from the request
 			in.Paths, in.Applying, in.HSPin, in.HSSeen, in.HSOff = nil, "", "", 0, nil
-			in.OptsManual = nil
+			in.OptsManual, in.PathNet = nil, nil
 			if !admin {
 				in.Owner = user
 			} else if in.Owner != "" && !accountExists(st, in.Owner) {
