@@ -30,22 +30,22 @@ func TestGemSignedIn(t *testing.T) {
 func TestGemAcctNote(t *testing.T) {
 	g := &gemAcctT{}
 	t0 := time.Unix(2_000_000_000, 0)
-	if m := g.note("in", nil, t0); m != "" {
+	if m := g.note("in", "", nil, t0); m != "" {
 		t.Fatalf("first in: %q", m)
 	}
-	if m := g.note("out", nil, t0.Add(time.Minute)); !strings.Contains(m, "signed out") || !strings.Contains(m, gemHome) {
+	if m := g.note("out", "", nil, t0.Add(time.Minute)); !strings.Contains(m, "signed out") || !strings.Contains(m, gemHome) {
 		t.Fatalf("going out: %q", m)
 	}
-	if m := g.note("out", nil, t0.Add(time.Hour)); m != "" {
+	if m := g.note("out", "", nil, t0.Add(time.Hour)); m != "" {
 		t.Fatalf("repeated within a day: %q", m)
 	}
-	if m := g.note("", errTest, t0.Add(2*time.Hour)); m != "" || g.State != "out" {
+	if m := g.note("", "", errTest, t0.Add(2*time.Hour)); m != "" || g.State != "out" {
 		t.Fatalf("browser error: %q state %q", m, g.State)
 	}
-	if m := g.note("out", nil, t0.Add(25*time.Hour)); m == "" {
+	if m := g.note("out", "", nil, t0.Add(25*time.Hour)); m == "" {
 		t.Fatal("no daily reminder")
 	}
-	if m := g.note("in", nil, t0.Add(26*time.Hour)); !strings.Contains(m, "signed in again") {
+	if m := g.note("in", "", nil, t0.Add(26*time.Hour)); !strings.Contains(m, "signed in again") {
 		t.Fatalf("back in: %q", m)
 	}
 	if s := g.snapshot(); s["state"] != "in" || s["exit"] != gemHome {

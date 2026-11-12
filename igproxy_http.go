@@ -217,6 +217,13 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 		if err == nil && act == "uninstall" && len(tl) != 1 {
 			err = errors.New("uninstall one server at a time")
 		}
+		if err == nil && act == "route" {
+			for _, x := range tl {
+				if gemHomeRouteBad(x, c.args[1], c.args[2]) {
+					err = errors.New(igLabel(x) + ": " + gemHomeRefusal)
+				}
+			}
+		}
 		if err != nil {
 			httpErr(w, 400, err.Error())
 			return
