@@ -154,24 +154,50 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	act := igStr(p["action"])
+	// several servers (all in view, or a list): one verdict line per server and the run is kept
+	_, list := p["srv"].([]any)
+	multi := list || igStr(p["srv"]) == "all" || len(tl) > 1
+	idc := make(chan string, 1)
+	t := &igTally{}
+	runEnd := func() {
+		if multi {
+			s.app.igRunEnd(user, act, <-idc, t)
+		}
+	}
 	var id string
 	if act == "deploy" {
 		onlyOld := igStr(p["old"]) != ""
 		_, sum := igAgent()
 		id, err = s.app.igJob(user, "install / update agent", time.Duration(len(tl))*12*time.Minute, func(ctx context.Context, out func(string)) bool {
+			defer runEnd()
+			if multi {
+				out(fmt.Sprintf(">> %d servers", len(tl)))
+			}
 			n, bad := 0, 0
 			for _, x := range tl {
 				if ctx.Err() != nil {
 					break
 				}
+				if multi {
+					out("== " + igLabel(x))
+				}
 				if onlyOld {
 					if inf := s.app.igInfo(ctx, x); inf["state"] != "UPDATE" && inf["state"] != "NOAGENT" && inf["outdated"] != "1" {
+						if multi {
+							t.add(x, "skip", "runs the current agent", out)
+							out("")
+						}
 						continue
 					}
 				}
 				n++
 				if !s.app.igDeploy(ctx, x, out) {
 					bad++
+					if multi {
+						t.add(x, "fail", "still does not run the new agent", out)
+					}
+				} else if multi {
+					t.add(x, "ok", "updated to "+sum, out)
 				}
 				out("")
 			}
@@ -196,20 +222,24 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		title := c.title + " - " + igLabel(tl[0])
-		if len(tl) > 1 {
+		if multi {
 			title = c.title + " - ALL servers"
 		}
 		id, err = s.app.igJob(user, title, time.Duration(len(tl))*time.Duration(c.tmo+40)*time.Second, func(ctx context.Context, out func(string)) bool {
+			defer runEnd()
 			ok := true
 			var rot *igRotTally
 			if act == "google_rotate" {
 				rot = &igRotTally{}
 			}
+			if multi {
+				out(fmt.Sprintf(">> %d servers", len(tl)))
+			}
 			for _, x := range tl {
 				if ctx.Err() != nil {
 					break
 				}
-				if len(tl) > 1 {
+				if multi {
 					out("== " + igLabel(x))
 				} else {
 					out("-> " + igLabel(x) + ": igproxy " + strings.Join(c.args, " "))
@@ -217,7 +247,7 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 				rc, said := s.app.igRun(ctx, x, c.args, c.input, c.tmo, out)
 				if rc != 0 {
 					ok = false
-					if len(tl) == 1 && rc != 255 {
+					if !multi && rc != 255 {
 						out(fmt.Sprintf("(exit code %d)", rc))
 					}
 				}
@@ -225,7 +255,9 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 					rot.add(igLabel(x), rc, said)
 				}
 				s.app.igForget(x.ID)
-				if len(tl) > 1 {
+				if multi {
+					st, say := igVerdict(act, rc, said)
+					t.add(x, st, say, out)
 					out("")
 				}
 			}
@@ -237,6 +269,10 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 			}
 			return ok
 		})
+	}
+	if err == nil && multi {
+		s.app.igRunStart(user, act, id)
+		idc <- id
 	}
 	if err != nil {
 		httpErr(w, 400, err.Error())
