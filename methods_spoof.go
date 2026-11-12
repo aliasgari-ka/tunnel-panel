@@ -80,10 +80,11 @@ var methodSpoofTunnel = &Method{
 		bin := "/opt/spoof-tunnel/spoof"
 		dir := tunnelDir(c.T)
 		irPath, khPath := dir+"/spoof.json", dir+"/spoof.json"
-		art := Artifact{Name: "spoof-tunnel-latest", Dest: bin, Mode: 0o755, Fetch: fmt.Sprintf(`
-VER=$(curl -fsSLI -o /dev/null -w '%%{url_effective}' https://github.com/ParsaKSH/spoof-tunnel/releases/latest | sed 's#.*/tag/##')
-[ -n "$VER" ] || VER=v3.1.0
-curl -fL --retry 3 -o "$OUT" "%shttps://github.com/ParsaKSH/spoof-tunnel/releases/download/${VER}/spoof-linux-${ARCH}"`, c.Set.GitHubProxy)}
+		art := Artifact{Name: "spoof-tunnel-" + spoofVersion, Dest: bin, Mode: 0o755, Fetch: fmt.Sprintf(`
+case "$ARCH" in amd64) want=%s ;; arm64) want=%s ;; *) echo "no pinned Spoof-Tunnel checksum for $ARCH"; exit 1 ;; esac
+curl -fL --retry 3 -o spoof "%shttps://github.com/ParsaKSH/spoof-tunnel/releases/download/%s/spoof-linux-${ARCH}"
+echo "$want  spoof" | sha256sum -c - || { echo "Spoof-Tunnel binary checksum mismatch — refusing to install it"; exit 1; }
+install -m0755 spoof "$OUT"`, spoofSHA256["amd64"], spoofSHA256["arm64"], c.Set.GitHubProxy, spoofVersion)}
 
 		mk := func(cfg, path, side string) SidePlan {
 			return SidePlan{
@@ -95,6 +96,15 @@ curl -fL --retry 3 -o "$OUT" "%shttps://github.com/ParsaKSH/spoof-tunnel/release
 		}
 		return mk(irCfg, irPath, "Iran"), mk(khCfg, khPath, "foreign"), nil
 	},
+}
+
+// spoofVersion is the Spoof-Tunnel release the config above is written for (it has the
+// xdp_interface field); pinned with the release's sha256 instead of following "latest".
+const spoofVersion = "v3.1.0-beta.0"
+
+var spoofSHA256 = map[string]string{
+	"amd64": "4ba5597568607e864fb6d5ba4f13bac91a50456da5696d99463d6375ce2a3697",
+	"arm64": "ab7e0a58aa37c63a36127feb99ef73cd498523c99d22146feb1a93dd97c9d97b",
 }
 
 // spoofPorts returns the one listen and destination port of a Spoof-Tunnel tunnel (443

@@ -18,7 +18,7 @@ type Settings struct {
 	LocalIPv4   string `json:"localIPv4"`
 	LocalIPv6   string `json:"localIPv6"`
 	PanelName   string `json:"panelName"`
-	FRPVersion  string `json:"frpVersion"`  // empty = latest
+	FRPVersion  string `json:"frpVersion"`  // empty = frpDefault (pinned)
 	GitHubProxy string `json:"githubProxy"` // optional prefix, e.g. https://ghproxy.example/
 	// AgentConnect is the host:port the Iran agent dials back to (this foreign
 	// server's public address + agent port). Shown in the bootstrap command.

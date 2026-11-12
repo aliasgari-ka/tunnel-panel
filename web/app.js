@@ -905,7 +905,7 @@ function viewSettings(w) {
       </div>
       <label class="f">Agent dial-back address <span class="faint">host:port Iran agents connect to (blank = this host's IPv4 : ${STATE.agentPort})</span><input name="agentConnect" class="mono" value="${esc(s.agentConnect || '')}" placeholder="203.0.113.5:${STATE.agentPort}"></label>
       <div class="two">
-        <label class="f">FRP version <span class="faint">(blank = latest)</span><input name="frpVersion" class="mono" value="${esc(s.frpVersion || '')}"></label>
+        <label class="f">FRP version <span class="faint">(blank = 0.72.0, pinned)</span><input name="frpVersion" class="mono" value="${esc(s.frpVersion || '')}"></label>
         <label class="f">GitHub download prefix<input name="githubProxy" class="mono" value="${esc(s.githubProxy || '')}" placeholder="https://ghproxy.net/"></label>
         <label class="f">Automatic benchmark every … hours <span class="faint">(only the methods running on each route, on the spare slot — live tunnels aren't touched; blank = 24, 0 = off; each method moves at most 3 MB each way)</span><input name="autoBench" class="mono" inputmode="numeric" value="${esc(s.autoBench || '')}" placeholder="24"></label>
       </div>
