@@ -72,7 +72,7 @@ func (a *App) routes() http.Handler {
 	reads := map[string]bool{"/api/me": true, "/api/mybot": true, "/api/settings": true, "/api/methods": true,
 		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
 		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
-		"/api/bench/history": true, "/api/bench/status": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
+		"/api/bench/history": true, "/api/repair/status": true, "/api/bench/status": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true,
 		"/api/igproxy/warps": true, "/api/igproxy/opts": true, "/api/igproxy/health": true, "/api/igproxy/runs": true}
@@ -127,6 +127,10 @@ func (a *App) routes() http.Handler {
 	g("/api/bench/auto", "admin", s.benchAuto)
 	g("/api/routes/skip", "self", s.routeSkip)
 	g("/api/repair", "admin", s.repair)
+	g("/api/repair/check", "self", s.repairCheckH) // the handler keeps the account's own tunnels
+	g("/api/repair/apply", "self", s.repairApplyH)
+	g("/api/repair/status", "self", s.repairStatusH)
+	g("/api/repair/auto", "admin", s.repairAutoH)
 	g("/api/ai", "admin", s.aiGet)
 	g("/api/ai/run", "admin", s.aiRunH)
 	g("/api/ai/apply", "admin", s.aiApplyH)
@@ -1460,9 +1464,10 @@ func (s *Server2) tunnelHSPin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"ok": msg})
 }
 
-// repair re-applies every running tunnel that has a problem (see repair.go).
+// repair runs the automatic Repair over every running tunnel (see repair.go): what the
+// automatic mode allows is done, the rest is reported.
 func (s *Server2) repair(w http.ResponseWriter, r *http.Request) {
-	j, err := s.app.Repair("from the panel")
+	j, err := s.app.RepairAuto("from the panel")
 	if err != nil {
 		httpErr(w, 409, err.Error())
 		return

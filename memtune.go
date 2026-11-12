@@ -27,25 +27,7 @@ func (a *App) memTune(ctx context.Context, j *Job, t *Tunnel, ir, kh Host) int {
 // that got a new drop-in, a unit that may restart and whose running process still has older
 // values restarts too. Returns how many units got the drop-in and how many restarted.
 func (a *App) memTuneUnits(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, users bool) (int, int) {
-	var hot bool
-	var good []HSPath
-	a.store.View(func(*State) { hot, good = t.HotStandby, hsGood(t) })
-	var irU, khU []memUnit
-	if !hot {
-		u := memUnit{name: unitName(t), restart: users}
-		irU, khU = []memUnit{u}, []memUnit{u}
-	} else {
-		usersOn := "" // the path the users are on ("" = not known: restart nothing)
-		if v := a.hsViewOf(t.ID); v != nil && v.Active >= 0 && v.Active < len(v.Keys) {
-			usersOn = v.Keys[v.Active]
-		}
-		for _, p := range good {
-			u := memUnit{name: unitName(pathTunnel(t, p)), restart: users || usersOn != "" && p.Method+"|"+p.Family != usersOn}
-			irU, khU = append(irU, u), append(khU, u)
-		}
-		// the foreign side's probe server carries no users (the switcher waits out its restart)
-		khU = append(khU, memUnit{name: unitName(hsUnitTunnel(t)), restart: true})
-	}
+	irU, khU := a.memUnitsFor(t, users)
 	n, r := 0, 0
 	for _, side := range []struct {
 		h  Host
@@ -71,6 +53,68 @@ func (a *App) memTuneUnits(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, 
 		j.log("· %s: Go memory settings added to %d unit(s); paths without users restarted to take them", t.Name, n)
 	}
 	return n, r
+}
+
+// memTuneNeed is memTune's dry run (Repair's check, repair.go): how many units on each side
+// lack the current drop-in. It only reads.
+func (a *App) memTuneNeed(ctx context.Context, t *Tunnel, ir, kh Host) (irN, khN int) {
+	irU, khU := a.memUnitsFor(t, false)
+	count := func(h Host, us []memUnit) int {
+		if h == nil || len(us) == 0 {
+			return 0
+		}
+		out, err := h.Run(ctx, memNeedScript(us), nil)
+		if err != nil {
+			return 0
+		}
+		for _, l := range strings.Split(out, "\n") {
+			if rest, ok := strings.CutPrefix(strings.TrimSpace(l), "MEMNEED"); ok {
+				return len(strings.Fields(rest))
+			}
+		}
+		return 0
+	}
+	return count(ir, irU), count(kh, khU)
+}
+
+// memNeedScript prints "MEMNEED <units whose drop-in is missing or older>"; it changes nothing.
+func memNeedScript(us []memUnit) string {
+	var all []string
+	for _, u := range us {
+		all = append(all, shq(u.name))
+	}
+	return fmt.Sprintf(`need=""
+for u in %[1]s; do
+  f=/etc/systemd/system/$u
+  [ -f "$f" ] || continue
+  printf '%%s' %[2]s | cmp -s - "$f.d/90-tunnel-panel-memory.conf" || need="$need $u"
+done
+echo "MEMNEED$need"
+`, strings.Join(all, " "), shq(goMemDropIn))
+}
+
+// memUnitsFor lists a tunnel's units on the Iran and on the foreign side, and which may
+// restart (users=true: also the ones users are on).
+func (a *App) memUnitsFor(t *Tunnel, users bool) (irU, khU []memUnit) {
+	var hot bool
+	var good []HSPath
+	a.store.View(func(*State) { hot, good = t.HotStandby, hsGood(t) })
+	if !hot {
+		u := memUnit{name: unitName(t), restart: users}
+		irU, khU = []memUnit{u}, []memUnit{u}
+	} else {
+		usersOn := "" // the path the users are on ("" = not known: restart nothing)
+		if v := a.hsViewOf(t.ID); v != nil && v.Active >= 0 && v.Active < len(v.Keys) {
+			usersOn = v.Keys[v.Active]
+		}
+		for _, p := range good {
+			u := memUnit{name: unitName(pathTunnel(t, p)), restart: users || usersOn != "" && p.Method+"|"+p.Family != usersOn}
+			irU, khU = append(irU, u), append(khU, u)
+		}
+		// the foreign side's probe server carries no users (the switcher waits out its restart)
+		khU = append(khU, memUnit{name: unitName(hsUnitTunnel(t)), restart: true})
+	}
+	return irU, khU
 }
 
 // memTuneScript writes the drop-in where a unit lacks the current settings (none yet, or older

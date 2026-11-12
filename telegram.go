@@ -1145,12 +1145,12 @@ func (b *Bot) onCallback(chat string, msg int64, cbID, data string) {
 		b.sendMsg(chat, b.outagesText(sc), "")
 		return
 	case "home:rp":
-		j, err := b.app.Repair("from the bot")
+		j, err := b.app.RepairAuto("from the bot")
 		if err != nil {
 			b.sendMsg(chat, "⚠ "+esc(err.Error()), "")
 			return
 		}
-		b.sendMsg(chat, "🛠 Checking every running tunnel; the ones with a problem are applied again. The summary comes here when it's done.", "")
+		b.sendMsg(chat, "🛠 Checking every running tunnel; what the automatic mode allows is fixed, the rest is listed for you to choose in the panel. The summary comes here when it's done.", "")
 		_ = j
 		return
 	case "home:res":

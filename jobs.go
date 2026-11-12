@@ -194,6 +194,8 @@ type App struct {
 	// benchFails: per route, the last attempt that measured nothing (bench.go)
 	benchFails map[string]BenchFail
 
+	repair repairState // the Repair run in progress (repair.go)
+
 	// hostFor, when set (tests only), supplies the Host for a server instead of agent/SSH.
 	hostFor func(*Server) Host
 
