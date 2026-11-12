@@ -32,7 +32,7 @@ async function api(path, body, method) {
   // page once — only while signed in, so the login page's own calls and late timers don't loop
   if (r.status === 401 && STATE.user && !['/login', '/register', '/logout'].includes(path)) {
     STATE.user = null; STATE.view = 'auth'; // every page timer stops on its own once the view is gone
-    renderAuth('login', STATE.settings.panelName);
+    renderAuth('login', STATE.settings.panelName, 'expired');
   }
   if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
   return data;
@@ -171,27 +171,64 @@ function wirePasswordUX(root) {
     };
   });
 }
-function renderAuth(mode, name) {
+// small line icons (currentColor): they follow the theme and the accent
+const ICON = {
+  mark: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5.5" cy="12" r="2.6"/><circle cx="18.5" cy="12" r="2.6"/><path d="M8.3 12h7.4"/><path d="M8 7.5c2.6-2.3 5.4-2.3 8 0M8 16.5c2.6 2.3 5.4 2.3 8 0" opacity=".55"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  out: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16.2v.3"/></svg>',
+};
+// the language picker of the sign-in page and the panel's settings: the choice is per browser
+// (tp-lang) and the page reloads in it; what was typed in the username field comes along
+const langSeg = () => `<div class="seg langseg" role="group" aria-label="Language" data-notr>${[['fa', 'فارسی'], ['en', 'English']].map(([l, t]) => `<button type="button" data-lang="${l}" class="${(window.tpLang || 'fa') === l ? 'on' : ''}" aria-pressed="${(window.tpLang || 'fa') === l}" lang="${l}">${t}</button>`).join('')}</div>`;
+function wireLang(root) {
+  $$('[data-lang]', root).forEach(b => b.onclick = () => {
+    if (b.dataset.lang === (window.tpLang || 'fa')) return;
+    const u = $('#af [name=u]'); if (u && u.value) { try { sessionStorage.setItem('tp-auth-u', u.value); } catch (e) {} }
+    window.tpSetLang && window.tpSetLang(b.dataset.lang);
+  });
+}
+// why the sign-in page is showing, when it isn't the first visit
+const AUTH_WHY = { expired: 'Your session ended. Sign in again.' };
+function renderAuth(mode, name, why) {
   const reg = mode === 'register';
   document.body.innerHTML = '';
-  const el = h(`<div class="auth"><div class="card">
-    <div class="brand"><div class="dot"></div><div><b>${esc(name || 'Tunnel Panel')}</b><small>server link manager</small></div></div>
-    <h2 style="text-align:center;margin-bottom:6px">${reg ? 'Create admin account' : 'Sign in'}</h2>
-    <p class="muted" style="text-align:center;margin:0 0 18px">${reg ? 'First run — set your panel login.' : 'Enter your credentials.'}</p>
-      ${reg ? `<div class="mdesc" style="margin-bottom:12px">Enter the <b>setup code</b> the installer printed. Lost it? On the server run <span class="mono">tunnel-panel setup-code</span></div>` : ''}
-    <form class="ff" id="af">
-      <label class="f">Username<input name="u" autocomplete="username" required></label>
-      <label class="f">Password<span class="pw"><input name="p" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" required${reg ? ' minlength="8" data-strength' : ''}><button type="button" class="btn sm ghost" data-eye title="show / hide">👁</button></span>${reg ? '<small class="fhelp" data-meter></small>' : ''}</label>
-      ${reg ? '<label class="f">Setup code<input name="c" class="mono" autocomplete="one-time-code" placeholder="xxxx-xxxx-xxxx" required></label>' : ''}
-      <button class="btn pri" style="justify-content:center;padding:11px">${reg ? 'Create account' : 'Sign in'}</button>
-      <div id="aerr" style="color:var(--crit);min-height:16px;font-size:13px"></div>
-    </form></div></div>`);
+  let keepU = ''; try { keepU = sessionStorage.getItem('tp-auth-u') || ''; sessionStorage.removeItem('tp-auth-u'); } catch (e) {}
+  const el = h(`<div class="auth"><div class="auth-top">${langSeg()}</div>
+    <div class="auth-card card">
+      <div class="auth-brand"><span class="auth-mark">${ICON.mark}</span>${name ? `<h1 data-notr>${esc(name)}</h1>` : '<h1>Tunnel Panel</h1>'}<p>server link manager</p></div>
+      ${reg ? `<div class="auth-note"><b>Create admin account</b><span>Enter the <b>setup code</b> the installer printed. Lost it? On the server run <span class="mono">tunnel-panel setup-code</span></span></div>`
+        : why && AUTH_WHY[why] ? `<div class="auth-note">${AUTH_WHY[why]}</div>` : ''}
+      <form id="af" class="auth-form" autocomplete="on">
+        <label class="f">Username<input name="u" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" dir="ltr" required value="${esc(keepU)}"></label>
+        <label class="f">Password<span class="auth-pw"><input name="p" type="password" dir="ltr" autocomplete="${reg ? 'new-password' : 'current-password'}" required${reg ? ' minlength="8" data-strength' : ''}><button type="button" class="auth-eye" data-eye title="show / hide" aria-label="show / hide">${ICON.eye}</button></span>${reg ? '<small class="fhelp" data-meter></small>' : ''}</label>
+        ${reg ? '<label class="f">Setup code<input name="c" class="mono" dir="ltr" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" placeholder="xxxx-xxxx-xxxx" required></label>' : ''}
+        <div class="auth-err" id="aerr" role="alert" hidden></div>
+        <button class="btn pri auth-go" id="ago">${reg ? 'Create account' : 'Sign in'}</button>
+      </form>
+    </div></div>`);
   document.body.appendChild(el);
-  wirePasswordUX(el);
-  $('#af').onsubmit = async (ev) => {
+  wirePasswordUX(el); wireLang(el);
+  const f = $('#af'), go = $('#ago'), err = $('#aerr');
+  const say = (m) => { err.innerHTML = ICON.warn + `<span>${esc(m)}</span>`; err.hidden = false; err.classList.remove('shake'); void err.offsetWidth; err.classList.add('shake'); };
+  (keepU ? f.p : f.u).focus();
+  f.oninput = () => { err.hidden = true; };
+  f.onsubmit = async (ev) => {
     ev.preventDefault();
-    try { await api(reg ? '/register' : '/login', { username: ev.target.u.value, password: ev.target.p.value, code: reg ? ev.target.c.value : '' }); location.reload(); }
-    catch (e) { $('#aerr').textContent = e.message; }
+    if (go.disabled) return; // one try at a time: Enter twice doesn't send two
+    const label = go.textContent;
+    go.disabled = true; go.classList.add('busy'); go.textContent = reg ? 'Creating…' : 'Signing in…'; err.hidden = true;
+    try {
+      await api(reg ? '/register' : '/login', { username: f.u.value.trim(), password: f.p.value, code: reg ? f.c.value : '' });
+      location.reload();
+      return;
+    } catch (e) {
+      // fetch itself failed: no answer from the panel (offline, the panel restarting)
+      say(e instanceof TypeError ? "Can't reach the panel. Check the connection and try again." : e.message);
+      if (!reg && /wrong/i.test(e.message)) { f.p.value = ''; f.p.focus(); }
+    }
+    go.disabled = false; go.classList.remove('busy'); go.textContent = label;
   };
 }
 
@@ -209,53 +246,66 @@ function renderShell() {
       <div class="foot">
         ${isAdmin() && (STATE.users || []).length > 1 ? `<label class="f vf" title="show the servers and tunnels of one account">👁 View<select id="ownerSel"><option value="">All accounts</option><option value="-">My own</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}" data-notr>${esc(u.username)}</option>`).join('')}</select></label>` : ''}
         ${isAdmin() ? '' : '<!--'}<a class="btn ghost sm bkbtn" href="/api/backup" download title="Download a backup of the whole panel: servers, tunnels, settings, users (keep the file private). Restore it under Settings.">💾 Backup</a>${isAdmin() ? '' : '-->'}
-        <div class="sep"></div>
-        <div class="look"><button class="btn ghost sm" id="themeBtn" title="Light / dark">◐</button><button class="btn ghost sm" id="langBtn" data-notr title="${window.tpLang === 'fa' ? 'English' : 'فارسی'}">${window.tpLang === 'fa' ? 'EN' : 'فا'}</button><div class="swatches" title="Accent colour">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c}" aria-label="accent ${c}"></button>`).join('')}</div></div>
-        <div class="who"><span class="faint"><b data-notr>${esc(STATE.user)}</b>${isAdmin() ? ' <span class="chip own">admin</span>' : ''}${STATE.version ? ` · <span class="mono" title="version">${esc(STATE.version)}</span>` : ''}</span><button class="btn ghost sm" id="logout">Sign out</button></div>
+        ${meFoot()}
       </div></aside>
     <div class="sidebg" id="sidebg"></div>
     <main class="main" id="work"></main></div>`);
   document.body.appendChild(shell);
   $$('.nav button', shell).forEach(b => b.onclick = () => { setView(b.dataset.v); paintNav(); renderView(); $('#side').classList.remove('open'); });
   $('#sidebg').onclick = () => $('#side').classList.remove('open');
-  $('#logout').onclick = async () => { await api('/logout', {}); location.reload(); };
-  $('#themeBtn').onclick = toggleTheme;
-  $('#langBtn').onclick = () => window.tpSetLang && window.tpSetLang(window.tpLang === 'fa' ? 'en' : 'fa');
   const os = $('#ownerSel', shell);
   if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { setOwnerFilter(os.value); renderShell(); }; } // the sidebar's counts follow it too
-  $$('[data-acc]', shell).forEach(b => b.onclick = () => setAccent(b.dataset.acc));
-  paintAccent();
+  wireMe(shell);
   paintNav(); renderView();
 }
 function paintNav() { $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.v === STATE.view)); }
-function toggleTheme() {
-  const cur = document.documentElement.getAttribute('data-theme') || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  const next = cur === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  try { localStorage.setItem('tp-theme', next); } catch (e) {}
+// the sidebar's last row: who is signed in (opens Appearance: theme, language, accent) and sign out
+const THEME_NAME = { black: 'Black', graphite: 'Graphite', white: 'White' };
+// accent colours (per browser): '' is the theme's own; each is fitted to the theme (boot.js)
+const ACCENTS = ['', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899', '#a855f7'];
+function meFoot() {
+  const ver = STATE.version ? `<div class="lk-ver"><span>version</span> <span class="mono" data-notr>${esc(STATE.version)}</span></div>` : '';
+  return `<div class="me" id="me">
+    <button type="button" class="me-chip" id="meBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="mePop" title="Appearance">
+      <span class="me-av" data-notr>${esc((STATE.user || '?').slice(0, 1).toUpperCase())}</span>
+      <span class="me-txt"><b data-notr>${esc(STATE.user)}</b><small>${isAdmin() ? 'admin' : 'user'}</small></span>
+      <span class="me-gear">${ICON.gear}</span>
+    </button>
+    <button type="button" class="me-out" id="logout" title="Sign out" aria-label="Sign out">${ICON.out}</button>
+    <div class="me-pop card" id="mePop" role="dialog" aria-label="Appearance" hidden>
+      <div class="lk-h">Theme</div>
+      <div class="lk-themes">${tpLook.THEMES.map(t => `<button type="button" class="lk-th" data-th="${t}"><i class="lk-prev lk-${t}"><i></i></i><span>${THEME_NAME[t]}</span></button>`).join('')}</div>
+      <button type="button" class="lk-sys" data-th="">Follow the system</button>
+      <div class="lk-h">Accent colour</div>
+      <div class="swatches">${ACCENTS.map(c => `<button type="button" class="sw" data-acc="${c}" style="--c:${c || 'var(--accent-def)'}" aria-label="${c ? 'accent ' + c : 'theme colour'}" title="${c ? '' : 'theme colour'}"></button>`).join('')}</div>
+      <div class="lk-h">Language</div>
+      ${langSeg()}
+      ${ver}
+    </div>
+  </div>`;
 }
-try { const t = localStorage.getItem('tp-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
-// accent colour (per browser): the theme's own, or one of these
-const ACCENTS = ['', '#6d5dfc', '#0ea5e9', '#10b981', '#f59e0b', '#ec4899'];
-function setAccent(c) {
-  const r = document.documentElement.style;
-  if (c) { r.setProperty('--accent', c); r.setProperty('--accent-soft', `color-mix(in srgb, ${c} 16%, var(--panel))`); r.setProperty('--accent-fg', accentFg(c)); }
-  else { r.removeProperty('--accent'); r.removeProperty('--accent-soft'); r.removeProperty('--accent-fg'); }
-  try { localStorage.setItem('tp-accent', c); } catch (e) {}
-  paintAccent();
+function wireMe(shell) {
+  const btn = $('#meBtn', shell), pop = $('#mePop', shell);
+  const open = (on) => { pop.hidden = !on; btn.setAttribute('aria-expanded', on); if (on) paintLook(); };
+  btn.onclick = (e) => { e.stopPropagation(); open(pop.hidden); };
+  pop.onclick = (e) => e.stopPropagation();
+  STATE.meClose = (focus) => { if (pop.isConnected && !pop.hidden) { open(false); if (focus) btn.focus(); } };
+  if (!wireMe.once) { // once per page: the shell is drawn again, these find the current one
+    wireMe.once = true;
+    document.addEventListener('click', () => STATE.meClose && STATE.meClose());
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && STATE.meClose) STATE.meClose(true); });
+  }
+  $$('[data-th]', pop).forEach(b => b.onclick = () => { tpLook.setTheme(b.dataset.th); paintLook(); });
+  $$('[data-acc]', pop).forEach(b => b.onclick = () => { tpLook.setAccent(b.dataset.acc); paintLook(); });
+  wireLang(pop);
+  $('#logout', shell).onclick = async () => { try { await api('/logout', {}); } catch (e) {} location.reload(); };
 }
-// the text colour on an accent: white where it reads (WCAG contrast ≥ 4.5), else near-black
-function accentFg(c) {
-  const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
-  const [r, g, b] = [1, 3, 5].map(i => lin(parseInt(c.slice(i, i + 2), 16)));
-  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return 1.05 / (L + 0.05) >= 4.5 ? '#ffffff' : '#0c0f1a';
+function paintLook() {
+  const chosen = tpLook.chosen(), cur = tpLook.theme(), acc = tpLook.accent();
+  $$('.lk-th').forEach(b => { const on = b.dataset.th === cur; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+  $$('.lk-sys').forEach(b => { b.classList.toggle('on', !chosen); b.setAttribute('aria-pressed', !chosen); });
+  $$('[data-acc]').forEach(b => b.classList.toggle('on', b.dataset.acc === acc));
 }
-function paintAccent() {
-  let c = ''; try { c = localStorage.getItem('tp-accent') || ''; } catch (e) {}
-  $$('[data-acc]').forEach(b => b.classList.toggle('on', b.dataset.acc === c));
-}
-try { const a = localStorage.getItem('tp-accent'); if (a && /^#[0-9a-f]{6}$/i.test(a)) setAccent(a); } catch (e) {}
 
 // numbers in [data-cu] count up from 0 (once per page draw)
 function countUp(root) {
@@ -1577,9 +1627,11 @@ async function consoleModal(id) {
   $('[data-cclose]', m).onclick = () => m.remove();
   try { await loadXterm(); } catch (e) { setSt('off', esc(e.message)); return; }
   if (!m.isConnected) return; // closed while loading
-  const dark = getComputedStyle(document.documentElement).colorScheme.includes('dark');
+  // the terminal in the theme's own colours (black, graphite or white)
+  const cs = getComputedStyle(document.documentElement), tv = (k) => cs.getPropertyValue(k).trim();
+  const dark = cs.colorScheme.includes('dark');
   const term = new Terminal({ cursorBlink: true, fontSize: 13, fontFamily: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace', scrollback: 5000,
-    theme: dark ? { background: '#0d1117', foreground: '#d6dbe4' } : { background: '#fbfcfe', foreground: '#1b2030', cursor: '#1b2030', selectionBackground: '#c9d4f5' } });
+    theme: dark ? { background: tv('--bg') || '#000000', foreground: '#d6dbe4', cursor: '#d6dbe4', selectionBackground: '#3a3f4b' } : { background: '#fbfcfe', foreground: '#1b2030', cursor: '#1b2030', selectionBackground: '#c9d4f5' } });
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
   const box = $('[data-term]', m); box.style.background = term.options.theme.background;
   term.open(box); fit.fit(); term.focus();
@@ -2787,7 +2839,7 @@ function igAcctBadge(w) {
   api('/igproxy/gaccount').then(d => {
     if (d.state === 'out') {
       b.textContent = '🔑 Google test account: signed out — log in';
-      b.style.color = 'var(--bad, #c0392b)'; b.style.fontWeight = '600';
+      b.style.color = 'var(--crit)'; b.style.fontWeight = '600';
       b.title = `Google ended the test account's session${d.since ? ' (seen ' + new Date(d.since).toLocaleString() + ')' : ''}. Log in here; it goes out through ${d.exit}.`;
     } else if (d.state === 'in') b.textContent = '🔑 Google test browser ✓';
   }).catch(() => {});

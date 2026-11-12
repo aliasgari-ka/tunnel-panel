@@ -1522,7 +1522,20 @@ window.TP_FA = {
 "Preparing…": "در حال آماده‌سازی…",
 "· continues on the server if you leave": "· اگر از صفحه بروید روی سرور ادامه می‌دهد",
 "Log": "لاگ",
-"left out (not measured)": "کنار گذاشته شده (اندازه‌گیری نشد)",
+"left out (not measured)": "کنار گذاشته شده (اندازه‌گیری نشد)","Your session ended. Sign in again.": "نشست شما تمام شد. دوباره وارد شوید.",
+"Signing in…": "در حال ورود…",
+"Creating…": "در حال ساخت…",
+"Can't reach the panel. Check the connection and try again.": "پنل در دسترس نیست. اتصال را بررسی کنید و دوباره امتحان کنید.",
+"Wrong username or password.": "نام کاربری یا رمز عبور اشتباه است.",
+"Too many failed attempts. Wait 5 minutes and try again.": "تلاش ناموفق زیاد بود. ۵ دقیقه صبر کنید و دوباره امتحان کنید.",
+"bad request": "درخواست نامعتبر",
+"Appearance": "ظاهر",
+"Theme": "تم",
+"Black": "مشکی",
+"Graphite": "نوک‌مدادی",
+"White": "سفید",
+"Follow the system": "مثل سیستم",
+"theme colour": "رنگ خود تم",
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title
