@@ -254,6 +254,8 @@ type State struct {
 	// LastVersion is the panel version that ran last (a new one repairs tunnels once)
 	LastVersion string   `json:"lastVersion,omitempty"`
 	Outages     []Outage `json:"outages,omitempty"` // servers/tunnels down, newest last
+	// OutagesFrom: the outage log is complete from here (cleared, or older entries trimmed)
+	OutagesFrom int64 `json:"outagesFrom,omitempty"`
 	// IgproxyImported: the server lists and backups of the old igpanel (port 2083) were read once
 	IgproxyImported bool      `json:"igproxyImported,omitempty"`
 	AIReport        *AIReport `json:"aiReport,omitempty"` // the last AI analysis

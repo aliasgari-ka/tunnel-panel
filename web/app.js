@@ -1193,19 +1193,22 @@ function viewServers(w) {
   if (!(cur === 'host' && hostShown) && !all.some(x => x.id === cur)) cur = all.length ? all[0].id : hostShown ? 'host' : '';
   const row = (s) => {
     const host = s === 'host', id = host ? 'host' : s.id;
-    const led = host || s.agentOnline ? 'on' : s.prepared ? 'ok2' : 'off';
-    const tip = host ? 'local' : s.agentOnline ? 'agent online' : s.prepared ? 'reachable' : 'not tested';
+    const dn = !host && s.up && s.up.down;
+    const led = dn ? 'bad' : host || s.agentOnline ? 'on' : s.prepared ? 'ok2' : 'off';
+    const tip = dn ? 'down' : host ? 'local' : s.agentOnline ? 'agent online' : s.prepared ? 'reachable' : 'not tested';
     const n = host ? STATE.tunnels.filter(t => !t.foreignId).length : STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id).length;
     const fl = host ? '🖥' : s.country ? flag(s.country) : ((s.role || 'iran') === 'iran' ? '🇮🇷' : '🌍');
     const ip = host ? STATE.settings.localIPv4 : (s.ipv4 || s.ipv6);
     return `<button class="srow${id === cur ? ' on' : ''}" data-pick="${id}">
       <span class="sflag">${fl}</span>
-      <span class="sinfo"><b>${host ? 'This panel host' : s.name ? nm(s.name) : '(unnamed)'}${host ? '' : ' ' + ownerChip(s.owner)}</b><small class="mono">${esc(ip || '—')}</small></span>
+      <span class="sinfo"><b>${host ? 'This panel host' : s.name ? nm(s.name) : '(unnamed)'}${host ? '' : ' ' + ownerChip(s.owner)}</b><small class="mono">${esc(ip || '—')}</small>${host ? '' : upLine(s.up, true)}</span>
       <span class="smeta"><span class="led ${led}" title="${tip}"></span><small class="faint" title="tunnels">🛰 ${n}</small><small class="faint mono" data-mini="${host ? '' : s.id}" title="CPU · RAM"></small></span>
     </button>`;
   };
   const grp = (key, title, items, add) => `<div class="sgrp"><div class="sgh"><span>${title} <span class="count">${items.length}</span></span><button class="btn sm" data-add="${key}">${add}</button></div>
     ${items.length ? items.map(row).join('') : `<div class="faint sempty">${key === 'iran' ? 'No Iran server yet — add one to start building tunnels.' : 'No foreign server yet.'}</div>`}</div>`;
+  const downNow = all.filter(s => s.up && s.up.down).sort((a, b) => a.up.since - b.up.since);
+  if (downNow.length) w.appendChild(h(`<div class="card sdown" data-notr><div class="odh"><b>🔴 ${L('Down now', 'الان قطع')}</b><span class="count">${downNow.length}</span></div>${downNow.map(s => `<button class="sdr" data-pick="${s.id}"><b>${nm(s.name || '(unnamed)')}</b><span class="faint">${L('down since', 'قطع از')} ${upWhen(s.up.since, s.up.now)}</span><b class="mono bad">${upDur(s.up.now - s.up.since)}</b><span class="faint">${s.up.recent && s.up.recent[0] ? upWhy(s.up.recent[0]) : ''}</span></button>`).join('')}</div>`));
   const split = h(`<div class="srvsplit">
     <aside class="card srvlist">
       ${all.length > 6 ? '<input class="sq" type="search" placeholder="Filter by name or IP…" data-sq>' : ''}
@@ -1229,6 +1232,7 @@ function viewServers(w) {
     if (scroll && window.innerWidth <= 860) det.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   $$('[data-pick]', split).forEach(b => b.onclick = () => show(b.dataset.pick, true));
+  $$('.sdr', w).forEach(b => b.onclick = () => show(b.dataset.pick, true));
   $$('[data-add]', split).forEach(b => b.onclick = () => serverModal({ role: b.dataset.add }));
   const q = $('[data-sq]', split);
   if (q) q.oninput = () => { const v = q.value.trim().toLowerCase(); $$('.srow', split).forEach(r => r.hidden = !!v && !r.textContent.toLowerCase().includes(v)); };
@@ -1260,6 +1264,51 @@ const oDayLabel = (u, now) => {
     : new Date(u * 1000).toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', weekday: 'short', day: 'numeric', month: 'short' });
 };
 const O_SHORT = 60; // drops shorter than this (seconds) are folded into a count
+// Uptime (uptime.go, from the outage log): a tunnel's is its users' — a switch between
+// hot-standby paths isn't an outage — a server's is its SSH monitor's. Written in both
+// languages here (the numbers move every load; the translator's table can't hold them).
+const L = (en, fa) => window.tpLang === 'fa' ? fa : en;
+const upDur = (s) => {
+  s = Math.max(0, Math.floor(s)); const d = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  const u = window.tpLang === 'fa' ? [' روز', ' ساعت', ' دقیقه', ' ثانیه'] : ['d', 'h', 'm', 's'];
+  return d ? `${d}${u[0]} ${hh}${u[1]}` : hh ? `${hh}${u[1]} ${m}${u[2]}` : m ? `${m}${u[2]}` : `${s}${u[3]}`;
+};
+const upPct = (p) => (p >= 99.995 ? '100' : p >= 99.9 ? p.toFixed(2) : p.toFixed(1)) + '%';
+const upCls = (p) => p >= 99.5 ? 'ok' : p >= 97 ? 'warn' : 'bad';
+const upWhen = (u, now) => { const d = oDayLabel(u, now); return `${d === 'Today' ? L('today', 'امروز') : d === 'Yesterday' ? L('yesterday', 'دیروز') : d} ${oClock(u)}`; };
+// how long it has been up; with no outage since the log began, "at least" that long
+const upFor = (u) => { const d = upDur(u.now - (u.since || u.from)); return u.since ? d : L(`${d}+`, `بیش از ${d}`); };
+// one small line: "up 3d 4h · 7d 99.2%" (and the 24 h when under 100%), or red "down 12m"
+function upLine(u, short) {
+  if (!u) return '';
+  const now = u.now;
+  if (u.down) return `<small class="upl down" data-notr title="${esc(L('Down since ', 'قطع از ') + upWhen(u.since, now) + L(' (Tehran)', ' (تهران)'))}">● ${L('down', 'قطع')} ${upDur(now - u.since)}</small>`;
+  const tip = u.since ? L(`Up since ${upWhen(u.since, now)} (Tehran) · ${u.n7} outage(s) in 7 days`, `روشن از ${upWhen(u.since, now)} (تهران) · ${u.n7} قطعی در 7 روز`)
+    : L(`No outage since the log began (${upWhen(u.from, now)})`, `از شروع لاگ (${upWhen(u.from, now)}) قطعی نداشته`);
+  // the 7 days always, the last 24 h only when they were not all up (the row stays one line)
+  const pc = (p, l) => p < 0 ? '' : ` · <span class="${upCls(p)}">${l} <bdi>${upPct(p)}</bdi></span>`;
+  const pcts = short ? '' : pc(u.a7, L('7d', '7 روز')) + (u.a24 >= 0 && u.a24 < 99.995 ? pc(u.a24, L('24h', '24 ساعت')) : '');
+  return `<small class="upl" data-notr title="${esc(tip + L(` · last 24 h ${upPct(Math.max(0, u.a24))}, 7 days ${upPct(Math.max(0, u.a7))}`, ` · 24 ساعت اخیر ${upPct(Math.max(0, u.a24))}، 7 روز ${upPct(Math.max(0, u.a7))}`))}">${L('up', 'روشن')} ${upFor(u)}${pcts}</small>`;
+}
+const upWhy = (o) => o.why === 'reboot' ? L('the server rebooted', 'سرور ریبوت شد')
+  : o.why === 'network' ? L(`${o.others} other server(s) dropped at the same time — network / provider`, `هم‌زمان ${o.others} سرور دیگر هم قطع شد — شبکه / دیتاسنتر`)
+  : (o.end && o.end - o.start < 60) ? L('short network drop', 'قطعی کوتاه شبکه')
+  : L("SSH didn't answer — the server or its network", 'SSH جواب نداد — خود سرور یا شبکه‌اش');
+// the server card's uptime: one line, the last outage, the last few on expand
+function upBox(s) {
+  const u = s.up; if (!u) return '';
+  const now = u.now, last = (u.recent || []).find(o => o.end), live = u.down;
+  const head = live ? `<b class="bad">● ${L('Down', 'قطع')} ${upDur(now - u.since)}</b> <span class="faint">${L('since', 'از')} ${upWhen(u.since, now)}</span>`
+    : `<b class="ok">● ${L('Up', 'روشن')} ${upFor(u)}</b>${u.since ? ` <span class="faint">${L('since', 'از')} ${upWhen(u.since, now)}</span>` : ''}`;
+  const pc = (p, l) => p < 0 ? '' : `<span class="${upCls(p)}">${l} <bdi>${upPct(p)}</bdi></span>`;
+  const meta = [u.boot ? `${L('machine booted', 'آخرین بوت')} ${upDur(now - u.boot)} ${L('ago', 'پیش')}` : '',
+    !live && last ? `${L('last down', 'آخرین قطعی')} ${upWhen(last.start, now)}، ${upDur(last.end - last.start)} — ${upWhy(last)}` : (!live && !last ? L('no outage recorded', 'قطعی ثبت نشده') : ''),
+    live && u.recent && u.recent[0] ? upWhy(u.recent[0]) : ''].filter(Boolean);
+  const rows = (u.recent || []).map(o => `<div class="upr"><span class="mono">${upWhen(o.start, now)}</span><b class="mono">${o.end ? upDur(o.end - o.start) : L('ongoing', 'ادامه دارد')}</b><span class="faint">${upWhy(o)}</span></div>`).join('');
+  return `<div class="upbox${live ? ' down' : ''}" data-notr><div class="uph">${head}<span class="upp">${pc(u.a24, L('24h', '24 ساعت'))}${pc(u.a7, L('7d', '7 روز'))}</span></div>
+    ${meta.length ? `<div class="upm faint">${meta.map(esc).join(' · ')}</div>` : ''}
+    ${rows ? `<details class="upd"><summary class="faint">${L(`Last outages (${u.recent.length})`, `قطعی‌های اخیر (${u.recent.length})`)}</summary>${rows}</details>` : ''}</div>`;
+}
 // what an outage was, in plain words, and whose it is (the current name: servers get renamed)
 function outageInfo(o) {
   let name = o.name || '', owner = '', gone = false, key, icon;
@@ -1424,7 +1473,8 @@ document.addEventListener('toggle', (e) => {
 document.addEventListener('click', (e) => { const mi = e.target.closest && e.target.closest('details.more .mi'); if (mi) setTimeout(() => { const d = mi.closest('details.more'); if (d && !mi.dataset.armed) d.removeAttribute('open'); }, 0); });
 function serverCard(s) {
   const isIran = (s.role || 'iran') === 'iran';
-  const status = s.agentOnline ? `<span class="pill on"><span class="led"></span>agent online</span>`
+  const status = s.up && s.up.down ? `<span class="pill bad"><span class="led"></span>down</span>`
+    : s.agentOnline ? `<span class="pill on"><span class="led"></span>agent online</span>`
     : s.prepared ? `<span class="pill ok2"><span class="led"></span>reachable</span>`
     : `<span class="pill off"><span class="led"></span>not tested</span>`;
   const tl = STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id);
@@ -1446,6 +1496,7 @@ function serverCard(s) {
       ])}
     </div>
     <div data-paths="${s.id}"></div>
+    ${upBox(s)}
     <dl class="kvt">
       <div><dt>IPv4</dt><dd><span class="mono">${esc(s.ipv4 || '—')}</span></dd></div>
       <div class="wide"><dt>IPv6</dt><dd><span class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</span></dd></div>
@@ -1622,7 +1673,7 @@ function viewTunnels(w) {
     const fl = (id, d) => { const s = id ? serverById(id) : null; return s && s.country ? flag(s.country) : d; };
     const row = (t) => `<button class="srow" data-pick="${t.id}">
       <span class="sflag">${fl(t.foreignId, t.foreignId ? '🌍' : '🖥')}</span>
-      <span class="sinfo"><b data-notr>${esc(t.name)}</b><small>→ ${srvNm(t.foreignId, 'panel host')} · ${esc(methodTitle(t.active || t.selected) || '—')}</small></span>
+      <span class="sinfo"><b data-notr>${esc(t.name)}</b><small>→ ${srvNm(t.foreignId, 'panel host')} · ${esc(methodTitle(t.active || t.selected) || '—')}</small>${upLine(t.up)}</span>
       <span class="smeta"><span class="sbadges">${t.hotStandby ? '<span class="sbadge hs" title="hot standby">⚡</span>' : ''}<span class="sbadge fo" data-tfo="${t.id}" title="on a backup path"${t.failover ? '' : ' hidden'}>🔁</span><span class="led ${t.active ? (t._down || t.health ? 'bad' : 'on') : 'off'}" data-tled="${t.id}" title="${t.active ? 'running' : 'stopped'}"></span></span><small class="faint mono" data-lr="${t.id}"></small></span></button>`;
     const split = h(`<div class="srvsplit usplit">
       <aside class="card srvlist">

@@ -736,20 +736,25 @@ type serverView struct {
 	AgentHost   string `json:"agentHost,omitempty"`
 	// Shared: another account's server that carries one of this user's tunnels (read-only)
 	Shared bool `json:"shared,omitempty"`
+	// Up: uptime from the outage log (uptime.go)
+	Up *UptimeView `json:"up,omitempty"`
 }
 
 func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		out := []serverView{}
 		user, admin := s.who(r)
+		boots := s.app.bootTimes()
+		now := time.Now().Unix()
 		s.app.store.View(func(st *State) {
+			from := outagesFrom(st, now)
 			var shared map[string]bool
 			if !admin {
 				shared = sharedServersLocked(st, user)
 			}
 			for _, x := range st.Servers {
 				if shared[x.ID] {
-					out = append(out, serverView{Server: sharedView(x), Shared: true})
+					out = append(out, serverView{Server: sharedView(x), Shared: true, Up: serverUptime(st.Outages, x.ID, from, now, boots[x.ID])})
 					continue
 				}
 				if !visible(user, admin, x.Owner) {
@@ -758,7 +763,7 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 				cp := *x
 				cp.Password, cp.PrivateKey = maskStr(cp.Password), maskStr(cp.PrivateKey)
 				cp.AgentToken = ""
-				v := serverView{Server: &cp}
+				v := serverView{Server: &cp, Up: serverUptime(st.Outages, x.ID, from, now, boots[x.ID])}
 				if ac := s.app.agents.online(x.ID); ac != nil {
 					v.AgentOnline, v.AgentHost = true, ac.hostname
 				}
@@ -1095,14 +1100,17 @@ func isMasked(s string) bool { return s == "" || s == "********" }
 func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 	type tv struct {
 		Tunnel
-		Families []string `json:"families"`        // address families both of its servers can use
-		Clash    string   `json:"clash,omitempty"` // a port another tunnel on this Iran server holds
-		HS       *hsView  `json:"hs,omitempty"`    // hot standby: the switcher's state
-		Health   *string  `json:"health"`          // monitor's last verdict: "" ok, a reason, null = not checked yet
+		Families []string    `json:"families"`        // address families both of its servers can use
+		Clash    string      `json:"clash,omitempty"` // a port another tunnel on this Iran server holds
+		HS       *hsView     `json:"hs,omitempty"`    // hot standby: the switcher's state
+		Health   *string     `json:"health"`          // monitor's last verdict: "" ok, a reason, null = not checked yet
+		Up       *UptimeView `json:"up,omitempty"`    // the users' uptime (running tunnels; uptime.go)
 	}
 	out := []tv{}
 	user, admin := s.who(r)
+	now := time.Now().Unix()
 	s.app.store.View(func(st *State) {
+		from := outagesFrom(st, now)
 		for _, t := range st.Tunnels {
 			if !visible(user, admin, t.Owner) {
 				continue
@@ -1117,7 +1125,11 @@ func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 			if r, ok := s.app.cachedHealth(t.ID); ok {
 				hp = &r
 			}
-			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, s.app.hsViewOf(t.ID), hp})
+			var up *UptimeView
+			if t.Active != "" {
+				up = uptimeOf(st.Outages, "tunnel", t.ID, from, now)
+			}
+			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, s.app.hsViewOf(t.ID), hp, up})
 		}
 	})
 	writeJSON(w, out)
@@ -1718,6 +1730,7 @@ func (s *Server2) outages(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				st.Outages = open
+				st.OutagesFrom = time.Now().Unix() // uptime counts from now on
 				return nil
 			})
 		}
