@@ -190,6 +190,8 @@ type App struct {
 	benchMu  sync.Mutex
 	benchRes map[string][]BenchResult // "iran|foreign|family" -> results
 	benchRun *benchActive             // the running benchmark (nil when idle)
+	// benchFails: per route, the last attempt that measured nothing (bench.go)
+	benchFails map[string]BenchFail
 
 	// hostFor, when set (tests only), supplies the Host for a server instead of agent/SSH.
 	hostFor func(*Server) Host
