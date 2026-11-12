@@ -586,7 +586,7 @@ async function viewUsage(w) {
     L.sort((x, y) => x[0] - y[0]); // by time, then the tunnels as above (most traffic first)
     const csv = ['start (Tehran),end (Tehran),tunnel,deleted,iran server,foreign server,account,download bytes,upload bytes,paid bytes,download GB,upload GB,total GB,paid GB'].concat(L.map(x => x.slice(1).join(',')));
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob(['﻿' + csv.join('\n') + '\n'], { type: 'text/csv' })); // (the mark: Excel reads it as UTF-8)
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + csv.join('\n') + '\n'], { type: 'text/csv' })); // (the mark: Excel reads it as UTF-8)
     a.download = `usage-${iso(r.from).slice(0, 13).replace(' ', '_')}-${iso(tEnd).slice(0, 13).replace(' ', '_')}.csv`;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
