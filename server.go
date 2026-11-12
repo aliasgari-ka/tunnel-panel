@@ -99,6 +99,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/servers/console", s.auth(s.guard("server", s.serverConsole)))
 	g("/api/tunnels", "self", s.tunnels)
 	g("/api/tunnels/save", "self", s.tunnelSave)
+	g("/api/tunnels/options", "tunnel", s.tunnelOptions) // saves a method's options and applies them at once
 	g("/api/tunnels/delete", "tunnel", s.tunnelDelete)
 	g("/api/tunnels/apply", "tunnel", s.tunnelApply)
 	g("/api/tunnels/stop", "tunnel", s.tunnelStop)

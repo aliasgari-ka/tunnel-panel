@@ -2046,7 +2046,12 @@ async function saveTunnel(t, patch) {
   if (r && r.job) openLog(t, r.job);
   else if (r && r.warn) toast(r.warn);
 }
-function renderOpts(box, t, mid) {
+// Options apply at once: a select or switch saves and rebuilds as soon as it changes (one
+// click, nothing half-typed); text and number fields on "Save & apply" (or Enter), so a
+// rebuild never starts in the middle of typing a port. The server validates first, rebuilds
+// only this method's paths, moves users off a path while it is rebuilt and puts the previous
+// options back when the new ones break a path that worked; progress and the result show here.
+function renderOpts(box, t, mid, status) {
   const m = STATE.methods.find(x => x.id === mid);
   if (!m || !m.fields?.length) { box.innerHTML = `<div class="opts one"><div class="muted">No options for this method.</div></div>`; return; }
   const saved = (t.options && t.options[mid]) || {};
@@ -2058,14 +2063,59 @@ function renderOpts(box, t, mid) {
     return `<label class="f">${esc(f.label)}<input data-k="${f.key}" class="mono" value="${esc(v)}"${f.type === 'number' ? ` inputmode="numeric" placeholder="${esc(f.default || 'auto')}"` : ''}>${help}</label>`;
   };
   const basic = m.fields.filter(f => !f.advanced), adv = m.fields.filter(f => f.advanced);
+  const advOpen = !!$('details.advopts[open]', box);
   box.innerHTML = `<div class="opts${basic.length < 2 ? ' one' : ''}">${basic.map(field).join('')}
-    ${adv.length ? `<details class="advopts" style="grid-column:1/-1"><summary>🎛 Advanced tuning <span class="faint">(${adv.length}) — the defaults are what this method always used</span></summary><div class="opts inner">${adv.map(field).join('')}</div></details>` : ''}
-    <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px"><button class="btn sm ghost" data-reset title="back to the method's defaults (saved when you press Save)">↺ Defaults</button><button class="btn sm pri" data-save>Save options</button></div></div>`;
-  $('[data-reset]', box).onclick = () => m.fields.forEach(f => { const el = $(`[data-k="${f.key}"]`, box); if (!el) return; if (el.type === 'checkbox') el.checked = String(f.default) === 'true'; else el.value = f.default; });
-  $('[data-save]', box).onclick = async () => {
-    const opts = {}; $$('[data-k]', box).forEach(el => opts[el.dataset.k] = el.type === 'checkbox' ? String(el.checked) : el.value);
-    try { await api('/tunnels/save', tunnelBody(t, { options: { [mid]: opts } })); await loadAll(); renderView(); toast('Options saved — Re-apply the tunnel to use them'); } catch (e) { alertModal('Error', e.message); }
+    ${adv.length ? `<details class="advopts" style="grid-column:1/-1"${advOpen ? ' open' : ''}><summary>🎛 Advanced tuning <span class="faint">(${adv.length}) — the defaults are what this method always used</span></summary><div class="opts inner">${adv.map(field).join('')}</div></details>` : ''}
+    <div class="faint" style="grid-column:1/-1;font-size:12px">${t.active ? 'Changes apply at once: a list or switch as soon as you pick it, text fields with Save &amp; apply. Only this method is rebuilt; users on it move to another path meanwhile, and a change that breaks it is undone on its own.' : 'The tunnel is stopped: options are saved and used when it starts.'}</div>
+    <div class="ostat" data-ost style="grid-column:1/-1;font-size:12.5px"${status ? '' : ' hidden'}>${status || ''}</div>
+    <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px"><button class="btn sm ghost" data-reset title="back to the method's defaults (applied when you press Save &amp; apply)">↺ Defaults</button><button class="btn sm pri" data-save>Save &amp; apply</button></div></div>`;
+  const ost = $('[data-ost]', box);
+  const show = (html) => { ost.hidden = !html; ost.innerHTML = html || ''; };
+  const busy = (on) => $$('[data-k],[data-save],[data-reset]', box).forEach(el => el.disabled = on);
+  const read = () => { const o = {}; $$('[data-k]', box).forEach(el => o[el.dataset.k] = el.type === 'checkbox' ? String(el.checked) : el.value); return o; };
+  const val = (o, f) => { const v = o[f.key]; return String(v === undefined || v === '' ? (f.default ?? '') : v); };
+  const same = (a, b) => m.fields.every(f => val(a, f) === val(b, f));
+  const wireLog = (el, jid) => { const lb = $('[data-olog]', el); if (lb) lb.onclick = (e) => { e.preventDefault(); openLog(t, jid); }; };
+  let sending = false;
+  const apply = async () => {
+    if (sending) return;
+    const opts = read();
+    if (same(opts, saved)) { show('<span class="muted">Nothing changed.</span>'); return; }
+    sending = true; busy(true); show('<span class="muted">Saving…</span>');
+    let r;
+    try { r = await api('/tunnels/options', { ID: t.id, Method: mid, Options: opts }); }
+    catch (e) { sending = false; busy(false); show(`<span style="color:var(--crit)">✕ ${esc(e.message)}</span>`); return; }
+    t.options = { ...(t.options || {}), [mid]: opts };
+    if (!r.job) { sending = false; renderOpts(box, t, mid, `<span style="color:var(--good)">✓ ${esc(r.note || 'Saved')}</span>`); return; }
+    // the job's progress, inline: its last line while it runs, the result at the end
+    const jid = r.job;
+    let fails = 0;
+    const tick = async () => {
+      if (!ost.isConnected) { followJob(jid); return; }
+      let j = null;
+      try { j = await api('/jobs?id=' + jid); fails = 0; } catch (e) { if (++fails < 5) { setTimeout(tick, 2000); return; } }
+      const lines = (j && j.lines) || [], clean = (l) => l.replace(/^\d\d:\d\d:\d\d /, '');
+      if (j && j.status === 'running') {
+        show(`<span class="muted">⏳ Applying… <span class="mono" data-notr>${esc(clean(lines[lines.length - 1] || ''))}</span></span> <a href="#" data-olog>log</a>`);
+        wireLog(ost, jid);
+        setTimeout(tick, 2000); return;
+      }
+      // the result, with the options as stored now (a rollback put the previous ones back)
+      try { await loadAll(); } catch (e) {}
+      const nt = STATE.tunnels.find(x => x.id === t.id); if (nt) Object.assign(t, { options: nt.options, paths: nt.paths, hs: nt.hs });
+      const res = lines.filter(l => / ✓ | ✕ |DONE|ROLLED BACK|ERROR/.test(l)).slice(-4).map(clean);
+      const ok = j && j.status === 'ok', back = lines.some(l => /ROLLED BACK/.test(l));
+      sending = false;
+      renderOpts(box, t, mid, `<div style="color:var(${ok ? '--good' : '--crit'})">${ok ? '✓ Applied' : back ? '↩ Rolled back to the previous options' : '✕ Not applied'}</div>${res.map(l => `<div class="faint mono" style="font-size:11.5px" data-notr>${esc(l)}</div>`).join('')}<a href="#" data-olog>log</a>`);
+      wireLog(box, jid);
+      jobEnded();
+    };
+    tick();
   };
+  $('[data-reset]', box).onclick = () => m.fields.forEach(f => { const el = $(`[data-k="${f.key}"]`, box); if (!el) return; if (el.type === 'checkbox') el.checked = String(f.default) === 'true'; else el.value = f.default; });
+  $('[data-save]', box).onclick = apply;
+  $$('select[data-k],input[type=checkbox][data-k]', box).forEach(el => el.onchange = apply);
+  $$('input[data-k]:not([type=checkbox])', box).forEach(el => el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(); } });
 }
 function tunnelModal(t) {
   t = t || {};
