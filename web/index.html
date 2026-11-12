@@ -253,7 +253,7 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .mg-h{padding-inline-end:44px}
 .mclose:hover{color:var(--fg);border-color:var(--muted)}
 .hsl{display:flex;flex-direction:column;gap:3px;font-size:13px;margin-bottom:8px}
-.hsl div{padding:5px 9px;border-radius:7px;background:var(--panel-2)}
+.hsl>div:not(.hsset){padding:5px 9px;border-radius:7px;background:var(--panel-2)}
 .hsl .bad{color:var(--crit)}
 .rt-card{padding:16px 18px;display:flex;flex-direction:column;gap:6px}
 .rt-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:6px}
@@ -347,6 +347,8 @@ details.more .pop{position:absolute;inset-inline-end:0;top:calc(100% + 4px);z-in
 .opts{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;background:var(--panel-2);border-radius:10px}.opts.one{grid-template-columns:1fr}
 .mdesc{font-size:12px;color:var(--muted);background:var(--panel-2);border-radius:8px;padding:8px 10px;border-inline-start:3px solid var(--accent)}
 .actions{display:flex;gap:8px;flex-wrap:wrap}
+/* the tunnel window: one action that fits, the rest under ⋯ */
+.mg-bar{align-items:center;margin-top:4px}.mg-bar .mg-now{font-size:12.5px}@media (min-width:861px){.mg-bar details.more .pop{bottom:calc(100% + 6px);top:auto}}
 .paths{margin-top:10px;display:flex;flex-direction:column;gap:5px}
 .path{display:flex;justify-content:space-between;font-size:12px;font-family:var(--mono);padding:4px 8px;border-radius:7px;background:var(--panel-2)}
 .path.ok{color:var(--good)}.path.bad{color:var(--crit)}
@@ -863,7 +865,18 @@ optgroup option{color:var(--fg);font-weight:500}
 .tdet .traf [data-speed]{display:block}.tdet .traf [data-speed]:empty{display:none}
 .tdet .tc-idle{min-height:0;padding:12px;font-size:12.5px;border:1px dashed var(--line);background:transparent}
 .tc-hs{display:flex;flex-direction:column;gap:6px}
-.hsl>div{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:9px;border:1px solid transparent}
+.hsl>div:not(.hsset){display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:9px;border:1px solid transparent}
+/* a path's settings, open under its row (⋯ → ⚙ Settings) */
+.hsl>.hsset{display:flex;flex-direction:column;gap:12px;margin:2px 0 8px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));border-radius:12px;background:var(--panel);color:var(--fg)}
+.hsset .hss-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.hsset .hss-h .grow{flex:1}.hsset .hss-h .hn{font-weight:600}
+.hsset .hss-note,.hsset .hss-small{font-size:12px;line-height:1.55}
+.hsset .hss-sec{display:flex;flex-direction:column;gap:6px;padding-top:10px;border-top:1px dashed var(--line)}
+.hsset .hss-sec>.lbl{margin:0}
+.hsset .hss-now{font-size:11.5px;display:flex;flex-direction:column;gap:2px}
+.hsset .hss-tbl{overflow-x:auto}.hsset table{width:100%;border-collapse:collapse;font-size:12px}
+.hsset th,.hsset td{padding:5px 8px;text-align:start;border-bottom:1px solid var(--line);white-space:nowrap}.hsset thead th{color:var(--faint);font-weight:600}
+.hsset .oconf{color:var(--warn,#d97706)}
+@media (max-width:640px){.hsl>.hsset{padding:10px}.hsset .opts{grid-template-columns:1fr}}
 .hsl .hi{font-weight:700;color:var(--good);flex:none}.hsl .bad .hi{color:var(--crit)}
 .hsl .hm{display:flex;flex-direction:column;flex:1;min-width:0}.hsl .hn{font-weight:600}.hsl .hq{font-size:11.5px;color:var(--faint);align-self:flex-start}
 .hsl .hw{font-size:11.5px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}

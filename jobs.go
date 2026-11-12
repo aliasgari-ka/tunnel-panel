@@ -266,6 +266,9 @@ func (a *App) build(m *Method, t *Tunnel, srv *Server, redir ...map[int]int) (Si
 	}
 	uerr := a.store.Update(func(st *State) error {
 		ir, kh, err = buildPlansRedirect(m, t, srv, fsrv, st.Settings, rd)
+		if err == nil {
+			addPathNet(m, t, &ir, &kh) // a hot-standby path's kernel settings (pathnet.go)
+		}
 		keepPathSecrets(st, t)
 		if err == nil && t.ID != "bench" {
 			err = portClash(st, t, m.ID)

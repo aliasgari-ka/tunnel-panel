@@ -2061,14 +2061,14 @@ function hsCauseHtml(c, key, canRestart) {
   const act = c.action ? `<div class="hca" data-notr>→ ${esc(fa ? c.actionFa : c.action)}${btn}</div>` : '';
   return `<details class="hcz"><summary><span class="hct" data-notr>${side ? `<b class="hcs">${esc(side)}</b> ` : ''}${esc(fa ? c.textFa : c.text)}</span> <span class="faint" data-notr>${L('evidence', 'شواهد')} ▸</span></summary>${ev ? `<ul data-notr dir="ltr">${ev}</ul>` : ''}${act}<div class="faint" data-notr>${L('checked', 'بررسی شد')} · ${ago(c.at)}</div></details>`;
 }
-// a path's ⋯ menu: Restart (a down standby path); Remove — not the users' path (move them first) nor the last working one
+// a path's ⋯ menu: its settings; Restart (a down standby path); Remove — not the users' path (move them first) nor the last working one
 function hsRowMenu(v, ok, i) {
   if (!v.keys || !v.keys[i]) return '';
   const working = ok.filter(Boolean).length;
   const why = i === v.active ? 'The users are on this path — move them to another one with “use” first.'
     : (ok[i] && working <= 1) ? 'The last working path can\'t be removed.' : '';
   const rs = !ok[i] && i !== v.active ? { label: '↻ ' + L('Restart path', 'ری‌استارت مسیر'), attr: `data-hsrestart="${esc(v.keys[i])}" title="${esc(L("restart only this path's cores on both servers — the users and the other paths are left alone", 'فقط هسته‌های این مسیر روی هر دو سرور ری‌استارت می‌شود — کاربران و مسیرهای دیگر دست نمی‌خورند'))}"` } : null;
-  return moreMenu([rs, why
+  return moreMenu([{ label: '⚙ Settings', attr: `data-hsset="${esc(v.keys[i])}" data-hsname="${esc(v.paths[i])}"` }, rs, why
     ? { label: '🗑 Remove path', attr: `disabled title="${esc(why)}"`, danger: true }
     : { label: '🗑 Remove path', attr: `data-hsrm="${esc(v.keys[i])}" data-hsname="${esc(v.paths[i])}"`, danger: true },
     why ? { label: `<span class="hwhy">${esc(why)}</span>`, attr: 'disabled' } : null]);
@@ -2082,6 +2082,7 @@ function hsOffFold(t) {
     `<div><span class="hi faint">–</span><span class="hm"><span class="hn">${esc(name(k))}</span><span class="hq">removed by hand — auto mode and Repair leave it out</span></span><button type="button" class="btn sm ghost" data-hsrestore="${esc(k)}" title="allow it again: it starts as a new standby path, the users stay where they are">put back</button></div>`).join('')}</div></details>`;
 }
 function hsWire(t, m) {
+  $$('[data-hsset]', m).forEach(b => b.onclick = () => hsSettings(t, b.dataset.hsset, b.dataset.hsname, b.closest('.hsl > div')));
   $$('[data-hsrm]', m).forEach(b => b.onclick = () => hsRemoveConfirm(t, b.dataset.hsrm, b.dataset.hsname));
   $$('[data-hsrestart]', m).forEach(b => b.onclick = async (e) => {
     e.preventDefault(); b.disabled = true;
@@ -2123,6 +2124,126 @@ function hsRemoveConfirm(t, key, name) {
     catch (er) { close(); alertModal('Remove path', er.message); }
   };
 }
+// A path's settings, open under its row (⋯ → ⚙ Settings): the method's options (applied at once,
+// only this method's paths rebuilt — see renderOpts) and the kernel settings of the path's own
+// interface (changed live on both servers, nothing restarts). The users are moved to the best
+// other working path meanwhile and back; with none, a method change asks first. What the
+// servers run with now is read when the panel opens; the server-wide settings are shown
+// read-only (Servers → ⚡ Optimize changes them).
+function hsSettings(t, key, name, row) {
+  if (!row) return;
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains('hsset')) { next.remove(); return; }
+  $$('.hsset', row.parentNode).forEach(x => x.remove());
+  const [mid, fam] = key.split('|');
+  const m = STATE.methods.find(x => x.id === mid);
+  const v = t.hs || {}, i = (v.keys || []).indexOf(key), users = i >= 0 && i === v.active;
+  const others = (v.ok || []).some((ok, k) => ok && k !== i);
+  const fams = [...new Set((t.paths || []).filter(p => p.method === mid).map(p => p.family))];
+  const box = h(`<div class="hsset" data-hsset-for="${esc(key)}">
+    <div class="hss-h"><b>⚙ <span>Settings</span></b><span class="hn" data-notr>${esc(name)}</span>${users ? '<span class="chip hs">users on it</span>' : ''}<span class="grow"></span><button type="button" class="btn sm ghost" data-hssx title="Close">✕</button></div>
+    <div class="hss-note faint">${users ? (others ? 'The users are on this path: while it changes they move to the best other working path, then come back. Nobody is cut.' : 'The users are on this path and no other path works now: kernel settings change in place (no restart); a method change asks first.') : 'No users on this path: it changes without touching anyone. The other paths keep running.'}</div>
+    <div class="hss-sec"><div class="lbl">🔧 <span>Method</span> · <span data-notr>${esc(m ? m.title : mid)}</span></div>${fams.length > 1 ? `<div class="faint hss-small">These options are the method's: its IPv4 and IPv6 paths are both rebuilt.</div>` : ''}<div data-mopts></div></div>
+    <div class="hss-sec"><div class="lbl">🐧 <span>Kernel · this path's interface</span> <span class="mono" data-ifc></span></div><div data-knet><div class="faint hss-small">Reading what the servers run…</div></div></div>
+    <div class="hss-sec"><div class="lbl">🖥 <span>Server-wide</span> <span class="faint">(read only)</span></div><div data-ksrv></div></div>
+  </div>`);
+  row.after(box);
+  $('[data-hssx]', box).onclick = () => box.remove();
+  renderOpts($('[data-mopts]', box), t, mid);
+  api('/tunnels/pathnet/info', { ID: t.id, Path: key }).then(info => { if (box.isConnected) pnRender(box, t, key, m, fam, info); })
+    .catch(e => { if (box.isConnected) $('[data-knet]', box).innerHTML = `<div class="hss-small" style="color:var(--crit)">✕ ${esc(e.message)}</div>`; });
+}
+// the kernel part of a path's settings, with what both servers run now
+function pnRender(box, t, key, m, fam, info, status) {
+  const kn = $('[data-knet]', box), ks = $('[data-ksrv]', box);
+  const sides = info.sides || [], ir = sides.find(s => s.side === 'ir') || {}, kh = sides.find(s => s.side === 'kh') || {};
+  const mb = (b) => b && +b > 0 ? (+b / 1048576).toFixed(+b >= 10485760 ? 0 : 1) + ' MB' : '—';
+  const sideName = (s) => s.side === 'ir' ? 'Iran' : 'Foreign';
+  ks.innerHTML = `<div class="hss-tbl"><table><thead><tr><th></th><th>Congestion control</th><th>Default qdisc</th><th>Socket buffers (max)</th><th>Conntrack</th></tr></thead><tbody>${sides.map(s => s.err
+    ? `<tr><th>${sideName(s)}</th><td colspan="4" style="color:var(--crit)">✕ ${esc(s.err)}</td></tr>`
+    : `<tr><th>${sideName(s)}</th><td class="mono">${esc(s.cc || '—')}</td><td class="mono">${esc(s.defQdisc || '—')}</td><td class="mono">${mb(s.rmem)} / ${mb(s.wmem)}</td><td class="mono">${esc(s.ctCount || '—')} / ${esc(s.ctMax || '—')}</td></tr>`).join('')}</tbody></table></div>
+    <div class="faint hss-small">${isAdmin() ? '<span>These are the whole server\'s, shared by every tunnel on it — change them under</span> <a href="#" data-hsopt>Servers → ⚡ Optimize</a>' : '<span>These are the whole server\'s, shared by every tunnel on it.</span>'}</div>`;
+  const ol = $('[data-hsopt]', ks); if (ol) ol.onclick = (e) => { e.preventDefault(); optimizeModal(t.serverId); };
+  $('[data-ifc]', box).textContent = info.iface || '';
+  if (!info.iface) {
+    kn.innerHTML = `<div class="faint hss-small">This path forwards the ports in user space — it has no network interface of its own. The kernel settings that affect it are the servers' (below).</div>`;
+    return;
+  }
+  const pn = (t.pathNet || {})[key] || {};
+  const ownMtu = !!(m && m.fields.some(f => f.key === 'mtu'));
+  const hand = (k) => pn[k] ? ' <span class="faint" title="set by you — kept as it is; ↺ Defaults puts the method\'s back">✋</span>' : '';
+  const now = (s) => s.err ? '<span>—</span>' : s.ifUp ? `<span class="mono" data-notr>mtu ${esc(s.mtu)} · txqueuelen ${esc(s.txqlen)} · qdisc ${esc(s.qdisc || '—')}${s.side === 'ir' && s.mss ? ' · ' + esc(s.mss) : ''}</span>` : '<span>interface not up</span>';
+  const qd = ['', 'fq', 'fq_codel', 'cake', 'pfifo_fast'];
+  const lo = fam === 'v6' ? 1280 : 576;
+  kn.innerHTML = `<div class="opts">
+    ${ownMtu ? `<div class="faint hss-small" style="grid-column:1/-1">MTU: this method sets it itself — it is in the method's options above.</div>` : `<label class="f"><span>MTU</span>${hand('mtu')}<input data-n="mtu" dir="ltr" inputmode="numeric" value="${pn.mtu || ''}" placeholder="${esc(ir.mtu ? 'default · now ' + ir.mtu : 'default')}"><small class="fhelp">${lo}–9000. Smaller packets for a route that drops big ones.</small></label>`}
+    <label class="f"><span>TCP MSS</span>${hand('mss')}<input data-n="mss" dir="ltr" inputmode="numeric" value="${pn.mss || ''}" placeholder="auto · from the MTU"><small class="fhelp">536–1460: a cap on the users' TCP segments on this path (Iran side). Blank = from the path MTU.</small></label>
+    <label class="f"><span>Queue length</span>${hand('txqlen')}<input data-n="txqlen" dir="ltr" inputmode="numeric" value="${pn.txqlen || ''}" placeholder="${esc(ir.txqlen ? 'default · now ' + ir.txqlen : 'default')}"><small class="fhelp">txqueuelen, 10–100000. Longer absorbs bursts, shorter keeps latency low.</small></label>
+    <label class="f"><span>Queueing discipline</span>${hand('qdisc')}<select data-n="qdisc">${qd.map(q => `<option value="${q}"${(pn.qdisc || '') === q ? ' selected' : ''}>${q || 'kernel default'}</option>`).join('')}</select><small class="fhelp">fq paces (good with bbr); fq_codel and cake keep queues short under load.</small></label>
+    <div class="hss-now faint" style="grid-column:1/-1"><div><span>Now on Iran:</span> ${now(ir)}</div><div><span>Now on foreign:</span> ${now(kh)}</div></div>
+    <div class="faint hss-small" style="grid-column:1/-1">Changed live on both servers — nothing restarts, open connections stay. Kept after a restart or reboot. What you set (✋) stays as you set it.</div>
+    <div class="ostat" data-nst style="grid-column:1/-1;font-size:12.5px"${status ? '' : ' hidden'}>${status || ''}</div>
+    <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px"><button class="btn sm ghost" data-nreset title="the interface as the method makes it, applied now">↺ Defaults</button><button class="btn sm pri" data-nsave>Save &amp; apply</button></div></div>`;
+  const st = $('[data-nst]', kn);
+  const show = (html) => { st.hidden = !html; st.innerHTML = html || ''; };
+  const busy = (on) => $$('[data-n],[data-nsave],[data-nreset]', kn).forEach(el => el.disabled = on);
+  // checked here first (the server checks again); a Persian keypad's ۱۴۰۰ is 1400
+  const read = () => { const o = {}; $$('[data-n]', kn).forEach(el => o[el.dataset.n] = latinDigits(el.value).trim()); return o; };
+  const check = (o) => {
+    const n = (k) => o[k] ? +o[k] : 0;
+    for (const [k, l] of [['mtu', 'MTU'], ['mss', 'TCP MSS'], ['txqlen', 'Queue length']]) if (o[k] && !/^\d+$/.test(o[k])) return l + ': a number, please';
+    if (n('mtu') && (n('mtu') < lo || n('mtu') > 9000)) return `MTU must be between ${lo} and 9000`;
+    if (n('mss') && (n('mss') < 536 || n('mss') > 8960)) return 'TCP MSS must be between 536 and 1460';
+    if (n('mss') && n('mtu') && n('mss') > n('mtu') - 40) return `TCP MSS doesn't fit in MTU ${n('mtu')} — at most ${n('mtu') - 40}`;
+    if (n('txqlen') && (n('txqlen') < 10 || n('txqlen') > 100000)) return 'Queue length must be between 10 and 100000';
+    return '';
+  };
+  const same = (o) => ['mtu', 'mss', 'txqlen', 'qdisc'].every(k => String(o[k] || '') === String(pn[k] || ''));
+  const send = async (reset) => {
+    const o = reset ? {} : read();
+    const err = reset ? '' : check(o);
+    if (err) { show(`<span style="color:var(--crit)">✕ ${esc(err)}</span>`); return; }
+    if (!reset && same(o)) { show('<span class="muted">Nothing changed.</span>'); return; }
+    busy(true); show('<span class="muted">Saving…</span>');
+    let r;
+    try { r = await api('/tunnels/pathnet', { ID: t.id, Path: key, Net: o, Reset: !!reset }); }
+    catch (e) { busy(false); show(`<span style="color:var(--crit)">✕ ${esc(e.message)}</span>`); return; }
+    const done = async (html) => {
+      try { await loadAll(); } catch (e) {}
+      const nt = STATE.tunnels.find(x => x.id === t.id); if (nt) Object.assign(t, { pathNet: nt.pathNet, hs: nt.hs, paths: nt.paths });
+      if (!box.isConnected) return;
+      let ni = info; try { ni = await api('/tunnels/pathnet/info', { ID: t.id, Path: key }); } catch (e) {}
+      if (box.isConnected) pnRender(box, t, key, m, fam, ni, html);
+    };
+    if (!r.job) { done(`<span style="color:var(--good)">✓ ${esc(r.note || 'Saved')}</span>`); return; }
+    jobInline(st, t, r.job, (ok, res, failing) => done(`<div style="color:var(${ok ? '--good' : '--crit'})">${ok ? '✓ Applied' : failing ? "✕ The path doesn't answer with these settings — kept as you set them; users stay on a working path" : '✕ Not applied'}</div>${res.map(l => `<div class="faint mono" style="font-size:11.5px" data-notr>${esc(l)}</div>`).join('')}${ok ? '' : ' <button class="btn sm ghost" data-nodef>↺ Back to defaults</button>'}`));
+  };
+  $('[data-nsave]', kn).onclick = () => send(false);
+  $('[data-nreset]', kn).onclick = () => send(true);
+  const nd = $('[data-nodef]', kn); if (nd) nd.onclick = () => send(true);
+  $$('select[data-n]', kn).forEach(el => el.onchange = () => send(false));
+  $$('input[data-n]', kn).forEach(el => el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); send(false); } });
+}
+// a job's progress in el: its last line while it runs, then end(ok, result lines, failing)
+function jobInline(el, t, jid, end) {
+  let fails = 0;
+  const clean = (l) => l.replace(/^\d\d:\d\d:\d\d /, '');
+  const tick = async () => {
+    if (!el.isConnected) { followJob(jid); return; }
+    let j = null;
+    try { j = await api('/jobs?id=' + jid); fails = 0; } catch (e) { if (++fails < 5) { setTimeout(tick, 2000); return; } }
+    const lines = (j && j.lines) || [];
+    if (j && j.status === 'running') {
+      el.hidden = false;
+      el.innerHTML = `<span class="muted">⏳ <span>Applying…</span> <span class="mono" data-notr>${esc(clean(lines[lines.length - 1] || ''))}</span></span> <a href="#" data-jlog>log</a>`;
+      const a = $('[data-jlog]', el); if (a) a.onclick = (e) => { e.preventDefault(); openLog(t, jid); };
+      setTimeout(tick, 2000); return;
+    }
+    jobEnded();
+    end(!!(j && j.status === 'ok'), lines.filter(l => / ✓ | ✕ |DONE|FAILING|ERROR/.test(l)).slice(-4).map(clean), lines.some(l => /FAILING/.test(l)));
+  };
+  tick();
+}
 // every method over every address family both servers of the tunnel have
 const famName = (f) => f === 'v6' ? 'IPv6' : 'IPv4';
 function routeChoices(t) {
@@ -2151,8 +2272,14 @@ function manageTunnel(t) {
     <div class="mdesc" data-desc></div>
     <div class="mwarn" data-warn hidden></div>
     <div data-optbox hidden></div>
-    <div class="actions"><button class="btn pri" data-apply></button>${t.active ? '<button class="btn" data-stop>■ Stop</button>' : ''}<span class="grow"></span>
-      ${t.active ? '<button class="btn ghost" data-speedtest>🚀 Speed test</button><button class="btn ghost" data-diag>🩺 Diagnose</button><button class="btn ghost" data-trace title="Watch 30 s while you connect your client (e.g. Xray) and see where it stops">🔎 Trace</button>' : ''}<button class="btn ghost" data-editt>✎ Edit tunnel</button><button class="btn ghost" data-x>Close</button></div>
+    <div class="actions mg-bar"><button class="btn pri" data-apply></button><span class="faint mg-now" data-now hidden>✓ <span>Running now</span></span><span class="grow"></span>
+      ${moreMenu([
+        t.active ? { label: '↻ Re-apply', attr: 'data-reapply' } : null,
+        t.active ? { label: '🚀 Speed test', attr: 'data-speedtest' } : null,
+        t.active ? { label: '🩺 Diagnose', attr: 'data-diag' } : null,
+        t.active ? { label: '🔎 Trace connections (30 s)', attr: 'data-trace title="Watch 30 s while you connect your client (e.g. Xray) and see where it stops"' } : null,
+        { label: '✎ Edit tunnel', attr: 'data-editt' },
+        t.active ? { label: '■ Stop tunnel', attr: 'data-stop', danger: true } : null])}</div>
   </div>`, true);
   const selEl = $('[data-method]', m), descEl = $('[data-desc]', m), warnEl = $('[data-warn]', m), optBox = $('[data-optbox]', m), applyBtn = $('[data-apply]', m);
   const pick = () => { const [mid, fam] = selEl.value.split('|'); return { mid, fam, x: STATE.methods.find(y => y.id === mid) }; };
@@ -2171,7 +2298,9 @@ function manageTunnel(t) {
     if (miss) {
       warnEl.textContent = '⚠ ' + miss;
     }
-    applyBtn.textContent = (t.active === mid && t.family === fam) ? '↻ Re-apply' : (t.active ? `⇄ Switch to this (${famName(fam)})` : `▶ Start (${famName(fam)})`);
+    const runs = t.active === mid && t.family === fam;
+    applyBtn.hidden = runs; $('[data-now]', m).hidden = !runs;
+    applyBtn.textContent = t.active ? `⇄ Switch to this (${famName(fam)})` : `▶ Start (${famName(fam)})`;
   };
   selEl.onchange = () => { optBox.hidden = true; refresh(); saveTunnel(t, { selected: pick().mid }); };
   refresh();
@@ -2183,7 +2312,7 @@ function manageTunnel(t) {
   on('[data-diag]', () => { m.remove(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); });
   on('[data-trace]', () => { m.remove(); tunnelJob(t, '/tunnels/trace', 'Trace — connect your client now'); });
   on('[data-editt]', () => { m.remove(); tunnelModal(t); });
-  on('[data-x]', () => m.remove());
+  on('[data-reapply]', async () => { if (await applyMethod(t, t.active, t.family)) m.remove(); });
 }
 // A tunnel runs one job at a time. When another one is still going, offer to watch or cancel it.
 function busyOrError(t, e) {
@@ -2261,7 +2390,7 @@ function healthWatch() {
           if (m.dataset.was !== html) { m.dataset.was = html; m.innerHTML = html; }
         }
         const hl = $('[data-hsl]', card), rows = hl && hsRows(t);
-        if (rows && hl.dataset.was !== rows && !$('details.more[open]', hl)) { hl.dataset.was = rows; hl.innerHTML = rows; hsWire(t, hl); }
+        if (rows && hl.dataset.was !== rows && !$('details.more[open]', hl) && !$('.hsset', hl)) { hl.dataset.was = rows; hl.innerHTML = rows; hsWire(t, hl); }
         const fo = $(`[data-tfo="${n.id}"]`); if (fo) fo.hidden = !t.failover;
       });
       if (moved) { // the counts that follow which tunnels run
@@ -2319,15 +2448,24 @@ function renderOpts(box, t, mid, status) {
   const same = (a, b) => m.fields.every(f => val(a, f) === val(b, f));
   const wireLog = (el, jid) => { const lb = $('[data-olog]', el); if (lb) lb.onclick = (e) => { e.preventDefault(); openLog(t, jid); }; };
   let sending = false;
-  const apply = async (reset) => {
+  const apply = async (reset, confirm) => {
     if (sending) return;
     reset = reset === true;
     const opts = reset ? {} : read();
     if (!reset && same(opts, saved)) { show('<span class="muted">Nothing changed.</span>'); return; }
     sending = true; busy(true); show('<span class="muted">Saving…</span>');
     let r;
-    try { r = await api('/tunnels/options', { ID: t.id, Method: mid, Options: opts, Reset: reset }); }
+    try { r = await api('/tunnels/options', { ID: t.id, Method: mid, Options: opts, Reset: reset, Confirm: !!confirm }); }
     catch (e) { sending = false; busy(false); show(`<span style="color:var(--crit)">✕ ${esc(e.message)}</span>`); return; }
+    // the users' path would restart with them on it (no other path answers): nothing is saved
+    // until the user says so
+    if (r.confirm) {
+      sending = false; busy(false);
+      show(`<div class="oconf">⚠ <span>${esc(r.confirm)}</span><div class="actions" style="margin-top:6px"><button class="btn sm danger" data-oconf>Restart it with the users on it</button><button class="btn sm ghost" data-ocancel>Cancel</button></div></div>`);
+      $('[data-oconf]', box).onclick = () => apply(reset, true);
+      $('[data-ocancel]', box).onclick = () => show('<span class="muted">Not changed.</span>');
+      return;
+    }
     t.options = { ...(t.options || {}), [mid]: opts };
     if (reset) t.optsManual = { ...(t.optsManual || {}), [mid]: [] };
     if (!r.job) { sending = false; renderOpts(box, t, mid, `<span style="color:var(--good)">✓ ${esc(r.note || 'Saved')}</span>`); return; }

@@ -148,6 +148,7 @@ func (s *Server2) tunnelOptions(w http.ResponseWriter, r *http.Request) {
 		ID, Method string
 		Options    map[string]string
 		Reset      bool // ↺ Defaults: the method's defaults, nothing marked manual
+		Confirm    bool // the user agreed to restart the users' path (no other path answers)
 	}
 	if err := readJSON(r, &in); err != nil {
 		httpErr(w, 400, "bad request")
@@ -163,7 +164,7 @@ func (s *Server2) tunnelOptions(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "tunnel not found")
 		return
 	}
-	res, code, err := s.app.SaveOptions(t, in.Method, in.Options, in.Reset)
+	res, code, err := s.app.SaveOptionsAsk(t, in.Method, in.Options, in.Reset, in.Confirm)
 	if err != nil {
 		httpErr(w, code, err.Error())
 		return
@@ -206,12 +207,24 @@ func (a *App) optUseOf(t *Tunnel, mid string) optUse {
 // "job" when something is rebuilt, "note" otherwise. A value that is refused, or a plan
 // that can't be built with it, changes nothing.
 func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string, reset bool) (map[string]string, int, error) {
+	return a.SaveOptionsAsk(t, mid, opts, reset, true)
+}
+
+// SaveOptionsAsk is SaveOptions; without confirmed, a change that would restart the users'
+// path while no other path answers is not saved: the result has "confirm" (what would happen)
+// and the panel asks first.
+func (a *App) SaveOptionsAsk(t *Tunnel, mid string, opts map[string]string, reset, confirmed bool) (map[string]string, int, error) {
 	m := methodByID[mid]
 	if m == nil {
 		return nil, 400, fmt.Errorf("unknown method %q", mid)
 	}
 	if opts == nil || reset {
 		opts = map[string]string{}
+	}
+	for k, v := range opts { // a Persian keypad: ۱۴۰۰ is 1400
+		if f := methodField(m, k); f != nil && f.Type == "number" {
+			opts[k] = latinNum(v)
+		}
 	}
 	if err := validateOptions(map[string]map[string]string{mid: opts}); err != nil {
 		return nil, 400, err
@@ -232,6 +245,11 @@ func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string, reset b
 		changed = optUnion(changed, wasManual)
 	}
 	u := a.optUseOf(t, mid)
+	if !confirmed && len(changed) > 0 && len(u.run) > 0 {
+		if msg := a.optRestartsUsers(t, u.run); msg != "" {
+			return map[string]string{"confirm": msg}, 200, nil
+		}
+	}
 	// the plans are built with the new values before anything is stored: one that can't be
 	// built (a port another tunnel holds, a value the method can't use) is refused here
 	if srv := a.store.Server(t.ServerID); srv != nil && len(changed) > 0 {
@@ -331,6 +349,24 @@ func (a *App) SaveOptions(t *Tunnel, mid string, opts map[string]string, reset b
 		out["note"] = "Saved — " + m.Title + " doesn't run on this tunnel now; these options are used when it does."
 	}
 	return out, 200, nil
+}
+
+// optRestartsUsers: the users are on one of paths ps and no other path answers — the
+// rebuild restarts their path with them on it. The message says so ("" = they aren't).
+func (a *App) optRestartsUsers(t *Tunnel, ps []HSPath) string {
+	v := a.hsViewOf(t.ID)
+	if v == nil || v.Active < 0 || v.Active >= len(v.Keys) {
+		return ""
+	}
+	mine := map[string]bool{}
+	for _, p := range ps {
+		mine[p.Method+"|"+p.Family] = true
+	}
+	users := v.Keys[v.Active]
+	if !mine[users] || hsBestOther(v, mine) != "" {
+		return ""
+	}
+	return "The users are on " + users + " and no other path answers now: this change restarts it with them on it — open connections drop for a few seconds and clients reconnect."
 }
 
 // optWhy is what is known about a path that doesn't answer: its deploy error, else what
@@ -520,11 +556,6 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 		return
 	}
 	var oldPaths []HSPath
-	var oldPin, own string
-	var auto bool
-	a.store.View(func(*State) {
-		oldPin, own, auto = t.HSPin, t.Active+"|"+t.Family, t.HSAuto
-	})
 	// the paths as they ran before the save: their own options from before optPathOpts
 	// (the store already has the new ones; the paths' old Opts came in with u)
 	oldByIdx := map[int]HSPath{}
@@ -541,7 +572,6 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 		}
 	})
 	before := withOpts(t, m.ID, prev, oldPaths)
-	users, _, _ := a.optPathsState(ctx, ir, t)
 	mine := map[string]bool{}
 	var keys []string
 	for _, p := range u.run {
@@ -549,51 +579,8 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 		mine[k] = true
 		keys = append(keys, k)
 	}
-	// users on a path being rebuilt go to another working one for the meantime
-	moved := false
-	if mine[users] {
-		other := ""
-		var v *hsView
-		if v = a.hsViewOf(t.ID); v != nil {
-			for k, key := range v.Keys {
-				if !mine[key] && k < len(v.OK) && v.OK[k] {
-					other = key
-					break
-				}
-			}
-		}
-		if other == "" {
-			j.log("the users are on %s and no other path answers now — it restarts with them on it (open connections may drop for a few seconds)", users)
-		} else {
-			j.log("the users are on %s — moving them to %s while it is rebuilt", users, other)
-			if msg, err := a.hsPinTo(ctx, t, other); err != nil {
-				j.log("  WARN: %v — rebuilding with the users on it", err)
-			} else {
-				j.log("  %s", msg)
-				moved = true
-			}
-		}
-	}
-	restore := func() {
-		if !moved {
-			return
-		}
-		// manual mode, or the path was the one chosen: back to that choice. Auto mode on a path
-		// it picked itself: one press back to it, and the choice stays what it was
-		back := oldPin
-		if auto && users != oldPin && !(oldPin == "" && users == own) {
-			back = users
-		}
-		j.log("moving the users back to %s", users)
-		if msg, err := a.hsPinTo(ctx, t, back); err != nil {
-			j.log("  WARN: %v", err)
-		} else {
-			j.log("  %s", msg)
-		}
-		if back != oldPin {
-			_ = a.store.Update(func(*State) error { t.HSPin = oldPin; return nil })
-		}
-	}
+	// users on a path being rebuilt go to the best other working one for the meantime
+	restore, _, _ := a.hsStepAside(ctx, j, ir, t, mine, "it restarts with them on it (open connections may drop for a few seconds)")
 	var after *Tunnel
 	a.store.View(func(*State) { after = withOpts(t, m.ID, next, append([]HSPath(nil), t.Paths...)) })
 	errs := a.optRebuild(ctx, j, srv, ir, kh, before, after, u.run, m)

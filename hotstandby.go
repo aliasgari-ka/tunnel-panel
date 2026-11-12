@@ -99,6 +99,9 @@ func pathTunnel(t *Tunnel, p HSPath) *Tunnel {
 	}
 	pt := &Tunnel{ID: t.ID + "x" + strconv.Itoa(p.Index), Name: t.Name + " · " + p.label(), ServerID: t.ServerID, ForeignID: t.ForeignID,
 		Family: p.Family, Index: p.Index, Options: opts, Secrets: t.Secrets, Active: p.Method}
+	if n, ok := t.PathNet[p.Method+"|"+p.Family]; ok && !n.zero() {
+		pt.Net = &n
+	}
 	m := methodByID[p.Method]
 	if m != nil && !benchIsL3(m, opts[m.ID]) {
 		var specs []string
@@ -351,7 +354,11 @@ func hsBase(t *Tunnel, paths []HSPath) string {
 		if ifc := l3Iface(m, pt); ifc != "" {
 			fmt.Fprintf(&b, "iptables -w -t nat -A %s -o %s -j MASQUERADE\n", post, ifc)
 			fmt.Fprintf(&b, "iptables -w -A %[1]s -o %[2]s -j ACCEPT\niptables -w -A %[1]s -i %[2]s -j ACCEPT\n", fwd, ifc)
-			fmt.Fprintf(&b, "iptables -w -t mangle -A %s -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu\n", mss, ifc)
+			mssv := 0 // the path's own TCP MSS when one is set (path settings), else its MTU's
+			if pt.Net != nil {
+				mssv = pt.Net.MSS
+			}
+			b.WriteString(pathNetMSSRule(mss, ifc, mssv))
 		}
 	}
 	fmt.Fprintf(&b, "iptables -w -t nat -C PREROUTING -j %[1]s 2>/dev/null || iptables -w -t nat -I PREROUTING -j %[1]s\n", nat)
