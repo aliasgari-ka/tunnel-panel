@@ -1596,6 +1596,8 @@ window.TP_FA = {
     [/^Instagram logged the test account out \((.*)\): music is not checked on any WARP or proxy\.$/, 'Instagram حساب تست را خارج کرد ($1): موسیقی روی هیچ WARP یا پراکسی بررسی نمی‌شود.'],
     [/^(\d+) tunnels?$/, '$1 تانل'],
     [/^last error: ([\s\S]+)$/, 'آخرین خطا: $1'],
+    [/^last error \(([\w ]+) ago\): ([\s\S]+)$/, (m, a, e) => 'آخرین خطا (' + ((a) => a.replace(/(\d+) days/, '$1 روز').replace(/(\d+) h/, '$1 ساعت').replace(/(\d+) min/, '$1 دقیقه'))(a) + ' پیش): ' + e],
+    [/^running on the Iran server, but no answer comes through it — its last error was ([\w ]+) ago: ([\s\S]+)$/, (m, a, e) => 'روی سرور ایران در حال اجراست، ولی جوابی از آن رد نمی‌شود — آخرین خطایش ' + ((a) => a.replace(/(\d+) days/, '$1 روز').replace(/(\d+) h/, '$1 ساعت').replace(/(\d+) min/, '$1 دقیقه'))(a) + ' پیش بود: ' + e],
     [/^the route drops most of its raw TCP frames \(([^)]*)\) — try other TCP flags in Paqet's settings$/, 'مسیر بیشتر فریم‌های TCP خامش را می‌اندازد ($1) — پرچم TCP دیگری در تنظیمات Paqet امتحان کنید'],
     [/^its core on the Iran server is (\S+)( — [\s\S]*)?$/, 'هسته‌اش روی سرور ایران $1 است$2'],
     [/^its core on the Iran server keeps restarting — ([\s\S]*)$/, 'هسته‌اش روی سرور ایران مدام ری‌استارت می‌شود — $1'],

@@ -151,6 +151,18 @@ func portsTOML(ports string) string {
 
 // ---- FRP (fatedier/frp) reverse ----
 
+// frp's control-connection heartbeat. frps drops a client that sent no ping for
+// frpHeartbeatTimeout seconds; frpc turns its pings off by default when tcpMux is on (the
+// default), so with only frps's timeout set every FRP path lost its control connection —
+// and all its proxies with the users' connections on them — exactly every 90 s (seen live
+// 2026-11-12: 542 "heartbeat timeout"s on NL1's FRP path in 14 h, all its runs). Both ends
+// get the same numbers: frpc pings every 30 s, either end gives up after 90 s (three pings
+// lost in a row — a lossy Iran route loses one, not three).
+const (
+	frpHeartbeatInterval = 30
+	frpHeartbeatTimeout  = 90
+)
+
 var methodFRP = &Method{
 	ID:       "frp",
 	Title:    "FRP (reverse)",
@@ -177,11 +189,11 @@ var methodFRP = &Method{
 		}
 		irToml := fmt.Sprintf(`bindAddr = "%s"
 bindPort = %s
-%stransport.heartbeatTimeout = 90
+%stransport.heartbeatTimeout = %d
 transport.maxPoolCount = 65535
 auth.method = "token"
 auth.token = "%s"
-`, ipAny(c.T.Family), bp, extra, tok)
+`, ipAny(c.T.Family), bp, extra, frpHeartbeatTimeout, tok)
 
 		var proxies string
 		pairs, perr := expandPortPairs(c.T.Ports, 512)
@@ -206,7 +218,9 @@ transport.protocol = "%s"
 transport.tls.enable = %s
 transport.poolCount = 32
 transport.dialServerKeepalive = 120
-%s`, d.IRPub, bp, tok, proto, c.Opt("tls"), proxies)
+transport.heartbeatInterval = %d
+transport.heartbeatTimeout = %d
+%s`, d.IRPub, bp, tok, proto, c.Opt("tls"), frpHeartbeatInterval, frpHeartbeatTimeout, proxies)
 
 		dir := tunnelDir(c.T)
 		irCfg, khCfg := dir+"/frps.toml", dir+"/frpc.toml"

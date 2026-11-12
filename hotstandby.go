@@ -1140,7 +1140,7 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 			unit = f[1]
 		case "W":
 			if k, err := strconv.Atoi(f[1]); err == nil && k >= 0 && k < len(v.Why) && len(f) > 2 {
-				v.Why[k] = hsWhyText(f[2], strings.Join(f[3:], " "))
+				v.Why[k] = hsWhyTextAt(f[2], f[3:], time.Now())
 			}
 		}
 	}
@@ -1181,7 +1181,7 @@ func hsWhyScript(t *Tunnel, good []HSPath) string {
   awk -v k="$k" '$1 == k && $2 == "down" {f=1} END {exit !f}' status 2>/dev/null || continue
   if [ -z "$u" ] || ! systemctl cat "$u" >/dev/null 2>&1; then echo "W $k none"; continue; fi
   s=$(systemctl is-active "$u" 2>/dev/null); i=$(systemctl show -p InvocationID --value "$u" 2>/dev/null); l=""
-  [ -n "$i" ] && l=$(journalctl _SYSTEMD_INVOCATION_ID="$i" -o cat --no-pager -n 400 2>/dev/null | grep -aiE 'error|warn|fail|timeout|refused|denied|disconnect|unreachable' | grep -aviE 'file already closed|use of closed' | tail -n 1 | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '[:print:]' | cut -c1-220)
+  [ -n "$i" ] && l=$(journalctl _SYSTEMD_INVOCATION_ID="$i" -o short-unix --no-pager -n 400 2>/dev/null | sed -E 's/^([0-9]+)(\.[0-9]+)? [^ ]+ [^ :]+: /@\1 /' | grep -aiE 'error|warn|fail|timeout|refused|denied|disconnect|unreachable' | grep -aviE 'file already closed|use of closed' | tail -n 1 | sed 's/\x1b\[[0-9;]*m//g' | tr -cd '[:print:]' | cut -c1-232)
   echo "W $k ${s:-unknown} $l"
 done; }`
 }
@@ -1208,6 +1208,47 @@ func hsRedact(line string) string {
 
 var hsPaqetLossRe = regexp.MustCompile(`BOTTLENECK: (?:packet_loss|kcp_lost)\W*([0-9.]+% retransmission|[0-9]+ lost segments)`)
 
+// hsWhyTextAt is hsWhyText for a W line's words after the state: "@<unix time>" first
+// (when the log line had its time) and then the line. An error that is minutes old says
+// how old it is: a core that logged it and then reconnected is not down because of it.
+func hsWhyTextAt(state string, rest []string, now time.Time) string {
+	var age time.Duration
+	if len(rest) > 0 && strings.HasPrefix(rest[0], "@") {
+		if at, err := strconv.ParseInt(rest[0][1:], 10, 64); err == nil {
+			age = now.Sub(time.Unix(at, 0))
+			rest = rest[1:]
+		}
+	}
+	why := hsWhyText(state, strings.Join(rest, " "))
+	if age < 2*time.Minute || why == "" {
+		return why
+	}
+	if r, ok := strings.CutPrefix(why, "last error: "); ok {
+		if age >= 10*time.Minute && (state == "active" || state == "reloading") {
+			// an old error doesn't explain why the path is down now
+			return "running on the Iran server, but no answer comes through it — its last error was " + hsAgo(age) + " ago: " + r
+		}
+		return "last error (" + hsAgo(age) + " ago): " + r
+	}
+	return why + " (" + hsAgo(age) + " ago)"
+}
+
+// hsAgo: "3 min", "2 h 5 min", "3 days".
+func hsAgo(d time.Duration) string {
+	switch {
+	case d < time.Hour:
+		return strconv.Itoa(int(d/time.Minute)) + " min"
+	case d < 48*time.Hour:
+		h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
+		if m == 0 {
+			return strconv.Itoa(h) + " h"
+		}
+		return fmt.Sprintf("%d h %d min", h, m)
+	default:
+		return strconv.Itoa(int(d/(24*time.Hour))) + " days"
+	}
+}
+
 // hsWhyText makes the reason a down path shows from its unit's state and last logged error.
 func hsWhyText(state, line string) string {
 	line = strings.TrimSpace(hsRedact(line))
@@ -1223,6 +1264,9 @@ func hsWhyText(state, line string) string {
 			r := "last error: " + line
 			if strings.Contains(strings.ToLower(line), "heartbeat timeout") {
 				r += " — the cores on the two servers stopped hearing each other (the core keeps retrying)"
+				if strings.Contains(line, "control.go") { // frps: frpc's pings stopped coming for 90 s
+					r += "; FRP's control link got no ping from the foreign server for 90 s — the route stalled"
+				}
 			}
 			return r
 		}
