@@ -83,15 +83,12 @@ func (a *App) deployShape(ctx context.Context, j *Job, label string, host Host, 
 	}
 	p := buildShape(t)
 	logf := func(l string) { j.log("[%s] %s", label, l) }
+	files := map[string]FileSpec{"/etc/systemd/system/" + u: {Content: []byte(renderUnit(p.Unit)), Mode: 0o644}}
 	for path, fs := range p.Files {
-		if err := host.WriteFile(path, fs.Content, fs.Mode); err != nil {
-			return err
-		}
+		files[path] = fs
 	}
-	if err := host.WriteFile("/etc/systemd/system/"+u, []byte(renderUnit(p.Unit)), 0o644); err != nil {
-		return err
-	}
-	_, err := host.Run(ctx, fmt.Sprintf("systemctl daemon-reload && systemctl enable --now %s && echo 'shaping on'", u), logf)
+	// all files and the start in one round trip (only the changed files are written)
+	_, err := runWithFiles(ctx, host, files, fmt.Sprintf("systemctl daemon-reload && systemctl enable --now %s && echo 'shaping on'", u), quietFiles(logf))
 	return err
 }
 

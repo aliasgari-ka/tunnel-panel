@@ -69,7 +69,11 @@ func (a *App) applyTeardown(ctx context.Context, j *Job, side string, h Host, id
 // path is out of t.Paths no Stop or delete of t knows its unit any more, so a side where the
 // teardown doesn't run to its end keeps a cleanup of its own, under the path's id (a cleanup
 // under t's id would be dropped as soon as t runs again).
+//
+// All of them, on both servers, go down at the same time: each path is its own unit and
+// files, and waiting for one before the next only made a removal take longer.
 func (a *App) teardownPaths(ctx context.Context, ir, kh Host, t *Tunnel, paths []HSPath) {
+	var wg sync.WaitGroup
 	for _, p := range paths {
 		pt := pathTunnel(t, p)
 		for _, s := range []struct {
@@ -80,11 +84,16 @@ func (a *App) teardownPaths(ctx context.Context, ir, kh Host, t *Tunnel, paths [
 				a.deferCleanupScript(s.id, pt, teardownScript(pt))
 				continue
 			}
-			if out, _ := s.h.Run(ctx, teardownScript(pt)+"\necho TP-TEARDOWN-DONE\n", nil); !strings.Contains(out, "TP-TEARDOWN-DONE") {
-				a.deferCleanupScript(s.id, pt, teardownScript(pt))
-			}
+			wg.Add(1)
+			go func(h Host, id string) {
+				defer wg.Done()
+				if out, _ := h.Run(ctx, teardownScript(pt)+"\necho TP-TEARDOWN-DONE\n", nil); !strings.Contains(out, "TP-TEARDOWN-DONE") {
+					a.deferCleanupScript(id, pt, teardownScript(pt))
+				}
+			}(s.h, s.id)
 		}
 	}
+	wg.Wait()
 }
 
 // deferHSLeftovers keeps cleanups, under their own ids, for paths of t (and its switcher
