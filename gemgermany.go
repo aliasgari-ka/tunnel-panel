@@ -153,7 +153,8 @@ func (a *App) gemFix(srv *Server, inf map[string]string) string {
 		warp       int // 0 = the server's own IP (route "direct"), else that WARP
 	}
 	var cands []cand
-	if inf["google"] != "direct" && gemDomIs(gemOwnDomOf(ctx, srv), want) {
+	// never the panel host's own IP: that is the test account's exit (gemhome.go)
+	if inf["google"] != "direct" && !gemIsHome(srv) && gemDomIs(gemOwnDomOf(ctx, srv), want) {
 		cands = append(cands, cand{"12371", "its own IP", 0})
 	}
 	for n := 1; n <= 8; n++ {

@@ -2841,7 +2841,7 @@ function igRender(w) {
   if (IG.cur) return igDetail(w);
   const subs = [['servers', 'Servers'], ['matrix', 'Route table'], ['bulk', 'All servers'], ['backup', 'Backup & copy']];
   w.innerHTML = topbar('IG Routing', 'igproxy on the foreign servers: which way Instagram, Google / Gemini, YouTube Music and the rest leave each server.',
-    `${isAdmin() ? '<a class="btn" data-gbtn href="/gbrowser/" target="_blank" rel="noopener" title="Chromium on xe108 with the Google test account: log in here once">🔑 Google test browser</a>' : ''}<button class="btn" data-igref>↻ Refresh</button><button class="btn pri" data-igadd>+ Add server</button>`)
+    `${isAdmin() ? '<a class="btn" data-gbtn href="/gbrowser/" title="Chromium on xe108 with the Google test account: log in here once">🔑 Google test browser</a>' : ''}<button class="btn" data-igref>↻ Refresh</button><button class="btn pri" data-igadd>+ Add server</button>`)
     + `<div class="seg" id="igsub">${subs.map(([k, t]) => `<button data-s="${k}" class="${k === IG.sub ? 'on' : ''}">${t}</button>`).join('')}</div><div id="igbody"></div>`;
   $$('#igsub button', w).forEach(b => b.onclick = () => { IG.sub = b.dataset.s; remember('tp-igsub', IG.sub); igRender(); });
   const body = $('#igbody', w);
@@ -2852,16 +2852,67 @@ function igRender(w) {
   $$('[data-igadd]', w).forEach(b => b.onclick = () => igAddServer());
   igAcctBadge(w);
 }
-// the Google test account's state on its button (gemacct.go): red while Google has it signed out
+// the Google test account's state on its button (gemacct.go): red while Google has it signed out.
+// The button opens the test browser in a window on this page (igGSignin), not in a new tab.
 function igAcctBadge(w) {
   const b = $('[data-gbtn]', w); if (!b) return;
+  b.onclick = (e) => { if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return; e.preventDefault(); igGSignin(); };
   api('/igproxy/gaccount').then(d => {
     if (d.state === 'out') {
       b.textContent = '🔑 Google test account: signed out — log in';
       b.style.color = 'var(--crit)'; b.style.fontWeight = '600';
-      b.title = `Google ended the test account's session${d.since ? ' (seen ' + new Date(d.since).toLocaleString() + ')' : ''}. Log in here; it goes out through ${d.exit}.`;
-    } else if (d.state === 'in') b.textContent = '🔑 Google test browser ✓';
+      b.title = `Google ended the test account's session${d.since ? ' (seen ' + new Date(d.since).toLocaleString() + ')' : ''}${d.cause ? '. Why: ' + d.cause : ''}. Log in here; it goes out through ${d.exit}.`;
+    } else if (d.state === 'in') { b.textContent = '🔑 Google test browser ✓'; b.style.color = ''; b.style.fontWeight = ''; }
   }).catch(() => {});
+}
+// the test browser (noVNC, /gbrowser/ — admin only, same auth as the page) in a window on this
+// page; its status follows the account (polled while the window is open) and it closes by
+// itself a few seconds after the account is signed in
+const GB_SRC = '/gbrowser/vnc.html?path=gbrowser/websockify&autoconnect=1&resize=scale&reconnect=1';
+function igGSignin() {
+  const m = modal(`<div class="gbhead"><h2 data-notr>🔑 ${L('Google test account', 'حساب تست Google')}</h2><span class="gbst wait" data-gbst data-notr>${L('Connecting…', 'در حال اتصال…')}</span></div>
+    <p class="gbhint" data-gbhint data-notr></p>
+    <div class="gbwrap"><iframe class="gbframe" src="${GB_SRC}" title="Google test browser" referrerpolicy="no-referrer"></iframe></div>
+    <div class="gbfoot"><a class="btn sm ghost" href="${GB_SRC}" target="_blank" rel="noopener" data-notr>${L('Open in a new tab', 'باز کردن در زبانه‌ی جدید')} ↗</a><button class="btn sm" data-gbclose data-notr>${L('Close', 'بستن')}</button></div>`);
+  m.classList.add('conm', 'gbm');
+  const st = $('[data-gbst]', m), hint = $('[data-gbhint]', m), fr = $('.gbframe', m);
+  let loaded = false, wasOut = false, done = false, timer = 0;
+  const close = () => { clearTimeout(timer); m.remove(); igRender(); };
+  $('[data-gbclose]', m).onclick = close;
+  $('.mclose', m).onclick = close;
+  const set = (cls, txt) => { st.className = 'gbst ' + cls; st.textContent = txt; };
+  fr.onload = () => { loaded = true; poll(); };
+  const exitTxt = (d) => L(`It goes out through ${d.exit ? d.exit.split(':')[0] : 'the panel host'} (Germany, the panel host's own IP) — the only exit this account ever uses.`,
+    `از ${d.exit ? d.exit.split(':')[0] : 'سرور پنل'} (آلمان، IP خود سرور پنل) بیرون می‌رود — تنها خروجی این حساب.`);
+  async function poll() {
+    if (!m.isConnected || done) return;
+    let d;
+    try { d = await api('/igproxy/gaccount?fresh=1'); } catch (e) { d = { err: String(e.message || e) }; }
+    if (!m.isConnected) return;
+    if (d.err && !d.state) {
+      set('bad', L('Test browser not answering', 'مرورگر تست جواب نمی‌دهد'));
+      hint.textContent = d.err;
+    } else if (!loaded) {
+      set('wait', L('Connecting…', 'در حال اتصال…'));
+    } else if (d.state === 'out') {
+      wasOut = true;
+      set('bad', L('Signed out — sign in below', 'خارج شده — پایین وارد شوید'));
+      hint.textContent = L('Reload Gemini in the browser below (an old tab can still show the name) and sign in to the Google account yourself — password and 2-step code are typed by you only. ', 'در مرورگر پایین Gemini را دوباره بارگذاری کنید (زبانه‌ی قدیمی ممکن است هنوز نام حساب را نشان دهد) و خودتان وارد حساب Google شوید — رمز و کد دومرحله‌ای را فقط خودتان وارد کنید. ')
+        + exitTxt(d) + (d.cause ? ' ' + L('Why it signed out: ', 'علت خروج: ') + d.cause : '');
+    } else if (d.state === 'in') {
+      set('ok', L('Signed in ✓', 'وارد شده ✓'));
+      hint.textContent = exitTxt(d);
+      if (wasOut) {
+        done = true;
+        set('ok', L('Signed in ✓ — done', 'وارد شد ✓ — تمام'));
+        hint.textContent = L('The account is signed in. This window closes in 5 seconds.', 'حساب وارد شد. این پنجره تا ۵ ثانیه دیگر بسته می‌شود.');
+        timer = setTimeout(close, 5000);
+        return;
+      }
+    } else set('wait', L('Checking…', 'در حال بررسی…'));
+    timer = setTimeout(poll, 4000);
+  }
+  poll();
 }
 
 // ---- servers

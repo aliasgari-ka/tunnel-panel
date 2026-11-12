@@ -225,6 +225,10 @@ func (s *Server2) igRoutesApply(w http.ResponseWriter, r *http.Request) {
 			httpErr(w, 400, err.Error())
 			return
 		}
+		if gemHomeRouteBad(srv, c.Svc, c.Via) {
+			httpErr(w, 400, igLabel(srv)+": "+gemHomeRefusal)
+			return
+		}
 		if _, ok := per[srv.ID]; !ok {
 			order = append(order, srv)
 		}

@@ -27,8 +27,10 @@ func (s *Server2) gbrowser() http.HandlerFunc {
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/gbrowser")
 		r.URL.RawPath = ""
 		r.Header.Del("Cookie") // the panel's session is not noVNC's business
-		// noVNC's page has an inline module script: only these proxied pages may run one
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+		// noVNC's page has an inline module script: only these proxied pages may run one. The
+		// panel's own pages may frame it (the sign-in window on IG Routing); nothing else may.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		rp.ServeHTTP(w, r)
 	}
 }
