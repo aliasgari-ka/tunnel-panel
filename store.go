@@ -364,7 +364,26 @@ func LoadStore(dir string) (*Store, error) {
 			sv.IPv6 = v
 		}
 	}
+	pruneOrphanCleanups(&st.S)
 	return st, st.saveLocked()
+}
+
+// pruneOrphanCleanups drops pending cleanups whose server no longer exists. A server
+// deleted before the delete handler took its cleanups along (or one gone from a restored
+// state) left them behind for good: runCleanups only runs for a server the monitor still
+// watches, so they never ran nor went, and kept their tunnel numbers out of use.
+func pruneOrphanCleanups(st *State) {
+	known := map[string]bool{}
+	for _, sv := range st.Servers {
+		known[sv.ID] = true
+	}
+	keep := st.Cleanups[:0]
+	for _, c := range st.Cleanups {
+		if c.ServerID == "" || known[c.ServerID] {
+			keep = append(keep, c)
+		}
+	}
+	st.Cleanups = keep
 }
 
 // normIP cleans up an address as typed (spaces, brackets, a /prefix or %zone) and checks
