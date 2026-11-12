@@ -154,9 +154,10 @@ func hsMethodOK(t *Tunnel, m *Method) error {
 	return fmt.Errorf("hot standby with %s (it forwards ports) takes single ports only, at most 18 — list the ports one by one, pick a kernel method (GRE, IPsec, WireGuard), or turn hot standby off", m.Title)
 }
 
-// hsCandidate: m over f can be a standby path of t (the user didn't leave it out on this route).
+// hsCandidate: m over f can be a standby path of t (the user didn't leave it out on this route
+// or remove it from this tunnel).
 func (a *App) hsCandidate(t *Tunnel, m *Method, f string) bool {
-	if !supportsFamily(m, f) || m.ID == "spoof" || (hsOnly != nil && !contains(hsOnly, m.ID)) || a.routeSkipped(t.ServerID, t.ForeignID, m.ID, f) {
+	if !supportsFamily(m, f) || m.ID == "spoof" || (hsOnly != nil && !contains(hsOnly, m.ID)) || a.hsExcluded(t, m.ID, f) {
 		return false
 	}
 	return benchIsL3(m, t.Options[m.ID]) || hsForwarderOK(t)
@@ -951,7 +952,7 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		p := paths[k]
 		pt := pathTunnel(t, p)
 		pm := methodByID[p.Method]
-		if k > 0 && a.routeSkipped(t.ServerID, t.ForeignID, p.Method, p.Family) {
+		if k > 0 && a.hsExcluded(t, p.Method, p.Family) {
 			// switched off on the Routes page while this Start runs
 			j.log("== path %d: %s — switched off on this route, not started ==", k+1, p.label())
 			continue

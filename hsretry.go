@@ -29,7 +29,7 @@ func (a *App) hsRetryDue(t *Tunnel, now time.Time) []HSPath {
 	})
 	var due []HSPath
 	for _, p := range old {
-		if !a.routeSkipped(t.ServerID, t.ForeignID, p.Method, p.Family) {
+		if !a.hsExcluded(t, p.Method, p.Family) {
 			due = append(due, p)
 		}
 	}

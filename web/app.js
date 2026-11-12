@@ -1491,7 +1491,7 @@ function tunnelCard(t) {
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>
       <div class="meta"><span data-tot></span><span data-src></span></div><div class="meta" data-speed></div></div>`
       : `<div class="tc-idle">Not running${selM ? ` · selected: <b>${esc(selM.title)}</b>` : ''}</div>`}
-    ${t.hotStandby && t.active ? `<div class="tc-hs"><div class="lbl">⚡ Hot standby paths</div><div data-hsl>${hsRows(t) || '<div class="faint">paths — reading which one the users are on…</div>'}</div></div>` : ''}
+    ${t.hotStandby && t.active ? `<div class="tc-hs"><div class="lbl">⚡ Hot standby paths</div><div data-hsl>${hsRows(t) || '<div class="faint">paths — reading which one the users are on…</div>'}</div>${hsOffFold(t)}</div>` : ''}
     <div class="tc-f">
       <button class="btn sm pri" data-manage>⚙ Manage</button>
       ${t.active ? `<button class="btn sm ghost" data-stop>■ Stop</button>` : `<button class="btn sm" data-start>▶ Start</button>`}
@@ -1587,7 +1587,7 @@ function hsBox(t) {
   const seg = `<div class="seg" data-hsmode><button type="button" data-auto="0" class="${auto ? '' : 'on'}" title="${esc('Manual: ' + 'users stay on the chosen path and move only when it is down (3 failed checks). They come back after 60 s of stability — longer for a path that keeps dropping (doubled per drop in 30 min, up to 30 min). At most 3 planned moves an hour.')}">✋ Manual</button><button type="button" data-auto="1" class="${auto ? 'on' : ''}" title="${esc('Auto: ' + "Latency and loss are watched all the time, the speed of the users' path every 2 hours (2 MB). When it gets slow or lossy the best few paths are measured and users move to a clearly better one. No ping-pong: 10 min wait after a move, at most 3 planned moves an hour. Light on traffic: standby paths are checked every 10 s.")}">🤖 Auto · best path</button></div>
     <div class="faint" style="font-size:12px;margin:-4px 0 6px">${auto ? 'Moves users to a clearly better path when theirs gets slow or lossy.' : 'Users stay on the chosen path; they move only when it is down.'} <span title="${esc(auto ? "Latency and loss are watched all the time, the speed of the users' path every 2 hours (2 MB). When it gets slow or lossy the best few paths are measured and users move to a clearly better one. No ping-pong: 10 min wait after a move, at most 3 planned moves an hour. Light on traffic: standby paths are checked every 10 s." : 'users stay on the chosen path and move only when it is down (3 failed checks). They come back after 60 s of stability — longer for a path that keeps dropping (doubled per drop in 30 min, up to 30 min). At most 3 planned moves an hour.')}" style="cursor:help">ⓘ</span></div>`;
   if (!v || !v.paths) return `<div class="lbl">⚡ Hot standby</div>${seg}<div class="faint" style="font-size:12px">every compatible path starts on the next Start/Re-apply.</div>`;
-  return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; the users' path is checked every 2 s on the Iran server)</span></div>${seg}${hsRows(t)}
+  return `<div class="lbl">⚡ Hot standby paths <span class="faint">(switcher order; the users' path is checked every 2 s on the Iran server)</span></div>${seg}${hsRows(t)}${hsOffFold(t)}
     <div class="faint" style="font-size:11.5px;margin-top:4px" title="New connections take the new path; open ones finish on the old one (it keeps running). Only a path that died has its connections reset, so clients reconnect at once.">Switching is seamless — nobody is cut. ⓘ</div>`;
 }
 // the hot-standby paths, switcher order: works or not, quality, the users' one and a "use" button
@@ -1610,9 +1610,34 @@ function hsRows(t) {
     return out.length ? `<span class="hq mono">${out.join(' · ')}</span>` : '';
   };
   return `<div class="hsl">${v.paths.map((p, i) =>
-    `<div class="${ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}"><span class="hi">${ok[i] ? '✓' : '✕'}</span><span class="hm"><span class="hn">${esc(p)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}</span>${q(i)}</span>${i === v.active ? '<b class="hu">← users</b>' : (ok[i] && v.keys ? `<button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}</div>`).join('')}</div>`;
+    `<div class="${ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}"><span class="hi">${ok[i] ? '✓' : '✕'}</span><span class="hm"><span class="hn">${esc(p)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}</span>${q(i)}</span>${i === v.active ? '<b class="hu">← users</b>' : (ok[i] && v.keys ? `<button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}${hsRowMenu(v, ok, i)}</div>`).join('')}</div>`;
+}
+// a path's ⋯ menu: Remove — not the users' path (move them first) nor the last working one
+function hsRowMenu(v, ok, i) {
+  if (!v.keys || !v.keys[i]) return '';
+  const working = ok.filter(Boolean).length;
+  const why = i === v.active ? 'The users are on this path — move them to another one with “use” first.'
+    : (ok[i] && working <= 1) ? 'The last working path can\'t be removed.' : '';
+  return moreMenu([why
+    ? { label: '🗑 Remove path', attr: `disabled title="${esc(why)}"`, danger: true }
+    : { label: '🗑 Remove path', attr: `data-hsrm="${esc(v.keys[i])}" data-hsname="${esc(v.paths[i])}"`, danger: true },
+    why ? { label: `<span class="hwhy">${esc(why)}</span>`, attr: 'disabled' } : null]);
+}
+// paths removed by hand from this tunnel: auto mode and Repair leave them out until put back
+function hsOffFold(t) {
+  const off = t.hsOff || [];
+  if (!off.length) return '';
+  const name = (k) => { const [mid, fam] = k.split('|'); const m = STATE.methods.find(x => x.id === mid); return `${m ? m.title : mid} (${fam})`; };
+  return `<details class="hsoff"><summary class="faint">🗑 <span>Removed paths</span> (${off.length}) ▸</summary><div class="hsl">${off.map(k =>
+    `<div><span class="hi faint">–</span><span class="hm"><span class="hn">${esc(name(k))}</span><span class="hq">removed by hand — auto mode and Repair leave it out</span></span><button type="button" class="btn sm ghost" data-hsrestore="${esc(k)}" title="allow it again: it starts as a new standby path, the users stay where they are">put back</button></div>`).join('')}</div></details>`;
 }
 function hsWire(t, m) {
+  $$('[data-hsrm]', m).forEach(b => b.onclick = () => hsRemoveConfirm(t, b.dataset.hsrm, b.dataset.hsname));
+  $$('[data-hsrestore]', m).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { const r = await api('/tunnels/hsrestore', { ID: t.id, Path: b.dataset.hsrestore }); await loadAll(); renderView(); if (r.job) openLog(t, r.job); else toast('put back — it starts on the next Start/Re-apply'); }
+    catch (e) { alertModal('Put back path', e.message); b.disabled = false; }
+  });
   $$('[data-hspin]', m).forEach(b => b.onclick = async () => {
     b.disabled = true;
     try { const r = await api('/tunnels/hspin', { ID: t.id, Path: b.dataset.hspin }); toast(r.ok); await loadAll(); renderView(); }
@@ -1624,6 +1649,24 @@ function hsWire(t, m) {
     catch (e) { alertModal('Hot standby mode', e.message); }
     $$('[data-hsmode] button', m).forEach(x => x.classList.toggle('on', (x.dataset.auto === '1') === auto));
   });
+}
+// the confirmation for removing a path, naming it and the tunnel
+function hsRemoveConfirm(t, key, name) {
+  const m = modal(`<h2>🗑 Remove this hot-standby path?</h2>
+    <div class="hsl" style="margin:10px 0 6px"><div class="bad"><span class="hi">🗑</span><span class="hm"><span class="hn">${esc(name)}</span><span class="hq"><span>tunnel</span> · ${esc(t.name)}</span></span></div></div>
+    <ul class="muted" style="font-size:13px;line-height:1.7;padding-inline-start:18px;margin:8px 0">
+      <li>It stops on both servers (its services, files and firewall rules) and leaves the switcher.</li>
+      <li>The users stay where they are — nobody is cut.</li>
+      <li>Auto mode and Repair won't add it back. You can put it back under “Removed paths” on this card.</li>
+    </ul>
+    <div class="actions" style="justify-content:flex-end;margin-top:14px"><button class="btn" data-no>Cancel</button><button class="btn danger" data-yes>🗑 Remove</button></div>`);
+  const close = () => m.remove();
+  $('[data-no]', m).onclick = close;
+  $('[data-yes]', m).onclick = async (e) => {
+    e.target.disabled = true;
+    try { const r = await api('/tunnels/hsremove', { ID: t.id, Path: key }); close(); await loadAll(); renderView(); openLog(t, r.job); }
+    catch (er) { close(); alertModal('Remove path', er.message); }
+  };
 }
 // every method over every address family both servers of the tunnel have
 const famName = (f) => f === 'v6' ? 'IPv6' : 'IPv4';
@@ -1763,7 +1806,7 @@ function healthWatch() {
           if (m.dataset.was !== html) { m.dataset.was = html; m.innerHTML = html; }
         }
         const hl = $('[data-hsl]', card), rows = hl && hsRows(t);
-        if (rows && hl.dataset.was !== rows) { hl.dataset.was = rows; hl.innerHTML = rows; hsWire(t, hl); }
+        if (rows && hl.dataset.was !== rows && !$('details.more[open]', hl)) { hl.dataset.was = rows; hl.innerHTML = rows; hsWire(t, hl); }
         const fo = $(`[data-tfo="${n.id}"]`); if (fo) fo.hidden = !t.failover;
       });
       if (moved) { // the counts that follow which tunnels run

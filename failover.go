@@ -324,6 +324,13 @@ func (a *App) rebuildMode(t *Tunnel) (*Job, error) {
 // current one): the user's choice wins over a running automatic failover, and the family
 // is put back if the apply cannot start.
 func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
+	// a path removed from the card and now picked by hand is wanted again: off the list, or
+	// the next Repair would take the users' own path away
+	f := fam
+	if f == "" {
+		a.store.View(func(*State) { f = t.Family })
+	}
+	a.hsUnremove(t, mid, f)
 	return a.applyRoute(t, mid, fam, false)
 }
 

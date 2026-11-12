@@ -109,6 +109,8 @@ func (a *App) routes() http.Handler {
 	g("/api/tunnels/trace", "tunnel", s.tunnelTrace)
 	g("/api/tunnels/hsmode", "tunnel", s.tunnelHSMode)
 	g("/api/tunnels/hspin", "tunnel", s.tunnelHSPin)
+	g("/api/tunnels/hsremove", "tunnel", s.tunnelHSRemove)
+	g("/api/tunnels/hsrestore", "tunnel", s.tunnelHSRestore)
 	g("/api/traffic", "self", s.trafficGet)
 	g("/api/usage", "self", s.usageGet)
 	g("/api/jobs", "job", s.job)
@@ -1222,7 +1224,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			in.Updated = time.Now().Unix()
 			in.Active, in.Secrets, in.Failover = "", nil, nil
 			// the panel's own bookkeeping never comes from the request
-			in.Paths, in.Applying, in.HSPin, in.HSSeen = nil, "", "", 0
+			in.Paths, in.Applying, in.HSPin, in.HSSeen, in.HSOff = nil, "", "", 0, nil
 			if !admin {
 				in.Owner = user
 			} else if in.Owner != "" && !accountExists(st, in.Owner) {

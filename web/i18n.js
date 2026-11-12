@@ -1224,6 +1224,24 @@ window.TP_FA = {
 "When users complain about Gemini: on each server where Google goes through WARP, it moves to a fresh WARP IP now. The summary at the end says where it moved and where not.": "وقتی کاربران از Gemini شکایت دارند: روی هر سروری که Google از WARP می‌رود، همین حالا به یک IP تازه WARP منتقل می‌شود. خلاصهٔ آخر کار می‌گوید کجا منتقل شد و کجا نه.",
 "Move Google to a fresh WARP IP on every server in view": "Google روی همه سرورهای نمایش‌داده‌شده به یک IP تازه WARP برود",
 "Gemini chats open on the old IPs are cut and reconnect on the new one. Servers where Google is not on WARP are left as they are.": "چت‌های باز Gemini روی IPهای قبلی قطع می‌شوند و روی IP تازه وصل می‌شوند. سرورهایی که Google در آن‌ها روی WARP نیست دست نمی‌خورند.",
+"🗑 Remove path": "🗑 حذف مسیر",
+"🗑 Remove": "🗑 حذف",
+"🗑 Remove this hot-standby path?": "🗑 این مسیر آماده‌به‌کار حذف شود؟",
+"It stops on both servers (its services, files and firewall rules) and leaves the switcher.": "روی هر دو سرور متوقف می‌شود (سرویس‌ها، فایل‌ها و قوانین فایروالش) و از سوییچر خارج می‌شود.",
+"The users stay where they are — nobody is cut.": "کاربران همان‌جا که هستند می‌مانند — اتصال هیچ‌کس قطع نمی‌شود.",
+"Auto mode and Repair won't add it back. You can put it back under “Removed paths” on this card.": "حالت خودکار و تعمیر آن را دوباره اضافه نمی‌کنند. از بخش «مسیرهای حذف‌شده» روی همین کارت می‌توانید برش گردانید.",
+"The users are on this path — move them to another one with “use” first.": "کاربران روی این مسیرند — اول با «استفاده» آن‌ها را به مسیر دیگری ببرید.",
+"The last working path can't be removed.": "آخرین مسیر سالم را نمی‌شود حذف کرد.",
+"Removed paths": "مسیرهای حذف‌شده",
+"removed by hand — auto mode and Repair leave it out": "دستی حذف شده — حالت خودکار و تعمیر اضافه‌اش نمی‌کنند",
+"put back": "برگرداندن",
+"allow it again: it starts as a new standby path, the users stay where they are": "دوباره مجاز شود: به‌عنوان مسیر آماده‌به‌کار تازه راه می‌افتد، کاربران همان‌جا می‌مانند",
+"put back — it starts on the next Start/Re-apply": "برگردانده شد — در شروع/اعمال دوبارهٔ بعدی راه می‌افتد",
+"Put back path": "برگرداندن مسیر",
+"Remove path": "حذف مسیر",
+"this tunnel isn't running with hot standby": "این تانل با حالت آماده‌به‌کار روشن نیست",
+"that path isn't on this tunnel": "این مسیر روی این تانل نیست",
+"that path isn't removed on this tunnel": "این مسیر روی این تانل حذف نشده است",
 };
 
 // The panel in Persian: the page is drawn in English (app.js) and every text node, title
@@ -1250,6 +1268,9 @@ window.TP_FA = {
   const AGO = { min: 'دقیقه', h: 'ساعت', d: 'روز' };
   // messages the server writes, with addresses and numbers inside
   const PAT = [
+    // removing a hot-standby path from the card (hsremove.go)
+    [/^the users are on (.+) — move them to another path with "use" first$/, 'کاربران روی $1 هستند — اول با «استفاده» آن‌ها را به مسیر دیگری ببرید'],
+    [/^(.+) is the last working path of this tunnel$/, '$1 آخرین مسیر سالم این تانل است'],
     // a helper core the panel lost and could not copy back from a server
     [/^⚠ The (\S+) core is missing on the panel and no server that runs it could be reached; it is retried at every apply\.$/, '⚠ هستهٔ $1 روی پنل نیست و به هیچ سروری که آن را اجرا می‌کند دسترسی نشد؛ در هر اعمال دوباره امتحان می‌شود.'],
     [/^⚠ The (\S+) core is missing on the panel and no reachable server has a trusted copy; it is retried at every apply\.$/, '⚠ هستهٔ $1 روی پنل نیست و هیچ سرور در دسترسی نسخهٔ معتبری از آن ندارد؛ در هر اعمال دوباره امتحان می‌شود.'],

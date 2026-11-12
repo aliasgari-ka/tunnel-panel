@@ -232,7 +232,7 @@ func (a *App) hsPathDiff(t *Tunnel) (drop, add []HSPath) {
 	have := map[string]bool{}
 	for _, p := range paths {
 		have[p.Method+"|"+p.Family] = true
-		if a.routeSkipped(t.ServerID, t.ForeignID, p.Method, p.Family) {
+		if a.hsExcluded(t, p.Method, p.Family) {
 			drop = append(drop, p)
 		}
 	}
