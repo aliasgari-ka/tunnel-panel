@@ -114,6 +114,20 @@ func (a *App) diagnoseHot(ctx context.Context, j *Job, t *Tunnel, ir, kh Host) {
 				why = " — " + v.Why[i]
 			}
 			j.log("  %s %s%s%s", state, label, on, why)
+			// a failing path: what the cause finder proves about it
+			if (i >= len(v.OK) || !v.OK[i]) && i < len(v.Keys) {
+				for _, p := range paths {
+					if p.Method+"|"+p.Family == v.Keys[i] {
+						var at int64
+						if i < len(v.Changed) {
+							at = v.Changed[i]
+						}
+						if c, err := a.dcFind(ctx, t, p, at); err == nil {
+							dcLog(j, c)
+						}
+					}
+				}
+			}
 		}
 		switch {
 		case up == 0:

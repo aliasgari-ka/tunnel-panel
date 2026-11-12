@@ -112,6 +112,7 @@ func (a *App) routes() http.Handler {
 	g("/api/tunnels/hspin", "tunnel", s.tunnelHSPin)
 	g("/api/tunnels/hsremove", "tunnel", s.tunnelHSRemove)
 	g("/api/tunnels/hsrestore", "tunnel", s.tunnelHSRestore)
+	g("/api/tunnels/hsrestart", "tunnel", s.tunnelHSRestart)
 	g("/api/traffic", "self", s.trafficGet)
 	g("/api/usage", "self", s.usageGet)
 	g("/api/jobs", "job", s.job)
@@ -1131,7 +1132,7 @@ func (s *Server2) tunnels(w http.ResponseWriter, r *http.Request) {
 			if t.Active != "" {
 				up = uptimeOf(st.Outages, "tunnel", t.ID, from, now)
 			}
-			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, s.app.hsViewOf(t.ID), hp, up})
+			out = append(out, tv{cp, s.app.routeFamiliesLocked(st, t), clash, s.app.hsViewCause(t.ID), hp, up})
 		}
 	})
 	writeJSON(w, out)

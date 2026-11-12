@@ -1057,6 +1057,9 @@ type hsView struct {
 	// read as a panel bug (seen live: Finland, Backhaul Premium ipx/tun).
 	Changed []int64  `json:"changed"`
 	Why     []string `json:"why"`
+	// Cause: what the cause finder proved about each down path (downcause.go); filled in a
+	// copy for the page, never in the cached view
+	Cause []*DownCause `json:"cause,omitempty"`
 }
 
 // hsRead reads the switcher's state and the events since `after` from the Iran server.
@@ -1377,6 +1380,7 @@ func (a *App) hsReport(t *Tunnel, v *hsView, events []string) {
 		}
 		a.hsViews[t.ID] = v
 		a.healthMu.Unlock()
+		a.dcSchedule(t, v)
 	}
 	good, _ := a.hsGoodNow(t)
 	if v != nil { // the events' indices are the switcher's (its keys), as v's are

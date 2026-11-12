@@ -216,3 +216,25 @@ func (s *Server2) tunnelHSRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, out)
 }
+
+// tunnelHSRestart: POST {id, path} → {job}: restart only that path's cores (downcause.go).
+func (s *Server2) tunnelHSRestart(w http.ResponseWriter, r *http.Request) {
+	var in struct{ ID, Path string }
+	_ = readJSON(r, &in)
+	t := s.app.store.Tunnel(in.ID)
+	if t == nil {
+		httpErr(w, 404, "tunnel not found")
+		return
+	}
+	mid, fam, ok := hsPathArg(in.Path)
+	if !ok {
+		httpErr(w, 400, "bad path")
+		return
+	}
+	j, err := s.app.hsRestartJob(t, mid, fam)
+	if err != nil {
+		httpErr(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"job": j.ID})
+}
