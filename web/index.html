@@ -663,6 +663,14 @@ optgroup option{color:var(--fg);font-weight:500}
 .hsl .cur{outline:0;border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:var(--accent-soft)}
 .hsl .hu{color:var(--accent);font-size:12px;white-space:nowrap}
 .hsl .btn.sm{padding:2px 10px;font-size:12px}
+/* a path's ⋯ menu (Remove) and the paths removed by hand */
+.hsl details.more{flex:none}.hsl details.more>summary{padding:2px 8px;font-size:14px;line-height:1.2}
+.hsl details.more .pop{padding:5px;background:var(--panel);color:var(--fg);border-radius:10px;min-width:230px}
+.hsl details.more .mi{padding:8px 10px;border-radius:7px;background:none}
+.mi:disabled{opacity:.5;cursor:not-allowed}.mi:disabled:hover{background:none}
+.mi .hwhy{display:block;white-space:normal;font-size:12px;font-weight:450;color:var(--faint);max-width:260px}
+.hsoff>summary{cursor:pointer;list-style:none;font-size:12.5px;padding:2px 2px}.hsoff[open]>summary{margin-bottom:4px}
+.hsoff .hsl>div{opacity:.85}
 
 /* the tunnel window */
 .tform{gap:14px}

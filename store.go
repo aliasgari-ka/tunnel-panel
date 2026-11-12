@@ -112,6 +112,10 @@ type Tunnel struct {
 	HSPin  string   `json:"hsPin,omitempty"`
 	Paths  []HSPath `json:"paths,omitempty"`
 	HSSeen int64    `json:"hsSeen,omitempty"` // newest switcher event already reported
+	// HSOff: "method|family" paths the user removed from this tunnel's standby list (the
+	// card's ⋯ → Remove). Auto mode, Repair and the retry never add them back; "put back"
+	// on the card takes one off this list again (hsremove.go).
+	HSOff []string `json:"hsOff,omitempty"`
 	// Applying is the method an apply is bringing up, from the moment it tears the old one
 	// down until it ends. Still set at start-up = the panel stopped in the middle (restart,
 	// update) and the tunnel was left down: resumeInterrupted brings it back.
