@@ -2377,7 +2377,7 @@ function jobInline(el, t, jid, end) {
       const a = $('[data-jlog]', el); if (a) a.onclick = (e) => { e.preventDefault(); openLog(t, jid); };
       setTimeout(tick, 2000); return;
     }
-    jobEnded();
+    // no jobEnded(): redrawing the view would close the panel and its result — end() reloads the data
     end(!!(j && j.status === 'ok'), lines.filter(l => / ✓ | ✕ |DONE|FAILING|ERROR/.test(l)).slice(-4).map(clean), lines.some(l => /FAILING/.test(l)));
   };
   tick();
