@@ -57,6 +57,26 @@ func (a *App) hsRebuild(t *Tunnel, reason string, down time.Duration) {
 	}
 }
 
+// resumeTunnelOutages takes up the tunnel outages a restart left open (takeOpenOutages): the
+// tunnel stays down in the same entry until a check finds it up ("back up" ends it). The next
+// failover / rebuild is due failoverAfter from now, as after a fresh outage.
+func resumeTunnelOutages(a *App, now time.Time) map[string]*tunnelHealth {
+	state := map[string]*tunnelHealth{}
+	open := a.takeOpenOutages(map[string]bool{"tunnel": true}, func(st *State, o *Outage) bool {
+		for _, t := range st.Tunnels {
+			if t.ID == o.Target {
+				return t.Active != ""
+			}
+		}
+		return false
+	})
+	for _, o := range open {
+		state[o.Target] = &tunnelHealth{outageID: o.ID, fails: monitorFails, alerted: true, downSince: time.Unix(o.Start, 0),
+			reason: o.Reason, failoverAt: now.Add(failoverAfter - failoverRetry)}
+	}
+	return state
+}
+
 type tunnelHealth struct {
 	outageID   string
 	fails      int
@@ -93,7 +113,7 @@ func (h *tunnelHealth) step(reason string, now time.Time) string {
 }
 
 func (a *App) healthMonitor() {
-	state := map[string]*tunnelHealth{}
+	state := resumeTunnelOutages(a, time.Now())
 	var mu sync.Mutex
 	for {
 		time.Sleep(monitorEvery)

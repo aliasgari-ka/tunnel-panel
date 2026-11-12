@@ -1109,28 +1109,109 @@ function bindServerActions(w) {
   $$('[data-own]', w).forEach(b => b.onclick = () => ownerModal('server', b.dataset.own));
   $$('[data-prep]', w).forEach(b => b.onclick = () => prepareServer(b.dataset.prep));
 }
-// Outage log: every server (SSH port checked every few seconds) and tunnel outage, with
-// exact times in Tehran time and, for tunnels, whether their servers answered.
-const tehranTime = (u) => new Date(u * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-const durTxt = (s) => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${Math.floor(s / 3600)}h${String(Math.floor(s / 60) % 60).padStart(2, '0')}m`;
+// Outage log: every server (SSH port checked every few seconds) and tunnel outage, in Tehran
+// time — ongoing ones on top, the rest by day with short drops folded, and which servers and
+// tunnels went down most. It follows the View selector (an account's own servers and tunnels).
+const OUT = { range: recall('tp-orange') || '7d', kind: recall('tp-okind') || 'all', fam: false, pick: '', open: {}, data: null };
+const durTxt = (s) => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : s < 86400 ? `${Math.floor(s / 3600)}h${String(Math.floor(s / 60) % 60).padStart(2, '0')}m` : `${Math.floor(s / 86400)}d${String(Math.floor(s / 3600) % 24).padStart(2, '0')}h`;
+const oClock = (u) => new Date(u * 1000).toLocaleTimeString('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' });
+const oDayKey = (u) => new Date(u * 1000).toLocaleDateString('en-CA', { timeZone: 'Asia/Tehran' }); // 2026-11-12
+const oDayLabel = (u, now) => {
+  const k = oDayKey(u);
+  if (k === oDayKey(now)) return 'Today';
+  if (k === oDayKey(now - 86400)) return 'Yesterday';
+  return window.tpLang === 'fa' ? new Date(u * 1000).toLocaleDateString('fa-IR-u-nu-latn', { timeZone: 'Asia/Tehran', weekday: 'long', day: 'numeric', month: 'long' })
+    : new Date(u * 1000).toLocaleDateString('en-GB', { timeZone: 'Asia/Tehran', weekday: 'short', day: 'numeric', month: 'short' });
+};
+const O_SHORT = 60; // drops shorter than this (seconds) are folded into a count
+// what an outage was, in plain words, and whose it is (the current name: servers get renamed)
+function outageInfo(o) {
+  let name = o.name || '', owner = '', gone = false, key, icon;
+  if (o.kind === 'tunnel') {
+    const t = STATE.tunnels.find(x => x.id === o.target); key = 't:' + o.target; icon = '🛰';
+    if (t) { name = t.name; owner = t.owner || ''; } else gone = true;
+  } else if (o.kind === 'panel') { name = 'This panel host'; key = 'panel'; icon = '🖥'; }
+  else {
+    const sid = (o.target || '').split('/')[0], s = STATE.servers.find(x => x.id === sid); key = 's:' + sid; icon = '🖧';
+    if (s) { name = s.name; owner = s.owner || ''; } else { gone = true; name = name.replace(/ \(IPv[46]\)$/, ''); }
+  }
+  const c = o.cause || '';
+  const [cause, cls] = o.kind === 'server' ? ['Server unreachable', 'bad']
+    : o.kind === 'ssh-v4' ? ['Only IPv4 down — IPv6 worked', 'warn']
+    : o.kind === 'ssh-v6' ? ['Only IPv6 down — IPv4 worked', 'warn']
+    : o.kind === 'panel' ? ['The panel host was offline', 'warn']
+    : /both servers answer/.test(c) ? ['Tunnel dropped — its servers answered', 'bad']
+    : /panel host/.test(c) ? ['The panel host was offline', 'warn']
+    : /Iran server .* and foreign server/.test(c) ? ['Both its servers were unreachable', 'warn']
+    : /^Iran server/.test(c) ? ['Its Iran server was unreachable', 'warn']
+    : /^foreign server/.test(c) ? ['Its foreign server was unreachable', 'warn']
+    : ['Tunnel down', 'bad'];
+  return { name, owner, gone, key, icon, cause, cls, fam: o.kind === 'ssh-v4' || o.kind === 'ssh-v6', approx: /panel restarted/.test(o.reason || '') };
+}
 function outageSection() {
-  const sec = h(`<section class="group"><div class="ghd"><div><h2>📉 Outage log</h2><p>Every server's SSH port is checked every few seconds (a miss is retried twice), so short drops show up too; tunnel outages say whether their servers answered at the time — the tunnel or the server. Times are Tehran time.</p></div>
-    <div><button class="btn sm" data-oref>⟳</button> <button class="btn sm ghost" data-oclr>Clear</button></div></div><div class="card" style="padding:0;overflow-x:auto" data-olist><div class="muted" style="padding:14px">loading…</div></div></section>`);
-  const load = async () => {
-    try {
-      const r = await api('/outages'); const list = $('[data-olist]', sec);
-      if (!r.outages.length) { list.innerHTML = '<div class="muted" style="padding:14px">No outage recorded yet. ✅</div>'; return; }
-      list.innerHTML = `<table class="otab"><thead><tr><th>Start</th><th>Duration</th><th>What</th><th>Reason</th></tr></thead><tbody>${r.outages.slice(0, 100).map(o => {
-        const open = !o.end, d = (o.end || r.now) - o.start;
-        const icon = o.kind === 'tunnel' ? '🛰' : o.kind === 'panel' ? '🖥' : '🖧';
-        return `<tr class="${open ? 'open' : ''}"><td class="mono">${tehranTime(o.start)}</td><td>${open ? `<b>ongoing</b> · ${durTxt(d)}` : `${durTxt(d)}<div class="faint mono" style="font-size:11px">→ ${tehranTime(o.end).split(', ')[1] || ''}</div>`}</td>
-          <td>${icon} ${nm(o.name)}<div class="faint" style="font-size:11px">${o.kind}</div></td><td>${esc(o.reason)}${o.cause ? `<div class="faint" style="font-size:12px">${esc(o.cause)}</div>` : ''}</td></tr>`;
-      }).join('')}</tbody></table>`;
-    } catch (e) { $('[data-olist]', sec).innerHTML = `<div style="padding:14px;color:var(--crit)">${esc(e.message)}</div>`; }
+  const sec = h(`<section class="group olog"><div class="ghd"><div><h2>📉 Outage log <span class="qi" title="Every server's SSH port is checked every few seconds (a miss is retried twice), so short drops show up too; tunnel outages say whether their servers answered at the time — the tunnel or the server. Times are Tehran time.">ⓘ</span></h2><p>Servers and tunnels that went down · Tehran time</p></div>
+    <div class="ohd"><div class="seg sm" data-orange>${[['24h', '24 h'], ['7d', '7 days'], ['all', 'All']].map(([v, l]) => `<button data-v="${v}"${OUT.range === v ? ' class="on"' : ''}>${l}</button>`).join('')}</div>
+    <button class="btn sm" data-oref title="Refresh">⟳</button>${moreMenu([{ label: '🗑 Clear the log…', attr: 'data-oclr', danger: true }])}</div></div>
+    <div data-obody><div class="card muted" style="padding:14px">loading…</div></div></section>`);
+  const body = $('[data-obody]', sec);
+  const paint = () => {
+    const r = OUT.data; if (!r) return;
+    const now = r.now, since = OUT.range === '24h' ? now - 86400 : OUT.range === '7d' ? now - 7 * 86400 : 0;
+    const hostShown = !STATE.ownerFilter || STATE.ownerFilter === '-';
+    let all = r.outages.map(o => ({ ...o, i: outageInfo(o), d: (o.end || now) - o.start }))
+      .filter(o => (o.end || now) >= since && (o.kind === 'panel' ? hostShown : o.i.gone ? !STATE.ownerFilter : shownOwner(o.i.owner)));
+    const famN = all.filter(o => o.i.fam).length;
+    if (!OUT.fam) all = all.filter(o => !o.i.fam);
+    if (OUT.kind === 'server') all = all.filter(o => o.kind !== 'tunnel'); else if (OUT.kind === 'tunnel') all = all.filter(o => o.kind === 'tunnel');
+    // the summary: who went down most (time down inside the period)
+    const by = {};
+    for (const o of all) {
+      const x = by[o.i.key] || (by[o.i.key] = { key: o.i.key, name: o.i.name, icon: o.i.icon, n: 0, t: 0, open: false });
+      x.n++; x.t += Math.max(0, (o.end || now) - Math.max(o.start, since)); x.open = x.open || !o.end;
+    }
+    const top = Object.values(by).sort((a, b) => b.t - a.t || b.n - a.n).slice(0, 6), max = top.length ? top[0].t || 1 : 1;
+    const picked = OUT.pick && by[OUT.pick] ? by[OUT.pick] : null;
+    if (OUT.pick && !picked) OUT.pick = '';
+    const list = OUT.pick ? all.filter(o => o.i.key === OUT.pick) : all;
+    const row = (o) => {
+      const dayOf = (u) => oDayKey(u) !== oDayKey(o.start) ? ` (<span>${oDayLabel(u, now)}</span>)` : '';
+      const tip = [o.reason, o.cause].filter(Boolean).join(' — ');
+      return `<div class="orow${o.end ? '' : ' live'}" title="${esc(tip)}"><span class="oic">${o.i.icon}</span>
+        <div class="om"><b>${nm(o.i.name)}${o.i.gone ? ' <small class="faint">(deleted)</small>' : ''}</b><small class="oc ${o.i.cls}">${o.i.cause}</small></div>
+        <div class="ot">${o.end ? `<span class="faint"><span class="mono">${oClock(o.start)} – ${oClock(o.end)}</span>${dayOf(o.end)}${o.i.approx ? ' <span title="the panel restarted during it: the end time is approximate">≈</span>' : ''}</span>` : `<span class="faint"><span>since</span> <span class="mono">${oClock(o.start)}</span>${oDayKey(o.start) !== oDayKey(now) ? ` (<span>${oDayLabel(o.start, now)}</span>)` : ''}</span>`}<b class="mono">${durTxt(o.d)}</b></div></div>`;
+    };
+    const live = list.filter(o => !o.end), done = list.filter(o => o.end);
+    const days = []; let cur = null;
+    for (const o of done) { const k = oDayKey(o.start); if (!cur || cur.k !== k) days.push(cur = { k, u: o.start, rows: [] }); cur.rows.push(o); }
+    body.innerHTML = `<div class="ofil"><div class="seg sm" data-okind>${[['all', 'All'], ['server', 'Servers'], ['tunnel', 'Tunnels']].map(([v, l]) => `<button data-v="${v}"${OUT.kind === v ? ' class="on"' : ''}>${l}</button>`).join('')}</div>
+      ${famN || OUT.fam ? `<label class="ochk" title="One address family's SSH down while the other answered — the server stayed up"><input type="checkbox" data-ofam${OUT.fam ? ' checked' : ''}> IPv4/IPv6-only drops <span class="count">${famN}</span></label>` : ''}
+      ${picked ? `<button class="chip opick" data-opick="">${picked.icon} ${nm(picked.name)} ✕</button>` : ''}</div>
+      ${!all.length ? `<div class="card oempty">✅ <span>${r.outages.length ? 'No outage in this period.' : 'No outage recorded yet.'}</span></div>` : `
+      ${top.length > 1 && !OUT.pick ? `<div class="card osum"><div class="osh">Down the most <span class="faint">· tap one to see only its outages</span></div>${top.map(x => `<button class="osr${x.open ? ' live' : ''}" data-opick="${esc(x.key)}"><span class="oic">${x.icon}</span><b>${nm(x.name)}</b><span class="obar"><i style="width:${Math.max(3, Math.round(x.t / max * 100))}%"></i></span><span class="faint mono">${x.n}×</span><b class="mono">${durTxt(x.t)}</b></button>`).join('')}</div>` : ''}
+      ${live.length ? `<div class="card oday onow"><div class="odh"><b>🔴 Down now</b><span class="count">${live.length}</span></div>${live.map(row).join('')}</div>` : ''}
+      ${days.map(d => {
+        const long = d.rows.filter(o => o.d >= O_SHORT), short = d.rows.filter(o => o.d < O_SHORT), tot = d.rows.reduce((s, o) => s + o.d, 0), op = OUT.open[d.k];
+        return `<div class="card oday"><div class="odh"><b>${oDayLabel(d.u, now)}</b><span class="faint">${d.rows.length} outage${d.rows.length > 1 ? 's' : ''} · ${durTxt(tot)} down</span></div>
+          ${long.map(row).join('')}${short.length ? `${op ? short.map(row).join('') : ''}<button class="ofold" data-ofold="${d.k}">${op ? '▴ Hide the short drops' : `▾ ${short.length} short drops (under 1 min)`}</button>` : ''}</div>`;
+      }).join('')}`}`;
+    $$('[data-okind] button', body).forEach(b => b.onclick = () => { OUT.kind = b.dataset.v; remember('tp-okind', OUT.kind); OUT.pick = ''; paint(); });
+    $$('[data-opick]', body).forEach(b => b.onclick = () => { OUT.pick = b.dataset.opick; paint(); });
+    $$('[data-ofold]', body).forEach(b => b.onclick = () => { OUT.open[b.dataset.ofold] = !OUT.open[b.dataset.ofold]; paint(); });
+    const fam = $('[data-ofam]', body); if (fam) fam.onchange = () => { OUT.fam = fam.checked; paint(); };
   };
+  const load = async () => {
+    try { OUT.data = await api('/outages'); paint(); }
+    catch (e) { body.innerHTML = `<div class="card" style="padding:14px;color:var(--crit)">${esc(e.message)}</div>`; }
+  };
+  $$('[data-orange] button', sec).forEach(b => b.onclick = () => { OUT.range = b.dataset.v; remember('tp-orange', OUT.range); $$('[data-orange] button', sec).forEach(x => x.classList.toggle('on', x === b)); paint(); });
   $('[data-oref]', sec).onclick = load;
-  $('[data-oclr]', sec).onclick = async (e) => { if (!confirmInline(e.target, 'Click again to clear')) return; try { await api('/outages', { Clear: true }); load(); } catch (er) { alertModal('Error', er.message); } };
+  $('[data-oclr]', sec).onclick = async (e) => {
+    const b = e.currentTarget; if (!confirmInline(b, 'Click again: delete every finished outage')) return;
+    try { await api('/outages', { Clear: true }); OUT.pick = ''; load(); } catch (er) { alertModal('Error', er.message); }
+  };
   load();
+  // ongoing outages count on, and new ones show up, while the page is open
+  const timer = setInterval(() => { if (!sec.isConnected) { clearInterval(timer); return; } if (!document.hidden && !$('details.more[open]', sec)) load(); }, 60000);
   return sec;
 }
 // the panel's own machine, shown as the first foreign server

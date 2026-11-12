@@ -191,10 +191,39 @@ label.row{flex-direction:row;align-items:center;gap:9px}label.row input{width:au
 .rprocs td:first-child{width:55%;overflow-wrap:anywhere}
 .rprocs td:nth-child(2){text-align:end;font-variant-numeric:tabular-nums}
 .rprocs td:nth-child(3){text-align:end}
-.otab{width:100%;border-collapse:collapse;font-size:13px}
-.otab th,.otab td{text-align:start;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
-.otab th{color:var(--faint);font-weight:600;font-size:12px}
-.otab tr.open td{background:color-mix(in srgb,var(--crit) 9%,transparent)}
+/* outage log: filters, "down the most" summary, day cards of one-line rows */
+.olog .qi{font-size:13px;font-weight:500;color:var(--faint);cursor:help}
+.olog .ohd{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.seg.sm{margin:0;padding:2px;border-radius:10px}.seg.sm button{padding:5px 11px;font-size:12.5px;border-radius:8px}
+.ofil{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+.ochk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);cursor:pointer}
+.opick{cursor:pointer;border:1px solid var(--line);color:var(--fg);font-weight:600}
+.oempty{padding:16px;color:var(--muted)}
+.osum{padding:10px 12px;margin-bottom:10px}
+.osh{font-size:12.5px;font-weight:650;margin:0 2px 6px}
+.osr{display:grid;grid-template-columns:22px minmax(0,1.3fr) minmax(40px,1fr) auto 64px;align-items:center;gap:8px;width:100%;background:none;border:0;color:var(--fg);padding:5px 4px;border-radius:8px;cursor:pointer;font-size:13px;text-align:start}
+.osr:hover{background:var(--panel-2)}
+.osr>b:first-of-type{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.osr>b.mono{text-align:end;font-size:12.5px}
+.osr.live>b:first-of-type{color:var(--crit)}
+.obar{height:6px;border-radius:99px;background:var(--panel-2);overflow:hidden}.obar i{display:block;height:100%;border-radius:99px;background:color-mix(in srgb,var(--crit) 70%,var(--warn))}
+.oday{padding:2px 0;margin-bottom:10px;overflow:hidden}
+.odh{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:9px 14px 7px;font-size:13px;border-bottom:1px solid var(--line)}
+.oday.onow{border-color:color-mix(in srgb,var(--crit) 45%,var(--line))}
+.oday.onow .odh{background:var(--crit-soft);color:var(--crit)}
+.orow{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.orow:last-child{border-bottom:0}
+.orow.live{background:color-mix(in srgb,var(--crit) 6%,transparent)}
+.oic{font-size:15px;text-align:center}
+.om{min-width:0;display:flex;flex-direction:column;gap:1px}
+.om>b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oc{font-size:12px}.oc.bad{color:var(--crit)}.oc.warn{color:var(--warn)}
+.ot{display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-size:12px;white-space:nowrap}
+.ot>b{font-size:13px}
+.orow.live .ot>b{color:var(--crit)}
+.ofold{display:block;width:100%;background:none;border:0;border-top:1px dashed var(--line);color:var(--muted);padding:8px 14px;font-size:12.5px;text-align:start;cursor:pointer}
+.ofold:hover{background:var(--panel-2);color:var(--fg)}
+@media (max-width:600px){.olog .ghd{flex-wrap:wrap;align-items:flex-start}.olog .ohd{justify-content:flex-start}.osr{grid-template-columns:20px minmax(0,1fr) auto 58px}.osr .obar{display:none}.orow{padding:8px 10px;gap:8px}.odh{padding:9px 10px 7px}}
 .modal .card{position:relative}
 .mclose{position:sticky;float:inline-end;top:0;margin:-12px -12px 0 6px;width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font-size:16px;line-height:1;cursor:pointer;z-index:2}
 .mg-h{padding-inline-end:44px}
