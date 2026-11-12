@@ -372,6 +372,23 @@ type igCmd struct {
 	tmo   int
 }
 
+// igFilter: the traffic view's filter. The page asks for "google, instagram …" but the agent
+// greps one pattern, so a list of words (commas or spaces) is sent as one GNU grep alternation
+// ("google\|instagram"); each word is checked on its own. Before, any list was "bad filter".
+func igFilter(v any) (string, error) {
+	var ws []string
+	for _, w := range strings.FieldsFunc(igStr(v), func(r rune) bool { return r == ',' || r == '،' || r == ' ' || r == '\t' }) {
+		if !igWord.MatchString(w) {
+			return "", fmt.Errorf("bad filter: %q", w)
+		}
+		ws = append(ws, w)
+	}
+	if len(ws) > 8 {
+		return "", errors.New("bad filter: at most 8 words")
+	}
+	return strings.Join(ws, `\|`), nil
+}
+
 func igNeed(v any, rx *regexp.Regexp, what string) (string, error) {
 	s := strings.TrimSpace(igStr(v))
 	if !rx.MatchString(s) {
@@ -454,7 +471,7 @@ func igBuild(a string, p map[string]any) (igCmd, error) {
 		}
 		return igCmd{"speed test", []string{"speedtest", t}, "", 600}, nil
 	case "recent", "watch":
-		w, err := igNeed(p["word"], igWord, "filter")
+		w, err := igFilter(p["word"])
 		if err != nil {
 			return igCmd{}, err
 		}
