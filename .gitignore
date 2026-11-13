@@ -23,3 +23,7 @@
 
 # stray go build output (binary == module name)
 /tunnelpanel
+
+# local assistant notes
+CLAUDE.md
+CLAUDE.local.md
