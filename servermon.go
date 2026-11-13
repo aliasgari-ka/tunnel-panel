@@ -46,6 +46,13 @@ type Outage struct {
 	End    int64  `json:"end,omitempty"` // 0 = still going on
 	Reason string `json:"reason"`
 	Cause  string `json:"cause,omitempty"` // tunnels: the servers' state at the time
+	// tunnels: why, in plain words (outagecause.go); Code e.g. all_down/route_tcp
+	Code  string `json:"code,omitempty"`
+	Why   string `json:"why,omitempty"`
+	WhyFa string `json:"whyFa,omitempty"`
+	// Old: "probe" = a hot-standby outage logged by the old rule (one failed probe of the
+	// users' path), not proof the users were cut — shown folded, left out of the uptime
+	Old string `json:"old,omitempty"`
 }
 
 type srvState struct {

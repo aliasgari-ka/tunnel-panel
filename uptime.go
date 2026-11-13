@@ -50,7 +50,7 @@ func spans(outs []Outage, kind, target string, now int64) [][2]int64 {
 		if o.Kind != kind || o.Target != target {
 			continue
 		}
-		if kind == "tunnel" && o.Cause == "the panel host itself is offline" {
+		if kind == "tunnel" && (o.Cause == "the panel host itself is offline" || o.Code == "panel" || o.Old == "probe") {
 			continue // the panel was blind, not the users cut
 		}
 		e := o.End
