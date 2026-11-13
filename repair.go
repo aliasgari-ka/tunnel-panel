@@ -59,6 +59,8 @@ type RepairItem struct {
 	Impact string `json:"impact"` // none | blip | users
 	Side   string `json:"side"`   // iran | foreign | both
 	Detail string `json:"detail,omitempty"`
+	// Ask: why this one waits for the user (only impact users): the panel does the others itself
+	Ask string `json:"ask,omitempty"`
 	// in a run: done | failed | left, and the error or why it was left
 	Status string `json:"status,omitempty"`
 	Why    string `json:"why,omitempty"`
@@ -95,7 +97,16 @@ type RepairRun struct {
 type repairState struct {
 	mu  sync.Mutex
 	cur *RepairRun
+	bg  repairBgState // the background run (repair_bg.go)
 }
+
+// why an item waits for the admin (RepairItem.Ask): each one cuts or moves users
+const (
+	askRebuild    = "the whole tunnel is rebuilt: all its paths restart at once and users drop for a moment"
+	askSingle     = "this tunnel has a single path: applying it again cuts its users for a moment"
+	askRelay      = "the relay is replaced under the running tunnel: users drop for a moment"
+	askPathsUsers = "the path the users are on is left out on the route: they are moved to another one"
+)
 
 func (rs *repairState) snapshot() *RepairRun {
 	rs.mu.Lock()
@@ -163,6 +174,7 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 	add := func(kind, text, impact, side string) {
 		rt.Items = append(rt.Items, RepairItem{Kind: kind, Text: text, Impact: impact, Side: side})
 	}
+	ask := func(why string) { rt.Items[len(rt.Items)-1].Ask = why }
 	done := func() (*RepairTunnel, *repairEnv) {
 		if len(rt.Items) > 0 {
 			rt.State = "fix"
@@ -190,6 +202,9 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 			}
 			add(rkPaths, fmt.Sprintf("paths differ from the route's choices: %d to add, %d to remove", len(put), len(drop)), impact, "both")
 			rt.Items[len(rt.Items)-1].Detail = strings.Join(parts, " · ")
+			if impact == impUsers {
+				ask(askPathsUsers)
+			}
 			return done() // the rest is looked at again once the paths are in line
 		}
 	}
@@ -225,6 +240,7 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 		switch {
 		case err != nil:
 			add(rkReapply, "switcher not running: "+err.Error(), impUsers, "both")
+			ask(askRebuild)
 			reapply = true
 		// only paths that ran and died count: a path whose method never came up on this
 		// route (Failed at deploy) rebuilt the tunnel — and cut its users — after every
@@ -240,6 +256,7 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 			}
 		case bad > 0:
 			add(rkReapply, fmt.Sprintf("%d of %d paths down — the tunnel is applied again", bad, len(v.OK)+failedPaths), impUsers, "both")
+			ask(askRebuild)
 			reapply = true
 		case old:
 			add(rkSwitcher, switcherText, impBlip, "both")
@@ -248,6 +265,7 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 		irs, khs, link := a.Health(cctx, t)
 		if text, side := healthItem(irs, khs, link, unitName(t)); text != "" {
 			add(rkReapply, text+" — the tunnel is applied again", impUsers, side)
+			ask(askSingle)
 			reapply = true
 		}
 	}
@@ -258,6 +276,7 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 		}{{"Iran", "iran", ir}, {"foreign", "foreign", kh}} {
 			if got := a.relaySrcOutdated(cctx, s.h); got != "" {
 				add(rkReapply, fmt.Sprintf("Golden-GRE relay outdated on the %s server (%s → %s) — the tunnel is applied again", s.label, short8(got), short8(goldenRelaySrc)), impUsers, s.side)
+				ask(askRelay)
 				reapply = true
 				break
 			}
@@ -473,6 +492,12 @@ func lastError(lines []string) string {
 // repairRunJob starts a Repair job over ts. allow decides each item (and says why not); by is
 // the account that started it ("" = the panel itself).
 func (a *App) repairRunJob(why, by string, auto bool, ts []*Tunnel, picked map[string][]string, allow func(t *Tunnel, it RepairItem) (bool, string)) (*Job, error) {
+	return a.repairRun(why, by, auto, ts, picked, allow, nil)
+}
+
+// repairRun is repairRunJob; a sink, when given, gets the finished run instead of the admin
+// chat and LastRepair (the background run, repair_bg.go).
+func (a *App) repairRun(why, by string, auto bool, ts []*Tunnel, picked map[string][]string, allow func(t *Tunnel, it RepairItem) (bool, string), sink func(*RepairRun)) (*Job, error) {
 	j, err := a.jobs.start(repairJobKey, "repair")
 	if err != nil {
 		return nil, fmt.Errorf("a repair is already running")
@@ -512,6 +537,12 @@ func (a *App) repairRunJob(why, by string, auto bool, ts []*Tunnel, picked map[s
 		run.Ended = time.Now().Unix()
 		final := copyRun(run)
 		a.repair.mu.Unlock()
+		if sink != nil {
+			j.log("DONE")
+			j.finish("ok")
+			sink(final)
+			return
+		}
 		_ = a.store.Update(func(st *State) error { st.LastRepair = final; return nil })
 		var fixed, failed, skipped, waiting int
 		var b strings.Builder
@@ -551,7 +582,7 @@ func (a *App) repairRunJob(why, by string, auto bool, ts []*Tunnel, picked map[s
 
 // Repair modes for the automatic run after an update (State.RepairAuto)
 const (
-	repairAutoSafe = ""    // only the fixes nobody notices; the rest is reported as needing an OK
+	repairAutoSafe = ""    // every fix that cuts nobody (none, blip); the rest is reported as needing an OK
 	repairAutoAll  = "all" // everything, as Repair did before it asked (users may be moved)
 	repairAutoOff  = "off" // nothing; the admin opens Repair
 )
@@ -569,8 +600,13 @@ func (a *App) RepairAuto(why string) (*Job, error) {
 	})
 }
 
+// repairAutoAllows: by default the panel does every fix that cuts nobody — the ones nobody
+// notices and the ones where only new connections pause about a second (a newer switcher,
+// standby paths added or removed while the users stay on theirs). Only what cuts or moves
+// users waits for the admin (2026-11-14: the admin found that most items Repair showed
+// needed no one's choice).
 func repairAutoAllows(mode string, it RepairItem) (bool, string) {
-	if mode == repairAutoAll || it.Impact == impNone {
+	if mode == repairAutoAll || it.Impact == impNone || it.Impact == impBlip {
 		return true, ""
 	}
 	return false, "needs your OK: " + impactWords(it.Impact)
@@ -688,6 +724,7 @@ func (a *App) repairAfterUpdate() {
 	if version == "dev" {
 		return
 	}
+	go a.repairBgLoop() // and from then on every few hours (repair_bg.go)
 	last, running, mode := "", 0, ""
 	a.store.View(func(st *State) {
 		last, mode = st.LastVersion, st.RepairAuto

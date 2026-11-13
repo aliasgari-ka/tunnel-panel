@@ -191,7 +191,7 @@ func TestRepairAutoSafe(t *testing.T) {
 	for _, c := range []struct {
 		mode, imp string
 		ok        bool
-	}{{"", impNone, true}, {"", impBlip, false}, {"", impUsers, false}, {"all", impUsers, true}} {
+	}{{"", impNone, true}, {"", impBlip, true}, {"", impUsers, false}, {"all", impUsers, true}} {
 		if ok, _ := repairAutoAllows(c.mode, RepairItem{Impact: c.imp}); ok != c.ok {
 			t.Errorf("mode %q impact %s: %v", c.mode, c.imp, ok)
 		}
