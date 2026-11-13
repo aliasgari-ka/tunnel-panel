@@ -2607,8 +2607,14 @@ function renderOpts(box, t, mid, status) {
     t.options = { ...(t.options || {}), [mid]: opts };
     if (reset) t.optsManual = { ...(t.optsManual || {}), [mid]: [] };
     if (!r.job) { sending = false; renderOpts(box, t, mid, `<span style="color:var(--good)">✓ ${esc(r.note || 'Saved')}</span>`); return; }
-    // the job's progress, inline: its last line while it runs, the result at the end
-    const jid = r.job;
+    follow(r.job);
+  };
+  // the job's progress, inline: its last line and how long it has run while it runs, the
+  // result at the end. The panel stays open with that result: no jobEnded() here — it redrew
+  // the whole tunnels view, which closed a path's ⚙ Settings panel and lost the result (the
+  // user saw "Applying…" and then nothing, and took it for a save that didn't happen).
+  const follow = (jid) => {
+    sending = true; busy(true);
     let fails = 0;
     const tick = async () => {
       if (!ost.isConnected) { followJob(jid); return; }
@@ -2616,22 +2622,32 @@ function renderOpts(box, t, mid, status) {
       try { j = await api('/jobs?id=' + jid); fails = 0; } catch (e) { if (++fails < 5) { setTimeout(tick, 2000); return; } }
       const lines = (j && j.lines) || [], clean = (l) => l.replace(/^\d\d:\d\d:\d\d /, '');
       if (j && j.status === 'running') {
-        show(`<span class="muted">⏳ Applying… <span class="mono" data-notr>${esc(clean(lines[lines.length - 1] || ''))}</span></span> <a href="#" data-olog>log</a>`);
+        const s = Math.max(0, Math.floor(Date.now() / 1000) - (j.started || 0)), took = j.started ? ` ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : '';
+        show(`<span class="muted">⏳ Applying…<span class="mono" data-notr>${took}</span> <span class="mono" data-notr>${esc(clean(lines[lines.length - 1] || ''))}</span></span> <a href="#" data-olog>log</a>`);
         wireLog(ost, jid);
         setTimeout(tick, 2000); return;
       }
       // the result, with the options as stored now and the hand-set marks
       try { await loadAll(); } catch (e) {}
       const nt = STATE.tunnels.find(x => x.id === t.id); if (nt) Object.assign(t, { options: nt.options, optsManual: nt.optsManual, paths: nt.paths, hs: nt.hs });
-      const res = lines.filter(l => / ✓ | ✕ |DONE|FAILING|ERROR/.test(l)).slice(-4).map(clean);
+      if (!box.isConnected) return;
+      const res = lines.filter(l => / ✓ | ✕ |DONE|FAILING|ERROR|CANCELLED/.test(l)).slice(-4).map(clean);
       const ok = j && j.status === 'ok', failing = lines.some(l => /FAILING/.test(l));
+      const head = ok ? '✓ Applied — saved and running' : failing ? "✕ Saved, but the path doesn't answer with these options — kept as you set them; users stay on a working path"
+        : j && j.status === 'cancelled' ? '✕ Cancelled — saved, not applied' : j ? '✕ Saved, but not applied' : "✕ Saved — the job's result couldn't be read";
       sending = false;
-      renderOpts(box, t, mid, `<div style="color:var(${ok ? '--good' : '--crit'})">${ok ? '✓ Applied' : failing ? "✕ Doesn't work with these options — kept as you set them; users stay on a working path" : '✕ Not applied'}</div>${res.map(l => `<div class="faint mono" style="font-size:11.5px" data-notr>${esc(l)}</div>`).join('')}<a href="#" data-olog>log</a>${ok ? '' : ' <button class="btn sm ghost" data-odef>↺ Back to defaults</button>'}`);
+      renderOpts(box, t, mid, `<div style="color:var(${ok ? '--good' : '--crit'})">${head}</div>${res.map(l => `<div class="faint mono" style="font-size:11.5px" data-notr>${esc(l)}</div>`).join('')}<a href="#" data-olog>log</a>${ok ? '' : ' <button class="btn sm ghost" data-odef>↺ Back to defaults</button>'}`);
       wireLog(box, jid);
-      jobEnded();
+      // the tunnel window (not a path's panel) redraws the cards behind it as before
+      if (!box.closest('.hsset')) jobEnded();
     };
     tick();
   };
+  // opened (or redrawn) while this method's options job runs: its progress shows here again
+  // and the form waits for it, instead of a form that looks idle and answers 409
+  if (!status && t.active) api('/tunnels/lastjob?id=' + encodeURIComponent(t.id)).then(j => {
+    if (j && j.status === 'running' && j.kind === 'options:' + mid && box.isConnected && !sending) follow(j.id);
+  }).catch(() => {});
   $('[data-reset]', box).onclick = () => apply(true);
   $('[data-save]', box).onclick = () => apply(false);
   const od = $('[data-odef]', box); if (od) od.onclick = () => apply(true);
@@ -3058,6 +3074,9 @@ async function jobEnded() {
   if (!STATE.user) return;
   try { await loadAll(); } catch (e) { return; }
   const w = $('#work'); if (!w) return;
+  // a path's ⚙ Settings panel is open: redrawing the view would close it and its result;
+  // the data is fresh, and healthWatch repaints the rows once the panel is closed
+  if (STATE.view === 'tunnels' && $('.hsset', w)) return;
   if (STATE.view === 'tunnels') viewTunnels(w);
   else if (STATE.view === 'servers') viewServers(w);
 }

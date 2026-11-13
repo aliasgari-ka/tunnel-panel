@@ -333,7 +333,10 @@ func (a *App) hsStepAside(ctx context.Context, j *Job, ir Host, t *Tunnel, mine 
 		return restore, users, false
 	}
 	j.log("the users are on %s — moving them to %s (the best other working path) meanwhile", users, other)
-	if msg, err := a.hsPinTo(ctx, t, other); err != nil {
+	pctx, pcancel := context.WithTimeout(ctx, hsPinWait+optReadMax) // a hung SSH session never holds the job
+	msg, err := a.hsPinTo(pctx, t, other)
+	pcancel()
+	if err != nil {
 		j.log("  WARN: %v — going on with the users on it", err)
 		return restore, users, false
 	} else {
@@ -345,7 +348,10 @@ func (a *App) hsStepAside(ctx context.Context, j *Job, ir Host, t *Tunnel, mine 
 			back = users
 		}
 		j.log("moving the users back to %s", users)
-		if msg, err := a.hsPinTo(ctx, t, back); err != nil {
+		pctx, pcancel := context.WithTimeout(ctx, hsPinWait+optReadMax)
+		msg, err := a.hsPinTo(pctx, t, back)
+		pcancel()
+		if err != nil {
 			j.log("  WARN: %v", err)
 		} else {
 			j.log("  %s", msg)
@@ -414,7 +420,7 @@ func (a *App) pathNetApply(ctx context.Context, j *Job, t *Tunnel, p HSPath, ifc
 	}
 	wg.Wait()
 	sort.Strings(errs)
-	okNow, v := a.optWait(ctx, ir, t, []string{key})
+	okNow, v := a.optWait(ctx, j, ir, t, []string{key})
 	restore()
 	switch {
 	case len(errs) > 0:
