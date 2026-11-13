@@ -56,7 +56,7 @@ func TestIgParseInfo(t *testing.T) {
 func TestIgBuild(t *testing.T) {
 	bad := []map[string]any{
 		{"action": "route", "svc": "IG", "via": "proxy; reboot"},
-		{"action": "route", "svc": "NETFLIX", "via": "warp"},
+		{"action": "route", "svc": "NOSUCH", "via": "warp"},
 		{"action": "proxy_add", "host": "1.2.3.4;id", "port": "80"},
 		{"action": "proxy_add", "host": "1.2.3.4", "port": "80", "user": "a b"},
 		{"action": "set", "key": "evil", "val": "on"},
