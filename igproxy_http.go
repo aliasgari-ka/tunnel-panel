@@ -224,6 +224,13 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if err == nil && act == "set" && len(c.args) == 3 && c.args[1] == "gall" {
+			for _, x := range tl {
+				if gemHomeOptBad(x, "gall", c.args[2]) || gemIsHome(x) && c.args[2] == "toggle" {
+					err = errors.New(igLabel(x) + ": " + gemHomeOptRefusal)
+				}
+			}
+		}
 		if err != nil {
 			httpErr(w, 400, err.Error())
 			return

@@ -13,6 +13,14 @@ package main
 // So: gemFix never offers the home server its own IP, the panel refuses that route there (one
 // server or many), and gemHomeGuard puts it back within one gemAcctTick if anything else
 // (a shell, an agent, the watch job) sets it anyway, and says so.
+//
+// GOOGLE=warp6 was not enough. The GOOGLE route covers only Gemini's list (gemini, accounts,
+// www.google.com, googleapis ...); every other Google address of the users still left from the
+// account's IP: mail.google.com, inbox.google.com, www.google.de, accounts.youtube.com, clients*.
+// google.com, gstatic ... (about 900 connections in 76 minutes on 2026-11-12, each carrying
+// strangers' Google sessions). The account was signed in at 11:39 UTC and out by 23:43 again.
+// So the home server also keeps the agent's "gall" on (ALL Google on the GOOGLE route, YouTube
+// video stays on its own IPv6): the guard turns it back on, the settings refuse turning it off.
 
 import (
 	"context"
@@ -46,12 +54,23 @@ func gemHomeRouteBad(s *Server, svc, via string) bool {
 
 const gemHomeRefusal = "the panel host's own IP is the Google test account's exit: its users' Google may not leave from it (Google signs the account out) — pick warp6, warp, ipv6 or a proxy"
 
+// gemHomeOptBad: a setting that would put users' Google on the test account's IP.
+func gemHomeOptBad(s *Server, k, v string) bool {
+	return gemIsHome(s) && k == "gall" && strings.EqualFold(strings.TrimSpace(v), "off")
+}
+
+const gemHomeOptRefusal = "on the panel host \"All of Google\" stays on: otherwise its users' Gmail, Search and YouTube sign-in leave from the Google test account's own IP and Google signs the account out"
+
 // gemHomeRisk: what the home server's info says is wrong ("" = nothing).
 func gemHomeRisk(inf map[string]string) string {
+	var why []string
 	if inf["google"] == "direct" {
-		return "the panel host's users' Google went out through the test account's own IP (" + gemHomeHost() + ", route GOOGLE=direct): Google saw the account among many strangers' traffic"
+		why = append(why, "the panel host's users' Google went out through the test account's own IP ("+gemHomeHost()+", route GOOGLE=direct): Google saw the account among many strangers' traffic")
 	}
-	return ""
+	if inf["gall"] == "OFF" {
+		why = append(why, "the panel host's users' other Google (Gmail, Search, google.de, YouTube sign-in: everything outside Gemini's list) went out through the test account's own IP ("+gemHomeHost()+", \"All of Google\" off): Google saw the account among strangers' Google sessions")
+	}
+	return strings.Join(why, "; ")
 }
 
 // gemHomeLog keeps the last risk seen, so the sign-out alert can name it.
@@ -97,10 +116,29 @@ func (a *App) gemHomeGuard(ctx context.Context) string {
 		return ""
 	}
 	gemHomeSeen(why, time.Now())
-	rc, out := a.igRun(ctx, home, []string{"route", "GOOGLE", gemHomeSafeVia}, "", 180, nil)
-	a.igForget(home.ID)
-	if rc != 0 {
-		return fmt.Sprintf("🔑⚠️ %s's users' Google leaves from the Google test account's own IP (route GOOGLE=direct). Moving it to %s failed: %s — move it by hand, or Google signs the test account out.", igLabel(home), gemHomeSafeVia, clipTo(agentLine(home, out), 120))
+	var fix [][]string
+	if inf["google"] == "direct" {
+		fix = append(fix, []string{"route", "GOOGLE", gemHomeSafeVia})
 	}
-	return fmt.Sprintf("🔑 Guard: %s's users' Google was set to leave from the Google test account's own IP (route GOOGLE=direct) — moved to %s. That IP is the test account's alone: Google signs the account out when strangers' traffic shares it.", igLabel(home), gemHomeSafeVia)
+	if inf["gall"] == "OFF" {
+		fix = append(fix, []string{"set", "gall", "on"})
+	}
+	var done, failed []string
+	for _, args := range fix {
+		rc, out := a.igRun(ctx, home, args, "", 180, nil)
+		what := "GOOGLE → " + gemHomeSafeVia
+		if args[0] == "set" {
+			what = "All of Google → on"
+		}
+		if rc != 0 {
+			failed = append(failed, what+" ("+clipTo(agentLine(home, out), 120)+")")
+		} else {
+			done = append(done, what)
+		}
+	}
+	a.igForget(home.ID)
+	if len(failed) > 0 {
+		return fmt.Sprintf("🔑⚠️ %s's users' Google leaves from the Google test account's own IP. Fixing it failed: %s — fix it by hand, or Google signs the test account out.", igLabel(home), strings.Join(failed, "; "))
+	}
+	return fmt.Sprintf("🔑 Guard: %s's users' Google was leaving from the Google test account's own IP — set %s. That IP is the test account's alone: Google signs the account out when strangers' Google traffic shares it.", igLabel(home), strings.Join(done, ", "))
 }

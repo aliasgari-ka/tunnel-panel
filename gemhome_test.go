@@ -56,16 +56,16 @@ func TestGemHomeRisk(t *testing.T) {
 
 // The sign-out alert carries its cause.
 func TestGemAcctCause(t *testing.T) {
-	if c := gemAcctCause("", 12, "de"); !strings.Contains(c, "Google ended the session itself") {
+	if c := gemAcctCause("", 12, "de", ""); !strings.Contains(c, "Google ended the session itself") {
 		t.Fatalf("plain: %s", c)
 	}
-	if c := gemAcctCause("route GOOGLE=direct", 12, "de"); !strings.Contains(c, "GOOGLE=direct") || strings.Contains(c, "itself") {
+	if c := gemAcctCause("route GOOGLE=direct", 12, "de", ""); !strings.Contains(c, "GOOGLE=direct") || strings.Contains(c, "itself") {
 		t.Fatalf("risk: %s", c)
 	}
-	if c := gemAcctCause("", 0, ""); !strings.Contains(c, "wiped") {
+	if c := gemAcctCause("", 0, "", ""); !strings.Contains(c, "wiped") {
 		t.Fatalf("wiped: %s", c)
 	}
-	if c := gemAcctCause("", 5, "ru"); !strings.Contains(c, ".ru") {
+	if c := gemAcctCause("", 5, "ru", ""); !strings.Contains(c, ".ru") {
 		t.Fatalf("moved: %s", c)
 	}
 	g := &gemAcctT{}
