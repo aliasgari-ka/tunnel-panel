@@ -34,7 +34,7 @@ const (
 	igInfoWait  = 12 * time.Second // the server list waits this long for the slowest server
 )
 
-var igServices = []string{"IG", "GOOGLE", "YTM", "ADULT", "SPOTIFY", "SCLOUD", "CUSTOM"}
+var igServices = []string{"IG", "GOOGLE", "YTM", "ADULT", "SPOTIFY", "SCLOUD", "SNAP", "CUSTOM"}
 
 var (
 	igANSI    = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)

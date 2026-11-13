@@ -3212,8 +3212,8 @@ async function pollJob(jobId, tunnelId) {
 // leave each server (a proxy, Cloudflare WARP, the server's IPv6 or direct). Every action runs
 // "igproxy <command>" on the server as one of the panel's jobs (output in a drawer).
 const IG = { data: null, cur: null, tab: 'routes', sub: recall('tp-igsub') || 'servers', filter: 'all', q: '' };
-const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', CUSTOM: 'My sites' };
-const IGWIDE = ['ADULT', 'SPOTIFY', 'SCLOUD', 'CUSTOM'];
+const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', SNAP: 'Snapchat', CUSTOM: 'My sites' };
+const IGWIDE = ['ADULT', 'SPOTIFY', 'SCLOUD', 'SNAP', 'CUSTOM'];
 const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'], GUARD: ['WARP guard not running', 'bad'],
   CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
 const igBad = (s) => (IGST[s] || ['', 'bad'])[1] === 'bad';
@@ -4511,7 +4511,7 @@ function igpxWire(box) {
 // ---- route table: every server × service. Changes wait in IG.pend (not in the page: a refresh of
 // the list redrew the table and threw them away) until one Apply; each cell has a dot from the
 // agent's own checks and from what the server can really do (paused, no proxy, no WARP …).
-const IGSHORT = { IG: ['📸', 'Instagram'], GOOGLE: ['✨', 'Google'], YTM: ['🎵', 'YT Music'], ADULT: ['🔞', 'Adult'], SPOTIFY: ['🎧', 'Spotify'], SCLOUD: ['☁️', 'SoundCloud'], CUSTOM: ['🌐', 'My sites'] };
+const IGSHORT = { IG: ['📸', 'Instagram'], GOOGLE: ['✨', 'Google'], YTM: ['🎵', 'YT Music'], ADULT: ['🔞', 'Adult'], SPOTIFY: ['🎧', 'Spotify'], SCLOUD: ['☁️', 'SoundCloud'], SNAP: ['👻', 'Snapchat'], CUSTOM: ['🌐', 'My sites'] };
 const igViaS = (v) => { v = v || ''; if (v === 'proxy') return 'Proxy'; if (/^proxy\d+$/.test(v)) return 'Proxy ' + v.slice(5); return { warp: 'WARP', warp6: 'WARP IPv6', ipv6: 'IPv6', direct: 'Direct' }[v] || v || '—'; };
 // [dot class, why] of one service's route on one server: '' = nothing to say (direct, not checked)
 function igCellHealth(s, g, v) {
