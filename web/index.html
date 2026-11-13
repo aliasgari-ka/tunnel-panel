@@ -610,6 +610,31 @@ optgroup option{color:var(--fg);font-weight:500}
 .igx-rl{display:flex;gap:4px 10px;flex-wrap:wrap;align-items:baseline}
 .igx-ri{font-weight:800;width:1em}.igx-rl.ok .igx-ri{color:var(--good)}.igx-rl.bad .igx-ri{color:var(--crit)}
 .igx-msg{flex-basis:100%;padding-inline-start:1.6em;font-size:12px}
+/* the Proxies tab's selection: a checkbox per row, the bar above the list, the delete dialog */
+.igx-ck{flex:none;display:grid;place-items:center;width:22px;height:30px;cursor:pointer;margin-inline-end:-4px}
+.igx-ck input{width:17px;height:17px;margin:0;accent-color:var(--accent);cursor:pointer}
+.igp .wrow.sel{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.igx-sel{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap;padding:5px 11px;margin:0 0 6px;border-radius:11px;min-height:38px;box-sizing:border-box;font-size:13px}
+.igx-sel .igx-sl{cursor:pointer;color:var(--muted)}
+.igx-sel .btn .chip{padding:0 6px;font-size:11px;margin-inline-start:2px}
+.igx-sel.on{position:sticky;top:8px;z-index:3;background:color-mix(in srgb,var(--accent) 14%,var(--panel));border:1px solid var(--accent);box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.igx-sel.on b{font-size:14px}
+.igx-dm .card{max-width:560px}
+.igx-dsub{margin:-4px 0 10px;font-size:13px}
+.igx-dl{display:flex;flex-direction:column;gap:5px;max-height:240px;overflow:auto;background:var(--panel-2);border-radius:10px;padding:9px 11px;font-size:13px}
+.igx-dl>div{overflow-wrap:anywhere}.igx-dl .chip{font-size:11px;padding:1px 7px}
+.igx-dw{margin-top:12px;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:10px;font-size:13px;background:color-mix(in srgb,var(--warn) 10%,var(--panel));border-inline-start:3px solid var(--warn)}
+.igx-dw>b{color:var(--warn)}
+.igx-dw .f{display:flex;flex-direction:column;gap:6px;margin:0}
+.igx-mv{display:flex;align-items:center;gap:8px}.igx-mv>span{flex:none;color:var(--muted)}.igx-mv .inp{flex:1;min-width:0;width:100%}
+.igx-dm .mdesc,.igx-dm .mcrit{margin-top:10px}
+.igx-da{justify-content:flex-end;margin-top:14px}
+@media (max-width:640px){
+  .igx-sel.on{top:4px}.igx-sel.on .grow{flex-basis:0}
+  .igx-mv{flex-direction:column;align-items:stretch;gap:4px}
+  .igx-da .btn{flex:1;justify-content:center}
+  .igx-sel.on{flex-wrap:nowrap;gap:6px}.igx-sel.on .igx-clt{display:none}
+}
 @media (max-width:600px){
   .igx-grid{grid-template-columns:1fr 96px}.igx-grid label:first-child{grid-column:1/-1}
   .igx-grid2{grid-template-columns:1fr}

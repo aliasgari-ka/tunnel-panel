@@ -236,7 +236,7 @@ func (a *App) igHealth(ctx context.Context, srv *Server) (IgHealth, error) {
 		perr error
 	)
 	wg.Add(1)
-	go func() { defer wg.Done(); px, perr = a.igProxies(ctx, srv, true, 0) }()
+	go func() { defer wg.Done(); px, perr = a.igProxies(ctx, srv, true) }()
 	// Gemini the way a user's browser gets it (see igHGemini), at the same time
 	var (
 		gv string
