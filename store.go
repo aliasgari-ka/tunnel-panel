@@ -285,6 +285,9 @@ type State struct {
 	AIReport        *AIReport `json:"aiReport,omitempty"` // the last AI analysis
 	// IgRuns: each account's last run of each IG Routing action over several servers ("user|action")
 	IgRuns map[string]*IgRun `json:"igRuns,omitempty"`
+	// IgAuto: IG Routing's automatic repair per server and service (igauto.go); IgAutoLog its history
+	IgAuto    map[string]map[string]*IgAutoSvc `json:"igAuto,omitempty"`
+	IgAutoLog []IgAutoEvent                    `json:"igAutoLog,omitempty"`
 	// HostHW: this panel host's cores, RAM and disk (the servers keep theirs in Server.HW)
 	HostHW *Hardware `json:"hostHw,omitempty"`
 }

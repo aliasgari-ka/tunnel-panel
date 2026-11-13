@@ -225,6 +225,15 @@ func igParseInfo(rc int, text, agentSum string) map[string]string {
 	if ig && agentSum != "" && S["sum"] != agentSum {
 		S["outdated"] = "1"
 	}
+	S["state"] = igStateOf(S, rc, text)
+	return S
+}
+
+// igStateOf: one word for the server's state. Instagram placed in a no-music country (IR …) or a
+// service routed to WARP on a server without one is never "OK": Ger-hertzener showed "healthy"
+// and "IG works" with IG=warp6, 0 WARPs, 0 proxies and Instagram seeing IR (2026-11-13).
+func igStateOf(S map[string]string, rc int, text string) string {
+	_, ig := S["ig"]
 	var st string
 	switch {
 	case ig && S["paused"] == "YES":
@@ -237,8 +246,14 @@ func igParseInfo(rc int, text, agentSum string) map[string]string {
 		st = "GEMFAIL"
 	case ig && S["igp"] == "FAIL":
 		st = "IGFAIL"
+	case ig && igNoMusic(S["igcc"]):
+		st = "IGIR"
+	case ig && igNoExit(S) != "":
+		st = "NOEXIT"
 	case ig && S["guard"] == "DOWN":
 		st = "GUARD"
+	case ig && igWarpMissing(S) != "":
+		st = "NOWARP"
 	case ig && S["outdated"] == "1":
 		st = "UPDATE"
 	case ig:
@@ -257,8 +272,7 @@ func igParseInfo(rc int, text, agentSum string) map[string]string {
 		}
 		S["err"] = e
 	}
-	S["state"] = st
-	return S
+	return st
 }
 
 type igEntry struct {
@@ -277,6 +291,11 @@ func (a *App) igInfo(ctx context.Context, srv *Server) map[string]string {
 	_, sum := igAgent()
 	rc, out := a.igRun(ctx, srv, []string{"info"}, "", 20, nil)
 	inf := igParseInfo(rc, out, sum)
+	// the panel's own reading of Instagram's country is fresher than the agent's (every 10 min)
+	if cc, ok := igLiveCC(srv.ID); ok && inf["ig"] != "" && inf["igcc"] != cc {
+		inf["igcc"] = cc
+		inf["state"] = igStateOf(inf, rc, out)
+	}
 	a.ig.mu.Lock()
 	if a.ig.m == nil {
 		a.ig.m = map[string]igEntry{}

@@ -143,6 +143,7 @@ func main() {
 	go app.premiumFilterSweep()
 	go app.igImport()
 	go app.igAlertLoop()
+	go app.igAutoLoop()
 	go app.aiDailyLoop()
 	go gemFwd.serve()
 	go app.gemLoop()

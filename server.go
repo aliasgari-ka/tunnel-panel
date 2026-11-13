@@ -80,7 +80,7 @@ func (a *App) routes() http.Handler {
 		"/api/bench/history": true, "/api/repair/status": true, "/api/bench/status": true, "/api/bench/plan": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true,
-		"/api/igproxy/warps": true, "/api/igproxy/opts": true, "/api/igproxy/health": true, "/api/igproxy/runs": true}
+		"/api/igproxy/warps": true, "/api/igproxy/opts": true, "/api/igproxy/health": true, "/api/igproxy/runs": true, "/api/igproxy/auto/log": true}
 	g := func(path, kind string, h http.HandlerFunc) {
 		if !reads[path] {
 			h = postOnly(h)
@@ -165,6 +165,8 @@ func (a *App) routes() http.Handler {
 	g("/api/igproxy/action", "self", s.igAction)
 	g("/api/igproxy/routes", "self", s.igRoutesApply)
 	g("/api/igproxy/runs", "self", s.igRunsGet)
+	g("/api/igproxy/auto", "self", s.igAutoSet)
+	g("/api/igproxy/auto/log", "self", s.igAutoLogGet)
 	g("/api/igproxy/proxies", "self", s.igProxyList)
 	g("/api/igproxy/proxy/add", "self", s.igProxyAdd)
 	g("/api/igproxy/proxy/cmd", "self", s.igProxyCmd)

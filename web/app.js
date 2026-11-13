@@ -3226,7 +3226,8 @@ const IG = { data: null, cur: null, tab: 'routes', sub: recall('tp-igsub') || 's
 const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', SNAP: 'Snapchat', CUSTOM: 'My sites' };
 const IGWIDE = ['ADULT', 'SPOTIFY', 'SCLOUD', 'SNAP', 'CUSTOM'];
 const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'], GUARD: ['WARP guard not running', 'bad'],
-  CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
+  IGIR: ['Instagram in a no-music country', 'bad'], NOEXIT: ['no exit for Instagram', 'bad'], NOWARP: ['WARP missing', 'warn'],
+  FIXED: ['fixed automatically', 'warn'], CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
 const igBad = (s) => (IGST[s] || ['', 'bad'])[1] === 'bad';
 // a proxy that is one of our servers (the agent's relay: own IP = port 12371, WARP n = 12371+n) -> "internal · name"
 const igSrvByIP = (ip) => ((IG.data && IG.data.servers) || []).find(s => s.host === ip);
@@ -3419,8 +3420,8 @@ function igGSignin() {
 function igServers(box) {
   const d = IG.data;
   if (!d) { box.innerHTML = '<div class="grid cards">' + '<div class="skel" style="height:150px"></div>'.repeat(4) + '</div>'; return; }
-  const L = igList(), ok = L.filter(s => s.info.state === 'OK').length, conn = L.reduce((a, s) => a + (+s.info.caught || 0), 0);
-  const bad = L.filter(s => s.info.state !== 'OK' && s.info.state !== 'CHECKING').length, old = L.filter(s => ['UPDATE', 'NOAGENT'].includes(s.info.state) || s.info.outdated === '1').length;
+  const L = igList(), ok = L.filter(s => igCardState(s) === 'OK').length, conn = L.reduce((a, s) => a + (+s.info.caught || 0), 0);
+  const bad = L.filter(s => !['OK', 'CHECKING'].includes(igCardState(s))).length, old = L.filter(s => ['UPDATE', 'NOAGENT'].includes(s.info.state) || s.info.outdated === '1').length;
   box.insertAdjacentHTML('beforeend', `<div class="summary">
     <div class="stat"><small>Servers</small><b>${L.length}</b></div><div class="stat"><small>Healthy</small><b>${ok}</b></div>
     <div class="stat"><small>Connections routed</small><b>${conn}</b></div><div class="stat"><small>Need attention</small><b>${bad}</b></div></div>`);
@@ -3431,7 +3432,7 @@ function igServers(box) {
     box.insertAdjacentHTML('beforeend', `<div class="card empty"><div class="big">🌐</div><h3>No servers here yet</h3><p class="muted">Add one of your foreign servers: the igproxy agent is installed on it, then you choose here which way each service leaves.</p><button class="btn pri" data-igadd>+ Add server</button></div>`);
     return;
   }
-  const nbad = L.filter(s => s.info.state !== 'OK').length;
+  const nbad = L.filter(s => igCardState(s) !== 'OK').length;
   box.insertAdjacentHTML('beforeend', `<div class="filters"><button class="fchip" data-f="all">All <b>${L.length}</b></button><button class="fchip" data-f="bad">Needs attention <b>${nbad}</b></button>
     <input class="inp search" id="igq" placeholder="Search name or IP…" value="${esc(IG.q)}"><span class="faint" style="font-size:12px">updated ${new Date(d.t * 1000).toLocaleTimeString()}</span></div><div class="grid cards" id="igcards"></div>`);
   $$('[data-f]', box).forEach(b => { b.classList.toggle('on', b.dataset.f === IG.filter); b.onclick = () => { IG.filter = b.dataset.f; igRender(); }; });
@@ -3440,13 +3441,13 @@ function igServers(box) {
 }
 function igCards() {
   const q = IG.q.trim().toLowerCase();
-  const L = igList().filter(s => (IG.filter !== 'bad' || s.info.state !== 'OK') && (!q || (s.name + ' ' + s.host).toLowerCase().includes(q)));
+  const L = igList().filter(s => (IG.filter !== 'bad' || igCardState(s) !== 'OK') && (!q || (s.name + ' ' + s.host).toLowerCase().includes(q)));
   const box = $('#igcards'); if (!box) return;
   box.innerHTML = L.length ? L.map(igCard).join('') : '<div class="empty card"><div class="big">🔍</div>No server matches</div>';
   // the cards open like buttons: a click, or Enter / Space on the keyboard
   $$('.scard', box).forEach(c => {
     c.tabIndex = 0; c.setAttribute('role', 'button');
-    c.onclick = () => { IG.cur = IG.data.servers.find(x => x.id === c.dataset.id); IG.tab = 'routes'; igRender(); scrollTo(0, 0); };
+    c.onclick = (e) => { if (e.target.closest('details')) return; IG.cur = IG.data.servers.find(x => x.id === c.dataset.id); IG.tab = 'routes'; igRender(); scrollTo(0, 0); };
     c.onkeydown = (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === c) { e.preventDefault(); c.click(); } };
   });
 }
@@ -3461,13 +3462,85 @@ function igCC(g, i, s) {
   const bad = g === 'IG' ? v === 'IR' : !!want && v !== want;
   return `<span class="note mono" style="color:${bad ? 'var(--crit)' : 'var(--faint)'}" title="${g === 'IG' ? 'the country Instagram places the users of this server in' : 'the Google country of the users of this server' + (want ? ' (should be .' + esc(want) + ', the server\'s own country)' : '')}">${g === 'IG' ? 'Instagram sees ' + esc(v) : 'Google sees .' + esc(v)}</span>`;
 }
+// ---- one plain line per service: "Instagram ✓ Germany via WARP" / "⚠ fixed automatically: …".
+// Built from the agent's info and the panel's automatic repair (igauto.go); the words are
+// English / Persian here (L) because they are put together from pieces.
+const IG_NOMUSIC = ['IR', 'CN', 'KP', 'SY', 'CU'];
+const IG_GBAD = ['ir', 'ru', 'cn', 'by', 'cu', 'sy', 'kp'];
+function igCCName(cc) {
+  cc = String(cc || '').toUpperCase(); if (!/^[A-Z]{2}$/.test(cc)) return cc;
+  try { return new Intl.DisplayNames([window.tpLang === 'fa' ? 'fa' : 'en'], { type: 'region' }).of(cc) || cc; } catch (e) { return cc; }
+}
+// Google's country domain -> a country code where it is one (co.uk -> GB, com.tr -> TR, de -> DE)
+const igDomCC = (d) => { d = String(d || '').toLowerCase(); const m = /^(?:co|com)\.([a-z]{2})$/.exec(d); return m ? (m[1] === 'uk' ? 'GB' : m[1].toUpperCase()) : /^[a-z]{2}$/.test(d) ? d.toUpperCase() : ''; };
+// the exit in plain words, both languages
+function igExitWord(v, i) {
+  v = v || '';
+  if (v === 'direct') return L("the server's own IP", 'IP خود سرور');
+  if (v === 'ipv6') return L("the server's own IPv6", 'IPv6 خود سرور');
+  if (v === 'warp6') return 'WARP IPv6';
+  if (v === 'warp') return 'WARP';
+  if (v === 'proxy') return L('proxies', 'پراکسی‌ها');
+  if (/^proxy\d+$/.test(v)) { const r = igRelayOf(i, v); return L('proxy ', 'پراکسی ') + v.slice(5) + (r ? ' · ' + r : ''); }
+  return v || '—';
+}
+// the repair's reason (igauto.go, English) in the page's language
+function igWhyWord(w) {
+  w = String(w || '');
+  if (w === 'no WARP on the server') return L('no WARP on the server', 'سرور WARP ندارد');
+  if (w === 'no answer') return L('no answer', 'بی‌پاسخ');
+  const m = /^Instagram sees ([A-Z]{2})$/.exec(w); if (m) return L('Instagram saw ', 'Instagram دید: ') + igCCName(m[1]);
+  return w;
+}
+// [level, html] for one service: level ok | warn | bad
+function igLine(s, g) {
+  const i = s.info || {}, au = s.auto || {}, route = i[g.toLowerCase()] || '';
+  const missing = /^warp/.test(route) && i.warps === '0';
+  const eff = missing ? (+i.proxies ? 'proxy' : g === 'YTM' ? 'ipv6' : 'direct') : route;
+  const name = g === 'IG' ? 'Instagram' : g === 'GOOGLE' ? 'Google · Gemini' : 'YouTube Music';
+  const pin = g === 'IG' ? au.ig && au.ig.pin : au.pins && au.pins[g];
+  const off = g === 'IG' && au.ig && au.ig.off;
+  const via = (v) => `<span class="igl-via">${L('via', 'از')} <b>${esc(igExitWord(v, i))}</b></span>`;
+  const where = (cc) => cc ? `<b class="igl-cc">${esc(igCCName(cc))}</b> ` : '';
+  const tags = (pin ? `<span class="chip" title="${esc(L('pinned by hand: while it is broken the panel uses another exit, then comes back', 'به‌دست سنجاق شده: اگر خراب شود پنل موقتاً خروجی دیگری می‌گذارد و بعد برمی‌گردد'))}">📌 ${esc(igExitWord(pin, i))}</span>` : '')
+    + (off ? `<span class="chip">${L('auto off', 'خودکار خاموش')}</span>` : '');
+  let lvl = 'ok', mark = '✓', body = '';
+  if (g === 'IG') {
+    const cc = i.igcc && i.igcc !== '-' ? i.igcc : '', cur = au.ig && au.ig.cur;
+    if (i.igp === 'FAIL') { lvl = 'bad'; mark = '✗'; body = `${L("doesn't open", 'باز نمی‌شود')} ${via(eff)}`; }
+    else if (IG_NOMUSIC.includes(cc)) { lvl = 'bad'; mark = '✗'; body = `${where(cc)}${L('— no music', '— بدون موسیقی')} ${via(eff)}${missing ? ` <span class="igl-why">${L('(WARP missing)', '(WARP نیست)')}</span>` : ''}`; }
+    else if (cur) { lvl = 'warn'; mark = '⚠'; body = `${L('fixed automatically:', 'خودکار درست شد:')} <span class="igl-why">${esc(igWhyWord(au.ig.why))} ${L('→', '←')} </span><b>${esc(igExitWord(cur, i))}</b>${cc ? ` · ${where(cc)}` : ''}`; }
+    else if (missing) { lvl = 'warn'; mark = '⚠'; body = `${where(cc)}${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
+    else body = `${where(cc)}${via(route)}`;
+  } else if (g === 'GOOGLE') {
+    const d = i.gdom && i.gdom !== '-' ? i.gdom : '', cc = igDomCC(d);
+    const shown = cc ? where(cc) : d ? `<b class="igl-cc">google.${esc(d)}</b> ` : '';
+    if (i.gem === 'FAIL') { lvl = 'bad'; mark = '✗'; body = `${L("Gemini doesn't open", 'Gemini باز نمی‌شود')} ${via(eff)}`; }
+    else if (IG_GBAD.includes(d)) { lvl = 'bad'; mark = '✗'; body = `${shown}${L('— Gemini is not offered there', '— Gemini آنجا ارائه نمی‌شود')} ${via(eff)}`; }
+    else if (missing || (/^warp/.test(route) && i.gcc === 'PROXY')) { lvl = 'warn'; mark = '⚠'; body = `${shown}${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(+i.proxies ? 'proxy' : 'direct', i))}</b>`; }
+    else body = `${shown}${via(route)}`;
+  } else {
+    if (missing) { lvl = 'warn'; mark = '⚠'; body = `${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
+    else body = via(route);
+  }
+  return [lvl, `<div class="igl ${lvl}"><span class="igl-m">${mark}</span><span class="igl-n">${name}</span><span class="igl-b">${body}</span>${tags}</div>`];
+}
+const igSvcLines = (s) => ['IG', 'GOOGLE', 'YTM'].map(g => igLine(s, g));
+// the card's pill: a bad or patched service line wins over a state that only says the router runs
+function igCardState(s) {
+  const i = s.info || {};
+  if (!i.ig || igBad(i.state) || i.state === 'CHECKING') return i.state;
+  const ls = igSvcLines(s);
+  if (ls.some(([l]) => l === 'bad')) return ['OK', 'NOWARP', 'UPDATE'].includes(i.state) ? 'IGIR' : i.state;
+  if (ls.some(([l]) => l === 'warn')) return s.auto && s.auto.ig && s.auto.ig.cur ? 'FIXED' : ['OK', 'UPDATE'].includes(i.state) ? 'NOWARP' : i.state;
+  return i.state;
+}
 function igCard(s) {
-  const i = s.info;
-  const svc = (g) => `<div class="svc"><small>${IGSV[g]}</small><b class="${igViaC(i[g.toLowerCase()])}">${esc(igViaW(i[g.toLowerCase()], i))}</b>${igCC(g, i, s)}${g === 'GOOGLE' && /^warp/.test(i.google || '') && i.gcc && i.gcc !== '-' ? `<span class="note mono" style="color:${i.gcc === 'PROXY' ? 'var(--crit)' : 'var(--faint)'}">${i.gcc === 'PROXY' ? 'on a proxy for now' : 'country ' + esc(i.gcc)}</span>` : ''}</div>`;
+  const i = s.info, st = igCardState(s);
   const n = igWarpNeed(i);
-  return `<div class="card scard${igBad(i.state) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><div><h3>${s.country ? flag(s.country) + ' ' : ''}${nm(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div></div>${igPill(i.state)}</div>
-    ${i.ig ? `<div class="svcs">${svc('IG')}${svc('GOOGLE')}${svc('YTM')}</div>
-    <div class="sfoot"><span>🔗 <b>${+i.caught || 0}</b></span><span>proxies <b>${+i.proxies || 0}</b></span><span>WARP <b>${+i.warps || 0}</b>${n ? `<span class="faint" title="suggested for the 24 h peak"> / ${n.total}</span>` : ''}</span><span class="grow"></span><span>Gemini ${igChk(i.gem)}</span><span>IG ${igChk(i.igp)}</span>${igAccBroken(i) ? '<span class="chip bad" title="Instagram logged the test account out: music is not checked on any exit IP">music check off</span>' : ''}</div>`
+  const det = i.ig ? `<details class="igc-more"><summary>${L('Details', 'جزئیات')}</summary><div class="sfoot" data-notr><span>🔗 <b>${+i.caught || 0}</b> ${L('connections', 'اتصال')}</span><span>${L('proxies', 'پراکسی')} <b>${+i.proxies || 0}</b></span><span>WARP <b>${+i.warps || 0}</b>${n ? `<span class="faint"> / ${n.total}</span>` : ''}</span><span class="grow"></span><span>Gemini ${igChk(i.gem)}</span><span>IG ${igChk(i.igp)}</span>${igAccBroken(i) ? `<span class="chip bad">${L('music check off', 'تست موسیقی خاموش')}</span>` : ''}${i.outdated === '1' ? `<span class="chip">${L('old agent', 'agent قدیمی')}</span>` : ''}</div></details>` : '';
+  return `<div class="card scard${igBad(st) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><div><h3>${s.country ? flag(s.country) + ' ' : ''}${nm(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div></div>${igPill(st)}</div>
+    ${i.ig ? `<div class="igls" data-notr>${igSvcLines(s).map(x => x[1]).join('')}</div>${det}`
     : i.state === 'CHECKING' ? '<div class="skel" style="height:64px;margin-top:10px"></div>' : `<div class="mcrit" style="margin:10px 0 0">${esc(i.err || (IGST[i.state] || [])[0] || '')}</div>`}</div>`;
 }
 // the shared Instagram test account: igaccst = working | untested | broken:<why> (Instagram logged it out)
@@ -3546,6 +3619,7 @@ function igDetail(w) {
   $$('[data-igto]', w).forEach(b => b.onclick = () => { IG.tab = b.dataset.igto; igRender(); });
   // the same actions as the ⋯ menu (its confirmations too)
   $$('[data-igdo]', w).forEach(b => b.onclick = () => b.dataset.igdo === 'deploy' ? igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`) : igAct(igS({ action: b.dataset.igdo })));
+  $$('[data-auto]', w).forEach(b => b.onclick = () => igAutoSet(s, ...b.dataset.auto.split('|')));
   const det = $('.igst-more', w); if (det) { det.open = recall('tp-igdet') === '1'; det.ontoggle = () => remember('tp-igdet', det.open ? '1' : '0'); }
   if (!i.ig && IG.tab !== 'tools') {
     $('#igtab').innerHTML = `<div class="card empty"><div class="big">${i.state === 'OFFLINE' ? '📡' : '📦'}</div><h3>${esc((IGST[i.state] || [i.state])[0])}</h3>
@@ -3600,6 +3674,7 @@ function igProblems(s, i) {
   if (['BLOCK', 'AWAY', 'MARK', 'V6', 'SOME'].includes(i.panel)) add('bad', 'The x-ui panel on this server blocks or diverts Google before igproxy sees it.', 'Fix panel', 'tools');
   if (i.gem === 'FAIL') add('bad', "Gemini doesn't open on the users' route (checked every minute).", 'Tests & diagnosis', 'tools');
   if (i.igp === 'FAIL') add('bad', "Instagram doesn't open on the users' route (checked every minute).", 'Tests & diagnosis', 'tools');
+  if (IG_NOMUSIC.includes(i.igcc)) add('bad', L(`Instagram places this server's users in ${igCCName(i.igcc)} (no music). The panel moves Instagram to a working exit by itself within minutes; if none works it tells the admin chat — then add a working proxy.`, `Instagram کاربران این سرور را در ${igCCName(i.igcc)} می‌بیند (بدون موسیقی). پنل خودش ظرف چند دقیقه Instagram را به خروجی سالم می‌برد؛ اگر هیچ‌کدام کار نکند در چت ادمین خبر می‌دهد — آن‌وقت یک پراکسی سالم اضافه کنید.`), L('Proxies', 'پراکسی‌ها'), 'proxies');
   if (i.guard === 'DOWN') add('bad', "The WARP guard isn't running: dead WARPs are not replaced.", 'Settings', 'settings');
   if (/^warp/.test(i.google || '') && i.gcc === 'PROXY') add('warn', 'No allowed WARP for Google: Google goes through a proxy for now.', 'WARP', 'warp');
   if (igAccBroken(i)) add('warn', `Instagram logged the test account out (${igAccWhy(i)}): music is not checked on any WARP or proxy.`, 'Test account', 'checks');
@@ -3612,8 +3687,9 @@ function igStatus(s, i) {
     return `<div class="card igst ${w[1]}"><div class="igst-top"><span class="igst-dot"></span><div class="igst-t"><b>${esc(w[0] || '')}</b>${i.err ? `<small class="mono">${esc(i.err)}</small>` : ''}</div>${igOwner(s)}</div></div>`;
   }
   const P = igProblems(s, i), nbad = P.filter(p => p.lvl === 'bad').length;
-  const lvl = i.state === 'CHECKING' ? 'acc' : nbad ? 'bad' : P.length ? 'warn' : 'on';
-  const head = nbad ? (nbad === 1 ? '1 problem' : nbad + ' problems') : i.paused === 'YES' ? 'Paused' : P.length ? 'Works · needs a look' : 'Everything works';
+  const cs = igCardState(s), lbad = IGST[cs] && IGST[cs][1] === 'bad' && !nbad ? 1 : 0;
+  const lvl = i.state === 'CHECKING' ? 'acc' : nbad || lbad ? 'bad' : P.length || cs === 'FIXED' || cs === 'NOWARP' ? 'warn' : 'on';
+  const head = nbad ? (nbad === 1 ? '1 problem' : nbad + ' problems') : lbad ? (IGST[cs] || [''])[0] : i.paused === 'YES' ? 'Paused' : cs === 'FIXED' ? 'Works · fixed automatically' : P.length || cs === 'NOWARP' ? 'Works · needs a look' : 'Everything works';
   const conn = +i.caught || 0, gu = igGusers(i), gsum = gu.reduce((a, x) => a + x[1], 0);
   const probs = P.length ? `<div class="igst-probs">${P.map(p => `<div class="igst-p ${p.lvl}"><span>${esc(p.text)}</span><button class="btn sm" ${p.act ? `data-igdo="${p.act}"` : `data-igto="${p.to}"`}>${esc(p.btn)}</button></div>`).join('')}</div>` : '';
   const yn = (ok, on, off) => ok ? `<b class="ok">${on}</b>` : `<b class="bad">${off}</b>`;
@@ -3633,8 +3709,35 @@ function igStatus(s, i) {
   ].join('');
   return `<div class="card igst ${lvl}"><div class="igst-top"><span class="igst-dot"></span><div class="igst-t"><b>${esc(head)}</b>
       <small><b data-notr>${conn}</b> connections now${gsum ? ` · <b data-notr>${gsum}</b> to Gemini in 10 min` : ''}</small></div>${igOwner(s)}</div>
-    ${probs}<div class="igst-tiles">${igSvcTile(s, i, 'IG')}${igSvcTile(s, i, 'GOOGLE')}</div>
+    ${probs}<div class="igls igls-d" data-notr>${['IG', 'GOOGLE', 'YTM'].map(g => igLine(s, g)[1].replace(/<\/div>$/, igAutoMenu(s, g) + '</div>')).join('')}</div>${igAutoHist(s)}
     <details class="igst-more"><summary>Details</summary><div class="igst-det">${det}</div></details></div>`;
+}
+// the small menu of one service: Auto (default) or one exit pinned; Instagram's repair can be turned off
+function igAutoMenu(s, g) {
+  const i = s.info || {}, au = s.auto || {}, a = g === 'IG' ? au.ig || {} : { pin: au.pins && au.pins[g] };
+  const auto = !a.pin && !a.off, cur = i[g.toLowerCase()] || '';
+  const o = ['proxy']; for (let k = 1; k <= (+i.proxies || 0); k++) o.push('proxy' + k); o.push('warp', 'warp6', 'ipv6', 'direct');
+  const items = [{ label: (auto ? '✓ ' : '') + L('Auto (recommended)', 'خودکار (پیشنهادی)'), attr: `data-auto="${g}|auto"` }]
+    .concat(o.map(v => ({ label: (a.pin === v ? '📌 ' : '') + L('Only ', 'فقط ') + esc(igExitWord(v, i)) + (v === cur && !a.pin ? L(' · now', ' · الان') : ''), attr: `data-auto="${g}|pin|${v}"` })));
+  if (g === 'IG') items.push({ label: (a.off ? '✓ ' : '') + L("Don't fix automatically", 'خودکار درست نکن'), attr: 'data-auto="IG|off"' });
+  return `<span class="igl-menu">${moreMenu(items)}</span>`;
+}
+async function igAutoSet(s, svc, mode, via) {
+  const word = mode === 'pin' ? L(`Send ${svc === 'IG' ? 'Instagram' : svc === 'GOOGLE' ? 'Google' : 'YouTube Music'} only through ${igExitWord(via, s.info)}? If it breaks, the panel uses another exit until it works again.`,
+    `${svc === 'IG' ? 'Instagram' : svc === 'GOOGLE' ? 'Google' : 'YouTube Music'} فقط از ${igExitWord(via, s.info)} برود؟ اگر خراب شود پنل تا درست شدنش از خروجی دیگری استفاده می‌کند.`) : '';
+  if (word && !confirm(word)) return;
+  try {
+    s.auto = Object.assign(s.auto || {}, await api('/igproxy/auto', { ID: s.id, Svc: svc, Mode: mode, Via: via || '' }));
+    toast(mode === 'auto' ? L('Auto: the panel keeps it working', 'خودکار: پنل خودش درستش نگه می‌دارد') : mode === 'off' ? L('Automatic repair off', 'تعمیر خودکار خاموش شد') : L('Pinned', 'سنجاق شد'));
+    igRefreshAfter({ srv: s.id });
+  } catch (e) { toast(e.message); }
+}
+// the last automatic fixes of this server
+function igAutoHist(s) {
+  const ev = (s.auto && s.auto.last) || [];
+  if (!ev.length) return '';
+  const ic = { fix: '🔧', back: '↩', fail: '⚠', info: '·' };
+  return `<details class="igst-more igah"><summary>${L('Automatic fixes', 'تعمیرهای خودکار')} <span class="faint">${ev.length}</span></summary><div class="igah-l" data-notr>${ev.map(e => `<div class="igah-r ${e.kind}"><span class="faint mono">${new Date(e.t * 1000).toLocaleString(window.tpLang === 'fa' ? 'fa-IR' : undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><span>${ic[e.kind] || '·'} ${esc(e.svc === 'IG' ? 'Instagram' : e.svc)}: ${esc(e.msg)}</span></div>`).join('')}</div></details>`;
 }
 function igViaOpts(svc, cur, nprox, i) {
   const o = ['proxy']; for (let k = 1; k <= nprox; k++) o.push('proxy' + k); o.push('warp'); if (!IGWIDE.includes(svc)) o.push('warp6', 'ipv6'); o.push('direct');
