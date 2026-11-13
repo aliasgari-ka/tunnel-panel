@@ -77,7 +77,7 @@ async function loadAll() {
   // a user also gets the admin's servers that carry their tunnels (shared, read-only): they
   // name where a tunnel runs but aren't the user's to manage
   STATE.servers = (servers || []).filter(s => !s.shared); STATE.shared = (servers || []).filter(s => s.shared);
-  STATE.settings = (settings && settings.settings) || {}; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
+  STATE.settings = (settings && settings.settings) || {}; STATE.hostHw = (settings && settings.hostHw) || null; STATE.agentPin = settings.agentPin || ''; STATE.agentPort = settings.agentPort || 7020;
   STATE.users = isAdmin() ? await api('/users').catch(() => []) : [];
   if (STATE.restored === undefined) { // once per page load: back to the page and account viewed before the refresh
     STATE.restored = true;
@@ -1059,6 +1059,18 @@ async function trafficTick() {
 }
 // a server's live CPU / RAM / disk, load, sockets and busiest programs
 const kbTxt = (kb) => kb >= 2 ** 30 ? (kb / 2 ** 30).toFixed(1) + ' TB' : kb >= 2 ** 20 ? (kb / 2 ** 20).toFixed(1) + ' GB' : (kb / 1024).toFixed(0) + ' MB';
+// a server's size (bytes), as the once-a-minute resource check last read it
+const gbTxt = (b) => { const g = b / 2 ** 30; return g >= 1000 ? (g / 1024).toFixed(1) + ' TB' : (g >= 10 || Math.abs(g - Math.round(g)) < 0.05 ? Math.round(g) : g.toFixed(1)) + ' GB'; };
+const hwShort = (hw) => hw && hw.cores ? `<small class="shw mono" title="${esc(L('cores · RAM · disk', 'هسته · رم · دیسک'))}">${hw.cores} core · ${gbTxt(hw.memTotal)} · ${gbTxt(hw.diskTotal)}</small>` : '';
+function hwRows(hw) {
+  if (!hw || !hw.cores) return `<div class="wide" data-notr><dt>${L('Hardware', 'سخت‌افزار')}</dt><dd><span class="faint">${L('read by the next resource check (once a minute, while the server is reachable)', 'در بررسی بعدی منابع خوانده می‌شود (هر دقیقه، وقتی سرور در دسترس است)')}</span></dd></div>`;
+  const pc = (a, b) => b ? Math.round(100 * a / b) : 0;
+  const when = `<span class="faint" title="${esc(new Date(hw.at * 1000).toLocaleString())}"> · ${hwAgo(hw.at)}</span>`;
+  return `<div data-notr><dt>CPU</dt><dd><b>${hw.cores}</b> ${L(hw.cores === 1 ? 'core' : 'cores', 'هسته')}</dd></div>
+    <div data-notr><dt>${L('RAM', 'رم')}</dt><dd><b><bdi>${gbTxt(hw.memTotal)}</bdi></b> <span class="faint">· ${L('used', 'استفاده‌شده')} <bdi>${gbTxt(hw.memUsed)} (${pc(hw.memUsed, hw.memTotal)}%)</bdi></span></dd></div>
+    <div class="wide" data-notr><dt>${L('Disk', 'دیسک')}</dt><dd><b><bdi>${gbTxt(hw.diskTotal)}</bdi></b> <span class="faint">· ${L('free', 'آزاد')} <bdi>${gbTxt(hw.diskFree)} (${pc(hw.diskFree, hw.diskTotal)}%)</bdi></span>${when}</dd></div>`;
+}
+const hwAgo = (ts) => { const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60)); return m < 2 ? L('read just now', 'همین الان خوانده شد') : m < 120 ? L(`read ${m} min ago`, `${m} دقیقه پیش خوانده شد`) : m < 2880 ? L(`read ${Math.round(m / 60)} h ago`, `${Math.round(m / 60)} ساعت پیش خوانده شد`) : L(`read ${Math.round(m / 1440)} d ago`, `${Math.round(m / 1440)} روز پیش خوانده شد`); };
 const upTxt = (s) => s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor(s % 86400 / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
 // "Top programs" stays open across the 2-second refreshes (the box is redrawn each time)
 const procsOpen = new Set();
@@ -1387,19 +1399,32 @@ function viewServers(w) {
     const ip = host ? STATE.settings.localIPv4 : (s.ipv4 || s.ipv6);
     return `<button class="srow${id === cur ? ' on' : ''}" data-pick="${id}">
       <span class="sflag">${fl}</span>
-      <span class="sinfo"><b>${host ? 'This panel host' : s.name ? nm(s.name) : '(unnamed)'}${host ? '' : ' ' + ownerChip(s.owner)}</b><small class="mono">${esc(ip || '—')}</small>${host ? '' : upLine(s.up, true)}</span>
+      <span class="sinfo"><b>${host ? 'This panel host' : s.name ? nm(s.name) : '(unnamed)'}${host ? '' : ' ' + ownerChip(s.owner)}</b><small class="mono">${esc(ip || '—')}</small>${hwShort(host ? STATE.hostHw : s.hw)}${host ? '' : upLine(s.up, true)}</span>
       <span class="smeta"><span class="led ${led}" title="${tip}"></span><small class="faint" title="tunnels">🛰 ${n}</small><small class="faint mono" data-mini="${host ? '' : s.id}" title="CPU · RAM"></small></span>
     </button>`;
   };
-  const grp = (key, title, items, add) => `<div class="sgrp"><div class="sgh"><span>${title} <span class="count">${items.length}</span></span><button class="btn sm" data-add="${key}">${add}</button></div>
-    ${items.length ? items.map(row).join('') : `<div class="faint sempty">${key === 'iran' ? 'No Iran server yet — add one to start building tunnels.' : 'No foreign server yet.'}</div>`}</div>`;
+  // Iran and foreign: one switch at the top of the list, one group shown at a time (no scrolling
+  // past every Iran server to reach the foreign ones); the choice is remembered
+  const fgItems = hostShown ? ['host', ...fg] : fg;
+  const grpOf = (id) => id === 'host' || fg.some(x => x.id === id) ? 'foreign' : 'iran';
+  let side = recall('tp-srvgrp');
+  if (side !== 'iran' && side !== 'foreign') side = cur ? grpOf(cur) : 'iran';
+  if (cur && grpOf(cur) !== side) { // the remembered server is on the other side: that side's first
+    const first = side === 'iran' ? ir[0] : fgItems[0];
+    if (first) cur = first === 'host' ? 'host' : first.id; else side = grpOf(cur);
+  }
+  const grp = (key, items) => `<div class="sgrp" data-grp="${key}"${key === side ? '' : ' hidden'}>
+    ${items.length ? items.map(row).join('') : `<div class="faint sempty">${key === 'iran' ? 'No Iran server yet — add one to start building tunnels.' : 'No foreign server yet.'}</div>`}
+    <div class="faint sempty" data-nomatch hidden>${L('No server matches the filter here.', 'سروری در این گروه با فیلتر جور نیست.')}</div></div>`;
+  const segBtn = (key, label, n) => `<button type="button" role="tab" data-side="${key}" class="${key === side ? 'on' : ''}" aria-selected="${key === side}">${label} <span class="sgn" data-sgn="${key}">${n}</span></button>`;
   const downNow = all.filter(s => s.up && s.up.down).sort((a, b) => a.up.since - b.up.since);
   if (downNow.length) w.appendChild(h(`<div class="card sdown" data-notr><div class="odh"><b>🔴 ${L('Down now', 'الان قطع')}</b><span class="count">${downNow.length}</span></div>${downNow.map(s => `<button class="sdr" data-pick="${s.id}"><b>${nm(s.name || '(unnamed)')}</b><span class="faint">${L('down since', 'قطع از')} ${upWhen(s.up.since, s.up.now)}</span><b class="mono bad">${upDur(s.up.now - s.up.since)}</b><span class="faint">${s.up.recent && s.up.recent[0] ? upWhy(s.up.recent[0]) : ''}</span></button>`).join('')}</div>`));
   const split = h(`<div class="srvsplit">
     <aside class="card srvlist">
       ${all.length > 6 ? '<input class="sq" type="search" placeholder="Filter by name or IP…" data-sq>' : ''}
-      ${grp('iran', `${flag('IR')} <span>Iran · entry</span>`, ir, '+ Add')}
-      ${grp('foreign', '🌍 Foreign · exit', hostShown ? ['host', ...fg] : fg, '+ Add')}
+      <div class="sside" data-notr><div class="seg sm" role="tablist" aria-label="${L('Server group', 'گروه سرورها')}">${segBtn('iran', `${flag('IR')} ${L('Iran', 'ایران')}`, ir.length)}${segBtn('foreign', `🌍 ${L('Foreign', 'خارج')}`, fgItems.length)}</div><button class="btn sm" data-add title="${L('Add a server to the group shown', 'افزودن سرور به گروه نمایش‌داده‌شده')}">+ ${L('Add', 'افزودن')}</button></div>
+      ${grp('iran', ir)}
+      ${grp('foreign', fgItems)}
     </aside>
     <div class="srvdetail" data-detail></div>
   </div>`);
@@ -1417,11 +1442,33 @@ function viewServers(w) {
     bindServerActions(det);
     if (scroll && window.innerWidth <= 860) det.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
-  $$('[data-pick]', split).forEach(b => b.onclick = () => show(b.dataset.pick, true));
-  $$('.sdr', w).forEach(b => b.onclick = () => show(b.dataset.pick, true));
-  $$('[data-add]', split).forEach(b => b.onclick = () => serverModal({ role: b.dataset.add }));
   const q = $('[data-sq]', split);
-  if (q) q.oninput = () => { const v = q.value.trim().toLowerCase(); $$('.srow', split).forEach(r => r.hidden = !!v && !r.textContent.toLowerCase().includes(v)); };
+  // the filter looks in both groups; each segment counts its matches
+  const refilter = () => {
+    const v = q ? q.value.trim().toLowerCase() : '';
+    $$('.sgrp', split).forEach(g => {
+      const rows = $$('.srow', g);
+      rows.forEach(r => r.hidden = !!v && !r.textContent.toLowerCase().includes(v));
+      const n = rows.filter(r => !r.hidden).length;
+      $(`[data-sgn="${g.dataset.grp}"]`, split).textContent = v ? `${n}/${rows.length}` : rows.length;
+      $('[data-nomatch]', g).hidden = !v || !rows.length || n > 0;
+    });
+  };
+  const pickSide = (k) => {
+    side = k; remember('tp-srvgrp', k);
+    $$('[data-side]', split).forEach(b => { b.classList.toggle('on', b.dataset.side === k); b.setAttribute('aria-selected', b.dataset.side === k); });
+    $$('.sgrp', split).forEach(g => g.hidden = g.dataset.grp !== k);
+  };
+  $$('[data-side]', split).forEach(b => b.onclick = () => {
+    if (b.dataset.side === side) return;
+    pickSide(b.dataset.side);
+    // show that side's chosen (or first visible) server on the right
+    if (grpOf(cur) !== side) { const r = $(`.sgrp[data-grp="${side}"] .srow:not([hidden])`, split) || $(`.sgrp[data-grp="${side}"] .srow`, split); if (r) show(r.dataset.pick, false); }
+  });
+  $$('[data-pick]', split).forEach(b => b.onclick = () => show(b.dataset.pick, true));
+  $$('.sdr', w).forEach(b => b.onclick = () => { if (grpOf(b.dataset.pick) !== side) pickSide(grpOf(b.dataset.pick)); show(b.dataset.pick, true); });
+  $('[data-add]', split).onclick = () => serverModal({ role: side });
+  if (q) q.oninput = refilter;
   show(cur, false);
 }
 function bindServerActions(w) {
@@ -1594,6 +1641,7 @@ function panelHostCard() {
       <div><dt>IPv4</dt><dd><span class="mono">${esc(st.localIPv4 || 'auto-detecting…')}</span></dd></div>
       ${st.localIPv6 ? `<div class="wide"><dt>IPv6</dt><dd><span class="mono">${esc(st.localIPv6)}</span></dd></div>` : ''}
       <div><dt>Tunnels</dt><dd>${n}</dd></div>
+      ${hwRows(STATE.hostHw)}
     </dl>
     <div class="nic" data-nic=""></div>
     <div class="res" data-res=""></div>
@@ -1688,6 +1736,7 @@ function serverCard(s) {
       <div class="wide"><dt>IPv6</dt><dd><span class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</span></dd></div>
       <div><dt>SSH</dt><dd><span class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</span></dd></div>
       <div><dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not installed yet</span>'}</dd></div>
+      ${hwRows(s.hw)}
       ${s.lastPath ? `<div><dt>Reached via</dt><dd>${esc(s.lastPath)}</dd></div>` : ''}
       ${s.proxy ? `<div><dt>Proxy</dt><dd><span class="mono">${esc(s.proxy)}</span></dd></div>` : ''}
       <div class="wide"><dt>Tunnels</dt><dd>${tl.length ? tl.map(t => `<span class="tchip${t.active ? '' : ' off'}" data-notr>${esc(t.name || t.id)}</span>`).join(' ') : '<span class="faint">none</span>'}</dd></div>

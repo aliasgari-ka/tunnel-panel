@@ -928,6 +928,17 @@ details.tshape>.ff{margin-top:10px;padding:12px;background:var(--panel-2);border
 .srvlist .sq{padding:9px 12px;border-radius:11px;background:var(--bg)}
 .sgh{padding:12px 8px 6px;font-size:11px;letter-spacing:.06em}
 .sgrp+.sgrp{border-top:1px solid var(--line);margin-top:6px}
+/* Iran / foreign switch at the top of the server list: one group at a time */
+.sside{display:flex;align-items:center;gap:8px;padding:8px 2px 6px}
+.sside .seg{flex:1;min-width:0;margin:0}
+.sside .seg button{flex:1 1 0;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:0}
+.sside .seg button .flagi{width:18px;height:13px}
+.sside .sgn{font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;background:color-mix(in srgb,var(--fg) 9%,transparent);font-variant-numeric:tabular-nums;direction:ltr;unicode-bidi:isolate}
+.sside .seg button.on .sgn{background:color-mix(in srgb,var(--accent-fg) 22%,transparent)}
+.sside>.btn{flex:none;padding:5px 11px}
+.sside~.sgrp{border-top:0;margin-top:0}
+.srow .sinfo small.shw{font-size:11px;color:var(--muted);direction:ltr;unicode-bidi:isolate;text-align:start}
+.kvt dd bdi{white-space:nowrap}
 .srow{position:relative;padding:8px 10px;border-radius:12px;gap:11px;transition:background .12s,border-color .12s}
 .srow .sflag{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:var(--panel-2);font-size:17px;font-weight:700;color:var(--muted);flex:none}
 .srow.on .sflag{background:var(--panel);box-shadow:var(--shadow)}

@@ -81,6 +81,8 @@ type Server struct {
 	CountryIP     string `json:"countryIp,omitempty"`
 	// Igproxy: the server is on the IG routing page (it runs, or is to run, the igproxy agent)
 	Igproxy bool `json:"igproxy,omitempty"`
+	// HW: its cores, RAM and disk, from the once-a-minute resource check (hardware.go)
+	HW *Hardware `json:"hw,omitempty"`
 }
 
 // Tunnel links one Iran server with this (foreign) server.
@@ -280,6 +282,8 @@ type State struct {
 	AIReport        *AIReport `json:"aiReport,omitempty"` // the last AI analysis
 	// IgRuns: each account's last run of each IG Routing action over several servers ("user|action")
 	IgRuns map[string]*IgRun `json:"igRuns,omitempty"`
+	// HostHW: this panel host's cores, RAM and disk (the servers keep theirs in Server.HW)
+	HostHW *Hardware `json:"hostHw,omitempty"`
 }
 
 // FailoverState is the original path of a tunnel that was moved to a backup.
