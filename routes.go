@@ -299,9 +299,7 @@ func (a *App) hsDropPaths(ctx context.Context, j *Job, t *Tunnel, ir, kh Host, b
 		return nil
 	})
 	j.log("== switcher: %d paths (left-out ones removed first) ==", len(stay))
-	sw := a.hsSwitcherPlan(t, stay)
-	sw.Setup = hsActiveRemap(hsDir(t), before, stay) + sw.Setup
-	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), sw); err != nil {
+	if err := a.hsSwitcherUpdate(ctx, j, ir, t, before, stay); err != nil {
 		_ = a.store.Update(func(*State) error { t.HSPin, t.Active, t.Family = pin, act, fam; return nil })
 		return nil, fmt.Errorf("switcher: %w", err)
 	}
@@ -488,9 +486,7 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		return nil
 	})
 	j.log("== switcher: %d paths ==", len(good))
-	sw := a.hsSwitcherPlan(t, good)
-	sw.Setup = hsActiveRemap(hsDir(t), before, good) + sw.Setup
-	if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(t), sw); err != nil {
+	if err := a.hsSwitcherUpdate(ctx, j, ir, t, before, good); err != nil {
 		// the old switcher still runs, with the old paths in their old order: the panel goes back
 		// to exactly that (its index 0 is the tunnel's own method, the pin one of its paths),
 		// and the added paths, which no switcher knows, stop again

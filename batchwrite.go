@@ -78,6 +78,8 @@ func (r *batchResult) logf(next func(string)) func(string) {
 			r.fail = strings.Trim(strings.TrimPrefix(s, batchMark+"FAIL "), "'")
 		case s == batchMark+"NOB64":
 			r.nob64 = true
+		case s == batchMark+"OK":
+			// the end of the writes: not a line for the job's log (it showed as "[IR] TPW-OK")
 		default:
 			if next != nil {
 				next(l)

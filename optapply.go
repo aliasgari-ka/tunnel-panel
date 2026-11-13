@@ -508,16 +508,12 @@ func (a *App) optRebuild(ctx context.Context, j *Job, srv *Server, ir, kh Host, 
 		}
 	}
 	// the switcher's own files for the paths (selector rules, flush, targets) follow the
-	// options too: compared without the pin, which this job may have moved for the users
+	// options too: compared as files (the pin, which this job may have moved for the users, is the setup's)
 	good := hsGood(from)
 	swOld, swNew := a.hsSwitcherPlan(from, good), a.hsSwitcherPlan(to, good)
-	delete(swOld.Files, hsDir(from)+"/pin.new")
-	delete(swNew.Files, hsDir(to)+"/pin.new")
 	if !reflect.DeepEqual(swOld.Files, swNew.Files) {
 		j.log("== switcher: same paths, new rules for the rebuilt ones (users stay on their path) ==")
-		sw := a.hsSwitcherPlan(a.pinNow(to), good)
-		sw.Setup = hsActiveRemap(hsDir(to), good, good) + sw.Setup
-		if err := a.deploy(ctx, j, "IR", ir, hsUnitTunnel(to), sw); err != nil {
+		if err := a.hsSwitcherUpdate(ctx, j, ir, a.pinNow(to), good, good); err != nil {
 			j.log("  WARN: switcher: %v", err)
 		}
 	}
