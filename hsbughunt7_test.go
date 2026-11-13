@@ -204,3 +204,19 @@ func TestHSRefusedPin(t *testing.T) {
 		t.Error("manual mode: the choice was dropped")
 	}
 }
+
+// a path proven impossible on its route (only GRE/ESP pass) is never restarted
+func TestHSKickSkipsProtoFilter(t *testing.T) {
+	tn := &Tunnel{ID: "x2", Name: "t", ServerID: "ir", ForeignID: "kh", Active: "gre", Family: "v4", HotStandby: true,
+		Paths: []HSPath{{Method: "gre", Family: "v4", Index: 10}, {Method: "tpk", Family: "v4", Index: 12}}}
+	a := hsTestApp(t, tn)
+	now := time.Unix(1_800_000_000, 0)
+	v := &hsView{Active: 0, Keys: []string{"gre|v4", "tpk|v4"}, OK: []bool{true, false}, Changed: []int64{now.Unix() - 99999, now.Unix() - 7200}}
+	if got := a.hsKickDue(tn, v, now); len(got) != 1 {
+		t.Fatalf("tpk down 2 h not due: %v", got)
+	}
+	a.dc = dcState{cache: map[string]*DownCause{"x2|tpk|v4": {Code: "proto_filter"}}}
+	if got := a.hsKickDue(tn, v, now); len(got) != 0 {
+		t.Errorf("a proto_filter path is restarted: %v", got)
+	}
+}

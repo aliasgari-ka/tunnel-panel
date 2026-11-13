@@ -359,3 +359,43 @@ func TestDownCauseCoreSlow(t *testing.T) {
 	in.Method, in.Title = "premium", "Backhaul Premium"
 	dcCheck(t, in, "core_slow", "foreign", "can't keep up", "30 times", "under emulation", "NetToTun channel full")
 }
+
+// 2026-11-13, outbound tunnel (OVH foreign server): only GRE/ESP pass the route. The pck
+// reverse core on Iran waits for a client that never arrives (tcpdump on Iran: 0 packets),
+// so it has opened no forwards — that's the route, not a core "without its forwards".
+func TestDownCauseProtoFilter(t *testing.T) {
+	lost := "PING small 100\nPING big 100\n"
+	in := dcSides(dcActive+lost+"FWD 0\n", dcActive+lost+"PROBE 1\n"+
+		"J @1794481600 13-Nov 00:46:53 [ERROR] failed to receive control channel response: failed to read message length from net.Conn: timeout\n")
+	in.Method, in.Title, in.UpVia = "bp_pckfec", "BackPack PCK + KCP/FEC multi-link (reverse)", []string{"Plain GRE (v4)"}
+	c := dcCheck(t, in, "proto_filter", "route", "only GRE/ESP", "Plain GRE (v4) works", "روی این مسیر شدنی نیست", "ping from Iran server to the foreign server: 100% lost")
+	if c.Restart {
+		t.Error("a restart can't help a route that drops TCP/UDP")
+	}
+	// TP Tunnel: the foreign client's TCP connects to Iran time out
+	in = dcSides(dcActive+lost+"FWD 1\nST LISTEN *:40336 *:*\n", dcActive+lost+"PROBE 1\nST SYN-SENT 198.51.100.20:51234 192.0.2.10:40336\nR 40336 124 4001\n")
+	in.UpVia = []string{"Plain GRE (v4)", "IPsec static-key (ESP) (v4)"}
+	dcCheck(t, in, "proto_filter", "route", "TCP connect from foreign server to port 40336: timed out")
+
+	// without a working GRE/ESP path there's no proof: the old causes stay
+	in = dcSides(dcActive+lost+"FWD 0\n", dcActive+lost+"PROBE 1\n")
+	dcCheck(t, in, "fwd_down", "iran")
+	// a TCP connect that gets through: not this filter
+	in = dcSides(dcActive+lost+"FWD 1\nST LISTEN *:40336 *:*\n", dcActive+lost+"PROBE 1\nR 40336 0 90\n")
+	in.UpVia = []string{"Plain GRE (v4)"}
+	if c := dcClassify(in).cause("x|v4", in); c.Code == "proto_filter" {
+		t.Error("TCP passes, yet proto_filter")
+	}
+	// the foreign side's ping passes: not this filter
+	in = dcSides(dcActive+lost+"FWD 0\n", dcActive+"PROBE 1\n")
+	in.UpVia = []string{"Plain GRE (v4)"}
+	if c := dcClassify(in).cause("x|v4", in); c.Code == "proto_filter" {
+		t.Error("ping passes one way, yet proto_filter")
+	}
+	// a GRE/ESP path itself is never "not possible" for this reason
+	in = dcSides(dcActive+lost+"FWD 0\n", dcActive+lost+"PROBE 1\n")
+	in.Method, in.UpVia = "espsk", []string{"Plain GRE (v4)"}
+	if c := dcClassify(in).cause("x|v4", in); c.Code == "proto_filter" {
+		t.Error("espsk named proto_filter")
+	}
+}
