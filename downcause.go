@@ -422,6 +422,9 @@ type dcInput struct {
 	Now                   time.Time
 	IR, KH                *dcSide
 	Job                   *Job // the tunnel's latest panel job (nil = none)
+	// UpVia: this tunnel's paths of the same family that carry their packets as a bare IP
+	// protocol (GRE, ESP) and work right now — proof the two servers do reach each other
+	UpVia []string
 }
 
 // dcMask hides the last two parts of an IPv4 address and most of an IPv6 one.
@@ -568,6 +571,15 @@ func dcClassify(in *dcInput) *dcResult {
 			}
 			return res(sideID(s), "core_down", en, fa, actRestartEn, actRestartFa, true, ev...)
 		}
+	}
+	// a route that passes only bare IP protocols (GRE 47, ESP 50): a GRE/ESP path of this
+	// tunnel works, yet ping is lost and no TCP connect between the servers gets through.
+	// Seen on the England and outbound OVH routes (2026-10-31, tcpdump on both ends: TCP,
+	// UDP and ICMP from abroad never reach the Iran server). A TCP/UDP method can't work
+	// there at all — no restart or carrier changes it — so it is named for what it is, not
+	// as a fault, and the panel stops restarting it (hskick.go).
+	if r := dcProtoFilter(in, core, coreFa, extra); r != nil {
+		return r
 	}
 	// an error that proves the cause on its own, logged in the core's current run
 	for _, s := range sides {
@@ -1047,6 +1059,59 @@ func dcRuleShort(r string) string {
 	return strings.TrimSpace("chain " + chain + ": " + strings.TrimSpace(what) + " → " + tgt)
 }
 
+// dcIPProto: methods whose packets between the servers are a bare IP protocol (GRE 47,
+// ESP 50) — no TCP, UDP or ICMP.
+func dcIPProto(mid string) bool { return mid == "gre" || mid == "espsk" }
+
+// dcProtoFilter: the cause "this route lets only GRE/ESP through" (nil when not proven).
+func dcProtoFilter(in *dcInput, core, coreFa string, extra []string) *dcResult {
+	if dcIPProto(in.Method) || len(in.UpVia) == 0 || in.IR.PingSmall != 100 || in.KH.PingSmall >= 0 && in.KH.PingSmall != 100 {
+		return nil
+	}
+	var ev []string
+	for _, s := range []*dcSide{in.IR, in.KH} {
+		for _, r := range s.Reach {
+			if r.RC != 124 {
+				return nil // a TCP connect between the servers got an answer: not this filter
+			}
+			ev = append(ev, fmt.Sprintf("test: TCP connect from %s to port %d: %s", s.Where, r.Port, reachText(&r)))
+		}
+		if s.PingSmall >= 0 {
+			ev = append(ev, fmt.Sprintf("test: ping from %s to %s: %d%% lost", s.Where, map[bool]string{true: "the foreign server", false: "the Iran server"}[s == in.IR], s.PingSmall))
+		}
+	}
+	via := strings.Join(in.UpVia, ", ")
+	ev = append([]string{"working on the same route now: " + via}, ev...)
+	return &dcResult{side: "route", code: "proto_filter",
+		en: fmt.Sprintf("not possible on this route: it lets only GRE/ESP through (%s works on it), while ping, TCP and UDP between the two servers are dropped — the %s needs TCP or UDP, so it can't work here; the path itself isn't broken", via, core),
+		fa: fmt.Sprintf("روی این مسیر شدنی نیست: این مسیر فقط GRE/ESP را رد می‌کند (%s رویش کار می‌کند)، ولی پینگ و TCP و UDP بین دو سرور دور ریخته می‌شود — %s به TCP یا UDP نیاز دارد و اینجا کار نمی‌کند؛ خود مسیر خراب نیست", via, coreFa),
+		act: "remove this path from the tunnel (⋯ → 🗑 Remove path) — the panel no longer restarts it. What works on this route: Plain GRE and IPsec static-key (ESP); reverse, TCP and UDP methods only with a foreign server on another provider",
+		actFa: "این مسیر را از تانل حذف کنید (⋯ ← 🗑 حذف مسیر) — پنل دیگر ری‌استارتش نمی‌کند. روی این مسیر فقط GRE ساده و IPsec کلید ثابت (ESP) کار می‌کند؛ روش‌های معکوس، TCP و UDP فقط با سرور خارج روی ارائه‌دهنده‌ی دیگر",
+		ev: append(ev, extra...)}
+}
+
+// dcUpVia: the labels of tunnel id's working GRE/ESP paths of family fam (switcher's view).
+func (a *App) dcUpVia(id, fam string) []string {
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	v := a.hsViews[id]
+	if v == nil {
+		return nil
+	}
+	var out []string
+	for k, key := range v.Keys {
+		mid, f, _ := strings.Cut(key, "|")
+		if k < len(v.OK) && v.OK[k] && f == fam && dcIPProto(mid) {
+			name := key
+			if k < len(v.Paths) {
+				name = v.Paths[k]
+			}
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // ---- running it ----
 
 // dcProto names the packets an L3 method sends between the servers.
@@ -1109,6 +1174,7 @@ func (a *App) dcFind(ctx context.Context, t *Tunnel, p HSPath, downAt int64) (*D
 		in.FwdPort = hsInternal(p, 19)
 	}
 	in.Job = a.jobs.latestFor(t.ID)
+	in.UpVia = a.dcUpVia(t.ID, p.Family)
 
 	type side struct {
 		s     *dcSide

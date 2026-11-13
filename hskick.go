@@ -67,6 +67,10 @@ func (a *App) hsKickDue(t *Tunnel, v *hsView, now time.Time) []HSPath {
 		if kk, ok := a.hsKicks[id]; ok && now.Before(kk.at.Add(hsKickGap(kk.n))) {
 			continue
 		}
+		// a route that only lets GRE/ESP through: no restart can make this path work
+		if c := a.dc.cache[id]; c != nil && c.Code == "proto_filter" {
+			continue
+		}
 		for _, p := range paths {
 			if p.Method+"|"+p.Family == key {
 				due = append(due, p)

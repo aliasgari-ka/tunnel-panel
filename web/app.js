@@ -2178,6 +2178,8 @@ function hsRows(t) {
       // the cause the panel proved (downcause.go), with its evidence and what to do; until
       // it is known, the switcher's own line and a note that the panel is looking
       const c = v.cause && v.cause[i];
+      // a route that passes only GRE/ESP: the method can't work here at all — not a fault
+      if (c && c.code === 'proto_filter') return `<span class="hq">${L('not possible on this route', 'روی این مسیر شدنی نیست')}</span>${hsCauseHtml(c, v.keys && v.keys[i], i !== v.active, v.paths[i])}`;
       if (c) return `<span class="hq">${since}</span>${hsCauseHtml(c, v.keys && v.keys[i], i !== v.active)}`;
       const why = v.why && v.why[i] ? v.why[i] : "the switcher's check through this path gets no answer";
       return `<span class="hq">${since}</span><span class="hw" title="${esc(why)}">${esc(why)}</span><span class="hw faint" data-notr>${L('finding the exact cause…', 'در حال پیدا کردن علت دقیق…')}</span>`;
@@ -2187,15 +2189,17 @@ function hsRows(t) {
     if (v.kbps && v.kbps[i] > 0) out.push((v.kbps[i] / 1000).toFixed(1) + ' Mbps');
     return out.length ? `<span class="hq mono">${out.join(' · ')}</span>` : '';
   };
+  const na = (i) => !ok[i] && v.cause && v.cause[i] && v.cause[i].code === 'proto_filter';
   return `<div class="hsl">${v.paths.map((p, i) =>
-    `<div class="${ok[i] ? 'ok' : 'bad'}${i === v.active ? ' cur' : ''}"><span class="hi">${ok[i] ? '✓' : '✕'}</span><span class="hm"><span class="hn">${esc(p)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}</span>${q(i)}</span>${i === v.active ? '<b class="hu">← users</b>' : (ok[i] && v.keys ? `<button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}${hsRowMenu(v, ok, i)}</div>`).join('')}</div>`;
+    `<div class="${ok[i] ? 'ok' : na(i) ? 'na' : 'bad'}${i === v.active ? ' cur' : ''}"><span class="hi">${ok[i] ? '✓' : na(i) ? '⛔' : '✕'}</span><span class="hm"><span class="hn">${esc(p)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}</span>${q(i)}</span>${i === v.active ? '<b class="hu">← users</b>' : (ok[i] && v.keys ? `<button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}${hsRowMenu(v, ok, i)}</div>`).join('')}</div>`;
 }
 // a down path's proven cause: one sentence naming the side; the evidence and what to do on expand
-function hsCauseHtml(c, key, canRestart) {
+function hsCauseHtml(c, key, canRestart, name) {
   const fa = window.tpLang === 'fa';
   const side = { iran: L('Iran', 'ایران'), foreign: L('foreign', 'خارج'), route: L('route', 'مسیر'), panel: L('panel', 'پنل') }[c.side];
   const ev = (c.evidence || []).map(e => `<li>${esc(e)}</li>`).join('');
-  const btn = c.restart && canRestart && key ? ` <button type="button" class="btn sm ghost" data-hsrestart="${esc(key)}">↻ ${L('Restart path', 'ری‌استارت مسیر')}</button>` : '';
+  const btn = c.restart && canRestart && key ? ` <button type="button" class="btn sm ghost" data-hsrestart="${esc(key)}">↻ ${L('Restart path', 'ری‌استارت مسیر')}</button>`
+    : c.code === 'proto_filter' && canRestart && key ? ` <button type="button" class="btn sm ghost" data-hsrm="${esc(key)}" data-hsname="${esc(name || key)}">🗑 ${L('Remove path', 'حذف مسیر')}</button>` : '';
   const act = c.action ? `<div class="hca" data-notr>→ ${esc(fa ? c.actionFa : c.action)}${btn}</div>` : '';
   return `<details class="hcz"><summary><span class="hct" data-notr>${side ? `<b class="hcs">${esc(side)}</b> ` : ''}${esc(fa ? c.textFa : c.text)}</span> <span class="faint" data-notr>${L('evidence', 'شواهد')} ▸</span></summary>${ev ? `<ul data-notr dir="ltr">${ev}</ul>` : ''}${act}<div class="faint" data-notr>${L('checked', 'بررسی شد')} · ${ago(c.at)}</div></details>`;
 }
