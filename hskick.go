@@ -19,10 +19,17 @@ import (
 // servers. It is never the path the users are on, and nothing else is touched. A path that
 // stays down after a restart waits twice as long each time, up to hsKickMax (a route that
 // never passes it doesn't get its core restarted every hour forever).
+//
+// When the down-cause finder (downcause.go) has proven, for this outage, that a restart is
+// the fix (the core is stuck with the route fine, stopped, or crash-looping), the path
+// waits only hsKickProven: seen live 2026-11-13, nl's TP Tunnel core (x86 under qemu)
+// crashed every ~10 min and once came back without reconnecting, which left the path dead
+// for the full 30 minutes although the cause was known within a minute.
 const (
-	hsKickAfter = 30 * time.Minute
-	hsKickEvery = time.Hour
-	hsKickMax   = 24 * time.Hour
+	hsKickAfter  = 30 * time.Minute
+	hsKickProven = 5 * time.Minute
+	hsKickEvery  = time.Hour
+	hsKickMax    = 24 * time.Hour
 )
 
 // hsKick: when the panel last restarted a down path, and how many times in a row.
@@ -32,7 +39,8 @@ type hsKick struct {
 }
 
 // hsKickDue lists the paths of t to restart now: down for hsKickAfter by the switcher's
-// clock, not the users' path, and past their back-off. A path that is up again forgets
+// clock (hsKickProven when this outage's proven cause says a restart fixes it), not the
+// users' path, and past their back-off. A path that is up again forgets
 // its restarts.
 func (a *App) hsKickDue(t *Tunnel, v *hsView, now time.Time) []HSPath {
 	if v == nil || len(v.Keys) != len(v.OK) || len(v.Keys) != len(v.Changed) {
@@ -61,7 +69,11 @@ func (a *App) hsKickDue(t *Tunnel, v *hsView, now time.Time) []HSPath {
 			delete(a.hsKicks, id)
 			continue
 		}
-		if k == v.Active || v.Changed[k] <= 0 || now.Unix()-v.Changed[k] < int64(hsKickAfter/time.Second) {
+		wait := hsKickAfter
+		if c := a.dc.cache[id]; c != nil && c.Restart && c.DownAt == v.Changed[k] {
+			wait = hsKickProven
+		}
+		if k == v.Active || v.Changed[k] <= 0 || now.Unix()-v.Changed[k] < int64(wait/time.Second) {
 			continue
 		}
 		if kk, ok := a.hsKicks[id]; ok && now.Before(kk.at.Add(hsKickGap(kk.n))) {
