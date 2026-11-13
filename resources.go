@@ -21,7 +21,7 @@ import (
 const resRead = `read -r _ u n s i w q sq st _ < /proc/stat; echo "C $u $n $s $i $w $q $sq ${st:-0} $(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)"
 awk '{m[$1]=$2} END{a=m["MemAvailable:"]; if (a=="") a=m["MemFree:"]+m["Buffers:"]+m["Cached:"]; print "M", m["MemTotal:"]+0, a+0, m["SwapTotal:"]+0, m["SwapFree:"]+0}' /proc/meminfo
 echo "L $(cut -d' ' -f1-3 /proc/loadavg) $(cut -d' ' -f1 /proc/uptime)"
-df -Pk / 2>/dev/null | awk 'NR==2{print "D", $2, $3}'
+df -Pk / 2>/dev/null | awk 'NR==2{print "D", $2, $3, $4}'
 awk '/^cpu[0-9]/{print "c", substr($1,4), $2+$3+$4+$5+$6+$7+$8+$9, $7+$8}' /proc/stat
 echo "K $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo -) $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo -) $(cat /proc/net/sockstat /proc/net/sockstat6 2>/dev/null | awk '/^TCP6?:/{s+=$3}END{print s+0}')"
 `
@@ -109,6 +109,7 @@ type resSample struct {
 	load               [3]float64
 	uptime             float64
 	disk, diskUsed     uint64
+	diskAvail          uint64 // KB free for programs (df's Available: without root's reserve)
 	ct, ctMax, tcp     int64
 	procs              map[string]uint64 // pid → ticks
 	procRSS, procName  map[string]string
@@ -160,6 +161,9 @@ func parseRes(out string) resSample {
 		case "D":
 			if len(f) >= 3 {
 				s.disk, s.diskUsed = u(f[1]), u(f[2])
+				if len(f) >= 4 {
+					s.diskAvail = u(f[3])
+				}
 			}
 		case "K":
 			if len(f) >= 4 {
@@ -444,6 +448,7 @@ func (a *App) resWatch() {
 		servers = append(servers, &Server{ID: "", Name: "this panel host"})
 		var mu sync.Mutex
 		var wg sync.WaitGroup
+		seen := map[string]*Hardware{} // server id ("" = this host) -> its size, read just now
 		for _, s := range servers {
 			if s.ID != "" && !a.serverReachable(s.ID) {
 				continue
@@ -468,6 +473,9 @@ func (a *App) resWatch() {
 				}
 				go a.housekeep(h, s)
 				mu.Lock()
+				if hw := hwOf(smp, time.Now()); hw != nil {
+					seen[s.ID] = hw
+				}
 				r := prev[s.ID]
 				if r == nil {
 					r = &ServerRes{}
@@ -498,6 +506,7 @@ func (a *App) resWatch() {
 			}(s)
 		}
 		wg.Wait()
+		a.saveHW(seen, time.Now())
 		time.Sleep(resWatchEvery)
 	}
 }

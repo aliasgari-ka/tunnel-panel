@@ -674,7 +674,9 @@ func (s *Server2) settings(w http.ResponseWriter, r *http.Request) {
 		set := s.app.settings()
 		set.TelegramTok = maskStr(set.TelegramTok)
 		set.ClaudeKey = maskStr(set.ClaudeKey)
-		writeJSON(w, map[string]any{"settings": set, "agentPin": s.app.agents.pin, "agentPort": s.app.agentPort, "hostArch": runtime.GOARCH})
+		var hw *Hardware
+		s.app.store.View(func(st *State) { hw = st.HostHW })
+		writeJSON(w, map[string]any{"settings": set, "agentPin": s.app.agents.pin, "agentPort": s.app.agentPort, "hostArch": runtime.GOARCH, "hostHw": hw})
 		return
 	}
 	var in Settings
@@ -835,7 +837,7 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 			in.CreatedAt = time.Now().Unix()
 			in.HostKey, in.AgentToken, in.Prepared = "", "", false
 			// state only the panel sets: never taken from the form
-			in.Igproxy, in.Provisioned, in.Arch, in.OS, in.LastPath = false, 0, "", "", ""
+			in.Igproxy, in.Provisioned, in.Arch, in.OS, in.LastPath, in.HW = false, 0, "", "", "", nil
 			// a country typed in the add form is a manual one; none = detected from the IP
 			in.Country, in.City, in.CountryIP = normCC(in.Country), "", ""
 			in.CountryManual = in.Country != ""
