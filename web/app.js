@@ -144,15 +144,17 @@ const panelHostOpt = () => isAdmin() ? '<option value="">this panel host</option
 const serverName = (id) => id ? (serverById(id)?.name || '(deleted)') : 'this panel host';
 // serverName as HTML: a server's own name is left untranslated, "this panel host" / "(deleted)" are translated
 const srvNm = (id, host) => { const s = id ? serverById(id) : null; return s ? nm(s.name) : esc(id ? '(deleted)' : host || 'this panel host'); };
-// flag emoji from an ISO-3166 alpha-2 country code (regional indicator letters)
+// a country's flag as a bundled SVG (/flags/xx.svg): Windows shows no flag emoji, only the two
+// letters. Unknown or bad codes give ''. ccText = the plain code, for <option> and title text.
+const FLAGS = new Set('ad ae af ag ai al am ao aq ar as at au aw ax az ba bb bd be bf bg bh bi bj bl bm bn bo bq br bs bt bv bw by bz ca cc cd cf cg ch ci ck cl cm cn co cp cr cu cv cw cx cy cz de dg dj dk dm do dz ec ee eg eh er es et eu fi fj fk fm fo fr ga gb gd ge gf gg gh gi gl gm gn gp gq gr gs gt gu gw gy hk hm hn hr ht hu ic id ie il im in io iq ir is it je jm jo jp ke kg kh ki km kn kp kr kw ky kz la lb lc li lk lr ls lt lu lv ly ma mc md me mf mg mh mk ml mm mn mo mp mq mr ms mt mu mv mw mx my mz na nc ne nf ng ni nl no np nr nu nz om pa pc pe pf pg ph pk pl pm pn pr ps pt pw py qa re ro rs ru rw sa sb sc sd se sg sh si sj sk sl sm sn so sr ss st sv sx sy sz tc td tf tg th tj tk tl tm tn to tr tt tv tw tz ua ug um un us uy uz va vc ve vg vi vn vu wf ws xk ye yt za zm zw'.split(' '));
+const ccText = (cc) => /^[A-Za-z]{2}$/.test(cc || '') ? cc.toUpperCase() : '';
 function flag(cc) {
-  if (!cc || cc.length !== 2) return '';
-  cc = cc.toUpperCase();
-  if (!/^[A-Z]{2}$/.test(cc)) return '';
-  return String.fromCodePoint(...[...cc].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+  const c = ccText(cc).toLowerCase();
+  if (!c || !FLAGS.has(c === 'uk' ? 'gb' : c)) return c ? `<span class="flagi flagc" title="${c.toUpperCase()}">${c.toUpperCase()}</span>` : '';
+  return `<img class="flagi" src="/flags/${c === 'uk' ? 'gb' : c}.svg" alt="${c.toUpperCase()}" title="${c.toUpperCase()}" width="20" height="15" loading="lazy" draggable="false">`;
 }
 const serverFlag = (id) => { const s = serverById(id); return s && s.country ? flag(s.country) + ' ' : ''; };
-const serverLabel = (s) => (s.country ? flag(s.country) + ' ' : '') + s.name;
+const serverLabel = (s) => (ccText(s.country) ? ccText(s.country) + ' · ' : '') + s.name;
 
 /* ---------------- auth ---------------- */
 // 👁 show/hide on password fields, and a strength hint under new passwords
@@ -579,7 +581,7 @@ async function viewUsage(w) {
   const billTbl = () => !bills.length ? '' : `<details class="card pad udet"><summary><b>🧾 Iran servers — the whole bill</b> <span class="faint">what each Iran server's network card received, and how much of it the tunnels explain</span></summary><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Iran server</th><th>Σ Tunnels' traffic</th><th>💰 Tunnels' paid</th>${bills.some(b => b.other > 0) ? "<th>💰 Other tunnels on this server</th>" : ''}<th>Other (updates, tests…)</th><th>💰 Server received (bill)</th></tr></thead><tbody>${bills.map(b => `<tr><td><b>${flagOf(b.id)} ${nameOf(b.id)}</b></td><td>${fmtBytes(tot(b.x))}</td><td>${fmtBytes(b.x.p)}</td>${bills.some(x => x.other > 0) ? `<td>${fmtBytes(b.other)}</td>` : ''}<td>${fmtBytes(b.rest)}</td><td><b>${fmtBytes(b.recv)}</b></td></tr>`).join('')}</tbody></table></div></details>`;
 
   // the breakdown: one row per group, its share of the traffic, what it pays and its change
-  const segBy = [['iran', '🇮🇷 Iran server'], ['foreign', '🌍 Foreign server'], ['tunnel', '🛰 Tunnel']].concat(owners ? [['owner', '👤 Account']] : []);
+  const segBy = [['iran', `${flag('IR')} <span>Iran server</span>`], ['foreign', '🌍 Foreign server'], ['tunnel', '🛰 Tunnel']].concat(owners ? [['owner', '👤 Account']] : []);
   const breakdown = () => {
     const gs = groupsOf(by), live = by === 'tunnel' ? gs.filter(g => !g.list[0].deleted) : gs, dead = by === 'tunnel' ? gs.filter(g => g.list[0].deleted && tot(g.cur) > 0) : [];
     const all2 = Math.max(1, tot(sum(items, 'cur')));
@@ -725,7 +727,7 @@ async function viewRoutes(w) {
   items.forEach(it => { const gk = it.pairOnly ? '~' : it.iran; let g = groups.find(x => x.id === gk); if (!g) groups.push(g = { id: gk, items: [] }); g.items.push(it); });
   groups.sort((x, y) => (x.id === '~') - (y.id === '~') || serverName(x.id).localeCompare(serverName(y.id)));
   items.splice(0, items.length, ...groups.flatMap(g => g.items)); // chips, ↑/↓ and the default pick follow the list
-  const listHTML = () => groups.map(g => `<div class="sgrp"><div class="sgh"><span>${g.id === '~' ? '<span>Measured, no tunnel</span>' : `${fl(g.id, '🇮🇷')} ${srvNm(g.id)}`}</span><span class="count">${g.items.length}</span></div>${g.items.map(row).join('')}</div>`).join('');
+  const listHTML = () => groups.map(g => `<div class="sgrp"><div class="sgh"><span>${g.id === '~' ? '<span>Measured, no tunnel</span>' : `${fl(g.id, flag('IR'))} ${srvNm(g.id)}`}</span><span class="count">${g.items.length}</span></div>${g.items.map(row).join('')}</div>`).join('');
   // the pick: remembered; an old "All tunnels" / "Other routes" pick or a deleted tunnel → the first
   let sel = recall('tp-routesel');
   if (!items.some(x => x.id === sel)) sel = items[0].id;
@@ -771,7 +773,7 @@ async function viewRoutes(w) {
 
     // header: name, the route, the status, Measure
     const st = t ? rxState(t) : null;
-    const route = `<span class="rx-end">${fl(p.iran, '🇮🇷')} ${srvNm(p.iran)}</span><span class="rx-arr">→</span><span class="rx-end">${fl(p.foreign, '🖥')} ${srvNm(p.foreign, 'panel host')}</span>${t ? `<span class="faint mono">:${esc(t.ports)}</span>` : ''}`;
+    const route = `<span class="rx-end">${fl(p.iran, flag('IR'))} ${srvNm(p.iran)}</span><span class="rx-arr">→</span><span class="rx-end">${fl(p.foreign, '🖥')} ${srvNm(p.foreign, 'panel host')}</span>${t ? `<span class="faint mono">:${esc(t.ports)}</span>` : ''}`;
     const head = `<div class="rx-h"><div class="rx-ht"><h3>${t ? nm(t.name) : '<span>Measured, no tunnel</span>'}</h3><div class="rx-route">${route}</div></div>
       <div class="rx-ha">${st ? `<span class="pill ${st.cls === 'ok' ? 'on' : 'off'} rx-st ${st.cls}"${st.why ? ` title="${esc(st.why)}"` : ''}><span class="led"></span>${esc(st.txt)}</span>` : ''}${fams.length ? '<button type="button" class="btn sm" data-measure>📊 Measure</button>' : ''}</div></div>`;
 
@@ -1379,7 +1381,7 @@ function viewServers(w) {
     const led = dn ? 'bad' : host || s.agentOnline ? 'on' : s.prepared ? 'ok2' : 'off';
     const tip = dn ? 'down' : host ? 'local' : s.agentOnline ? 'agent online' : s.prepared ? 'reachable' : 'not tested';
     const n = host ? STATE.tunnels.filter(t => !t.foreignId).length : STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id).length;
-    const fl = host ? '🖥' : s.country ? flag(s.country) : ((s.role || 'iran') === 'iran' ? '🇮🇷' : '🌍');
+    const fl = host ? '🖥' : s.country ? flag(s.country) : ((s.role || 'iran') === 'iran' ? flag('IR') : '🌍');
     const ip = host ? STATE.settings.localIPv4 : (s.ipv4 || s.ipv6);
     return `<button class="srow${id === cur ? ' on' : ''}" data-pick="${id}">
       <span class="sflag">${fl}</span>
@@ -1394,7 +1396,7 @@ function viewServers(w) {
   const split = h(`<div class="srvsplit">
     <aside class="card srvlist">
       ${all.length > 6 ? '<input class="sq" type="search" placeholder="Filter by name or IP…" data-sq>' : ''}
-      ${grp('iran', '🇮🇷 Iran · entry', ir, '+ Add')}
+      ${grp('iran', `${flag('IR')} <span>Iran · entry</span>`, ir, '+ Add')}
       ${grp('foreign', '🌍 Foreign · exit', hostShown ? ['host', ...fg] : fg, '+ Add')}
     </aside>
     <div class="srvdetail" data-detail></div>
@@ -1662,7 +1664,7 @@ function serverCard(s) {
   const tl = STATE.tunnels.filter(t => t.serverId === s.id || t.foreignId === s.id);
   const sub = [s.city, s.os && s.arch ? `${s.os} ${s.arch}` : ''].filter(Boolean).join(' · ');
   return h(`<div class="card scard ${isIran ? 'ir' : 'fg'}">
-    <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? '🇮🇷' : '🌍')}</span><div><h3>${s.name ? nm(s.name) : '(unnamed)'} ${ownerChip(s.owner)}</h3><small><span class="srole">${isIran ? 'Iran · entry' : 'foreign · exit'}</span>${sub ? ' ' + esc(sub) : ''}</small></div></div>${status}</div>
+    <div class="sh"><div class="sname"><span class="sflag">${s.country ? flag(s.country) : (isIran ? flag('IR') : '🌍')}</span><div><h3>${s.name ? nm(s.name) : '(unnamed)'} ${ownerChip(s.owner)}</h3><small><span class="srole">${isIran ? 'Iran · entry' : 'foreign · exit'}</span>${sub ? ' ' + esc(sub) : ''}</small></div></div>${status}</div>
     <div class="sfoot">
       <button class="btn sm pri" data-con="${s.id}" title="A shell on this server in the browser, over the panel's own path to it">&gt;_ Console</button>
       <button class="btn sm" data-test="${s.id}">Test connection</button>
@@ -1804,7 +1806,7 @@ function serverModal(s) {
         <label class="f">SSH host <span class="faint">(blank=IPv4)</span><input name="sshHost" class="mono" value="${esc(s.sshHost || '')}"></label>
         <label class="f">SSH port<input name="sshPort" type="number" class="mono" value="${s.sshPort || 22}"></label>
       </div>
-      <div class="two"><label class="f">SSH user<input name="sshUser" class="mono" value="${esc(s.sshUser || 'root')}"></label><label class="f">Country <span class="faint">(auto; 2-letter override)</span><input name="country" class="mono" maxlength="2" value="${esc(s.country || '')}" placeholder="auto"></label></div>
+      <div class="two"><label class="f">SSH user<input name="sshUser" class="mono" value="${esc(s.sshUser || 'root')}"></label><label class="f">Country <span class="faint">${s.country ? flag(s.country) + ' ' : ''}${s.countryManual ? '(set by hand — empty it to detect from the IP)' : '(found from the IP; type 2 letters to set it by hand)'}</span><input name="country" class="mono" maxlength="2" value="${esc(s.country || '')}" placeholder="auto"></label></div>
       ${isAdmin() && !s.id && (STATE.users || []).length > 1 ? `<label class="f">Account <span class="faint">(who sees and runs it)</span><select name="owner"><option value="">me (admin)</option>${STATE.users.filter(u => u.username !== STATE.user).map(u => `<option value="${esc(u.username)}"${STATE.ownerFilter === u.username ? ' selected' : ''} data-notr>${esc(u.username)}</option>`).join('')}</select></label>` : ''}
       <label class="f">Password <span class="faint">(leave blank to keep)</span><input name="password" type="password" value="${esc(s.password || '')}"></label>
       <label class="f">or Private key (PEM)<textarea name="privateKey" rows="2" class="mono">${esc(s.privateKey || '')}</textarea></label>
@@ -1819,6 +1821,8 @@ function serverModal(s) {
   $('#srvf', m).onsubmit = oneAtATime($('#srvf', m), async (ev) => {
     const fd = Object.fromEntries(new FormData(ev.target));
     fd.sshPort = parseInt(fd.sshPort || '22', 10);
+    // an emptied country = detect it again from the IP (a country typed here stays for good)
+    fd.country = (fd.country || '').trim() || (s.id ? 'auto' : '');
     if (s.id) fd.ID = s.id;
     try { const r = await api('/servers', fd); m.remove(); await loadAll(); renderView(); toast('Server saved'); if (s.onSaved) s.onSaved(r.id || s.id, fd.name); } catch (e) { alertModal('Error', e.message); }
   });
@@ -1863,7 +1867,7 @@ function viewTunnels(w) {
       <aside class="card srvlist">
         <input class="sq" type="search" data-q placeholder="🔍 Search name, server, port, method…" value="${esc(STATE.tunSearch || '')}">
         <button class="fchip${STATE.tunRunning ? ' on' : ''}" data-run title="show only running tunnels">● Running <b>${run}</b></button>
-        ${groups.map(g => `<div class="sgrp" data-g="${g.id}"><div class="sgh"><span>${fl(g.id, '🇮🇷')} ${srvNm(g.id)} <span class="count">${g.tunnels.length}</span></span></div>${g.tunnels.map(row).join('')}</div>`).join('')}
+        ${groups.map(g => `<div class="sgrp" data-g="${g.id}"><div class="sgh"><span>${fl(g.id, flag('IR'))} ${srvNm(g.id)} <span class="count">${g.tunnels.length}</span></span></div>${g.tunnels.map(row).join('')}</div>`).join('')}
         <div class="faint sempty nomatch" hidden>No tunnel matches this search.</div>
       </aside>
       <div class="srvdetail tdet" data-detail></div>
@@ -1924,7 +1928,7 @@ function tunnelCard(t) {
   const card = h(`<div class="card tc${t.active ? ' live' : ''}" data-id="${t.id}">
     <div class="tc-h"><div class="tc-t"><span class="sflag" aria-hidden="true">🛰</span><div class="tc-tn"><h3 title="${esc(t.name)}" data-notr>${esc(t.name)}</h3>${ownerChip(t.owner)}</div></div>${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     <div class="tc-r" title="${esc(serverName(t.serverId))} → ${esc(fg ? fg.name : 'this panel host')}">
-      <span class="tc-end"><span class="ef">${fl(ir, '🇮🇷')}</span><span class="en"><small>Iran server</small><b class="nm">${srvNm(t.serverId)}</b></span><span class="sd" data-ir></span></span>
+      <span class="tc-end"><span class="ef">${fl(ir, flag('IR'))}</span><span class="en"><small>Iran server</small><b class="nm">${srvNm(t.serverId)}</b></span><span class="sd" data-ir></span></span>
       <span class="ln${t.active ? ' on' : ''}"></span>
       <span class="tc-end r"><span class="sd" data-fg></span><span class="en"><small>Foreign server</small><b class="nm">${fg ? nm(fg.name) : 'panel host'}</b></span><span class="ef">${fl(fg, fg ? '🌍' : '🖥')}</span></span>
     </div>
@@ -2411,7 +2415,7 @@ function manageTunnel(t) {
   const active = STATE.methods.find(m => m.id === t.active);
   const ir = serverById(t.serverId), fg = t.foreignId ? serverById(t.foreignId) : null;
   const m = modal(`<div class="mg">
-    <div class="mg-h"><div><h2 style="margin:0" data-notr>${esc(t.name)}</h2><div class="faint" style="font-size:12.5px">${(ir && ir.country) ? flag(ir.country) : '🇮🇷'} ${srvNm(t.serverId)} → ${fg && fg.country ? flag(fg.country) : (fg ? '🌍' : '🖥')} ${fg ? nm(fg.name) : 'this panel host'} · ports <span class="mono">${esc(t.ports)}</span></div></div>
+    <div class="mg-h"><div><h2 style="margin:0" data-notr>${esc(t.name)}</h2><div class="faint" style="font-size:12.5px">${(ir && ir.country) ? flag(ir.country) : flag('IR')} ${srvNm(t.serverId)} → ${fg && fg.country ? flag(fg.country) : (fg ? '🌍' : '🖥')} ${fg ? nm(fg.name) : 'this panel host'} · ports <span class="mono">${esc(t.ports)}</span></div></div>
       ${active ? `<span class="pill on"><span class="led"></span>${esc(active.title)}</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     ${t.clash ? `<div class="mwarn">⚠ ${esc(t.clash)}</div>` : ''}
     <div class="lbl">Connection method · address family</div>
@@ -2883,7 +2887,7 @@ function bnCard(p) {
   const fl = (id, d) => { const s = id ? serverById(id) : null; return s && s.country ? flag(s.country) : d; };
   const tnames = p.tunnels.map(t => `<span class="chip" data-notr>${esc(t.name)}</span>`).join('');
   const card = h(`<div class="card bn-card"><div class="bn-head">
-      <div class="bn-route">${fl(p.iran, '🇮🇷')} ${srvNm(p.iran)} <span class="faint">→</span> ${fl(p.foreign, p.foreign ? '🌍' : '🖥')} ${srvNm(p.foreign, 'this panel host')}</div>
+      <div class="bn-route">${fl(p.iran, flag('IR'))} ${srvNm(p.iran)} <span class="faint">→</span> ${fl(p.foreign, p.foreign ? '🌍' : '🖥')} ${srvNm(p.foreign, 'this panel host')}</div>
       <div class="bn-tn">${p.users ? `<span class="pill on"><span class="led"></span>${p.users === 1 ? 'tunnel running' : `${p.users} tunnels running`}</span>` : p.tunnels.length ? '<span class="pill off">tunnel stopped</span>' : '<span class="pill off">no tunnel</span>'}${tnames}</div></div></div>`);
   if (!fams.length) card.appendChild(h(`<div class="bn-fam"><div class="faint">${BN.fam ? `No ${famName(BN.fam)} on this route.` : 'These two servers have no address family in common.'}</div></div>`));
   fams.forEach(f => card.appendChild(bnFamSection(p, f)));

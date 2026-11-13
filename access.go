@@ -109,7 +109,7 @@ func sharedServersLocked(st *State, user string) map[string]bool {
 // sharedView is what a user may see of a server that isn't theirs.
 func sharedView(x *Server) *Server {
 	return &Server{ID: x.ID, Owner: x.Owner, Name: x.Name, IPv4: x.IPv4, IPv6: x.IPv6, Arch: x.Arch, OS: x.OS,
-		Prepared: x.Prepared, CreatedAt: x.CreatedAt, Role: x.Role, Country: x.Country, City: x.City}
+		Prepared: x.Prepared, CreatedAt: x.CreatedAt, Role: x.Role, Country: x.Country, City: x.City, CountryManual: x.CountryManual}
 }
 
 // guard checks the object a request names before the handler runs. kind:
