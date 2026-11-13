@@ -254,6 +254,11 @@ func (s *Server2) igOptsSave(w http.ResponseWriter, r *http.Request) {
 				if ctx.Err() != nil {
 					break
 				}
+				if gemHomeOptBad(x, k, set[k]) {
+					out("!! " + gemHomeOptRefusal)
+					bad = append(bad, k+" ("+gemHomeOptRefusal+")")
+					continue
+				}
 				rc, said := s.app.igRun(ctx, x, []string{"set", k, set[k]}, "", 180, out)
 				if rc == 0 {
 					n++

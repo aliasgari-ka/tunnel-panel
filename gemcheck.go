@@ -125,6 +125,8 @@ func gemProbeAs(ctx context.Context, proxy string, signed bool) (string, gemPage
 			defer cancel()
 			_ = w.call(c2, "", "Target.disposeBrowserContext", map[string]any{"browserContextId": bc.ID}, nil)
 		}()
+		gemProbeCtxs.Store(bc.ID, true) // the network watcher leaves it out
+		defer time.AfterFunc(time.Minute, func() { gemProbeCtxs.Delete(bc.ID) })
 		tp["browserContextId"] = bc.ID
 		verdict = gemAnonVerdict
 	}

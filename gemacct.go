@@ -70,8 +70,12 @@ func gemAcctRead(ctx context.Context) (string, int, error) {
 // gemAcctCause: the likeliest reason the account is signed out, from what the panel saw.
 // risk = gemHomeRecent (users' Google on the account's IP); ncookies = Google cookies left;
 // dom = Google's country for the home exit now ("" = not known).
-func gemAcctCause(risk string, ncookies int, dom string) string {
+// cut = what the network watcher saw (gemCutWhy; "" = nothing).
+func gemAcctCause(risk string, ncookies int, dom, cut string) string {
 	var why []string
+	if cut != "" {
+		why = append(why, cut)
+	}
 	if risk != "" {
 		why = append(why, risk)
 	}
@@ -82,7 +86,7 @@ func gemAcctCause(risk string, ncookies int, dom string) string {
 		why = append(why, "Google places the account's exit "+gemHomeHost()+" in ."+dom+" now (it was .de)")
 	}
 	if len(why) == 0 {
-		return "Google ended the session itself (its session cookies were cleared, the rest of the profile is intact); no route change, profile wipe or exit move was seen"
+		return "Google ended the session itself (its session cookies were cleared, the rest of the profile is intact); no route change, profile wipe or exit move was seen (the network watcher was not connected, so the answer that did it is unknown)"
 	}
 	return strings.Join(why, "; ")
 }
@@ -143,7 +147,7 @@ func (g *gemAcctT) note(state, cause string, err error, now time.Time) string {
 func (g *gemAcctT) snapshot() map[string]any {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return map[string]any{"state": g.State, "since": g.Since, "checked": g.Checked, "err": g.Err, "exit": gemHome, "cause": g.Cause}
+	return map[string]any{"state": g.State, "since": g.Since, "checked": g.Checked, "err": g.Err, "exit": gemHome, "cause": g.Cause, "watch": gemWatchState()}
 }
 
 const gemAcctTick = 10 * time.Minute
@@ -172,9 +176,13 @@ func (a *App) gemAcctWhy(st string, n int, err error) string {
 	if err != nil || !gemAcct.wentOut(st) {
 		return ""
 	}
+	gemAcct.mu.Lock()
+	inSince := gemAcct.Since // still the moment it was found signed in
+	gemAcct.mu.Unlock()
+	c, ok, watched := gemCutSince(inSince)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return gemAcctCause(gemHomeRecent(time.Now()), n, gemDom(ctx, gemHome))
+	return gemAcctCause(gemHomeRecent(time.Now()), n, gemDom(ctx, gemHome), gemCutWhy(c, ok, watched))
 }
 
 // GET /api/igproxy/gaccount: the test account's state for the page (admin only).
