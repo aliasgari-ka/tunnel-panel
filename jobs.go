@@ -797,7 +797,11 @@ func (a *App) healthLive(ctx context.Context, t *Tunnel) (ir, kh, link string) {
 		if err != nil {
 			return err.Error(), foreign(), ""
 		}
-		return "active", "active", a.hsLink(t.ID, v)
+		link = a.hsLink(t.ID, v)
+		if link == "down" && v != nil && hsUsersFlowNow(ctx, h, t) {
+			link = "up" // the probe failed, the users' data didn't stop
+		}
+		return "active", "active", link
 	}
 	chk := linkCheck(t, srv, a.store.Server(t.ForeignID), a.settings())
 	out, _ := h.Run(ctx, cmd+"\n"+chk, nil)
@@ -832,8 +836,10 @@ const hsUsersRate = 256_000
 // dropped its probes for ~30 s again and again while it moved 50+ Mbit/s), and the card
 // then said "no traffic between the servers" over a live traffic graph. Standby paths that
 // fail don't make the link down: the card's "n/m paths working" chip shows them.
+// It is "down" only when the users may really be cut (hsUsersCut): a users' path that fails
+// for less than hsMoveWait while another path works is the switcher's to handle.
 func (a *App) hsLink(id string, v *hsView) string {
-	if v != nil && v.Active >= 0 && v.Active < len(v.OK) && v.OK[v.Active] {
+	if cut, _ := hsUsersCut(v); !cut {
 		return "up"
 	}
 	if a.trafficAtLeast(id, hsUsersRate, 2000) {

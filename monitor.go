@@ -72,7 +72,7 @@ func resumeTunnelOutages(a *App, now time.Time) map[string]*tunnelHealth {
 	})
 	for _, o := range open {
 		state[o.Target] = &tunnelHealth{outageID: o.ID, fails: monitorFails, alerted: true, downSince: time.Unix(o.Start, 0),
-			reason: o.Reason, failoverAt: now.Add(failoverAfter - failoverRetry)}
+			reason: o.Reason, failoverAt: now.Add(failoverAfter - failoverRetry), why: OutageWhy{o.Code, o.Why, o.WhyFa}}
 	}
 	return state
 }
@@ -85,6 +85,7 @@ type tunnelHealth struct {
 	reason     string
 	lastOutage time.Duration
 	failoverAt time.Time // the last failover / rebuild of this outage (zero: none yet)
+	why        OutageWhy // the open outage's cause (outagecause.go)
 }
 
 // step records one check ("" = healthy) and returns "down" or "up" when an alert is due.
@@ -113,6 +114,7 @@ func (h *tunnelHealth) step(reason string, now time.Time) string {
 }
 
 func (a *App) healthMonitor() {
+	a.markProbeOnly()
 	state := resumeTunnelOutages(a, time.Now())
 	var mu sync.Mutex
 	for {
@@ -163,9 +165,21 @@ func (a *App) healthMonitor() {
 						extra = fmt.Sprintf("\nAutomatic failover starts if it is still down after %s.", failoverAfter)
 					}
 					cause := a.tunnelCause(t)
+					var v *hsView
+					if t.HotStandby {
+						v = a.hsViewOf(t.ID)
+					}
+					w := a.tunnelWhy(t, reason, v)
+					h.why = w
+					h.downSince = hsDownSince(v, h.downSince)
 					h.outageID = newID()
-					a.addOutage(Outage{ID: h.outageID, Kind: "tunnel", Target: t.ID, Name: t.Name, Start: h.downSince.Unix(), Reason: reason, Cause: cause})
-					a.pushT(t, fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)\nsince %s (Tehran)\n%s%s", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t), clock(h.downSince), cause, extra))
+					a.addOutage(Outage{ID: h.outageID, Kind: "tunnel", Target: t.ID, Name: t.Name, Start: h.downSince.Unix(), Reason: reason, Cause: cause,
+						Code: w.Code, Why: w.En, WhyFa: w.Fa})
+					a.pushT(t, fmt.Sprintf("🔴 Tunnel DOWN: %s\n%s\n(%s → %s)\nsince %s (Tehran)\n%s%s", t.Name, reason, serverName(a, t.ServerID), foreignName(a, t), clock(h.downSince), w.En, extra))
+				case "":
+					if h.alerted && h.outageID != "" && t.HotStandby {
+						a.outageRefine(h.outageID, t, h.why) // the cause finder's verdict, once it has one
+					}
 				case "up":
 					now := time.Now()
 					if h.outageID != "" {

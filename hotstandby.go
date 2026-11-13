@@ -1127,6 +1127,8 @@ type hsView struct {
 	// read as a panel bug (seen live: Finland, Backhaul Premium ipx/tun).
 	Changed []int64  `json:"changed"`
 	Why     []string `json:"why"`
+	// Clock: the switcher's own clock when this was read (Changed is on it)
+	Clock int64 `json:"clock,omitempty"`
 	// Cause: what the cause finder proved about each down path (downcause.go); filled in a
 	// copy for the page, never in the cached view
 	Cause []*DownCause `json:"cause,omitempty"`
@@ -1145,6 +1147,7 @@ func (a *App) hsRead(ctx context.Context, h Host, t *Tunnel, after int64) (*hsVi
 echo "K $(cat keys 2>/dev/null | tr '\n' ' ')"
 echo "A $(cat active 2>/dev/null)"
 echo "M $(cat mode 2>/dev/null || echo manual)"
+echo "C $(date +%%s)"
 sed 's/^/S /' status 2>/dev/null
 awk -v s=%d '$1 > s' events.log 2>/dev/null | sed 's/^/E /' | tail -n 50
 systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
@@ -1214,6 +1217,8 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 			}
 		case "M":
 			v.Auto = f[1] == "auto"
+		case "C":
+			v.Clock, _ = strconv.ParseInt(f[1], 10, 64)
 		case "E":
 			events = append(events, strings.Join(f[1:], " "))
 		case "U":
