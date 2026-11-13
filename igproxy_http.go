@@ -260,6 +260,12 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 					out("-> " + igLabel(x) + ": igproxy " + strings.Join(c.args, " "))
 				}
 				rc, said := s.app.igRun(ctx, x, c.args, c.input, c.tmo, out)
+				switch {
+				case rc == 0 && (act == "warp_add" || act == "warp_del" || act == "set" && len(c.args) > 1 && (c.args[1] == "minwarps" || c.args[1] == "warpauto")):
+					s.app.wpHold(x.ID) // a person sized it: the automatic pool waits a day
+				case rc == 0 && act == "route":
+					s.app.wpKick(x.ID)
+				}
 				if rc != 0 {
 					ok = false
 					if !multi && rc != 255 {
