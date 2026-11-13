@@ -3537,7 +3537,7 @@ function igCardState(s) {
 }
 function igCard(s) {
   const i = s.info, st = igCardState(s);
-  const n = igWarpNeed(i);
+  const n = igWarpNeed(i, s);
   const det = i.ig ? `<details class="igc-more"><summary>${L('Details', 'جزئیات')}</summary><div class="sfoot" data-notr><span>🔗 <b>${+i.caught || 0}</b> ${L('connections', 'اتصال')}</span><span>${L('proxies', 'پراکسی')} <b>${+i.proxies || 0}</b></span><span>WARP <b>${+i.warps || 0}</b>${n ? `<span class="faint"> / ${n.total}</span>` : ''}</span><span class="grow"></span><span>Gemini ${igChk(i.gem)}</span><span>IG ${igChk(i.igp)}</span>${igAccBroken(i) ? `<span class="chip bad">${L('music check off', 'تست موسیقی خاموش')}</span>` : ''}${i.outdated === '1' ? `<span class="chip">${L('old agent', 'agent قدیمی')}</span>` : ''}</div></details>` : '';
   return `<div class="card scard${igBad(st) ? ' bad' : ''}" data-id="${esc(s.id)}" style="cursor:pointer"><div class="sh"><div class="sname"><div><h3>${s.country ? flag(s.country) + ' ' : ''}${nm(s.name)} ${igOwner(s)}</h3><small class="mono">${esc(s.host)}</small></div></div>${igPill(st)}</div>
     ${i.ig ? `<div class="igls" data-notr>${igSvcLines(s).map(x => x[1]).join('')}</div>${det}`
@@ -3547,8 +3547,11 @@ function igCard(s) {
 const igAccBroken = (i) => /^broken/.test(i.igaccst || '');
 const igAccWhy = (i) => (i.igaccst || '').replace(/^broken:?/, '') || 'logged out';
 // WARPs needed for the 24 h peak: one WARP keeps its speed up to ~2500 connections / 5 min, +1 spare (3-10), + Google's own
-const igWarpNeed = (i) => { if (i.wpeak === undefined || i.wpeak === '-' || i.wpeak === '') return null; const p = +i.wpeak || 0, g = (i.gw || '').split(',').filter(Boolean).length;
-  const ig = Math.min(10, Math.max(3, Math.ceil(p / 2500) + 1)); return { p, ig, g, total: ig + g, have: +i.warps || 0 }; };
+const igWarpNeed = (i, s) => { const w = s && s.auto && s.auto.warp;
+  if (w && w.at) return { p: +i.wpeak || 0, ig: w.carry + w.spare, g: w.g, total: w.need, have: w.have, used: w.used, off: w.off };
+  if (i.wpeak === undefined || i.wpeak === '-' || i.wpeak === '') return null; const p = +i.wpeak || 0, g = (i.gw || '').split(',').filter(Boolean).length;
+  const ig = Math.min(10, Math.max(3, Math.ceil(p / 2500) + 1)); return { p, ig, g, total: ig + g, have: +i.warps || 0, used: true }; };
+const faNum = (n) => String(n).replace(/\d/g, d => '۰۱۲۳۴۵۶۷۸۹'[d]);
 const igGccChip = (i) => i.gcc === undefined || i.gcc === '-' || i.gcc === '' ? '' : i.gcc === 'PROXY' ? '<span class="chip bad" title="no allowed WARP for Google: Google goes through a proxy for now">no allowed WARP → proxy</span>' : `<span class="chip" title="the country Google sees for its current WARP">${esc(i.gcc)}</span>`;
 
 async function igAddServer() {
@@ -3694,13 +3697,13 @@ function igStatus(s, i) {
   const probs = P.length ? `<div class="igst-probs">${P.map(p => `<div class="igst-p ${p.lvl}"><span>${esc(p.text)}</span><button class="btn sm" ${p.act ? `data-igdo="${p.act}"` : `data-igto="${p.to}"`}>${esc(p.btn)}</button></div>`).join('')}</div>` : '';
   const yn = (ok, on, off) => ok ? `<b class="ok">${on}</b>` : `<b class="bad">${off}</b>`;
   const row = (k, v, tip) => `<div class="igst-r"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><span class="igst-rv">${v}</span></div>`;
-  const n = igWarpNeed(i);
+  const n = igWarpNeed(i, s);
   const det = [
     row('Router', yn(i.router === 'active', 'running', esc(i.router || 'stopped')), 'igproxy-xray: the router that sends each service its way'),
     row('Traffic sent to the router', yn(i.redirect === 'ON', 'on', 'off')),
     row('Wide catch', i.wide === 'ON' ? '<b>on</b><small>all web traffic is routed by domain</small>' : '<b>off</b><small>only the listed services</small>'),
     row('WARP mode', i.mode === 'BALANCE' ? `<b>balance</b>${igSet(i.pool) ? `<small>${esc(String(i.pool).replace('/', ' of '))} in use</small>` : ''}` : `<b>failover</b>${igSet(i.active) ? `<small data-notr>WARP ${esc(i.active)}</small>` : ''}`),
-    row('WARP accounts', `<b data-notr>${+i.warps || 0}</b>${n ? `<small>${n.total} suggested for the 24 h peak</small>` : ''}`),
+    row('WARP accounts', `<b data-notr>${+i.warps || 0}</b>${n ? `<small data-notr>${n.off ? L('by hand', 'دستی') : n.used ? L(`automatic · ${n.total} needed`, `خودکار · ${faNum(n.total)} لازم`) : L('automatic · none needed', 'خودکار · لازم نیست')}</small>` : ''}`),
     row('Proxies', `<b data-notr>${+i.proxies || 0}</b>`),
     i.guard !== undefined ? row('WARP guard', i.guard === 'ON' ? '<b class="ok">on</b>' : i.guard === 'DOWN' ? '<b class="bad">not running</b>' : '<b>off</b>', 'replaces a WARP that stops working') : '',
     row('x-ui panel', i.panel === 'OK' ? '<b class="ok">passes Google</b>' : igSet(i.panel) ? `<b class="bad" data-notr>${esc(i.panel)}</b>` : '<b>no x-ui panel</b>', 'does the x-ui panel on this server pass Google to igproxy untouched'),
@@ -3761,16 +3764,24 @@ const IGTAB = {
   },
   proxies() { igpxTab(); },
   warp() {
-    const i = IG.cur.info, gA = i.gw !== undefined, id = IG.cur.id;
-    $('#igtab').innerHTML = `<div class="card pad sec igw"><h3>WARP accounts <span id="igwsum" class="wchips"></span><span class="grow"></span>
-       <span class="wact"><button class="btn sm" id="igwt" title="checks every WARP again now">Test all</button><button class="btn sm pri" id="igwa">+ Add WARP</button>
-       ${moreMenu([{ label: 'Google → fresh IP', attr: 'id="igwr"' }, gA && { label: 'Country per WARP (Google)', attr: 'id="igwc"' }])}</span></h3>
+    const i = IG.cur.info, gA = i.gw !== undefined, id = IG.cur.id, wp = (IG.cur.auto && IG.cur.auto.warp) || {};
+    const items = [
+      { label: L('Test every WARP now', 'تست همهٔ WARPها الان'), attr: 'id="igwt"' },
+      { label: L('Add a WARP by hand…', 'افزودن دستی WARP…'), attr: 'id="igwa"' },
+      wp.off ? { label: L('✓ By hand · switch to automatic', '✓ دستی · خودکار کن'), attr: 'data-wpm="auto"' } : { label: L('Manage WARPs by hand…', 'مدیریت دستی WARPها…'), attr: 'data-wpm="off"' },
+      { label: L('Google → fresh IP', 'Google → IP تازه'), attr: 'id="igwr"' },
+      gA && { label: L('Country per WARP (Google)', 'کشور هر WARP (Google)'), attr: 'id="igwc"' }];
+    $('#igtab').innerHTML = `<div class="card pad sec igw"><div class="wtop"><div id="igwline">${igWarpLine(IG.cur)}</div><span class="wact">${moreMenu(items)}</span></div>
      <div class="wsum">${igWarpSvc(i)}</div>
+     <details class="igst-more wdet" id="igwdet"${IG.wdetOpen ? ' open' : ''}><summary><span data-notr>${L('WARP accounts', 'حساب‌های WARP')}</span><span id="igwsum" class="wchips"></span></summary>
      <div id="igwl" class="wlist"></div>
-     <div class="mdesc">Broken WARPs are repaired, WARP+ keys are found and the best WARP (music OK, fastest) is chosen automatically. "Use" moves Instagram — and Google, unless it has its own WARPs — to that WARP now.</div></div>`;
-    $('#igwa').onclick = () => igAct(igS({ action: 'warp_add' }), 'Make a new WARP account on ' + IG.cur.name + '? It takes a minute or two.', { title: 'New WARP account' });
+     <div class="mdesc" data-notr>${L('The panel keeps as many WARP accounts as this server needs: it makes new ones when good ones are missing (a few at a time, so Cloudflare never blocks the server), tests the spares in the background, and removes the extra and broken ones at night. Broken WARPs are repaired and the best one (music OK, fastest) is chosen automatically.',
+       'پنل به اندازهٔ نیاز این سرور حساب WARP نگه می‌دارد: وقتی حساب سالم کم باشد خودش حساب تازه می‌سازد (چندتا چندتا، تا Cloudflare سرور را نبندد)، یدک‌ها را در پس‌زمینه تست می‌کند و اضافه‌ها و خراب‌ها را شب حذف می‌کند. WARP خراب خودکار تعمیر و بهترینش (موزیک سالم، سریع‌تر) انتخاب می‌شود.')}</div></details></div>`;
+    $('#igwdet').ontoggle = () => { IG.wdetOpen = $('#igwdet').open; };
+    $('#igwa').onclick = () => igAct(igS({ action: 'warp_add' }), L('Make a new WARP account on ' + IG.cur.name + ' by hand? The panel then leaves the number of WARPs here alone for a day.', 'یک حساب WARP تازه دستی روی ' + IG.cur.name + ' ساخته شود؟ پنل تا یک روز تعداد WARPهای این سرور را دست نمی‌زند.'), { title: L('New WARP account', 'حساب WARP تازه') });
     $('#igwr').onclick = () => igAct(igS({ action: 'google_rotate' }));
-    $('#igwt').onclick = async () => { const b = $('#igwt'); b.disabled = true; b.textContent = 'Testing…'; try { await igQuiet(igS({ action: 'warp_list' })); } catch (e) { toast(e.message); } igWarpLoad(id, true); };
+    $('#igwt').onclick = async () => { const b = $('#igwt'); b.disabled = true; toast(L('Testing every WARP… (up to 3 min)', 'در حال تست همهٔ WARPها… (تا ۳ دقیقه)')); try { await igQuiet(igS({ action: 'warp_list' })); } catch (e) { toast(e.message); } igWarpLoad(id, true); };
+    $$('[data-wpm]').forEach(b => b.onclick = () => igWarpMode(IG.cur, b.dataset.wpm));
     if (gA) $('#igwc').onclick = () => igWarpCountries(id);
     igWarpDraw(IG.wcache && IG.wcache[id]);
     igWarpLoad(id);
@@ -4100,8 +4111,9 @@ const IGO = {
   geosite: { t: 'sw', label: 'Full domain lists (geosite)', help: 'updated daily, loaded at night' },
   kwg: { t: 'sw', label: 'Kernel WARP (all CPU cores)', help: 'for a busy server: the IPv4 WARPs run as kernel WireGuard, not inside the router; same accounts and exit IPs' },
 };
-const IGO_SEC = [['pool', 'WARP accounts', ['mode', 'minspeed', 'minwarps', 'warpauto']], ['google', 'Google · Gemini', ['gwarps', 'gcountries', 'gspread', 'grotate', 'gall']],
-  ['ig', 'Instagram', ['guard', 'musiccheck']], ['adv', 'Advanced', ['autokey', 'geosite', 'kwg']]];
+// the number of WARP accounts is the panel's (warppool.go, WARP tab): minwarps / warpauto are not offered here any more
+const IGO_SEC = [['pool', 'WARP accounts', ['minspeed']], ['google', 'Google · Gemini', ['gwarps', 'gcountries', 'gspread', 'grotate', 'gall']],
+  ['ig', 'Instagram', ['guard', 'musiccheck']], ['adv', 'Advanced', ['mode', 'autokey', 'geosite', 'kwg']]];
 const igoShow = (k, v) => k === 'mode' ? (v === 'balance' ? 'Spread the load' : 'One at a time') : IGO[k].t === 'sw' ? (v === 'on' ? 'on' : 'off') : v;
 async function igOptLoad(id) {
   IGOPT.err = '';
@@ -4131,7 +4143,8 @@ function igoWhy(k, i) {
   if (k === 'musiccheck' && !on('guard')) return ['off', 'Runs inside the WARP guard: turn the fast switch on.'];
   if (k === 'musiccheck' && n('musiccheck') > 0 && i.igacc !== 'SET') return ['warn', 'No Instagram test account yet: nothing is checked.', 'checks'];
   if (k === 'musiccheck' && n('musiccheck') > 0 && igAccBroken(i)) return ['warn', 'The test account is logged out: nothing is checked.', 'checks'];
-  if (k === 'mode' && val('mode') === 'balance') return ['warn', 'Instagram music may break: the users\' IP changes between WARPs.'];
+  if (k === 'mode' && val('mode') === 'balance') return ['info', 'Recommended. Only WARPs that leave from the same exit IP carry Instagram, so users keep one IP and music works; Google keeps its own WARP.'];
+  if (k === 'mode' && val('mode') === 'failover') return ['warn', 'The panel sets this back to "Spread the load" at night (03-06), unless the WARPs here are managed by hand.'];
   if (k === 'warpauto' && on('warpauto') && n('minwarps') === 0) return ['info', 'With 0 above, only the load decides (3 or more).'];
   if (k === 'guard' && i.guard === 'DOWN' && on('guard')) return ['warn', 'On, but its service isn\'t running: Re-apply in the ⋯ menu.'];
   if (k === 'kwg' && on('kwg') && /^\d+$/.test(i.kwg || '')) return ['info', `${+i.kwg} kernel interface(s) up`];
@@ -4213,9 +4226,51 @@ function igOptDraw() {
 // ---- WARP tab: one row per WARP account (/igproxy/warps: the agent's state + one Cloudflare trace each)
 const igAgo = (s) => s < 0 ? '' : s < 90 ? 'just now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago';
 const igGw = (i) => (i.gw || '').split(',').filter(x => /^\d+$/.test(x)).map(Number);
+// the automatic WARP pool in one line (warppool.go): "WARP: auto · 2 of 2 working · Instagram sees DE"
+function igWarpLine(s, d) {
+  const i = s.info || {}, p = (s.auto && s.auto.warp) || {}, now = Date.now() / 1000, fa = window.tpLang === 'fa';
+  const N = (n) => fa ? faNum(n) : String(n), dur = (x) => x < 5400 ? L(Math.max(1, Math.round(x / 60)) + ' min', faNum(Math.max(1, Math.round(x / 60))) + ' دقیقه') : L(Math.round(x / 3600) + ' h', faNum(Math.round(x / 3600)) + ' ساعت');
+  const ws = d ? d.warps : null, have = ws ? ws.length : (+i.warps || 0), work = ws ? ws.filter(w => w.state === 'ok').length : null;
+  const igOn = /^warp/.test(i.ig || ''), cc = igOn && i.igcc && i.igcc !== '-' ? i.igcc : '', gcc = /^warp/.test(i.google || '') && i.gcc && !['-', 'PROXY', '?'].includes(i.gcc) ? i.gcc : '';
+  const auto = L('auto', 'خودکار');
+  let lvl = 'on', head, sub = [];
+  if (p.off) {
+    lvl = 'acc'; head = `WARP: ${L('by hand', 'دستی')} · ${L(N(have) + ' accounts', N(have) + ' حساب')}${work !== null ? ` · ${L(N(work) + ' working', N(work) + ' فعال')}` : ''}`;
+    sub.push(L('The panel does not add or remove WARPs here. ⋯ → switch to automatic.', 'پنل اینجا WARP اضافه یا حذف نمی‌کند. ⋯ ← خودکار کن.'));
+  } else if (!p.at) {
+    lvl = 'acc'; head = `WARP: ${auto} · ${L('checking…', 'در حال بررسی…')}`;
+    sub.push(L('The panel looks at this server within 15 minutes.', 'پنل تا ۱۵ دقیقه این سرور را بررسی می‌کند.'));
+  } else if (!p.used) {
+    lvl = have ? 'acc' : 'on'; head = `WARP: ${auto} · ${L('not in use', 'استفاده نمی‌شود')}`;
+    sub.push(have ? L(`No service goes through WARP: the ${N(have)} accounts are removed tonight.`, `هیچ سرویسی از WARP نمی‌رود: ${N(have)} حساب امشب حذف می‌شود.`) : L('No service goes through WARP, so no account is needed. One is made when a service moves to WARP.', 'هیچ سرویسی از WARP نمی‌رود، پس حسابی لازم نیست. وقتی سرویسی به WARP برود ساخته می‌شود.'));
+  } else if (p.noExit) {
+    lvl = 'warn'; head = `WARP: ${auto} · ${L('no music country here', 'کشور با موزیک ندارد')} (${p.noExit})`;
+    sub.push(L(`Every new WARP of this server reads ${p.noExit}, so no more are made for now and Instagram goes through ${igExitWord(i.ig, i)}. WARP is tried again in ${dur(p.wait || 0)}.`,
+      `هر WARP تازهٔ این سرور ${p.noExit} خوانده می‌شود، پس فعلاً ساخته نمی‌شود و Instagram از ${igExitWord(i.ig, i)} می‌رود. ${dur(p.wait || 0)} دیگر دوباره WARP امتحان می‌شود.`));
+  } else {
+    const g = Math.min(p.good, p.need);
+    lvl = p.good >= p.need ? 'on' : 'warn';
+    head = `WARP: ${auto} · ${L(`${N(g)} of ${N(p.need)} working`, `${N(g)} از ${N(p.need)} فعال`)}${cc ? ` · ${L('Instagram sees', 'Instagram می‌بیند')} ${cc}` : ''}${gcc ? ` · ${L('Google sees', 'Google می‌بیند')} ${gcc}` : ''}`;
+    const parts = [p.carry ? L(`${N(p.carry)} for ${igOn ? 'Instagram' : 'the services on WARP'}`, `${N(p.carry)} برای ${igOn ? 'Instagram' : 'سرویس‌های روی WARP'}`) : '', p.spare ? L(`${N(p.spare)} spare`, `${N(p.spare)} یدک`) : '', p.g ? L(`${N(p.g)} Google's own`, `${N(p.g)} مخصوص Google`) : ''].filter(Boolean);
+    sub.push(L('Needed: ', 'لازم: ') + parts.join(' + '));
+    if (p.short) sub.push(p.wait > 0 ? L(`Making new accounts — next try in ${dur(p.wait)}.`, `در حال ساخت حساب تازه — تلاش بعدی ${dur(p.wait)} دیگر.`) : L('Making new accounts now.', 'در حال ساخت حساب تازه.'));
+    if (p.untest) sub.push(L(`Testing ${N(p.untest)} spare${p.untest === 1 ? '' : 's'}.`, `در حال تست ${N(p.untest)} یدک.`));
+  }
+  if (!p.off && p.at && p.hold > now) sub.push(L('Changed by hand — the panel leaves the count alone until ', 'دستی تغییر کرد — پنل تا این زمان تعداد را دست نمی‌زند: ') + new Date(p.hold * 1000).toLocaleString(fa ? 'fa-IR' : undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+  else if (!p.off && p.at && p.used && (p.extra || 0) + (p.bad || 0) > 0) sub.push(L(`${N(p.extra + p.bad)} not needed — removed tonight (03–06; the router restarts for a few seconds).`, `${N(p.extra + p.bad)} لازم نیست — امشب حذف می‌شود (۳ تا ۶ صبح؛ روتر چند ثانیه ری‌استارت می‌شود).`));
+  return `<div class="igst wline ${lvl}" data-notr><div class="igst-top"><span class="igst-dot"></span><div class="igst-t"><b>${esc(head)}</b>${sub.map(x => `<small>${esc(x)}</small>`).join('')}</div></div></div>`;
+}
+async function igWarpMode(s, mode) {
+  if (mode === 'off' && !confirm(L('Manage the WARPs of ' + s.name + ' by hand? The panel then never adds or removes a WARP here.', 'WARPهای ' + s.name + ' دستی مدیریت شود؟ پنل دیگر اینجا WARP اضافه یا حذف نمی‌کند.'))) return;
+  try {
+    s.auto = Object.assign(s.auto || {}, await api('/igproxy/auto', { ID: s.id, Svc: 'WARP', Mode: mode }));
+    toast(mode === 'auto' ? L('WARP: automatic', 'WARP: خودکار') : L('WARP: by hand', 'WARP: دستی'));
+    if (IG.cur && IG.cur.id === s.id && IG.tab === 'warp') IGTAB.warp();
+  } catch (e) { toast(e.message); }
+}
 // how Instagram and Google leave now, in words
 function igWarpSvc(i, d) {
-  const bal = i.mode === 'BALANCE', igw = /^warp/.test(i.ig || ''), gw = /^warp/.test(i.google || ''), n = igWarpNeed(i);
+  const bal = i.mode === 'BALANCE', igw = /^warp/.test(i.ig || ''), gw = /^warp/.test(i.google || '');
   const pool = d ? d.warps.filter(w => w.state === 'ok' && !igGw(i).includes(w.n)).length : +(i.pool || '').split('/')[0] || 0;
   const kind = i.ig === 'warp6' ? 'WARP IPv6' : 'WARP';
   const ig = !igw ? 'not on WARP' : bal ? `${kind} · ${pool} WARP${pool === 1 ? '' : 's'} share it` : `${kind} ${+i.active ? +i.active : '—'}`;
@@ -4223,20 +4278,23 @@ function igWarpSvc(i, d) {
   const cell = (k, v, sub, cls) => `<div class="svc"><small>${k}</small><b class="${cls || ''}">${esc(v)}</b>${sub ? `<span class="note">${sub}</span>` : ''}</div>`;
   return `<div class="svcs">${cell('Instagram', ig, igw ? (i.igcc && i.igcc !== '-' ? `Instagram sees <b class="mono">${esc(i.igcc)}</b>` : '') : `goes ${esc(igViaW(i.ig, i))} → Routes tab`, igw ? 'v-warp' : 'v-direct')}
     ${cell('Google / Gemini', g, gw ? (i.gcc === 'PROXY' ? 'no WARP in an allowed country' : i.gcc && i.gcc !== '-' ? `Google sees <b class="mono">${esc(i.gcc)}</b>` : '') : `goes ${esc(igViaW(i.google, i))} → Routes tab`, gw && i.gcc !== 'PROXY' ? 'v-warp' : i.gcc === 'PROXY' ? 'v-proxy' : 'v-direct')}
-    ${n ? cell('WARP accounts', `${n.have} · ${n.total} needed`, `busiest 5 min in 24 h: <b class="mono">${n.p}</b> connections → ${n.ig} for Instagram${n.g ? ' + ' + n.g + ' for Google' : ''}${i.wauto === 'ON' ? ' · made automatically' : ''}`, n.have < n.total ? 'wbad' : '') : ''}</div>`;
+    </div>`;
 }
-const IGWOUT = { ip: 'Standby: different exit IP', ipnew: 'Getting a new IP', music: 'Parked: no Instagram music', down: 'Parked: down' };
+const IGWOUT = { ip: 'Spare', ipnew: 'Getting a new IP', music: 'Parked: no Instagram music', down: 'Parked: down' };
+// a spare (out of the pool: on warp6 every account has its own exit) as the panel's last test saw it
+const igWarpSpare = (w) => w.test === 'ok' ? ['Spare · ready', 'idle'] : w.test === 'no' ? [`No music country`, 'bad'] : w.test === 'down' ? ['Spare · not working', 'warn'] : ['Spare · not tested yet', 'idle'];
 function igWarpRow(i, d, w) {
   const gws = igGw(i), own = gws.includes(w.n), bal = i.mode === 'BALANCE';
   const igOn = /^warp/.test(i.ig || '') && !own && w.state === 'ok' && (bal || d.active === w.n);
   const gOn = /^warp/.test(i.google || '') && i.gcc !== 'PROXY' && (d.gact ? d.gact === w.n : !gws.length && igOn);
-  const st = w.state === 'ok' ? ['Working', 'ok'] : w.state === 'out' ? [IGWOUT[w.why] || 'Not in use: ' + w.why, w.why === 'ip' ? 'idle' : 'warn']
+  const st = w.state === 'ok' ? ['Working', 'ok'] : w.state === 'out' ? (w.why === 'ip' ? igWarpSpare(w) : [IGWOUT[w.why] || 'Not in use: ' + w.why, 'warn'])
     : w.state === 'repair' ? ['Being repaired' + (w.fails ? ` (try ${w.fails})` : ''), 'warn'] : ['Down', 'bad'];
-  const v6 = w.ip && w.ip.includes(':');
-  const exit = w.ip ? `<span class="mono" title="${esc(w.ip)}">${w.loc ? esc(w.loc) + ' · ' : ''}${esc(w.ip)}</span> <span class="tag">${v6 ? 'IPv6' : 'IPv4'}</span>`
-    : `<span class="faint">${w.state === 'out' ? 'not tested while on standby' : 'no exit now'}</span>`;
+  const tIP = !w.ip && w.testIP, eIP = w.ip || w.testIP || '', eLoc = w.ip ? w.loc : w.testLoc;
+  const exit = eIP ? `<span class="mono" title="${esc(eIP)}">${eLoc ? esc(eLoc) + ' · ' : ''}${esc(eIP)}</span> <span class="tag">${eIP.includes(':') ? 'IPv6' : 'IPv4'}</span>`
+    : `<span class="faint">${w.state === 'out' ? (w.test === 'down' ? 'no exit in its test' : 'tested soon') : 'no exit now'}</span>`;
+  const tst = (w.testCC ? `<span>Instagram sees <b class="mono${w.test === 'no' ? ' bad' : ''}">${esc(w.testCC)}</b></span>` : '') + (tIP && w.testAt ? `<span class="faint">tested ${igAgo(Math.round(Date.now() / 1000 - w.testAt))}</span>` : '');
   const music = w.music === 'ok' ? '<span class="good">music OK</span>' : w.music === 'no' ? `<span class="bad" title="${esc(w.musicWhy || '')}">no music</span>` : w.music === 'down' ? '<span class="bad">was down</span>' : '<span class="faint">music not tested</span>';
-  const test = w.music ? `<span>${music}${w.mbps ? ` · <b class="mono">${w.mbps}</b> Mbps` : ''}</span><span class="faint">${igAgo(w.testAge)}</span>` : '<span class="faint">no speed test yet</span>';
+  const test = w.music ? `<span>${music}${w.mbps ? ` · <b class="mono">${w.mbps}</b> Mbps` : ''}</span><span class="faint">${igAgo(w.testAge)}</span>` : w.state === 'out' ? '' : '<span class="faint">no speed test yet</span>';
   const roles = (igOn ? '<span class="chip fo">Instagram</span>' : '') + (gOn ? '<span class="chip fo">Google</span>' : '') + (own && !gOn ? '<span class="chip">Google\'s reserve</span>' : '');
   const useG = own && i.gw !== undefined, inUse = useG ? gOn : (igOn && (bal || d.active === w.n));
   const prim = inUse || w.state !== 'ok' ? '' : `<button class="btn sm" data-${useG ? 'wg' : 'wu'}="${w.n}">${useG ? 'Use for Google' : 'Use'}</button>`;
@@ -4245,7 +4303,7 @@ function igWarpRow(i, d, w) {
     <div class="wn mono">${w.n}</div>
     <div class="wb"><div class="w1"><span class="igd ${st[1] === 'ok' ? 'ok' : st[1] === 'bad' ? 'bad' : ''}"></span><b class="wst ${st[1]}">${st[0]}</b>
       <span class="tag${w.plus ? ' plus' : ''}">${w.plus ? 'WARP+' : 'Free'}</span>${roles}</div>
-      <div class="w2"><span>${exit}</span>${w.gcc ? `<span>Google sees <b class="mono">${esc(w.gcc)}</b></span>` : ''}${test}</div>
+      <div class="w2"><span>${exit}</span>${tst}${w.gcc ? `<span>Google sees <b class="mono">${esc(w.gcc)}</b></span>` : ''}${test}</div>
       ${w.next && w.state === 'ok' ? `<div class="w3">gets a new account soon: ${esc(w.next)}</div>` : ''}${w.old ? '<div class="w3">old account: delete and add again for automatic WARP+ keys</div>' : ''}</div>
     <div class="wa${prim ? ' p' : ''}">${inUse ? '<span class="inuse" title="in use">✓<span class="t"> in use</span></span>' : prim}${menu}</div></div>`;
 }
@@ -4255,16 +4313,17 @@ function igWarpDraw(d, err) {
   if (err && !d) { box.innerHTML = `<div class="mcrit" style="margin:0">Couldn't read the WARPs: ${esc(err)} <button class="btn sm" id="igwrt">Try again</button></div>`; $('#igwrt').onclick = () => { igWarpDraw(); igWarpLoad(IG.cur.id); }; return; }
   if (!d) { box.innerHTML = '<div class="skel" style="height:64px"></div>'.repeat(Math.min(8, Math.max(2, +i.warps || 3))); return; }
   const ws = d.warps, ok = ws.filter(w => w.state === 'ok').length, idle = ws.filter(w => w.state === 'out').length, bad = ws.length - ok - idle;
-  $('#igwsum').innerHTML = ws.length ? `<span class="chip">${ws.length} accounts</span><span class="chip">${ok} working</span>${idle ? `<span class="chip">${idle} on standby</span>` : ''}${bad ? `<span class="chip bad">${bad} down</span>` : ''}` : '';
+  $('#igwsum').innerHTML = ws.length ? `<span class="chip" data-notr>${ws.length}</span>${bad ? `<span class="chip bad" data-notr>${L(bad + ' down', faNum(bad) + ' قطع')}</span>` : ''}` : '';
   $('.igw .wsum').innerHTML = igWarpSvc(i, d);
-  if (!ws.length) { box.innerHTML = '<div class="empty" style="padding:22px 10px"><div class="big">☁️</div>No WARP account on this server yet.<div class="actions" style="justify-content:center;margin-top:10px"><button class="btn pri" id="igwa2">+ Add WARP</button></div></div>'; $('#igwa2').onclick = () => $('#igwa').click(); return; }
+  if ($('#igwline')) $('#igwline').innerHTML = igWarpLine(IG.cur, d);
+  if (!ws.length) { box.innerHTML = `<div class="empty" style="padding:18px 10px"><div class="big">☁️</div>${L('No WARP account on this server. The panel makes them by itself when a service goes through WARP.', 'این سرور حساب WARP ندارد. وقتی سرویسی از WARP برود پنل خودش می‌سازد.')}</div>`; return; }
   box.innerHTML = (err ? `<div class="mwarn">Couldn't refresh (${esc(err)}) — showing what was read ${igAgo(Math.round(Date.now() / 1000 - d.at))}.</div>` : '')
-    + (d.sel === 'none' ? '<div class="mwarn">No WARP has Instagram music and the minimum speed now, so the current one is kept. Adding a WARP looks for a better IP.</div>' : '')
+    + (d.sel === 'none' ? '<div class="mwarn">No WARP has Instagram music and the minimum speed now, so the current one is kept. The panel looks for a better IP by itself.</div>' : '')
     + ws.map(w => igWarpRow(i, d, w)).join('')
-    + (i.mode === 'BALANCE' && /^warp/.test(i.ig || '') && d.poolIP ? `<div class="mdesc">Instagram's WARPs all leave from one exit IP (<span class="mono">${esc(d.poolIP)}</span>). A WARP that comes out with another IP waits on standby and is checked again later.</div>` : '');
+    + (i.mode === 'BALANCE' && /^warp/.test(i.ig || '') && d.poolIP ? `<div class="mdesc">Instagram leaves from one exit IP (<span class="mono">${esc(d.poolIP)}</span>). The other accounts are spares: they take over when it fails.</div>` : '');
   $$('[data-wu]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'warp_use', n: b.dataset.wu })));
   $$('[data-wg]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'google_use', n: b.dataset.wg })));
-  $$('[data-wd]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'warp_del', n: b.dataset.wd }), `Delete WARP ${b.dataset.wd} on ${IG.cur.name}? Its account is removed and the WARPs after it move up one number.`, { title: 'Delete WARP' }));
+  $$('[data-wd]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'warp_del', n: b.dataset.wd }), `Delete WARP ${b.dataset.wd} on ${IG.cur.name}? Its account is removed and the WARPs after it move up one number. The panel then leaves the number of WARPs here alone for a day.`, { title: 'Delete WARP' }));
 }
 async function igWarpLoad(id, fresh) {
   const here = () => IG.cur && IG.cur.id === id && IG.tab === 'warp';

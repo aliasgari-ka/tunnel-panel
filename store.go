@@ -102,11 +102,11 @@ type Tunnel struct {
 	// bot). Those values stay whatever happens: nothing automatic (the benchmark's carrier,
 	// a path's own options, hot standby, Repair) replaces them; "↺ Defaults" clears the list.
 	OptsManual map[string][]string `json:"optsManual,omitempty"`
-	Note      string                       `json:"note"`
-	LastJob   string                       `json:"lastJob"`
-	Updated   int64                        `json:"updated"`
-	Secrets   map[string]string            `json:"secrets"` // stable per-tunnel secrets (tokens, PSKs)
-	Shape     Shape                        `json:"shape"`   // optional traffic-shaping layer
+	Note       string              `json:"note"`
+	LastJob    string              `json:"lastJob"`
+	Updated    int64               `json:"updated"`
+	Secrets    map[string]string   `json:"secrets"` // stable per-tunnel secrets (tokens, PSKs)
+	Shape      Shape               `json:"shape"`   // optional traffic-shaping layer
 	// NoFailover turns off automatic failover for this tunnel (on by default).
 	NoFailover bool `json:"noFailover,omitempty"`
 	// Failover is set while the tunnel runs on a backup path; it remembers the original.
@@ -271,13 +271,13 @@ type State struct {
 	// Cleanups: teardowns a server missed while unreachable (see cleanup.go)
 	Cleanups []Cleanup `json:"cleanups,omitempty"`
 	// LastVersion is the panel version that ran last (a new one repairs tunnels once)
-	LastVersion string   `json:"lastVersion,omitempty"`
+	LastVersion string `json:"lastVersion,omitempty"`
 	// LastRepair: the last Repair run and what became of each tunnel (repair.go)
 	LastRepair *RepairRun `json:"lastRepair,omitempty"`
 	// RepairAuto: what the automatic Repair after an update may do: "" = only the fixes
 	// nobody notices, "all" = everything, "off" = nothing
-	RepairAuto string `json:"repairAuto,omitempty"`
-	Outages     []Outage `json:"outages,omitempty"` // servers/tunnels down, newest last
+	RepairAuto string   `json:"repairAuto,omitempty"`
+	Outages    []Outage `json:"outages,omitempty"` // servers/tunnels down, newest last
 	// OutagesFrom: the outage log is complete from here (cleared, or older entries trimmed)
 	OutagesFrom int64 `json:"outagesFrom,omitempty"`
 	// IgproxyImported: the server lists and backups of the old igpanel (port 2083) were read once
@@ -288,6 +288,8 @@ type State struct {
 	// IgAuto: IG Routing's automatic repair per server and service (igauto.go); IgAutoLog its history
 	IgAuto    map[string]map[string]*IgAutoSvc `json:"igAuto,omitempty"`
 	IgAutoLog []IgAutoEvent                    `json:"igAutoLog,omitempty"`
+	// WarpPool: each server's automatic WARP accounts (warppool.go)
+	WarpPool map[string]*WarpPool `json:"warpPool,omitempty"`
 	// HostHW: this panel host's cores, RAM and disk (the servers keep theirs in Server.HW)
 	HostHW *Hardware `json:"hostHw,omitempty"`
 }

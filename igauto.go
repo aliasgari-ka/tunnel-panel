@@ -476,6 +476,7 @@ func (a *App) igAutoRoute(ctx context.Context, srv *Server, via string) (string,
 		return "", fmt.Errorf("route IG %s: %s", via, clipTo(strings.TrimSpace(out), 160))
 	}
 	a.igForget(srv.ID)
+	a.wpKick(srv.ID) // WARP's pool follows the route
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -725,6 +726,7 @@ type igAutoView struct {
 	Live   string            `json:"live,omitempty"` // Instagram's country on the users' route, measured by the panel
 	LiveAt int64             `json:"liveAt,omitempty"`
 	Last   []IgAutoEvent     `json:"last,omitempty"` // the server's last events
+	Warp   *WarpPool         `json:"warp,omitempty"` // the automatic WARP pool (warppool.go)
 }
 
 func (a *App) igAutoViewOf(id string) *igAutoView {
@@ -743,6 +745,10 @@ func (a *App) igAutoViewOf(id string) *igAutoView {
 					v.Pins[k] = s.Pin
 				}
 			}
+		}
+		if p := st.WarpPool[id]; p != nil {
+			c := *p
+			v.Warp = &c
 		}
 		for i := len(st.IgAutoLog) - 1; i >= 0 && len(v.Last) < 6; i-- {
 			if st.IgAutoLog[i].Srv == id {
@@ -772,6 +778,25 @@ func (s *Server2) igAutoSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x, err := s.igServer(user, admin, in.ID)
+	if err == nil && in.Svc == "WARP" {
+		// the WARP pool: auto (the panel sizes it) or by hand
+		if in.Mode != "auto" && in.Mode != "off" {
+			httpErr(w, 400, "mode is auto or off")
+			return
+		}
+		s.app.wpPut(x.ID, func(p *WarpPool) {
+			p.Off = in.Mode == "off"
+			if !p.Off {
+				p.Hold = 0
+			}
+		})
+		s.app.igAutoLog(x, "WARP", "info", map[string]string{"auto": "WARP accounts: automatic", "off": "WARP accounts: by hand"}[in.Mode]+" (by "+orDash(user)+")")
+		if in.Mode == "auto" {
+			s.app.wpKick(x.ID)
+		}
+		writeJSON(w, s.app.igAutoViewOf(x.ID))
+		return
+	}
 	if err == nil && !igAutoSvcOK[in.Svc] {
 		err = errors.New("unknown service")
 	}
@@ -796,6 +821,7 @@ func (s *Server2) igAutoSet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.app.igForget(x.ID)
+		s.app.wpKick(x.ID)
 	}
 	s.app.igAutoPut(x.ID, in.Svc, func(a *IgAutoSvc) {
 		switch in.Mode {

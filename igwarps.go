@@ -27,13 +27,17 @@ ag(){ [ -e "$1" ] && echo $((now - $(stat -c %Y "$1"))); }
 while read -r k a ep id; do
   [ -z "$k" ] && continue; i=$((i+1))
   ( t=$(curl -s -m 6 -x "socks5h://127.0.0.1:$((12350+i))" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
-    printf 'W\tn=%s\tep=%s\told=%s\tkey=%s\tip=%s\tloc=%s\twarp=%s\tsel=%s\tselage=%s\tout=%s\tnew=%s\tfail=%s\tgcc=%s\tgccage=%s\n' \
+    tk=$id; [ "$id" = none ] && tk=n$i
+    printf 'W\tn=%s\tep=%s\told=%s\tkey=%s\tip=%s\tloc=%s\twarp=%s\tsel=%s\tselage=%s\tout=%s\tnew=%s\tfail=%s\tgcc=%s\tgccage=%s\tid=%s\tage=%s\ttst=%s\n' \
       "$i" "$ep" "$([ "$id" = none ] && echo 1)" "$([ -s "$D/warp-acc/$id/key" ] && echo 1)" \
       "$(sed -n 's/^ip=//p' <<<"$t")" "$(sed -n 's/^loc=//p' <<<"$t")" "$(sed -n 's/^warp=//p' <<<"$t")" \
-      "$(f "$R/wsel_$i")" "$(ag "$R/wsel_$i")" "$(f "$R/wout_$i")" "$(f "$R/wnew_$i")" "$(f "$R/wfail_$i")" "$(f "$R/gcc_$i")" "$(ag "$R/gcc_$i")" ) &
+      "$(f "$R/wsel_$i")" "$(ag "$R/wsel_$i")" "$(f "$R/wout_$i")" "$(f "$R/wnew_$i")" "$(f "$R/wfail_$i")" "$(f "$R/gcc_$i")" "$(ag "$R/gcc_$i")" \
+      "$(tr -cd 'A-Za-z0-9' <<<"$id")" "$([ "$id" != none ] && ag "$D/warp-acc/$id")" "$(f "$R/wtest_$tk")" ) &
 done < "$D/warps"
 wait
-printf 'S\tactive=%s\tgact=%s\tsel=%s\tpoolip=%s\tselago=%s\n' "$(f $R/warp_active)" "$(f $R/gwarp_active)" "$(f $R/sel_state)" "$(f $R/pool_ip)" "$(ag $R/last_sel)"
+st=$(cat "$R/igcc_stop" 2>/dev/null || echo 0); fn=$(cat "$R/fill_next" 2>/dev/null || echo 0)
+printf 'S\tactive=%s\tgact=%s\tsel=%s\tpoolip=%s\tselago=%s\tccstop=%s\tfnext=%s\trejcc=%s\thour=%s\tvia=%s\n' "$(f $R/warp_active)" "$(f $R/gwarp_active)" "$(f $R/sel_state)" "$(f $R/pool_ip)" "$(ag $R/last_sel)" \
+  "$(( ${st:-0} > now ? ${st:-0} - now : 0 ))" "$(( ${fn:-0} > now ? ${fn:-0} - now : 0 ))" "$(tail -n 1 "$R/igcc_rej" 2>/dev/null | grep -oE '[A-Z]{2}' | tail -n 1)" "$(date +%-H)" "$([ -s "$D/warp_via" ] && echo 1)"
 `
 
 // IgWarp is one WARP account as the WARP tab shows it.
@@ -55,17 +59,30 @@ type IgWarp struct {
 	Fails    int    `json:"fails,omitempty"`
 	Next     string `json:"next,omitempty"` // why the agent wants a new account for it ("no Instagram music", "only 12 Mbps")
 	Endpoint string `json:"endpoint,omitempty"`
+	ID       string `json:"-"`             // the account's folder name (the panel's trims check it; never shown)
+	Age      int    `json:"age,omitempty"` // seconds since the account was made (0 = unknown)
+	// the panel's own test of a standby (warppool.go): ok | no (no-music country) | down, its exit, Instagram's country
+	Test    string `json:"test,omitempty"`
+	TestIP  string `json:"testIP,omitempty"`
+	TestCC  string `json:"testCC,omitempty"`
+	TestLoc string `json:"testLoc,omitempty"`
+	TestAt  int64  `json:"testAt,omitempty"`
 }
 
 // IgWarps is the whole tab.
 type IgWarps struct {
 	Warps  []IgWarp `json:"warps"`
-	Active int      `json:"active"`  // FAILOVER: the WARP Instagram uses (0 = none / BALANCE)
-	GAct   int      `json:"gact"`    // the WARP Google is pinned to (0 = none)
-	Sel    string   `json:"sel"`     // the last automatic choice: ok | none (nothing good enough)
-	PoolIP string   `json:"poolIP"`  // BALANCE: the exit IP the pool shares
-	SelAgo int      `json:"selAgo"`  // seconds since the last automatic choice (-1 = unknown)
+	Active int      `json:"active"` // FAILOVER: the WARP Instagram uses (0 = none / BALANCE)
+	GAct   int      `json:"gact"`   // the WARP Google is pinned to (0 = none)
+	Sel    string   `json:"sel"`    // the last automatic choice: ok | none (nothing good enough)
+	PoolIP string   `json:"poolIP"` // BALANCE: the exit IP the pool shares
+	SelAgo int      `json:"selAgo"` // seconds since the last automatic choice (-1 = unknown)
 	At     int64    `json:"at"`
+	CCStop int      `json:"ccStop,omitempty"` // the agent stopped making accounts for this long: each new one read a no-music country
+	RejCC  string   `json:"rejCC,omitempty"`  // … that country
+	FNext  int      `json:"fNext,omitempty"`  // the agent's next try to make missing accounts (seconds)
+	Hour   int      `json:"hour"`             // the server's local hour (trims run at night)
+	Via    bool     `json:"via,omitempty"`    // warp-via: Instagram's WARPs enter Cloudflare through other servers
 }
 
 func igAtoi(s string, def int) int {
@@ -95,11 +112,13 @@ func igParseWarps(out string) IgWarps {
 			m := igKV(l)
 			r.Active, r.GAct, r.Sel, r.PoolIP = igAtoi(m["active"], 0), igAtoi(m["gact"], 0), m["sel"], m["poolip"]
 			r.SelAgo = igAtoi(m["selago"], -1)
+			r.CCStop, r.FNext, r.RejCC, r.Hour, r.Via = igAtoi(m["ccstop"], 0), igAtoi(m["fnext"], 0), m["rejcc"], igAtoi(m["hour"], -1), m["via"] == "1"
 		case strings.HasPrefix(l, "W\t"):
 			m := igKV(l)
 			w := IgWarp{N: igAtoi(m["n"], 0), Endpoint: m["ep"], Key: m["key"] == "1", Old: m["old"] == "1",
 				IP: m["ip"], Loc: m["loc"], GCC: m["gcc"], GCCAge: igAtoi(m["gccage"], 0),
-				TestAge: igAtoi(m["selage"], -1), Fails: igAtoi(m["fail"], 0), Next: m["new"]}
+				TestAge: igAtoi(m["selage"], -1), Fails: igAtoi(m["fail"], 0), Next: m["new"], ID: m["id"], Age: igAtoi(m["age"], 0)}
+			w.setTest(m["tst"])
 			if w.N < 1 {
 				continue
 			}

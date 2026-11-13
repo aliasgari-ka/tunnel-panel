@@ -230,6 +230,15 @@ func (s *Server2) igOptsSave(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err.Error())
 		return
 	}
+	if _, a := set["minwarps"]; a {
+		for _, x := range tl {
+			s.app.wpHold(x.ID) // sized by hand: the automatic pool (warppool.go) waits a day
+		}
+	} else if _, b := set["warpauto"]; b {
+		for _, x := range tl {
+			s.app.wpHold(x.ID)
+		}
+	}
 	var keys []string
 	for _, k := range igOptKeys {
 		if _, ok := set[k]; ok {
