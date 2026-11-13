@@ -1082,12 +1082,17 @@ document.addEventListener('toggle', (e) => {
   d.open ? procsOpen.add(id) : procsOpen.delete(id);
 }, true);
 function renderRes(el, r) {
+  // the server page shows the once-a-minute hardware tiles only until the live bars (same numbers) arrive
+  const fb = el.parentElement && el.parentElement.querySelector(':scope > .hwfb');
+  if (fb) fb.hidden = !!(r && !r.error);
   if (!r) { el.innerHTML = ''; return; }
   if (r.error) { el.innerHTML = `<span class="faint" style="font-size:12px" title="${esc(r.error)}"><span>⚠ live load unavailable</span> — <span>${esc(r.error.split(/[:;—]/)[0].trim())}</span></span>`; return; }
   const p = (a, b) => b ? 100 * a / b : 0;
   const bar = (label, v, txt, title) => `<div class="rbar${v >= 90 ? ' crit' : v >= 70 ? ' warn' : ''}" title="${esc(title || '')}"><span class="rl">${label}</span><span class="rt"><i style="width:${Math.min(100, v).toFixed(1)}%"></i></span><span class="rv">${v.toFixed(0)}%</span><span class="rx faint">${txt}</span></div>`;
   const mem = p(r.memUsed, r.memTotal), disk = p(r.diskUsed, r.diskTotal);
-  const extra = [`load ${r.load.map(x => x.toFixed(2)).join(' ')}`, `${r.cores} cores`, `up ${upTxt(r.uptime)}`, `TCP ${r.tcp}`];
+  // on the server page the cores sit in the CPU tile and the boot time in the uptime box: not again here
+  const big = !!fb;
+  const extra = [`load ${r.load.map(x => x.toFixed(2)).join(' ')}`, big ? '' : `${r.cores} cores`, big && el.dataset.noup ? '' : `up ${upTxt(r.uptime)}`, `TCP ${r.tcp}`].filter(Boolean);
   if (r.ctMax > 0 && r.conntrack >= 0) extra.push(`conntrack ${r.conntrack}/${r.ctMax}`);
   const warn = [];
   if (r.steal >= 5) warn.push(`steal ${r.steal.toFixed(0)}% — the host is oversold, this VPS waits for CPU`);
@@ -1098,9 +1103,9 @@ function renderRes(el, r) {
   const perCore = (r.coreIrq || []).map((v, i) => `core ${i}: ${v.toFixed(0)}%`).join(' · ');
   if ((r.softirq || 0) >= 15 && r.coreIrq && r.coreIrq.length > 1) extra.push(`packets per core ${r.coreIrq.map(v => v.toFixed(0) + '%').join(' ')}`);
   const procs = (r.procs || []).filter(x => x.cpu >= 0.1 || x.rssMB >= 20).slice(0, 12);
-  el.innerHTML = bar('CPU', r.cpu, `iowait ${r.iowait.toFixed(0)}% · steal ${r.steal.toFixed(0)}% · kernel ${(r.sys || 0).toFixed(0)}% · packets ${(r.softirq || 0).toFixed(0)}%`, 'all cores together; "packets" is the kernel moving network traffic (irq + softirq)' + (perCore ? '\npackets per core — ' + perCore : '') + (r.nic ? `\n${r.nic}: ${r.rxQueues} receive queue${r.rxQueues === 1 ? '' : 's'}, RPS ${(r.rps || '').replace(/0/g, '') ? r.rps : 'off'}` : ''))
-    + bar('RAM', mem, `${kbTxt(r.memUsed)} / ${kbTxt(r.memTotal)}${r.swapTotal ? ` · swap ${kbTxt(r.swapUsed)}` : ''}`)
-    + bar('Disk', disk, `${kbTxt(r.diskUsed)} / ${kbTxt(r.diskTotal)}`, 'the root filesystem')
+  el.innerHTML = bar(big && r.cores ? `CPU <span class="rc" data-notr>· ${r.cores} ${L(r.cores === 1 ? 'core' : 'cores', 'هسته')}</span>` : 'CPU', r.cpu, `iowait ${r.iowait.toFixed(0)}% · steal ${r.steal.toFixed(0)}% · kernel ${(r.sys || 0).toFixed(0)}% · packets ${(r.softirq || 0).toFixed(0)}%`, 'all cores together; "packets" is the kernel moving network traffic (irq + softirq)' + (perCore ? '\npackets per core — ' + perCore : '') + (r.nic ? `\n${r.nic}: ${r.rxQueues} receive queue${r.rxQueues === 1 ? '' : 's'}, RPS ${(r.rps || '').replace(/0/g, '') ? r.rps : 'off'}` : ''))
+    + bar('RAM', mem, `<bdi>${kbTxt(r.memUsed)} / ${kbTxt(r.memTotal)}</bdi>${r.swapTotal ? ` · swap <bdi>${kbTxt(r.swapUsed)}</bdi>` : ''}`)
+    + bar('Disk', disk, `<bdi>${kbTxt(r.diskUsed)} / ${kbTxt(r.diskTotal)}</bdi>`, 'the root filesystem')
     + `<svg class="rspark" viewBox="0 0 100 24" preserveAspectRatio="none"><path class="pc" d="${resLine(r.hist, 'cpu')}"/><path class="pm" d="${resLine(r.hist, 'mem')}"/></svg>`
     + `<div class="faint rinfo">${extra.join(' · ')} <span class="rleg"><b class="pc">━</b> CPU <b class="pm">━</b> RAM · last 3 min</span></div>`
     + warn.map(w => `<div class="rwarn">⚠ ${esc(w)}</div>`).join('')
@@ -1661,14 +1666,12 @@ function panelHostCard() {
   const st = STATE.settings, n = STATE.tunnels.filter(t => !t.foreignId).length;
   return h(`<div class="card scard host">
     <div class="sh"><div class="sname"><span class="sflag">🖥</span><div><h3>This panel host</h3><small>the machine running this panel</small></div></div><span class="pill on"><span class="led"></span>local</span></div>
-    <dl class="kvt">
-      <div><dt>IPv4</dt><dd><span class="mono">${esc(st.localIPv4 || 'auto-detecting…')}</span></dd></div>
-      ${st.localIPv6 ? `<div class="wide"><dt>IPv6</dt><dd><span class="mono">${esc(st.localIPv6)}</span></dd></div>` : ''}
-      <div><dt>Tunnels</dt><dd>${n}</dd></div>
-      ${hwRows(STATE.hostHw)}
-    </dl>
-    <div class="nic" data-nic=""></div>
-    <div class="res" data-res=""></div>
+    ${netBlock([
+      `<div><dt>IPv4</dt><dd><span class="mono">${esc(st.localIPv4 || 'auto-detecting…')}</span></dd></div>`,
+      st.localIPv6 ? `<div class="v6"><dt>IPv6</dt><dd><span class="mono">${esc(st.localIPv6)}</span></dd></div>` : '',
+      `<div><dt>Tunnels</dt><dd>${n}</dd></div>`,
+    ], '')}
+    ${resBlock(STATE.hostHw, '', false)}
     <div class="sfoot"><button class="btn sm" data-prep="" title="Pre-install the binaries every method needs">Install packages</button><span class="grow"></span><span class="faint" style="font-size:12px">edit in Settings</span></div>
   </div>`);
 }
@@ -1754,19 +1757,32 @@ function serverCard(s) {
       ])}
     </div>
     <div data-paths="${s.id}"></div>
-    ${upBox(s)}
-    <dl class="kvt">
-      <div><dt>IPv4</dt><dd><span class="mono">${esc(s.ipv4 || '—')}</span></dd></div>
-      <div class="wide"><dt>IPv6</dt><dd><span class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</span></dd></div>
-      <div><dt>SSH</dt><dd><span class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</span></dd></div>
-      <div><dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not installed yet</span>'}</dd></div>
-      ${hwRows(s.hw)}
-      ${s.lastPath ? `<div><dt>Reached via</dt><dd>${esc(s.lastPath)}</dd></div>` : ''}
-      ${s.proxy ? `<div><dt>Proxy</dt><dd><span class="mono">${esc(s.proxy)}</span></dd></div>` : ''}
-      <div class="wide"><dt>Tunnels</dt><dd>${tl.length ? tl.map(t => `<span class="tchip${t.active ? '' : ' off'}" data-notr>${esc(t.name || t.id)}</span>`).join(' ') : '<span class="faint">none</span>'}</dd></div>
-    </dl>
-    <div class="nic" data-nic="${s.id}"></div>
-    <div class="res" data-res="${s.id}"></div></div>`);
+    <div class="stop${s.up ? '' : ' one'}">
+      ${upBox(s)}
+      <dl class="kvt">
+        <div><dt>Packages</dt><dd>${s.provisioned ? '<span style="color:var(--good)">✓ installed</span>' : '<span class="faint">not installed yet</span>'}</dd></div>
+        <div><dt>Tunnels</dt><dd>${tl.length ? tl.map(t => `<span class="tchip${t.active ? '' : ' off'}" data-notr>${esc(t.name || t.id)}</span>`).join(' ') : '<span class="faint">none</span>'}</dd></div>
+      </dl>
+    </div>
+    ${netBlock([
+      `<div><dt>IPv4</dt><dd><span class="mono">${esc(s.ipv4 || '—')}</span></dd></div>`,
+      `<div class="v6"><dt>IPv6</dt><dd><span class="mono">${esc(s.ipv6 || (s.prepared ? 'none' : 'reading over SSH…'))}</span></dd></div>`,
+      `<div class="ssh"><dt>SSH</dt><dd><span class="mono">${esc(s.sshUser || 'root')}@${esc(s.sshHost || s.ipv4 || s.ipv6 || '?')}:${s.sshPort || 22}</span></dd></div>`,
+      s.lastPath ? `<div class="rvia${s.proxy ? '' : ' solo'}"><dt>Reached via</dt><dd>${esc(s.lastPath)}</dd></div>` : '',
+      s.proxy ? `<div><dt>Proxy</dt><dd><span class="mono">${esc(s.proxy)}</span></dd></div>` : '',
+    ], s.id)}
+    ${resBlock(s.hw, s.id, !!s.up)}</div>`);
+}
+// the server page's two blocks: where the server is reached (addresses, SSH, live NIC traffic) and what it has (CPU, RAM, disk)
+function netBlock(tiles, id) {
+  tiles = tiles.filter(Boolean);
+  // IPv4 · IPv6 (two columns) · SSH fill the first row of four; the live traffic takes what the second row leaves
+  const cols = tiles.reduce((a, t) => a + (t.includes('class="v6"') ? 2 : 1), 0), used = cols % 4, span = used ? 4 - used : 4;
+  return `<section class="sblk"><div class="sbh">Network</div><dl class="kvt kvn">${tiles.join('')}
+    <div class="nicw s${span}"><dt>Traffic</dt><dd class="nic" data-nic="${id}"></dd></div></dl></section>`;
+}
+function resBlock(hw, id, noup) {
+  return `<section class="sblk"><div class="sbh">Resources</div><dl class="kvt hwfb">${hwRows(hw)}</dl><div class="res" data-res="${id}"${noup ? ' data-noup="1"' : ''}></div></section>`;
 }
 async function testServer(id, btn) {
   btn.disabled = true; const o = btn.textContent; btn.textContent = 'Testing… (up to ~30 s)';

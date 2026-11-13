@@ -761,6 +761,8 @@ window.TP_FA = {
 "Tunnel Panel": "پنل تانل",
 "Tunnel saved": "تانل ذخیره شد",
 "Tunnels": "تانل‌ها",
+"Network": "شبکه",
+"Resources": "منابع",
 "Turn back on": "روشن کردن دوباره",
 "Two-letter codes with spaces, like US GB DE": "کدهای دو‌حرفی با فاصله، مثل US GB DE",
 "Type": "نوع",
