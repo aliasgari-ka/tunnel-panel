@@ -18,7 +18,13 @@ func TestPremiumLicenseCheck(t *testing.T) {
 		{"\x1b[90m23-Oct\x1b[0m [\x1b[31mERROR\x1b[0m] License IP mismatch", "license problem: License IP mismatch", false},
 		{"[ERROR] License has expired", "License has expired", false},
 		{"[ERROR] License does not exist", "License does not exist", false},
-		{"[INFO] control channel established successfully", "no license verdict", true},
+		// up with no verdict: done at once instead of after 15 s (the v2 core never logs one)
+		{"[INFO] control channel established successfully", "core up: control channel established", true},
+		{"13-Nov 00:09:15 [INFO] starting 2 workers with channel size 10000", "core up: starting 2 workers", true},
+		{"[INFO] ♥️ Health service connected to 10.10.57.1:40228", "core up: ♥️ Health service connected", true},
+		{"[INFO] Applying kernel tuning profile: BALANCED", "no license verdict", true},
+		// a bad verdict next to the start line still fails the apply
+		{"[INFO] starting 2 workers\n[ERROR] License IP mismatch", "license problem: License IP mismatch", false},
 		// bad verdicts that used to pass with a note blaming the server's DNS (bug hunt 2026-11-12)
 		{"[ERROR] License rejected", "license problem: License rejected", false},
 		{"[ERROR] License status is unknown", "license problem: License status is unknown", false},
