@@ -1131,15 +1131,28 @@ details.tshape>.ff{margin-top:10px;padding:12px;background:var(--panel-2);border
 /* the buttons right under the header, on both pages */
 .tdet .tc-h{order:-2}.tdet .tc-f{order:-1}
 .srvdetail .sfoot,.tdet .tc-f{gap:8px;flex-wrap:wrap;padding-bottom:16px;border-bottom:1px solid var(--line)}
-.srvdetail [data-paths]:empty,.srvdetail .nic:empty,.srvdetail .res:empty{display:none}
+.srvdetail [data-paths]:empty,.srvdetail .res:empty,.srvdetail .nicw:has(.nic:empty){display:none}
 .srvdetail .kvt dd,.tdet .kvt dd{font-size:13.5px}
 .srvdetail .tchip{padding:2px 10px;margin:2px 0}.srvdetail .tchip.off{background:transparent;border:1px dashed var(--line)}
-.srvdetail .nic{background:var(--panel-2);border-radius:12px;padding:10px 12px;display:flex;gap:4px 10px;flex-wrap:wrap;align-items:baseline}
+.srvdetail .nic{display:flex;gap:2px 10px;flex-wrap:wrap;align-items:baseline}
 .srvdetail .nic .dn,.srvdetail .nic .up{font-weight:650;font-size:13.5px}
 /* live load: three tiles, then the chart and the details */
 .srvdetail .res{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:0}
 .srvdetail .res>*:not(.rbar){grid-column:1/-1}
-.srvdetail .rbar{grid-template-columns:1fr auto;grid-template-areas:"rl rv" "rt rt" "rx rx";gap:7px 6px;background:var(--panel-2);border-radius:12px;padding:11px 12px;align-items:baseline}
+.srvdetail .rbar{grid-template-columns:1fr auto;grid-template-areas:"rl rv" "rt rt" "rx rx";gap:6px;background:var(--panel-2);border-radius:10px;padding:9px 11px;align-items:baseline}
+.srvdetail .rbar .rc{font-weight:500;color:var(--muted)}
+/* the server page: a top strip (uptime · packages · tunnels), then the Network and Resources blocks, all 10px tiles */
+.srvdetail .scard{gap:14px}
+.srvdetail .sfoot{padding-bottom:14px}
+.stop{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:8px;align-items:stretch}.stop.one{grid-template-columns:1fr}
+.stop .upbox{margin:0;border:0;background:var(--panel-2);padding:8px 11px}.stop .upbox.down{border:1px solid var(--crit);background:var(--crit-soft)}
+.stop .kvt{grid-template-columns:auto minmax(0,1fr)}
+.sblk{display:flex;flex-direction:column;gap:6px}
+.sbh{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);padding:0 2px}
+.kvt.kvn{grid-template-columns:repeat(4,minmax(0,1fr))}.kvn .v6{grid-column:span 2}
+.kvn .nicw.s1{grid-column:span 1}.kvn .nicw.s2{grid-column:span 2}.kvn .nicw.s3{grid-column:span 3}.kvn .nicw.s4{grid-column:1/-1}
+.kvn dd .mono{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.kvt.hwfb{grid-template-columns:repeat(3,minmax(0,1fr))}.hwfb>div.wide{grid-column:auto}.hwfb>div.wide:only-child{grid-column:1/-1}.hwfb[hidden]{display:none}
 .srvdetail .rbar .rl{grid-area:rl;font-size:11.5px}
 .srvdetail .rbar .rv{grid-area:rv;font-size:19px;font-weight:700;line-height:1}
 .srvdetail .rbar.warn .rv{color:var(--warn)}.srvdetail .rbar.crit .rv{color:var(--crit)}
@@ -1152,6 +1165,11 @@ details.tshape>.ff{margin-top:10px;padding:12px;background:var(--panel-2);border
   .srvdetail .sflag,.tdet .tc-t .sflag{width:40px;height:40px;font-size:19px;border-radius:12px}
   .srvdetail .sname h3,.tdet .tc-h h3{font-size:17px}
   .srvdetail .res{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .stop{grid-template-columns:1fr}
+  .kvt.kvn{grid-template-columns:repeat(2,minmax(0,1fr))}.kvt.kvn>div.nicw{grid-column:1/-1}
+  .kvn dd .mono{white-space:normal;overflow-wrap:anywhere}
+  /* phone: IPv4 | SSH, then IPv6 and the rest on full rows when alone */
+  .kvn>div{order:3}.kvn>div:first-child{order:0}.kvn>div.ssh{order:1}.kvn>div.v6{order:2}.kvt.kvn>div.rvia.solo{grid-column:1/-1}.kvn>div.nicw{order:4}
   .srvdetail .rbar{padding:9px 10px}.srvdetail .rbar .rv{font-size:16px}.srvdetail .rbar .rx{display:none}
   .srvdetail .sfoot .btn,.tdet .tc-f .btn{flex:1 1 auto;justify-content:center}.srvdetail .sfoot .grow{display:none}
 }
