@@ -291,5 +291,5 @@ func (s *Server2) igRoutesApply(w http.ResponseWriter, r *http.Request) {
 }
 
 func igSvcName(g string) string {
-	return map[string]string{"IG": "Instagram", "GOOGLE": "Google", "YTM": "YouTube Music", "ADULT": "Adult", "SPOTIFY": "Spotify", "SCLOUD": "SoundCloud", "CUSTOM": "My sites"}[g]
+	return map[string]string{"IG": "Instagram", "GOOGLE": "Google", "YTM": "YouTube Music", "ADULT": "Adult", "SPOTIFY": "Spotify", "SCLOUD": "SoundCloud", "SNAP": "Snapchat", "CUSTOM": "My sites"}[g]
 }
