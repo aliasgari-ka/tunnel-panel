@@ -466,8 +466,8 @@ func (r *dcResult) cause(key string, in *dcInput) *DownCause {
 }
 
 const (
-	actRestartEn = "restart this path (⋯ → Restart path); the panel also restarts a path by itself after 30 min down"
-	actRestartFa = "این مسیر را ری‌استارت کنید (⋯ ← ری‌استارت مسیر)؛ پنل هم بعد از ۳۰ دقیقه قطعی خودش ری‌استارتش می‌کند"
+	actRestartEn = "restart this path (⋯ → Restart path); the panel also restarts it by itself 5 min after it went down"
+	actRestartFa = "این مسیر را ری‌استارت کنید (⋯ ← ری‌استارت مسیر)؛ پنل هم ۵ دقیقه بعد از قطعی خودش ری‌استارتش می‌کند"
 	actRouteEn   = "the route blocks this method now — the switcher keeps the users on other paths; try another carrier or method on this route"
 	actRouteFa   = "مسیر الان این روش را می‌بندد — سوییچر کاربران را روی مسیرهای دیگر نگه می‌دارد؛ کریر یا روش دیگری را روی این مسیر امتحان کنید"
 )

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -382,36 +383,95 @@ exec "$Q" %[1]s.arm64 "$@"
 }
 
 // staticAmd64Emulated installs a static amd64 helper (no libc: TP's Go core) on another
-// CPU behind a wrapper that runs it under qemu-x86_64.
+// CPU behind a wrapper that runs it under qemu-x86_64. On arm64 the wrapper prefers a
+// pinned qemu 10 next to the core (qemuNewScript) over the distro's qemu-user.
 func staticAmd64Emulated(ctx context.Context, j *Job, label string, h Host, art Artifact) error {
 	core, err := ensureHelper(ctx, jobLogf(j), art.Asset, "amd64")
 	if err != nil {
 		return err
 	}
 	sum := sha256.Sum256(core)
-	out, _ := h.Run(ctx, fmt.Sprintf("sha256sum %s.amd64 2>/dev/null; grep -q qemu-x86_64 %s 2>/dev/null && echo wrapper-ok", shq(art.Dest), shq(art.Dest)), nil)
-	if strings.Contains(out, hex.EncodeToString(sum[:])) && strings.Contains(out, "wrapper-ok") {
+	qemu := path.Dir(art.Dest) + "/qemu-x86_64"
+	out, _ := h.Run(ctx, fmt.Sprintf(`sha256sum %[1]s.amd64 2>/dev/null; grep -q %[2]s %[1]s 2>/dev/null && echo wrapper-ok
+[ "$(uname -m)" != aarch64 ] || [ "$(sha256sum < %[3]s 2>/dev/null | cut -d' ' -f1)" = %[4]s ] && echo qemu-ok`, shq(art.Dest), qemuNew.Mark, shq(qemu), qemuNew.BinSHA), nil)
+	if strings.Contains(out, hex.EncodeToString(sum[:])) && strings.Contains(out, "wrapper-ok") && strings.Contains(out, "qemu-ok") {
 		j.log("[%s] %s already installed (amd64 core under qemu-x86_64, up to date)", label, art.Dest)
 		return nil
 	}
 	out, err = h.Run(ctx, `if ! command -v qemu-x86_64-static >/dev/null 2>&1 && ! command -v qemu-x86_64 >/dev/null 2>&1; then
   (apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq qemu-user-static >/dev/null 2>&1) || apt-get install -y -qq qemu-user >/dev/null 2>&1 || dnf install -y qemu-user-static >/dev/null 2>&1 || true
 fi
-command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev/null 2>&1 || { echo "could not install qemu-user-static (qemu-x86_64)"; exit 1; }`, nil)
+command -v qemu-x86_64-static >/dev/null 2>&1 || command -v qemu-x86_64 >/dev/null 2>&1 || [ -x `+shq(qemu)+` ] || { echo "could not install qemu-user-static (qemu-x86_64)"; exit 1; }`, nil)
 	if err != nil {
 		return fmt.Errorf("%s", lastLine(out))
 	}
-	wrapper := fmt.Sprintf(`#!/bin/sh
-# %[2]s exists for amd64 only: run it under qemu-x86_64 on this CPU.
-Q=$(command -v qemu-x86_64-static || command -v qemu-x86_64)
-[ -n "$Q" ] || { echo "no x86-64 emulator: apt install qemu-user-static"; exit 1; }
-exec "$Q" %[1]s.amd64 "$@"
-`, shq(art.Dest), art.Asset)
-	if err := pushBlobs(ctx, j, label, h, []blob{{art.Dest + ".amd64", core, 0o755}, {art.Dest, []byte(wrapper), 0o755}}); err != nil {
+	out, _ = h.Run(ctx, qemuNewScript(qemu), nil)
+	if l := lastLine(out); l != "" {
+		j.log("[%s] %s", label, l)
+	}
+	if err := pushBlobs(ctx, j, label, h, []blob{{art.Dest + ".amd64", core, 0o755}, {art.Dest, []byte(qemuWrapper(art.Dest, art.Asset)), 0o755}}); err != nil {
 		return err
 	}
 	j.log("[%s] %s runs under qemu-x86_64 on this server (expect more CPU use than native)", label, art.Asset)
 	return nil
+}
+
+// qemuNew is the x86-64 emulator the panel installs for TP's core on arm64 hosts: Debian
+// 13's qemu-user 10.0.13 (static-pie), checked by the .deb's and the binary's sha256.
+// Ubuntu 22.04's qemu-user-static 6.2 corrupts the Go core's memory: seen live 2026-11-13
+// on nl (arm64), tpk-agent crashed every ~6-11 min (127 times in 24 h) with nil pointers
+// in net.Dial, "found pointer to free object" and "send on synctest channel from outside
+// bubble", once came back without reconnecting, and couldn't set TCP_CONGESTION (bbr).
+// GODEBUG=asyncpreemptoff=1 didn't change that; box64 can't run a static Go binary at
+// all ("morestack on g0"). Under qemu 10 the same core ran without a crash. When the
+// download fails the wrapper falls back to the distro's qemu, as before.
+var qemuNew = struct {
+	Mark, Deb, DebSHA, BinSHA string
+	URLs                      []string
+}{
+	Mark:   "qemu10",
+	Deb:    "pool/main/q/qemu/qemu-user_10.0.13+ds-0+deb13u1_arm64.deb",
+	DebSHA: "c73711af02b97cd5e2667e735d9c06890c57165517110ca4e646c95a7083158d",
+	BinSHA: "9af86352fd463ad9ec25bdd6a4b891ac6b6a7f3d46a7db3da6f23e2c09094a59",
+	URLs: []string{
+		"https://deb.debian.org/debian/",
+		"http://ftp.debian.org/debian/",
+		"https://snapshot.debian.org/archive/debian/20261101T000000Z/", // after Debian drops this version
+	},
+}
+
+// qemuNewScript installs qemuNew's qemu-x86_64 at dest on an arm64 host (a no-op
+// elsewhere, or when it is already there). It never fails the apply: its last line says
+// what happened. A host that couldn't download it isn't asked again for 6 h.
+func qemuNewScript(dest string) string {
+	var us []string
+	for _, u := range qemuNew.URLs {
+		us = append(us, shq(u+qemuNew.Deb))
+	}
+	return fmt.Sprintf(`Q=%[1]s; W=%[2]s; MK="$Q.unreachable"
+[ "$(uname -m)" = aarch64 ] || exit 0
+[ "$(sha256sum < "$Q" 2>/dev/null | cut -d' ' -f1)" = "$W" ] && { echo "qemu 10 (x86-64 emulator) already installed"; exit 0; }
+if [ -f "$MK" ] && [ $(( $(date +%%s) - $(stat -c %%Y "$MK") )) -lt 21600 ]; then echo "WARNING: qemu 10 couldn't be downloaded recently — TP's core runs under the distro's qemu"; exit 0; fi
+T=$(mktemp -d); trap 'rm -rf $T' EXIT; cd $T
+for u in %[3]s; do curl -fsSL --max-time 180 -o q.deb "$u" && [ "$(sha256sum < q.deb | cut -d' ' -f1)" = %[4]s ] && break; rm -f q.deb; done
+[ -s q.deb ] || { mkdir -p "$(dirname "$Q")"; touch "$MK"; echo "WARNING: qemu 10 couldn't be downloaded from Debian — TP's core runs under the distro's qemu (it crashes Go programs)"; exit 0; }
+if command -v dpkg-deb >/dev/null 2>&1; then dpkg-deb --fsys-tarfile q.deb | tar -xf - ./usr/bin/qemu-x86_64; else ar x q.deb data.tar.xz && tar -xJf data.tar.xz ./usr/bin/qemu-x86_64; fi 2>/dev/null
+[ "$(sha256sum < usr/bin/qemu-x86_64 2>/dev/null | cut -d' ' -f1)" = "$W" ] || { echo "WARNING: the qemu 10 package didn't hold the expected binary — kept the distro's qemu"; exit 0; }
+mkdir -p "$(dirname "$Q")" && install -m0755 usr/bin/qemu-x86_64 "$Q.new" && mv -f "$Q.new" "$Q" && rm -f "$MK" && echo "installed qemu 10 (x86-64 emulator) for TP's core"
+`, shq(dest), qemuNew.BinSHA, strings.Join(us, " "), qemuNew.DebSHA)
+}
+
+// qemuWrapper runs the static amd64 program dest.amd64 under the pinned qemu 10 next to
+// it when there is one, else under the distro's qemu-x86_64.
+func qemuWrapper(dest, asset string) string {
+	return fmt.Sprintf(`#!/bin/sh
+# %[2]s exists for amd64 only: run it under qemu-x86_64 on this CPU.
+# %[3]s: the panel's qemu 10 first (the distro's qemu 6.x corrupts Go programs' memory).
+Q=%[4]s
+[ -x "$Q" ] || Q=$(command -v qemu-x86_64-static || command -v qemu-x86_64)
+[ -n "$Q" ] || { echo "no x86-64 emulator: apt install qemu-user-static"; exit 1; }
+exec "$Q" %[1]s.amd64 "$@"
+`, shq(dest), asset, qemuNew.Mark, shq(path.Dir(dest)+"/qemu-x86_64"))
 }
 
 type blob struct {
