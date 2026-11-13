@@ -126,6 +126,9 @@ type Tunnel struct {
 	// card's ⋯ → Remove). Auto mode, Repair and the retry never add them back; "put back"
 	// on the card takes one off this list again (hsremove.go).
 	HSOff []string `json:"hsOff,omitempty"`
+	// HSWant: "method|family" paths the user asked for by hand (put back, or "use" on a path
+	// that didn't run): kept even where auto mode would leave them out for their cost (hscost.go).
+	HSWant []string `json:"hsWant,omitempty"`
 	// PathNet: per path ("method|family"), the kernel settings of its interface set in the
 	// card's path settings (pathnet.go). Net is a path's own, on its pseudo tunnel only.
 	PathNet map[string]PathNet `json:"pathNet,omitempty"`

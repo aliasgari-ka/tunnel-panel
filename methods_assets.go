@@ -361,6 +361,17 @@ func premiumNotrack(peer, tag string) (up, down string) {
 	return up, down
 }
 
+// premiumCarrierFilter is the ExecStartPost of an ipx core with the tcp carrier: in the
+// background (the unit doesn't wait for it), the probe narrows the core's AF_PACKET filter
+// from "every TCP packet of the peer" to its own carrier, 443 -> 443, once the core has
+// attached it, and keeps watching while the core runs (see internal/pktfilter). Without it
+// a standby Premium path copied the users' traffic of every other TCP path between the same
+// two servers into its userspace, where it failed decryption: 30-90 % of a core while it
+// carried nothing (usa, IRAN-USA, 2026-11-13). "-": a failure never fails the unit.
+func premiumCarrierFilter(peer string) string {
+	return fmt.Sprintf("-/bin/sh -c '%s pktfilter -pid $MAINPID -unit %%n -peer %s -proto 6 -sport 443 -dport 443 -watch &'", probeBin, peer)
+}
+
 var methodPremium = &Method{
 	ID:       "premium",
 	Title:    "Backhaul Premium (ipx/tun)",
@@ -545,6 +556,12 @@ sed -i "s/IFACE/$dev/" %s 2>/dev/null || true
 				sp.Files[dir+"/fw-down.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + ntDown + down), Mode: 0o755}
 				sp.Unit.ExecStartPre = dir + "/fw-up.sh"
 				sp.Unit.ExecStopPost = dir + "/fw-down.sh"
+				if c.Opt("profile") == "tcp" {
+					// the core's own raw-socket filter keeps every TCP packet of the peer,
+					// the users' traffic of the other TCP paths too (premiumCarrierFilter)
+					sp.Artifacts = append(sp.Artifacts, probeArt)
+					sp.Unit.ExecStartPost = premiumCarrierFilter(peer)
+				}
 			}
 			return sp
 		}

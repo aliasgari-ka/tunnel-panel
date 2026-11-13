@@ -159,9 +159,25 @@ func hsMethodOK(t *Tunnel, m *Method) error {
 	return fmt.Errorf("hot standby with %s (it forwards ports) takes single ports only, at most 18 — list the ports one by one, pick a kernel method (GRE, IPsec, WireGuard), or turn hot standby off", m.Title)
 }
 
-// hsCandidate: m over f can be a standby path of t (the user didn't leave it out on this route
-// or remove it from this tunnel).
+// hsCandidate: auto mode makes m over f a standby path of t — hsCandidateBase, and not left
+// out for its cost on this route (hscost.go: an emulated core on a 2-core server, while
+// cheaper paths work; never one that runs or one the user asked for by hand).
 func (a *App) hsCandidate(t *Tunnel, m *Method, f string) bool {
+	if !a.hsCandidateBase(t, m, f) {
+		return false
+	}
+	have := map[string]bool{}
+	a.store.View(func(*State) {
+		for _, p := range t.Paths {
+			have[p.Method+"|"+p.Family] = true
+		}
+	})
+	return a.hsLeaveOutForCost(t, m, f, have) == ""
+}
+
+// hsCandidateBase: m over f can be a standby path of t (the user didn't leave it out on this
+// route or remove it from this tunnel).
+func (a *App) hsCandidateBase(t *Tunnel, m *Method, f string) bool {
 	if !supportsFamily(m, f) || m.ID == "spoof" || (hsOnly != nil && !contains(hsOnly, m.ID)) || a.hsExcluded(t, m.ID, f) {
 		return false
 	}
@@ -1114,6 +1130,11 @@ type hsView struct {
 	// Cause: what the cause finder proved about each down path (downcause.go); filled in a
 	// copy for the page, never in the cached view
 	Cause []*DownCause `json:"cause,omitempty"`
+	// IdleIR, IdleKH: % of one core each standby path's cores burned on the Iran / foreign
+	// server while the users were elsewhere (-1 = not measured; standbytrim.go). Filled in a
+	// copy for the page, like Cause.
+	IdleIR []int `json:"idleIr,omitempty"`
+	IdleKH []int `json:"idleKh,omitempty"`
 }
 
 // hsRead reads the switcher's state and the events since `after` from the Iran server.
@@ -1597,6 +1618,7 @@ func (a *App) hsAddJob(t *Tunnel, mid, fam string) (*Job, error) {
 		ctx, cancel := j.context(20 * time.Minute)
 		defer cancel()
 		p := HSPath{Method: mid, Family: fam}
+		a.hsWantPath(t, mid+"|"+fam, true) // chosen by hand: auto mode keeps it (hscost.go)
 		var drop []HSPath
 		a.store.View(func(*State) {
 			for _, o := range t.Paths {

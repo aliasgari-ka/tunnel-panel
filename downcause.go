@@ -1342,14 +1342,14 @@ func (a *App) hsViewCause(id string) *hsView {
 	a.healthMu.Lock()
 	defer a.healthMu.Unlock()
 	v := a.hsViews[id]
-	if v == nil || a.dc.cache == nil {
+	if v == nil || (a.dc.cache == nil && a.idleUse == nil) {
 		return v
 	}
 	cp := *v
 	cp.Cause = make([]*DownCause, len(v.Keys))
 	found := false
 	for k, key := range v.Keys {
-		if k < len(v.OK) && !v.OK[k] {
+		if k < len(v.OK) && !v.OK[k] && a.dc.cache != nil {
 			if c := a.dc.cache[id+"|"+key]; c != nil {
 				cp.Cause[k], found = c, true
 			}
@@ -1358,6 +1358,7 @@ func (a *App) hsViewCause(id string) *hsView {
 	if !found {
 		cp.Cause = nil
 	}
+	a.idleOfLocked(id, &cp, time.Now().Unix())
 	return &cp
 }
 

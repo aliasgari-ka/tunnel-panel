@@ -122,12 +122,19 @@ func standbyUnits(t *Tunnel, good []HSPath, v *hsView, now int64) []string {
 // standbyTrimHost measures the units on one server and restarts the ones trim picks. Returns
 // "<unit>: <why>" for each restart.
 func standbyTrimHost(ctx context.Context, h Host, units []string) []string {
+	done, _ := standbyTrimHostUse(ctx, h, units)
+	return done
+}
+
+// standbyTrimHostUse is standbyTrimHost that also returns what each unit used.
+func standbyTrimHostUse(ctx context.Context, h Host, units []string) ([]string, []standbyUse) {
 	if h == nil || len(units) == 0 {
-		return nil
+		return nil, nil
 	}
 	out, _ := h.Run(ctx, standbyUseScript(units), nil)
 	var done []string
-	for _, u := range parseStandbyUse(out) {
+	uses := parseStandbyUse(out)
+	for _, u := range uses {
 		why := u.trim()
 		if why == "" {
 			continue
@@ -136,7 +143,7 @@ func standbyTrimHost(ctx context.Context, h Host, units []string) []string {
 			done = append(done, u.unit+": "+why)
 		}
 	}
-	return done
+	return done, uses
 }
 
 // standbyTrim looks at every hot-standby tunnel once an hour.
@@ -176,12 +183,81 @@ func (a *App) standbyTrimOne(t *Tunnel) []string {
 	if srv == nil {
 		return nil
 	}
+	keyOf := map[string]string{}
+	for _, p := range good {
+		keyOf[unitName(pathTunnel(t, p))] = p.Method + "|" + p.Family
+	}
 	var done []string
 	if ir, _, err := a.reach(ctx, srv, nil); err == nil {
-		done = append(done, standbyTrimHost(ctx, ir, units)...)
+		d, uses := standbyTrimHostUse(ctx, ir, units)
+		done = append(done, d...)
+		a.noteIdleUse(t, keyOf, uses, true)
 	}
 	if kh, _, err := a.foreignHost(ctx, t, nil); err == nil {
-		done = append(done, standbyTrimHost(ctx, kh, units)...)
+		d, uses := standbyTrimHostUse(ctx, kh, units)
+		done = append(done, d...)
+		a.noteIdleUse(t, keyOf, uses, false)
 	}
 	return done
+}
+
+// idleCPU is what one standby path's cores burned while the users were elsewhere: % of one
+// core on each server (-1 = not measured), as the last trim round measured it. Shown on the
+// path's row, so an expensive standby is seen before it slows the server down.
+type idleCPU struct {
+	IR, KH int
+	At     int64
+}
+
+// idleShowAge: an idle reading older than this isn't shown.
+const idleShowAge = 3 * 3600
+
+// noteIdleUse keeps the CPU of t's standby units that carried no users' traffic (iran: the
+// Iran server's side). A unit that carried traffic clears its side (it wasn't idle).
+func (a *App) noteIdleUse(t *Tunnel, keyOf map[string]string, uses []standbyUse, iran bool) {
+	now := time.Now().Unix()
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	if a.idleUse == nil {
+		a.idleUse = map[string]idleCPU{}
+	}
+	for _, u := range uses {
+		key := keyOf[u.unit]
+		if key == "" {
+			continue
+		}
+		cpu := u.cpu
+		if u.kbit >= standbyIdleKbit {
+			cpu = -1
+		}
+		k := t.ID + "|" + key
+		c, ok := a.idleUse[k]
+		if !ok || now-c.At > standbySample*30 {
+			c = idleCPU{IR: -1, KH: -1} // the other side is from an older round: not mixed in
+		}
+		if iran {
+			c.IR = cpu
+		} else {
+			c.KH = cpu
+		}
+		c.At = now
+		a.idleUse[k] = c
+	}
+}
+
+// idleOfLocked fills v's per-path idle CPU (a copy for the page; call with healthMu held).
+// The users' own path shows none: it isn't idle.
+func (a *App) idleOfLocked(id string, v *hsView, now int64) {
+	v.IdleIR, v.IdleKH = nil, nil
+	found := false
+	ir, kh := make([]int, len(v.Keys)), make([]int, len(v.Keys))
+	for k, key := range v.Keys {
+		ir[k], kh[k] = -1, -1
+		if c, ok := a.idleUse[id+"|"+key]; ok && now-c.At <= idleShowAge && k != v.Active {
+			ir[k], kh[k], found = c.IR, c.KH, true
+		}
+	}
+	if found {
+		v.IdleIR, v.IdleKH = ir, kh
+	}
 }

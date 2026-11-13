@@ -140,6 +140,7 @@ func main() {
 	go app.repairAfterUpdate()
 	go app.memNightly()
 	go app.standbyTrim()
+	go app.premiumFilterSweep()
 	go app.igImport()
 	go app.igAlertLoop()
 	go app.aiDailyLoop()

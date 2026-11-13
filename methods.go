@@ -25,8 +25,10 @@ type Unit struct {
 	RemainAfterExit bool
 	ExecStartPre    string
 	ExecStart       string
-	ExecStop        string
-	ExecStopPost    string
+	// ExecStartPost runs once the main process started ($MAINPID is known)
+	ExecStartPost string
+	ExecStop      string
+	ExecStopPost  string
 	// ExtraPre/ExtraPost are more ExecStartPre=/ExecStopPost= lines (run after the
 	// main ones), used for per-tunnel firewall openings that every method gets.
 	ExtraPre  []string
@@ -78,6 +80,9 @@ func renderUnit(u Unit) string {
 		b.WriteString("ExecStartPre=" + x + "\n")
 	}
 	b.WriteString("ExecStart=" + u.ExecStart + "\n")
+	if u.ExecStartPost != "" {
+		b.WriteString("ExecStartPost=" + u.ExecStartPost + "\n")
+	}
 	if u.ExecStop != "" {
 		b.WriteString("ExecStop=" + u.ExecStop + "\n")
 	}
