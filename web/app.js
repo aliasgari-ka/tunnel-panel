@@ -251,12 +251,20 @@ function renderShell() {
     <div class="sidebg" id="sidebg"></div>
     <main class="main" id="work"></main></div>`);
   document.body.appendChild(shell);
-  $$('.nav button', shell).forEach(b => b.onclick = () => { setView(b.dataset.v); paintNav(); renderView(); $('#side').classList.remove('open'); });
+  $$('.nav button', shell).forEach(b => b.onclick = () => { navReset(b.dataset.v); setView(b.dataset.v); paintNav(); renderView(); scrollTo(0, 0); $('#side').classList.remove('open'); });
   $('#sidebg').onclick = () => $('#side').classList.remove('open');
   const os = $('#ownerSel', shell);
   if (os) { os.value = STATE.ownerFilter || ''; os.onchange = () => { setOwnerFilter(os.value); renderShell(); }; } // the sidebar's counts follow it too
   wireMe(shell);
   paintNav(); renderView();
+}
+// a sidebar click always opens the section's main list — also when it is the section already
+// shown: an opened record (an IG Routing server, the Outage log's picked server or tunnel, a
+// benchmark run picked from history) is closed. Filters and sub-tabs the user chose stay.
+function navReset(v) {
+  if (v === 'igproxy') { IG.cur = null; IG.tab = 'routes'; }
+  if (v === 'servers') OUT.pick = '';
+  if (v === 'bench') BN.view = {};
 }
 function paintNav() { $$('.nav button').forEach(b => b.classList.toggle('on', b.dataset.v === STATE.view)); }
 // the sidebar's last row: who is signed in (opens Appearance: theme, language, accent) and sign out
