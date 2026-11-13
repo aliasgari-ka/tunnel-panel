@@ -85,3 +85,36 @@ func TestIgParseHealth(t *testing.T) {
 		t.Errorf("bad proxy: %+v", p)
 	}
 }
+
+// Gemini's line follows the browser check of the users' route, not the plain HTTP answer: on
+// 2026-11-13 HTTP said OK on a WARP Google refused to accounts, and CAPTCHA on an IPv6 exit a
+// browser opened.
+func TestIgHGemini(t *testing.T) {
+	mk := func(ok bool, why string) IgHealth {
+		return IgHealth{Svcs: []IgHCheck{{K: "IG", OK: true}, {K: "GEMINI", OK: ok, Why: why}}}
+	}
+	placed := gemPage{Input: true, SignIn: true, Text: "Gemini\nSettings\nGermany\nFrom your IP address\nSign in"}
+	r := mk(false, "Google shows its \"unusual traffic\" page (CAPTCHA) for this exit IP")
+	igHGemini(&r, "ok", placed)
+	if g := r.Svcs[1]; !g.OK || !g.Warn || g.Loc != "Germany" || !strings.Contains(g.Why, "a browser opens it") {
+		t.Fatalf("captcha over HTTP, browser ok: %+v", g)
+	}
+	r = mk(true, "")
+	igHGemini(&r, "ok", placed)
+	if g := r.Svcs[1]; !g.OK || g.Warn || g.Why != "" || g.Loc != "Germany" {
+		t.Fatalf("both ok: %+v", g)
+	}
+	r = mk(true, "")
+	igHGemini(&r, "refused", gemPage{Input: true, SignIn: true, Text: "Gemini\nSign in"})
+	if g := r.Svcs[1]; g.OK || !strings.Contains(g.Why, "refuses accounts") {
+		t.Fatalf("HTTP 200 on a refused exit: %+v", g)
+	}
+	r = mk(true, "")
+	igHGemini(&r, "noanswer", gemPage{})
+	if g := r.Svcs[1]; !g.OK || g.Why != "" {
+		t.Fatalf("no browser verdict must keep the HTTP answer: %+v", g)
+	}
+	if !r.Svcs[0].OK || r.Svcs[0].Why != "" {
+		t.Fatalf("other services touched: %+v", r.Svcs[0])
+	}
+}

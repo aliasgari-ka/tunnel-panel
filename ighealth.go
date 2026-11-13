@@ -190,6 +190,39 @@ func igHProxy(p *igProxyRow) IgHCheck {
 	return c
 }
 
+// The script's Gemini line is a plain HTTP request, and that can't see what users see. On
+// 2026-11-13 it showed xe101 OK on the WARP exit that Google refuses to accounts (the page answers
+// 200 there too), then CAPTCHA on its own IPv6, where a browser opens Gemini (Google: Germany).
+// So the Gemini line is the panel's browser check of the users' route (gemProbe without the
+// account, the same check that moves Google) whenever the test browser gives a verdict; the
+// HTTP answer is kept only when it gives none (test browser down, relay not reachable from it).
+var igHGemProbe = gemProbe
+
+const igHGemWait = 60 * time.Second
+
+func igHGemini(r *IgHealth, v string, p gemPage) {
+	for i := range r.Svcs {
+		c := &r.Svcs[i]
+		if c.K != "GEMINI" {
+			continue
+		}
+		httpOK, httpWhy := c.OK, c.Why
+		switch v {
+		case "ok":
+			c.OK, c.Warn, c.Why, c.Loc = true, false, "", gemWhy(p)
+			if !httpOK {
+				c.Warn, c.Why = true, "a browser opens it; a plain HTTP request gets: "+httpWhy
+			}
+		case "refused":
+			c.OK, c.Warn, c.Loc = false, false, ""
+			c.Why = "Gemini refuses accounts on this exit (browser check: " + gemWhy(p) + ")"
+		case "captcha":
+			c.OK, c.Warn, c.Loc = false, false, ""
+			c.Why = "a browser gets Google's \"unusual traffic\" page (CAPTCHA) on this exit"
+		}
+	}
+}
+
 var igHLast = struct {
 	sync.Mutex
 	m map[string]IgHealth
@@ -204,6 +237,20 @@ func (a *App) igHealth(ctx context.Context, srv *Server) (IgHealth, error) {
 	)
 	wg.Add(1)
 	go func() { defer wg.Done(); px, perr = a.igProxies(ctx, srv, true, 0) }()
+	// Gemini the way a user's browser gets it (see igHGemini), at the same time
+	var (
+		gv string
+		gp gemPage
+	)
+	if srv.IPv4 != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pc, pcancel := context.WithTimeout(ctx, igHGemWait)
+			defer pcancel()
+			gv, gp, _ = igHGemProbe(pc, "socks5://"+srv.IPv4+":"+strconv.Itoa(gemRelayPort))
+		}()
+	}
 	rc, lines, err := a.igShell(ctx, srv, igHealthScript, 45*time.Second)
 	wg.Wait()
 	if rc == 3 {
@@ -216,6 +263,7 @@ func (a *App) igHealth(ctx context.Context, srv *Server) (IgHealth, error) {
 		return IgHealth{}, err
 	}
 	r := igParseHealth(lines)
+	igHGemini(&r, gv, gp)
 	if perr != nil {
 		r.Err = "proxies: " + perr.Error()
 	}
