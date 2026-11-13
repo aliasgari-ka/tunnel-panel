@@ -425,6 +425,9 @@ type dcInput struct {
 	// UpVia: this tunnel's paths of the same family that carry their packets as a bare IP
 	// protocol (GRE, ESP) and work right now — proof the two servers do reach each other
 	UpVia []string
+	// UpOther: a path of the same family that is not GRE/ESP works now — TCP or UDP does
+	// pass this route, so it isn't GRE/ESP-only
+	UpOther bool
 }
 
 // dcMask hides the last two parts of an IPv4 address and most of an IPv6 one.
@@ -1065,7 +1068,7 @@ func dcIPProto(mid string) bool { return mid == "gre" || mid == "espsk" }
 
 // dcProtoFilter: the cause "this route lets only GRE/ESP through" (nil when not proven).
 func dcProtoFilter(in *dcInput, core, coreFa string, extra []string) *dcResult {
-	if dcIPProto(in.Method) || len(in.UpVia) == 0 || in.IR.PingSmall != 100 || in.KH.PingSmall >= 0 && in.KH.PingSmall != 100 {
+	if dcIPProto(in.Method) || len(in.UpVia) == 0 || in.UpOther || in.IR.PingSmall != 100 || in.KH.PingSmall >= 0 && in.KH.PingSmall != 100 {
 		return nil
 	}
 	var ev []string
@@ -1090,17 +1093,20 @@ func dcProtoFilter(in *dcInput, core, coreFa string, extra []string) *dcResult {
 		ev: append(ev, extra...)}
 }
 
-// dcUpVia: the labels of tunnel id's working GRE/ESP paths of family fam (switcher's view).
-func (a *App) dcUpVia(id, fam string) []string {
+// dcUpVia: the labels of tunnel id's working GRE/ESP paths of family fam (switcher's view),
+// and whether another of its paths of that family works too.
+func (a *App) dcUpVia(id, fam string) (out []string, other bool) {
 	a.healthMu.Lock()
 	defer a.healthMu.Unlock()
 	v := a.hsViews[id]
 	if v == nil {
-		return nil
+		return nil, false
 	}
-	var out []string
 	for k, key := range v.Keys {
 		mid, f, _ := strings.Cut(key, "|")
+		if k < len(v.OK) && v.OK[k] && f == fam && !dcIPProto(mid) {
+			other = true
+		}
 		if k < len(v.OK) && v.OK[k] && f == fam && dcIPProto(mid) {
 			name := key
 			if k < len(v.Paths) {
@@ -1109,7 +1115,7 @@ func (a *App) dcUpVia(id, fam string) []string {
 			out = append(out, name)
 		}
 	}
-	return out
+	return out, other
 }
 
 // ---- running it ----
@@ -1174,7 +1180,7 @@ func (a *App) dcFind(ctx context.Context, t *Tunnel, p HSPath, downAt int64) (*D
 		in.FwdPort = hsInternal(p, 19)
 	}
 	in.Job = a.jobs.latestFor(t.ID)
-	in.UpVia = a.dcUpVia(t.ID, p.Family)
+	in.UpVia, in.UpOther = a.dcUpVia(t.ID, p.Family)
 
 	type side struct {
 		s     *dcSide
