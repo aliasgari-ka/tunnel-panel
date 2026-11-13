@@ -167,7 +167,7 @@ func (a *App) updAfterWords() string {
 	case mode == repairAutoAll:
 		return fmt.Sprintf("In ~4 min Repair checks the %d running tunnel(s) one at a time and re-applies what changed (users may be moved); its report follows.", running)
 	}
-	return fmt.Sprintf("In ~4 min Repair checks the %d running tunnel(s) one at a time and re-applies what changed with no impact on users; the rest waits for your OK. Its report follows.", running)
+	return fmt.Sprintf("In ~4 min Repair checks the %d running tunnel(s) one at a time and fixes what cuts nobody by itself; what would move users waits for your OK. Its report follows.", running)
 }
 
 // refuse remembers a version that is never tried again (the last 20).
