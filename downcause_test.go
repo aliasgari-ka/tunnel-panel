@@ -392,6 +392,13 @@ func TestDownCauseProtoFilter(t *testing.T) {
 	if c := dcClassify(in).cause("x|v4", in); c.Code == "proto_filter" {
 		t.Error("ping passes one way, yet proto_filter")
 	}
+	// 2026-11-13 England: Premium down, ping lost, no TCP test — but TP and FRP work on the
+	// same route, so TCP passes: not this filter
+	in = dcSides(dcActive+lost+"FWD 0\n", dcActive+lost+"PROBE 1\n")
+	in.Method, in.UpVia, in.UpOther = "premium", []string{"Plain GRE (v4)"}, true
+	if c := dcClassify(in).cause("x|v4", in); c.Code == "proto_filter" {
+		t.Error("TCP paths work on the route, yet proto_filter")
+	}
 	// a GRE/ESP path itself is never "not possible" for this reason
 	in = dcSides(dcActive+lost+"FWD 0\n", dcActive+lost+"PROBE 1\n")
 	in.Method, in.UpVia = "espsk", []string{"Plain GRE (v4)"}
