@@ -567,6 +567,33 @@ details.igsv .mi.on{color:var(--accent);font-weight:700}
   .igsv-top #igsvq{max-width:none}
   .igsv-help{position:static}.igsv-tip{inset-inline:10px;top:auto;width:auto}
 }
+/* IG routing · My sites (igSitesTab) */
+.igs-p{margin:0 0 10px;font-size:13px}
+.igs-row{display:flex;gap:8px}.igs-row .inp{flex:1;min-width:0}
+.igs-found{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.igs-main{font-weight:650;color:var(--good)}.igs-main .mono{color:var(--fg)}
+.igs-w{margin-top:8px}
+.igs-note{font-size:12.5px;margin-top:8px}
+.igs-rh{font-size:12.5px;color:var(--muted);margin:10px 0 6px;font-weight:600}
+.igs-rel{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:4px 12px}
+.igs-ck{display:flex;align-items:center;gap:7px;font-size:13px;padding:3px 0;min-width:0;cursor:pointer}
+.igs-ck .mono{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.igs-ck.maybe{color:var(--muted)}.igs-ck .chip{font-size:10.5px;padding:0 6px}
+.igs-opt{margin-top:12px}
+.igs-list{display:flex;flex-direction:column;gap:8px}
+details.igs-card{border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+details.igs-card>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:8px 10px}
+details.igs-card>summary::-webkit-details-marker{display:none}
+details.igs-card[open]>summary{border-bottom:1px solid var(--line)}
+.igs-b{display:flex;flex-direction:column;min-width:0;flex:1}
+.igs-n{font-weight:650;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:start}
+.igs-s{font-size:12px}.igs-ov{color:var(--warn)}
+.igs-del{flex:none;color:var(--crit)}
+.igs-rp{flex:none;white-space:nowrap}
+.igs-doms{padding:8px 12px 10px;display:flex;flex-direction:column;gap:6px}
+.igs-d{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;font-size:13px}
+.igs-d .chip{font-size:11px;padding:1px 7px}
+@media (max-width:640px){.igs-rel{grid-template-columns:1fr}.igs-row .btn{flex:none}}
 /* IG routing */
 .igp .svcs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:10px 0}
 .igp .svc{background:var(--panel-2);border-radius:10px;padding:7px 9px;min-width:0}

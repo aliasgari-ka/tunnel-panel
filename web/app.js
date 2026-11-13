@@ -3873,6 +3873,90 @@ function igsvDraw() {
   $$('[data-igsvdep]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`));
   $('#igrd', box).onclick = () => igAct(igS({ action: 'routes' }), null, { refresh: false });
 }
+// ---- My sites: one card per site (its own domain + every subdomain, and the other domains it
+// loads), delete = all of them; adding finds those other domains first (igsites.go).
+const IGSITE = { find: null, busy: false, seq: 0 };
+const igsRoute = (r, i) => r ? igsvVia(r) : L('My sites route', 'مسیر سایت‌های من') + ' (' + igsvVia(i.custom) + ')';
+const igsSub = (d) => `<span class="mono" dir="ltr" data-notr>${esc(d)}</span> <span class="faint">${L('+ all subdomains', '+ همه‌ی زیردامنه‌ها')}</span>`;
+function igSitesTab() {
+  const s = IG.cur, i = s.info || {};
+  const nprox = +i.proxies || 0;
+  $('#igtab').innerHTML = `<div class="card pad sec igs-add"><h3>${L('Add a site', 'افزودن سایت')}</h3>
+     <p class="muted igs-p">${L('Type the site or paste any link of it: the whole site is routed — its domain, every subdomain, and the other domains it loads (CDN, API, images, login).', 'نام سایت یا هر لینکی از آن را بنویسید: کل سایت مسیر می‌گیرد — دامنه‌اش، همه‌ی زیردامنه‌ها، و دامنه‌های دیگری که بارگذاری می‌کند (CDN، API، تصاویر، ورود).')}</p>
+     <div class="igs-row"><input id="igcs" class="inp mono" dir="ltr" placeholder="example.com / https://…" autocomplete="off" spellcheck="false"><button class="btn" id="igcf">${L('Find', 'پیدا کن')}</button></div>
+     <div id="igsfind"></div>
+     <div class="ff igs-opt"><label class="f">${L('Route', 'مسیر')}<select id="igcr" class="inp"><option value="">${esc(igsRoute('', i))}</option><option value="warp">WARP</option><option value="proxy">${L('Proxy (fastest)', 'پراکسی (سریع‌ترین)')}</option>
+       ${Array.from({ length: nprox }, (_, k) => `<option value="proxy${k + 1}">${L('Only proxy ', 'فقط پراکسی ')}${k + 1}</option>`).join('')}<option value="direct">${L('Direct', 'مستقیم')}</option></select></label>
+     <label class="f row"><input type="checkbox" id="igcall"> ${L('On every server in view', 'روی همه سرورهای نمایش‌داده‌شده')}</label></div>
+     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igcadd" disabled>${L('Add', 'افزودن')}</button></div></div>
+   <div class="card pad sec"><h3>${L('My sites', 'سایت‌های من')} <span id="igsn" class="count"></span></h3><div id="igsl"><div class="skel" style="height:60px"></div></div></div>`;
+  const inp = $('#igcs'), go = $('#igcf');
+  const find = async () => {
+    const v = inp.value.trim(); if (!v) return;
+    const seq = ++IGSITE.seq;
+    go.disabled = true; go.textContent = L('Looking…', 'در حال بررسی…');
+    $('#igsfind').innerHTML = `<div class="skel" style="height:44px;margin-top:10px"></div>`;
+    try { const f = await api('/igproxy/sites/find', { Site: v }); if (seq === IGSITE.seq) { IGSITE.find = f; igsFindDraw(); } }
+    catch (e) { if (seq === IGSITE.seq) { IGSITE.find = null; $('#igsfind').innerHTML = `<div class="mwarn igs-w">${esc(e.message)}</div>`; $('#igcadd').disabled = true; } }
+    go.disabled = false; go.textContent = L('Find', 'پیدا کن');
+  };
+  go.onclick = find;
+  inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); find(); } };
+  inp.oninput = () => { if (IGSITE.find) { IGSITE.find = null; $('#igsfind').innerHTML = ''; $('#igcadd').disabled = true; } };
+  $('#igcadd').onclick = async () => {
+    const f = IGSITE.find; if (!f) return;
+    const doms = $$('#igsfind input[data-d]:checked').map(x => x.dataset.d), all = $('#igcall').checked;
+    const b = $('#igcadd'); b.disabled = true; b.textContent = L('Adding…', 'در حال افزودن…');
+    try {
+      const r = await api('/igproxy/sites/add', { Srv: all ? 'all' : s.id, View: igView(), Site: f.site, Route: $('#igcr').value, Domains: doms });
+      const bad = (r.results || []).filter(x => !x.ok);
+      toast(bad.length ? bad.map(x => x.name + ': ' + x.msg).join(' · ') : L(`Added: ${f.site} + ${doms.length} related domains`, `افزوده شد: ${f.site} + ${doms.length} دامنه‌ی مرتبط`));
+      inp.value = ''; IGSITE.find = null; $('#igsfind').innerHTML = '';
+      igSitesLoad();
+    } catch (e) { toast(e.message); }
+    b.textContent = L('Add', 'افزودن'); b.disabled = !IGSITE.find;
+  };
+  if (IGSITE.find) igsFindDraw();
+  igSitesLoad();
+}
+function igsFindDraw() {
+  const f = IGSITE.find, box = $('#igsfind'); if (!box || !f) return;
+  const rel = f.related || [];
+  box.innerHTML = `<div class="igs-found"><div class="igs-main">✓ ${igsSub(f.site)}</div>
+    ${f.google ? `<div class="mwarn igs-w">${L('This is a Google domain: Google has its own route (Routes tab → Gemini · Google). Adding it here moves it ahead of that.', 'این دامنه‌ی Google است: Google مسیر خودش را دارد (تب مسیرها ← Gemini · Google). اضافه‌کردن اینجا جلوتر از آن می‌نشیند.')}</div>` : ''}
+    ${f.err ? `<div class="faint igs-note">${L("The panel couldn't open the site to look for its other domains — only its own domain is added.", 'پنل نتوانست سایت را برای پیداکردن دامنه‌های دیگرش باز کند — فقط دامنه‌ی خودش اضافه می‌شود.')}</div>` : ''}
+    ${rel.length ? `<div class="igs-rh">${L('It also loads these — keep them on the same route so the site works fully:', 'این‌ها را هم بارگذاری می‌کند — همین مسیر بمانند تا سایت کامل کار کند:')}</div>
+      <div class="igs-rel">${rel.map(r => `<label class="igs-ck${r.sure ? '' : ' maybe'}" title="${esc(r.hit || '')}"><input type="checkbox" data-d="${esc(r.d)}"${r.sure ? ' checked' : ''}> ${igsSub(r.d)}${r.sure ? '' : ` <span class="chip">${L('maybe', 'شاید')}</span>`}</label>`).join('')}</div>`
+      : f.err ? '' : `<div class="faint igs-note">${L('No other domain found: the site loads everything from its own domain.', 'دامنه‌ی دیگری پیدا نشد: سایت همه‌چیز را از دامنه‌ی خودش بارگذاری می‌کند.')}</div>`}
+    ${f.left ? `<div class="faint igs-note">${L(`${f.left} shared libraries / analytics / Google domains left out (routing them would move other sites too).`, `${f.left} کتابخانه‌ی مشترک / آنالیتیکس / دامنه‌ی Google کنار گذاشته شد (مسیر دادن به آن‌ها سایت‌های دیگر را هم جابه‌جا می‌کند).`)}</div>` : ''}</div>`;
+  $('#igcadd').disabled = false;
+}
+async function igSitesLoad() {
+  const s = IG.cur, i = s.info || {}, box = $('#igsl'); if (!box) return;
+  let r;
+  try { r = await api('/igproxy/sites?id=' + encodeURIComponent(s.id)); } catch (e) { box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+  if (!$('#igsl') || IG.cur !== s) return;
+  const sites = r.sites || [];
+  $('#igsn').textContent = sites.length;
+  if (!sites.length) { box.innerHTML = `<p class="muted">${L('No site yet.', 'هنوز سایتی نیست.')}</p>`; return; }
+  box.innerHTML = `<div class="igs-list">${sites.map((c, n) => {
+    const warn = c.doms.some(d => (d.also || []).length || d.covered);
+    return `<details class="igs-card"><summary><span class="igsv-ic" style="--bc:#5357f0" aria-hidden="true">${esc((c.site[0] || '?').toUpperCase())}</span>
+      <span class="igs-b"><span class="igs-n" data-notr><bdi>${esc(c.site)}</bdi></span><span class="faint igs-s">${L('+ all subdomains', '+ همه‌ی زیردامنه‌ها')}${c.doms.length > 1 ? ` · ${c.doms.length} ${L('domains', 'دامنه')}` : ''}${warn ? ' · <b class="igs-ov">⚠ ' + L('overlap', 'هم‌پوشانی') + '</b>' : ''}</span></span>
+      <span class="igsv-p igs-rp ${c.route ? igViaC(c.route) : 'v-auto'}" data-notr title="${esc(igsRoute(c.route, i))}">${esc(c.route ? igsvVia(c.route) : L('Default', 'پیش‌فرض') + ': ' + igsvVia(i.custom))}</span>
+      <button class="btn sm ghost danger igs-del" data-del="${n}" title="${esc(L('Delete the site and all its domains', 'حذف سایت با همه‌ی دامنه‌هایش'))}">✕</button></summary>
+      <div class="igs-doms">${c.doms.map(d => `<div class="igs-d"><span>${d.rule.startsWith('domain:') ? igsSub(d.d) : `<span class="mono" dir="ltr" data-notr>${esc(d.rule)}</span>`}</span>
+        ${d.route !== c.route ? `<span class="igsv-p ${d.route ? igViaC(d.route) : 'v-auto'}" data-notr>${esc(igsRoute(d.route, i))}</span>` : ''}
+        ${(d.also || []).length ? `<span class="chip warn" title="${esc(L('My sites wins over the service\'s route for this domain', 'برای این دامنه، سایت‌های من بر مسیر سرویس مقدم است'))}">${L('also in', 'در لیست')} ${esc(d.also.map(x => (IGSVC[x] && IGSVC[x][0]) || igsvName(x, i)).join(', '))}${L('', ' هم هست')}</span>` : ''}
+        ${d.covered ? `<span class="chip" title="${esc(L('already covered by that domain', 'آن دامنه همین را پوشش می‌دهد'))}">${L('inside', 'داخل')} <span dir="ltr" data-notr>${esc(d.covered)}</span></span>` : ''}</div>`).join('')}</div></details>`;
+  }).join('')}</div>`;
+  $$('[data-del]', box).forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const c = sites[+b.dataset.del];
+    if (!confirm(L(`Delete ${c.site} and all its ${c.doms.length} domain(s)? They go back to their normal route at once.`, `${c.site} با همه‌ی ${c.doms.length} دامنه‌اش حذف شود؟ فوراً به مسیر عادی برمی‌گردند.`))) return;
+    try { await api('/igproxy/sites/del', { ID: s.id, Site: c.site }); toast(L('Deleted', 'حذف شد')); igSitesLoad(); igRefreshAfter({ srv: s.id }); } catch (er) { toast(er.message); }
+  });
+}
 const igSecret = 'type="text" class="inp mono secret" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false"';
 const IGTAB = {
   routes() { igsvDraw(); },
@@ -3900,16 +3984,7 @@ const IGTAB = {
     igWarpDraw(IG.wcache && IG.wcache[id]);
     igWarpLoad(id);
   },
-  sites() {
-    const i = IG.cur.info;
-    $('#igtab').innerHTML = `<div class="card pad sec"><h3>My sites <span class="faint" style="font-size:12px;font-weight:500">each with all its subdomains</span></h3><div id="igcl" class="lines"><div class="skel" style="height:60px"></div></div></div>
-     <div class="card pad sec"><h3>Add a site</h3><div class="ff"><label class="f">Site<input id="igcs" class="inp mono" placeholder="example.com"></label>
-     <label class="f">Route<select id="igcr" class="inp"><option value="">the "My sites" route (${esc(igViaW(i.custom, i))})</option><option value="proxy">Proxy</option><option value="warp">WARP</option><option value="direct">Direct</option></select></label>
-     <label class="f row"><input type="checkbox" id="igcall"> On every server in view</label></div>
-     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igcadd">Add</button></div></div>`;
-    $('#igcadd').onclick = () => igAct({ srv: $('#igcall').checked ? 'all' : IG.cur.id, action: 'custom_add', site: $('#igcs').value.trim(), route: $('#igcr').value });
-    igListInto('#igcl', 'custom_list', false, 'custom_del');
-  },
+  sites() { igSitesTab(); },
   settings() { igOptTab(); },
   checks() {
     const i = IG.cur.info, st = (v) => `<span class="pill ${v === 'SET' || v === 'ON' ? 'on' : 'off'}"><span class="led"></span>${v === 'SET' || v === 'ON' ? 'set' : 'not set'}</span>`;

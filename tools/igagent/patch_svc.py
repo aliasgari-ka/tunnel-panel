@@ -114,5 +114,22 @@ sub('  route|routes) if [ $# = 0 ]; then show_routes; else route_cmd "$@"; fi;;'
     '  route|routes) if [ $# = 0 ]; then show_routes; else route_cmd "$@"; fi;;\n  routeset) routeset_cmd "$@";;')
 sub('  route <IG|GOOGLE|YTM|ADULT|SPOTIFY|SCLOUD|SNAP|CUSTOM|ALL>', '  route <IG|GOOGLE|YTM|ADULT|SPOTIFY|SCLOUD|SNAP|OPENAI|CLAUDE|...|CUSTOM|ALL>')
 sub('(proxyN = only that proxy, e.g. proxy2)', '(proxyN = only that proxy, e.g. proxy2)\n  routeset SVC=route [SVC=route ...]   several services at once (one live reload)')
+# my sites: several domains of one site in one go (one apply), and the services' domain lists for the panel
+sub('''    del) n=$2; [[ "$n" =~ ^[0-9]+$ ]] || n=$(awk -v d="$(dom_norm "$2")" '$1==d{print NR; exit}' "$DIR/custom")''',
+    r'''    addm) shift; r=${1,,}; shift; [ "$r" = - ] && r=""     # addm <route|-> <site> [site ...] : one apply
+       case "$r" in ""|proxy|warp|direct) ;; warp6) r=warp;; proxy[1-9]*) [[ "$r" =~ ^proxy[1-9][0-9]*$ ]] || die "bad route $r";; *) die "route must be proxy, warp or direct";; esac
+       [ $# -gt 0 ] || die "usage: custom addm <route|-> <site> ..."
+       local add=() x; for x in "$@"; do d=$(dom_norm "$x") || die "not a valid site / domain: $x"; dom_ok "$d" || die "Xray does not accept '$d'"; add+=("$d"); done
+       cp "$DIR/custom" "$DIR/custom.tmp"; for d in "${add[@]}"; do awk -v d="$d" '$1!=d' "$DIR/custom.tmp" > "$DIR/custom.tmp2"; echo "$d${r:+ $r}" >> "$DIR/custom.tmp2"; mv "$DIR/custom.tmp2" "$DIR/custom.tmp"; done
+       mv "$DIR/custom.tmp" "$DIR/custom"; apply quiet; echo "  added: ${#add[@]} -> ${r:-$(route_of CUSTOM) (my sites route)}"; return 0;;
+    delm) shift; [ $# -gt 0 ] || die "usage: custom delm <site> ..."           # delm <site> ... : one apply
+       cp "$DIR/custom" "$DIR/custom.tmp"; for x in "$@"; do d=$(dom_norm "$x") || continue; awk -v d="$d" '$1!=d' "$DIR/custom.tmp" > "$DIR/custom.tmp2"; mv "$DIR/custom.tmp2" "$DIR/custom.tmp"; done
+       mv "$DIR/custom.tmp" "$DIR/custom"; apply quiet; echo "  removed"; return 0;;
+    raw) cat "$DIR/custom"; return 0;;
+    del) n=$2; [[ "$n" =~ ^[0-9]+$ ]] || n=$(awk -v d="$(dom_norm "$2")" '$1==d{print NR; exit}' "$DIR/custom")''')
+sub('  routeset) routeset_cmd "$@";;',
+    '''  routeset) routeset_cmd "$@";;
+  svclists) printf 'IG %s %s %s\\n' "$G_IG" "$G_IG_CDN" "$G_IG_FULL"; printf 'GOOGLE %s %s\\n' "$G_GOOGLE" "$G_GALL"; printf 'YTM %s\\n' "$G_YTM"
+     printf 'ADULT %s\\nSPOTIFY %s\\nSCLOUD %s\\nSNAP %s\\n' "$G_ADULT" "$G_SPOTIFY" "$G_SCLOUD" "$G_SNAP"; svx_lists | tr ';' '\\n' | awk -F'|' 'NF>=2{print $1" "$2}';;''')
 open(sys.argv[2], 'w', encoding='utf-8', newline='\n').write(src)
 print("patched", n, "places")
