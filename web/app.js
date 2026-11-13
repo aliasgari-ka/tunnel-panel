@@ -947,7 +947,7 @@ let routesTimer = null;
 function rxMeasure(p, fams, maxMB, skip) {
   const k = bnKey(p.iran, p.foreign);
   const use = Object.fromEntries(fams.map(f => { const { users, standby } = bnUse({ tunnels: p.pairTunnels || p.tunnels || [] }, f); return [f, users.size + standby.size]; }));
-  const all = Object.fromEntries(fams.map(f => [f, bnAll(f, skip, k).length]));
+  const all = Object.fromEntries(fams.map(f => [f, bnAll(f).length]));
   const m = modal(`<h2>📊 Measure this route</h2><p class="muted" style="margin-top:4px">${srvNm(p.iran)} → ${srvNm(p.foreign, 'panel host')}</p>
     <form class="ff" id="rxmf">
       <div class="rx-fams">${fams.map(f => `<label class="ochk"><input type="checkbox" name="f" value="${f}" checked> ${famName(f)}</label>`).join('')}</div>
@@ -961,14 +961,16 @@ function rxMeasure(p, fams, maxMB, skip) {
     const fs = picked();
     const n = (sc) => fs.reduce((a, x) => a + (sc === 'running' ? (use[x] || all[x]) : all[x]), 0);
     $('[data-cost=running]', f).textContent = `${n('running')} methods · ≤ ${n('running') * 2 * maxMB} MB`;
-    $('[data-cost=all]', f).textContent = `${n('all')} methods · ≤ ${n('all') * 2 * maxMB} MB · about ${Math.max(1, Math.round(n('all') * 1.5))} min`;
+    $('[data-cost=all]', f).textContent = bnCostAll(n('all'), maxMB);
     $('button.pri', f).disabled = !fs.length;
   };
   $$('[name=f]', f).forEach(x => x.onchange = cost); cost();
+  // the exact count of every method from the server (a Golden-GRE a live tunnel runs here stays out)
+  fams.forEach(fm => api(`/bench/plan?iran=${encodeURIComponent(p.iran)}&foreign=${encodeURIComponent(p.foreign || '')}&family=${fm}`).then(pl => { all[fm] = (pl.methods || []).length; if (m.isConnected) cost(); }).catch(() => {}));
   $('[data-no]', m).onclick = () => m.remove();
   f.onsubmit = oneAtATime(f, async () => {
     const fs = picked(); if (!fs.length) return;
-    const req = { iranId: p.iran, foreignId: p.foreign, family: fs[0], running: f.scope.value !== 'all', seconds: 3 };
+    const req = { iranId: p.iran, foreignId: p.foreign, family: fs[0], running: f.scope.value !== 'all', all: f.scope.value === 'all', seconds: 3 };
     if (fs[1]) req.then = fs[1];
     try { const r = await api('/bench/start', req); m.remove(); toast(fs[1] ? `Benchmark started — ${famName(fs[0])}, then ${famName(fs[1])}` : 'Benchmark started'); openLog({ id: 'bench', name: 'Benchmark · ' + fs.map(famName).join(' + ') }, r.job); }
     catch (er) { alertModal('Benchmark', er.message); }
@@ -2796,8 +2798,10 @@ const bnKey = (i, f) => i + '|' + (f || '');
 const bnAge = (u) => { const s = Math.max(0, Math.floor(Date.now() / 1000) - u); return s < 90 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 const bnIn = (u) => { const s = u - Math.floor(Date.now() / 1000); return s <= 600 ? 'within 10 min' : s < 3600 ? `in ${Math.round(s / 60)} min` : s < 86400 ? `in ${Math.round(s / 3600)} h` : `in ${Math.round(s / 86400)} d`; };
 const bnMb = (v) => v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(0) : v > 0 ? v.toFixed(1) : '0';
-// the methods a route+family can measure: all that fit it, less the ones left out on the route (and spoof, never measured)
-const bnAll = (fam, skip, k) => STATE.methods.filter(m => m.id !== 'spoof' && m.families.includes(fam) && !(skip[k] || []).includes(m.id + '|' + fam));
+// the methods "Every method" measures on a route+family: all that fit it, also the ones left out on the route (only
+// measured there, nothing is deployed), less spoof (never measured); the dialogs ask the server (/bench/plan) for the exact list
+const bnAll = (fam) => STATE.methods.filter(m => m.id !== 'spoof' && m.families.includes(fam));
+const bnCostAll = (n, maxMB) => `${n} methods · ≤ ${n * 2 * maxMB} MB · about ${Math.max(1, Math.round(n * 1.5))} min`;
 function bnSpark(pts) {
   if (pts.length < 2) return '';
   const vs = pts.map(p => p.v), mx = Math.max(...vs, 1), w = 64, hh = 18;
@@ -2926,7 +2930,7 @@ function bnFamSection(p, f) {
   const carrier = (x) => x.opts ? Object.entries(x.opts).map(([k, v]) => `${k} ${v}`).join(', ') : '';
   const rows = ok.map((x, i) => {
     const old = x.at && run.at && run.at - x.at > 300; // carried over from an earlier run
-    const tags = (users.has(x.method) ? '<span class="chip bn-u">👥 users on it</span>' : '') + (standby.has(x.method) ? '<span class="chip bn-s">⚡ standby</span>' : '') + (carrier(x) ? `<span class="chip" title="the default carrier passes nothing here; this one does" data-notr>${esc(carrier(x))}</span>` : '');
+    const tags = ((BND.skip[bnKey(p.iran, p.foreign)] || []).includes(x.method + '|' + f) ? '<span class="chip" title="left out on this route (Routes page): measured only, not deployed">off on this route</span>' : '') + (users.has(x.method) ? '<span class="chip bn-u">👥 users on it</span>' : '') + (standby.has(x.method) ? '<span class="chip bn-s">⚡ standby</span>' : '') + (carrier(x) ? `<span class="chip" title="the default carrier passes nothing here; this one does" data-notr>${esc(carrier(x))}</span>` : '');
     return `<div class="bn-row${i === 0 ? ' best' : ''}${users.has(x.method) ? ' users' : ''}">
       <span class="bn-rk">${i === 0 ? '★' : i + 1}</span>
       <div class="bn-m"><b>${esc(methodTitle(x.method))}</b>${tags ? `<span class="bn-tags">${tags}</span>` : ''}${old ? `<small class="bn-old" title="this run didn't measure it: its result is from an earlier run">⏱ <span>measured ${bnAge(x.at)}</span></small>` : ''}</div>
@@ -2948,7 +2952,7 @@ function bnFamSection(p, f) {
   // cost of a run: each method moves at most maxMB each way
   const k = bnKey(p.iran, p.foreign), maxMB = st.maxMB || 6;
   const nRun = (sched && sched.running && sched.running.length) || [...users, ...standby].length;
-  const nAll = bnAll(f, BND.skip, k).length;
+  const nAll = bnAll(f).length;
   const runBtn = `<button class="btn sm ${run ? '' : 'pri'}" data-run="${f}"${busy ? ' disabled title="one benchmark at a time — wait for the running one"' : ''}>▶ Run benchmark</button>`;
   const cost = `<small class="faint bn-cost">≤ ${(nRun || nAll) * 2 * maxMB} MB</small>`;
   let next = '';
@@ -2993,18 +2997,27 @@ function bnRunModal(p, fam) {
   const st = BND.st, maxMB = st.maxMB || 6, k = bnKey(p.iran, p.foreign);
   const sched = (st.routes || []).find(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === fam);
   const { users, standby } = bnUse(p, fam);
-  const runN = (sched && sched.running && sched.running.length) || [...users, ...standby].length, allN = bnAll(fam, BND.skip, k).length;
+  const runN = (sched && sched.running && sched.running.length) || [...users, ...standby].length, allN = bnAll(fam).length;
   const m = modal(`<h2>Run benchmark</h2><p class="muted" style="margin-top:4px"><span data-notr>${esc(p.label)}</span> · ${famName(fam)}</p>
     <form class="ff" id="bnrf">
       <label class="bn-opt"><input type="radio" name="scope" value="running" ${runN ? 'checked' : 'disabled'}><span><b>The methods in use</b><small>${runN ? `${runN} methods · ≤ ${runN * 2 * maxMB} MB` : 'no tunnel runs here — nothing in use'}</small></span></label>
-      <label class="bn-opt"><input type="radio" name="scope" value="all" ${runN ? '' : 'checked'}><span><b>Every method</b><small>${allN} methods · ≤ ${allN * 2 * maxMB} MB · about ${Math.max(1, Math.round(allN * 1.5))} min</small></span></label>
+      <label class="bn-opt"><input type="radio" name="scope" value="all" ${runN ? '' : 'checked'}><span><b>Every method</b><small data-cost="all">${bnCostAll(allN, maxMB)}</small></span></label>
+      <div class="bn-plan" id="bnplan"></div>
       <details class="bn-adv"><summary>Advanced</summary><label class="f">Throughput probe per method (seconds)<input name="seconds" type="number" min="1" max="20" class="mono" value="5"></label></details>
       <div class="faint" style="font-size:12px">Each method runs on a temporary tunnel, is measured, then removed — live tunnels are not touched. At most ${maxMB} MB each way per method. It runs on the server: you can leave this page.</div>
       <div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" id="bncx">Cancel</button><button class="btn pri">▶ Start</button></div></form>`);
   $('#bncx', m).onclick = () => m.remove();
+  // what "Every method" measures, from the server: the count, and each method left out with why
+  api(`/bench/plan?iran=${encodeURIComponent(p.iran)}&foreign=${encodeURIComponent(p.foreign || '')}&family=${fam}`).then(pl => {
+    if (!m.isConnected) return;
+    const n = (pl.methods || []).length, left = pl.left || [], off = pl.off || [];
+    $('[data-cost=all]', m).textContent = bnCostAll(n, pl.maxMB || maxMB);
+    $('#bnplan', m).innerHTML = (off.length ? `<small class="faint">${off.length === 1 ? 'Includes 1 method left out on this route' : `Includes ${off.length} methods left out on this route`} — only measured, nothing is deployed</small>` : '')
+      + (left.length ? `<details class="bn-adv"><summary>Not measured (${left.length})</summary><div class="bn-left">${left.map(x => `<div><b>${esc(methodTitle(x.method))}</b> <span class="faint">${esc(x.why)}</span></div>`).join('')}</div></details>` : '');
+  }).catch(() => {});
   const f = $('#bnrf', m);
   f.onsubmit = oneAtATime(f, async () => {
-    const req = { iranId: p.iran, foreignId: p.foreign, family: fam, running: f.scope.value !== 'all', seconds: parseInt(f.seconds.value || '5', 10) };
+    const req = { iranId: p.iran, foreignId: p.foreign, family: fam, running: f.scope.value !== 'all', all: f.scope.value === 'all', seconds: parseInt(f.seconds.value || '5', 10) };
     try { const r = await api('/bench/start', req); m.remove(); bnWatch(r.job, req); } catch (e) { alertModal('Benchmark', e.message); }
   });
 }

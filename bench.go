@@ -21,6 +21,9 @@ type BenchRequest struct {
 	// Running: only the methods the route's tunnels run on the servers now (Methods is
 	// filled from them) — the automatic benchmark and the pages' default
 	Running bool `json:"running,omitempty"`
+	// All: with no Methods, also the methods left out on the route (the dialog's "Every
+	// method", see benchplan.go); without it a run of every method skips them
+	All bool `json:"all,omitempty"`
 	// Auto: started by the automatic benchmark (autobench.go), not by someone on the page
 	Auto    bool `json:"-"`
 	Seconds int  `json:"seconds"` // throughput probe length per method (default 5)
@@ -270,6 +273,15 @@ func (a *App) bench(srv *Server, req BenchRequest) (*Job, error) {
 		}
 	}
 	var cands []*Method
+	// a run of every method: what can run on the route, the others named in the log with why
+	var plan BenchPlan
+	left := map[string]string{}
+	if len(req.Methods) == 0 {
+		plan = a.benchPlan(req.IranID, req.ForeignID, req.Family, req.All)
+		for _, l := range plan.Left {
+			left[l.Method] = l.Why
+		}
+	}
 	for _, m := range methods {
 		if !supportsFamily(m, req.Family) {
 			continue
@@ -315,7 +327,14 @@ func (a *App) bench(srv *Server, req BenchRequest) (*Job, error) {
 		if note != "" {
 			j.log("%s", note)
 		}
-		j.log("benchmarking %s ⇄ %s (%s), %d methods", ipath, kpath, req.Family, len(cands))
+		nRun := len(cands) // the methods it measures (a run of every method: the plan's)
+		if len(req.Methods) == 0 {
+			nRun = len(plan.Methods)
+		}
+		j.log("benchmarking %s ⇄ %s (%s), %d methods", ipath, kpath, req.Family, nRun)
+		if len(plan.Off) > 0 {
+			j.log("measured though left out on this route (only measured — nothing is deployed): %s", strings.Join(plan.Off, ", "))
+		}
 		j.log("firewall — Iran: %s; foreign: %s (each tunnel opens what it needs)", firewallInfo(ctx, irHost), firewallInfo(ctx, khHost))
 
 		// the probe binary on both ends + a probe server on the foreign side for the whole run
@@ -351,9 +370,18 @@ func (a *App) bench(srv *Server, req BenchRequest) (*Job, error) {
 				r.Kind = "l3"
 			}
 			j.log("── [%d/%d] %s ──", i+1, len(cands), m.Title)
-			if len(req.Methods) == 0 && a.routeSkipped(req.IranID, req.ForeignID, m.ID, req.Family) {
-				r.Skipped, r.Error = true, "excluded on this route"
-				j.log("   skipped: excluded on this route (Routes page)")
+			if why, ok := left[m.ID]; ok {
+				if why == benchRouteOff {
+					// its earlier result stays (a run that measured it on purpose said whether it works)
+					if e := benchEarlier(earlier, earlierAt, m.ID); e != nil {
+						j.log("   skipped: left out on this route (Routes page) — keeps its earlier result")
+						out = append(out, *e)
+						continue
+					}
+					why = "excluded on this route"
+				}
+				r.Skipped, r.Error = true, why
+				j.log("   skipped: %s", why)
 				out = append(out, r)
 				continue
 			}

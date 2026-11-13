@@ -77,7 +77,7 @@ func (a *App) routes() http.Handler {
 	reads := map[string]bool{"/api/me": true, "/api/mybot": true, "/api/settings": true, "/api/methods": true,
 		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
 		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
-		"/api/bench/history": true, "/api/repair/status": true, "/api/bench/status": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
+		"/api/bench/history": true, "/api/repair/status": true, "/api/bench/status": true, "/api/bench/plan": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true,
 		"/api/igproxy/warps": true, "/api/igproxy/opts": true, "/api/igproxy/health": true, "/api/igproxy/runs": true}
@@ -126,6 +126,7 @@ func (a *App) routes() http.Handler {
 	g("/api/jobs/cancel", "job", s.jobCancel)
 	g("/api/bench/start", "pair", s.benchStart)
 	g("/api/bench/results", "pair", s.benchResults)
+	g("/api/bench/plan", "pair", s.benchPlanAPI)
 	g("/api/bench/active", "self", s.benchActive)
 	g("/api/bench/history", "self", s.benchHistory)
 	g("/api/bench/status", "self", s.benchStatus)
