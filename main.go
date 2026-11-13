@@ -146,6 +146,7 @@ func main() {
 	go app.igAutoLoop()
 	go app.wpLoop()
 	go app.igSvcLoop()
+	go app.igSubLoop()
 	go app.aiDailyLoop()
 	go gemFwd.serve()
 	go app.gemLoop()
