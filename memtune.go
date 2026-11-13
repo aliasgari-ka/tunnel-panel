@@ -87,10 +87,10 @@ func memNeedScript(us []memUnit) string {
 for u in %[1]s; do
   f=/etc/systemd/system/$u
   [ -f "$f" ] || continue
-  printf '%%s' %[2]s | cmp -s - "$f.d/90-tunnel-panel-memory.conf" || need="$need $u"
+  %[3]s || need="$need $u"
 done
 echo "MEMNEED$need"
-`, strings.Join(all, " "), shq(goMemDropIn))
+`, strings.Join(all, " "), shq(goMemDropIn), memCurrentTest())
 }
 
 // memUnitsFor lists a tunnel's units on the Iran and on the foreign side, and which may
@@ -117,6 +117,20 @@ func (a *App) memUnitsFor(t *Tunnel, users bool) (irU, khU []memUnit) {
 	return irU, khU
 }
 
+// memCurrentTest (shell, $f = the unit file) is true when the unit
+// runs with the current settings: its drop-in says so, or — with no drop-in — the unit file
+// itself carries them. Every unit the panel writes carries them (renderUnit) and deploy
+// removes the drop-in then, so asking for the drop-in alone reported "memory settings
+// missing" after every path change or switcher renewal (seen live 2026-11-14: 9 tunnels,
+// all with the settings in place).
+func memCurrentTest() string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(goMemEnv), "\n") {
+		lines = append(lines, "grep -qxF "+shq(l)+` "$f"`)
+	}
+	return `{ if [ -e "$f.d/90-tunnel-panel-memory.conf" ]; then printf '%s' ` + shq(goMemDropIn) + ` | cmp -s - "$f.d/90-tunnel-panel-memory.conf"; else ` + strings.Join(lines, " && ") + `; fi; }`
+}
+
 // memTuneScript writes the drop-in where a unit lacks the current settings (none yet, or older
 // values: the drop-in overrides what the unit file itself says), restarts the ones that may
 // restart when they got it or their running process has older values, and prints
@@ -137,7 +151,7 @@ func memTuneScript(us []memUnit) string {
 for u in %[1]s; do
   f=/etc/systemd/system/$u
   [ -f "$f" ] || continue
-  printf '%%s' %[3]s | cmp -s - "$f.d/90-tunnel-panel-memory.conf" && continue
+  %[5]s && continue
   mkdir -p "$f.d" && printf '%%s' %[3]s > "$f.d/90-tunnel-panel-memory.conf" && done="$done $u"
 done
 [ -n "$done" ] && systemctl daemon-reload
@@ -150,7 +164,7 @@ for u in %[2]s; do
 done
 echo "MEMTUNED$done"
 echo "MEMRESTARTED$again"
-`, strings.Join(all, " "), strings.Join(again, " "), shq(goMemDropIn), shq("GOMEMLIMIT="+goMemLimit))
+`, strings.Join(all, " "), strings.Join(again, " "), shq(goMemDropIn), shq("GOMEMLIMIT="+goMemLimit), memCurrentTest())
 }
 
 // memNightHour is when (Tehran time) memNightly restarts the units users are on — VPN use

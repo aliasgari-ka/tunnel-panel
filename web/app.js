@@ -2096,7 +2096,7 @@ async function aiModal() {
 // that cut or move users start unchecked and need a second, explicit OK. only = one tunnel.
 function repairModal(only) {
   const tn = only ? (STATE.tunnels.find(t => t.id === only) || {}).name : '';
-  const m = modal(`<h2>🛠 Repair${tn ? ` · <span data-notr>${esc(tn)}</span>` : ''}</h2><p class="muted rp-sub">First a check — it changes nothing. Then choose what to fix.</p><div data-rp></div><div data-rpauto></div>`, true);
+  const m = modal(`<h2>🛠 Repair${tn ? ` · <span data-notr>${esc(tn)}</span>` : ''}</h2><p class="muted rp-sub">First a check — it changes nothing. Fixes that cut nobody the panel also does by itself every 3 hours; only the ones that cut or move users wait for you.</p><div data-rp></div><div data-rpauto></div>`, true);
   const box = $('[data-rp]', m), autoBox = $('[data-rpauto]', m);
   let poll = null;
   const alive = () => box.isConnected;
@@ -2106,6 +2106,8 @@ function repairModal(only) {
   const notMine = (t) => isAdmin() && t.owner && t.owner !== STATE.user;
   // the paths a path update adds (+) and removes (−): method names, kept as they are
   const det = (it) => it.detail ? `<span class="rp-det" data-notr dir="ltr" title="${esc(it.detail)}">${esc(it.detail)}</span>` : '';
+  // why one waits for you (repair.go RepairItem.Ask); the others the panel does by itself
+  const ask = (it) => it.impact === 'users' ? (it.ask ? `<span class="rp-why">✋ ${esc(it.ask)}</span>` : '') : `<span class="rp-why">🤖 the panel does this by itself</span>`;
 
   // ---- the check ----
   const check = async () => {
@@ -2120,7 +2122,7 @@ function repairModal(only) {
     const row = (t) => `<div class="rp-t" data-t="${esc(t.id)}">
         <label class="rp-h"><input type="checkbox" data-tall><b data-notr>${esc(t.name)}</b>${t.owner ? `<span class="chip">👤 <span data-notr>${esc(t.owner)}</span></span>` : ''}<span class="grow"></span><span class="chip warn">${t.items.length === 1 ? '1 to fix' : t.items.length + ' to fix'}</span></label>
         ${notMine(t) ? `<div class="rp-note">left unchecked: it belongs to another account — their choice</div>` : ''}
-        ${t.items.map(it => `<label class="rp-i"><input type="checkbox" data-k="${esc(it.kind)}" data-imp="${esc(it.impact)}"${it.impact !== 'users' && !notMine(t) ? ' checked' : ''}><span class="rp-x"><span>${esc(it.text)}</span>${det(it)}</span><span class="rp-c">${chips(it)}</span></label>`).join('')}
+        ${t.items.map(it => `<label class="rp-i"><input type="checkbox" data-k="${esc(it.kind)}" data-imp="${esc(it.impact)}"${it.impact !== 'users' && !notMine(t) ? ' checked' : ''}><span class="rp-x"><span>${esc(it.text)}</span>${det(it)}${ask(it)}</span><span class="rp-c">${chips(it)}</span></label>`).join('')}
         ${t.note ? `<div class="rp-note">${esc(t.note)}</div>` : ''}</div>`;
     box.innerHTML = `
       <div class="rp-sum"><span class="chip ${fix.length ? 'warn' : 'ok'}">${fix.length} to fix</span><span class="chip ok">${ok.length} fine</span>${skip.length ? `<span class="chip">${skip.length} left alone</span>` : ''}
@@ -2204,8 +2206,8 @@ function repairModal(only) {
     const l = s.last;
     const cnt = (k) => l ? l.tunnels.filter(t => t.result === k).length : 0;
     const wait = l ? l.tunnels.filter(t => (t.results || []).some(i => i.status === 'left' && /needs your OK/.test(i.why || ''))).length : 0;
-    autoBox.innerHTML = `<div class="rp-auto"><label class="f">Automatic Repair after an update<select data-amode>
-        <option value="">Only fixes nobody notices; the rest waits for your OK</option>
+    autoBox.innerHTML = `<div class="rp-auto"><label class="f">Automatic Repair (after an update and every 3 hours)<select data-amode>
+        <option value="">Every fix that cuts nobody; what cuts or moves users waits for your OK</option>
         <option value="all">Everything (users may be moved)</option>
         <option value="off">Off</option></select></label>
       ${l ? `<div class="rp-last"><span class="faint">Last run:</span> ${l.auto ? '🤖 ' : ''}<span>${esc(l.why)}</span> · <span>${ago(l.started)}</span> <span class="chip ok">${cnt('fixed')} fixed</span>${cnt('failed') ? `<span class="chip bad">${cnt('failed')} failed</span>` : ''}${wait ? `<span class="chip warn">${wait} need your OK</span>` : ''} <button class="btn sm ghost" data-lastv>Details</button></div>` : ''}</div>`;

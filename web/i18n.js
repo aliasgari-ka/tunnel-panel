@@ -1729,6 +1729,17 @@ window.TP_FA = {
 "Iran server unreachable — the tunnel is applied again": "سرور ایران در دسترس نیست — تانل دوباره اعمال می‌شود",
 "foreign server unreachable — the tunnel is applied again": "سرور خارج در دسترس نیست — تانل دوباره اعمال می‌شود",
 "tunnel link down (no traffic between the servers) — the tunnel is applied again": "لینک تانل قطع است (ترافیکی بین سرورها رد نمی‌شود) — تانل دوباره اعمال می‌شود",
+"First a check — it changes nothing. Fixes that cut nobody the panel also does by itself every 3 hours; only the ones that cut or move users wait for you.": "اول یک بررسی — هیچ چیزی را تغییر نمی‌دهد. تعمیرهایی که کسی را قطع نمی‌کنند را پنل هر ۳ ساعت خودش هم انجام می‌دهد؛ فقط آن‌هایی که کاربران را قطع یا جابه‌جا می‌کنند منتظر شما می‌مانند.",
+"🤖 the panel does this by itself": "🤖 پنل خودش این را انجام می‌دهد",
+"Automatic Repair (after an update and every 3 hours)": "تعمیر خودکار (بعد از به‌روزرسانی و هر ۳ ساعت)",
+"Every fix that cuts nobody; what cuts or moves users waits for your OK": "هر تعمیری که کسی را قطع نمی‌کند؛ آنچه کاربران را قطع یا جابه‌جا کند منتظر تأیید شما می‌ماند",
+"in the background": "در پس‌زمینه",
+"the whole tunnel is rebuilt: all its paths restart at once and users drop for a moment": "کل تانل از نو ساخته می‌شود: همهٔ مسیرهایش با هم ری‌استارت می‌شوند و کاربران لحظه‌ای قطع می‌شوند",
+"this tunnel has a single path: applying it again cuts its users for a moment": "این تانل فقط یک مسیر دارد: اعمال دوباره کاربرانش را لحظه‌ای قطع می‌کند",
+"the relay is replaced under the running tunnel: users drop for a moment": "رله زیر تانلِ در حال کار عوض می‌شود: کاربران لحظه‌ای قطع می‌شوند",
+"the path the users are on is left out on the route: they are moved to another one": "مسیری که کاربران رویش هستند در این مسیر کنار گذاشته شده: به مسیر دیگری برده می‌شوند",
+"needs your OK: came back within a day after the panel fixed it — something undoes it; needs a look": "تأیید شما لازم است: کمتر از یک روز بعد از تعمیرِ پنل دوباره برگشت — چیزی آن را برمی‌گرداند؛ باید بررسی شود",
+"automatic repair is off": "تعمیر خودکار خاموش است",
 "Off": "خاموش",
 };
 
