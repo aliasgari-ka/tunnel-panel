@@ -132,3 +132,17 @@ func TestGbrowserAdminOnlyAndFramedBySelf(t *testing.T) {
 		t.Fatalf("framing headers: %q / %q", w.Header().Get("X-Frame-Options"), w.Header().Get("Content-Security-Policy"))
 	}
 }
+
+// The guard puts the home server's users' Google on its own IPv6 (Gemini refused its WARPs on
+// 2026-11-13), on warp6 only when the server has no IPv6.
+func TestGemHomeSafeVia(t *testing.T) {
+	if v := gemHomeSafeVia(&Server{IPv4: gemHomeHost(), IPv6: "2a0a:4cc0:c0:2253::1"}); v != "ipv6" {
+		t.Fatalf("with IPv6: %s", v)
+	}
+	if v := gemHomeSafeVia(&Server{IPv4: gemHomeHost()}); v != "warp6" {
+		t.Fatalf("without IPv6: %s", v)
+	}
+	if gemHomeRouteBad(&Server{IPv4: gemHomeHost()}, "GOOGLE", gemHomeSafeVia(&Server{IPv6: "x"})) {
+		t.Fatal("the guard's own choice is refused")
+	}
+}

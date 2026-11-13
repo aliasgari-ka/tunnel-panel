@@ -31,9 +31,17 @@ import (
 	"time"
 )
 
-// gemHomeSafeVia: where the home server's users' Google goes instead (the panel host has IPv6
-// WARP; that is where it was before 2026-11-11).
-const gemHomeSafeVia = "warp6"
+// gemHomeSafeVia: where the home server's users' Google goes instead. Its own IPv6 when it has
+// one: the agent spreads Google over random addresses of the /64, none of them the account's
+// IPv4. Not a WARP: on 2026-11-13 Gemini refused every WARP exit of the panel host (IPv4
+// 104.28.193.116 and the Frankfurt IPv6 ones; the signed-out app never said where it places
+// them) while the host's own IPv6 opened it (Google: Germany, .de). warp6 only without IPv6.
+func gemHomeSafeVia(s *Server) string {
+	if s != nil && strings.TrimSpace(s.IPv6) != "" {
+		return "ipv6"
+	}
+	return "warp6"
+}
 
 // gemHomeHost is the IP the test account lives on.
 func gemHomeHost() string {
@@ -52,7 +60,7 @@ func gemHomeRouteBad(s *Server, svc, via string) bool {
 	return gemIsHome(s) && (svc == "GOOGLE" || svc == "ALL") && strings.TrimSpace(via) == "direct"
 }
 
-const gemHomeRefusal = "the panel host's own IP is the Google test account's exit: its users' Google may not leave from it (Google signs the account out) — pick warp6, warp, ipv6 or a proxy"
+const gemHomeRefusal = "the panel host's own IP is the Google test account's exit: its users' Google may not leave from it (Google signs the account out) — pick ipv6, warp6, warp or a proxy"
 
 // gemHomeOptBad: a setting that would put users' Google on the test account's IP.
 func gemHomeOptBad(s *Server, k, v string) bool {
@@ -118,7 +126,7 @@ func (a *App) gemHomeGuard(ctx context.Context) string {
 	gemHomeSeen(why, time.Now())
 	var fix [][]string
 	if inf["google"] == "direct" {
-		fix = append(fix, []string{"route", "GOOGLE", gemHomeSafeVia})
+		fix = append(fix, []string{"route", "GOOGLE", gemHomeSafeVia(home)})
 	}
 	if inf["gall"] == "OFF" {
 		fix = append(fix, []string{"set", "gall", "on"})
@@ -126,7 +134,7 @@ func (a *App) gemHomeGuard(ctx context.Context) string {
 	var done, failed []string
 	for _, args := range fix {
 		rc, out := a.igRun(ctx, home, args, "", 180, nil)
-		what := "GOOGLE → " + gemHomeSafeVia
+		what := "GOOGLE → " + gemHomeSafeVia(home)
 		if args[0] == "set" {
 			what = "All of Google → on"
 		}
