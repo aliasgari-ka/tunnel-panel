@@ -394,7 +394,9 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 	var notes []string
 	if !hold {
 		if inf["minw"] != strconv.Itoa(minw) {
-			if rc, out := a.igRun(ctx, srv, []string{"set", "minwarps", strconv.Itoa(minw)}, "", 60, nil); rc == 0 {
+			// the agent's "set minwarps" ends on a test that is false when no account is missing, so its
+			// exit code is 1 after a good change: its "WARPs kept: at least N" line is the answer
+			if rc, out := a.igRun(ctx, srv, []string{"set", "minwarps", strconv.Itoa(minw)}, "", 60, nil); rc == 0 || strings.Contains(out, "WARPs kept: at least "+strconv.Itoa(minw)) {
 				a.igAutoLog(srv, "WARP", "info", fmt.Sprintf("WARP accounts kept: %s → %d%s", orDash(inf["minw"]), minw, wpWhy(carry, spare, g, used, inf)))
 				a.igForget(srv.ID)
 			} else {
