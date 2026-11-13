@@ -28,6 +28,15 @@ type optHost struct {
 	deploy int
 	t      *Tunnel
 	hang   bool // the switcher's state reads hang (an SSH session that never answers)
+	// probe: the Iran server answers the fresh end-to-end checks (TP-PROBE) with probeOK;
+	// stale: the switcher's status still says every path answers (read before the restart)
+	probe   bool
+	probeOK func(key string) bool
+	stale   bool
+	// slow: a restart takes this long (outside the lock); inFlight/maxFlight count overlaps
+	slow      time.Duration
+	inFlight  int
+	maxFlight int
 }
 
 func (h *optHost) Label() string { return "opt" }
@@ -42,7 +51,36 @@ func (h *optHost) WriteFile(path string, b []byte, _ os.FileMode) error {
 	return nil
 }
 func (h *optHost) Run(ctx context.Context, s string, _ func(string)) (string, error) {
+	if h.slow > 0 && strings.Contains(s, "systemctl restart") {
+		h.mu.Lock()
+		h.inFlight++
+		if h.inFlight > h.maxFlight {
+			h.maxFlight = h.inFlight
+		}
+		h.mu.Unlock()
+		time.Sleep(h.slow)
+		h.mu.Lock()
+		h.inFlight--
+		h.mu.Unlock()
+	}
 	h.mu.Lock()
+	if strings.Contains(s, "TP-PROBE") {
+		defer h.mu.Unlock()
+		if !h.probe {
+			return "", nil
+		}
+		var b strings.Builder
+		for _, key := range h.keys {
+			if strings.Contains(s, "\"TP-PROBE "+key+" ") {
+				st := "down"
+				if h.probeOK(key) {
+					st = "ok"
+				}
+				fmt.Fprintf(&b, "TP-PROBE %s %s\n", key, st)
+			}
+		}
+		return b.String(), nil
+	}
 	if h.hang && strings.Contains(s, `echo "K $(cat keys`) {
 		h.mu.Unlock()
 		<-ctx.Done()
@@ -85,7 +123,7 @@ func (h *optHost) Run(ctx context.Context, s string, _ func(string)) (string, er
 					idx = p.Index
 				}
 			}
-			if h.ok(key, h.cfg[idx]) {
+			if h.stale || h.ok(key, h.cfg[idx]) {
 				st = "ok"
 			}
 			fmt.Fprintf(&b, "S %d %s 1793215000 40 0 90000\n", k, st)
@@ -306,6 +344,57 @@ func TestOptionsAccess(t *testing.T) {
 	s.tunnelOptions(w, r)
 	if w.Code == http.StatusOK || tn.Options["gre"]["mtu"] != "1436" {
 		t.Fatalf("another account changed the options: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The rebuilt path goes up on both servers at the same time (one after the other doubled the
+// apply: ~20 s per side with Premium's start check, seen live), and the job says how long
+// each part took.
+func TestOptionsDeployBothSidesAtOnce(t *testing.T) {
+	defer func(d time.Duration) { optWaitUp = d }(optWaitUp)
+	optWaitUp = 2 * time.Second
+	a, tn, h := optSetup(t, func(key, cfg string) bool { return true })
+	h.slow = 300 * time.Millisecond
+	h.probe, h.probeOK = true, func(string) bool { return true }
+	res, _, err := a.SaveOptions(tn, "gre", map[string]string{"mtu": "1400"}, false)
+	if err != nil || res["job"] == "" {
+		t.Fatalf("save: %v %v", res, err)
+	}
+	j := optDone(t, a, res["job"])
+	log := strings.Join(j.Lines, "\n")
+	if j.Status != "ok" {
+		t.Fatalf("status %s:\n%s", j.Status, log)
+	}
+	if h.maxFlight < 2 {
+		t.Fatalf("the two servers were restarted one after the other (max %d at once):\n%s", h.maxFlight, log)
+	}
+	for _, w := range []string{"deployed on both servers in ", "checked in ", "DONE in "} {
+		if !strings.Contains(log, w) {
+			t.Fatalf("no %q timing in the log:\n%s", w, log)
+		}
+	}
+}
+
+// Just after a restart the switcher's status can still be the one from before it (a standby
+// path is checked only every few rounds): the job checks the path itself, fresh, and a path
+// that doesn't answer is reported as failing even while the switcher still shows it ok.
+func TestOptionsFreshCheckBeatsStaleSwitcher(t *testing.T) {
+	defer func(d time.Duration) { optWaitUp = d }(optWaitUp)
+	optWaitUp = 300 * time.Millisecond
+	a, tn, h := optSetup(t, func(key, cfg string) bool { return true })
+	h.stale = true
+	h.probe, h.probeOK = true, func(key string) bool { return key != "gre|v4" }
+	res, _, err := a.SaveOptions(tn, "gre", map[string]string{"mtu": "1300"}, false)
+	if err != nil || res["job"] == "" {
+		t.Fatalf("save: %v %v", res, err)
+	}
+	j := optDone(t, a, res["job"])
+	log := strings.Join(j.Lines, "\n")
+	if j.Status != "error" || !strings.Contains(log, "FAILING") || !strings.Contains(log, "gre|v4 doesn't answer") {
+		t.Fatalf("a stale ok from the switcher passed the check, got %s:\n%s", j.Status, log)
+	}
+	if got := tn.Options["gre"]["mtu"]; got != "1300" || !tn.manualOpt("gre", "mtu") {
+		t.Fatalf("the user's value was replaced: mtu %q manual %v", got, tn.OptsManual)
 	}
 }
 

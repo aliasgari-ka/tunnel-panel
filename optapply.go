@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,7 +28,7 @@ import (
 var optWaitUp = 90 * time.Second
 
 // optPoll is how often the switcher's state is read meanwhile.
-var optPoll = 3 * time.Second
+var optPoll = time.Second
 
 // optReadMax bounds one read of the switcher's state: a read that hung on an SSH session
 // held the job (and the card's "Applying…") until the job's own 25-minute deadline.
@@ -456,6 +457,7 @@ func (a *App) optRebuild(ctx context.Context, j *Job, srv *Server, ir, kh Host, 
 			np = p
 		}
 		j.log("== rebuilding %s on both servers ==", p.label())
+		t0 := time.Now()
 		a.teardownPaths(ctx, ir, kh, from, []HSPath{p})
 		pt := pathTunnel(to, np)
 		err := func() error {
@@ -479,11 +481,22 @@ func (a *App) optRebuild(ctx context.Context, j *Job, srv *Server, ir, kh Host, 
 					return nil
 				})
 			}
-			if err := a.deploy(ctx, j, "KH", kh, pt, khP); err != nil {
-				return fmt.Errorf("foreign: %w", err)
-			}
-			if err := a.deploy(ctx, j, "IR", ir, pt, irP); err != nil {
-				return fmt.Errorf("Iran: %w", err)
+			// both servers at the same time: each side's core keeps dialing until the other
+			// one is up, and one after the other doubled the wait (a restart plus the core's
+			// start check on each side; ~20 s each with Premium's license wait, seen live)
+			var khErr, irErr error
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); khErr = a.deploy(ctx, j, "KH", kh, pt, khP) }()
+			go func() { defer wg.Done(); irErr = a.deploy(ctx, j, "IR", ir, pt, irP) }()
+			wg.Wait()
+			switch {
+			case khErr != nil && irErr != nil:
+				return fmt.Errorf("foreign: %v; Iran: %v", khErr, irErr)
+			case khErr != nil:
+				return fmt.Errorf("foreign: %w", khErr)
+			case irErr != nil:
+				return fmt.Errorf("Iran: %w", irErr)
 			}
 			return nil
 		}()
@@ -491,7 +504,7 @@ func (a *App) optRebuild(ctx context.Context, j *Job, srv *Server, ir, kh Host, 
 			j.log("  ✕ %v", err)
 			errs[key] = err.Error()
 		} else {
-			j.log("  ✓ deployed — waiting for the switcher to see it answer")
+			j.log("  ✓ deployed on both servers in %s — checking that it answers", optSecs(time.Since(t0)))
 		}
 	}
 	// the switcher's own files for the paths (selector rules, flush, targets) follow the
@@ -522,16 +535,77 @@ func (a *App) pinNow(to *Tunnel) *Tunnel {
 	return &c
 }
 
-// optWait polls the switcher until every key in keys answers (or optWaitUp passes). A read
-// that fails keeps what the last one said; every optProgress the job says what it waits for.
+// optSecs is a duration as "4.2 s" for the job's log.
+func optSecs(d time.Duration) string { return fmt.Sprintf("%.1f s", d.Seconds()) }
+
+// optProbe checks the paths in keys end to end right now, from the Iran server, the way the
+// switcher does (tp-probe through each path to the probe server on the foreign side), all at
+// once. The switcher checks a standby path only every few rounds, so its status just after a
+// restart was often the one from before it (a path "answered" the moment it was rebuilt).
+// nil: no fresh answer (the probe isn't there, or the read failed) — the switcher's view decides.
+func (a *App) optProbe(ctx context.Context, ir Host, t *Tunnel, keys []string) map[string]bool {
+	srv, fsrv, set := a.store.Server(t.ServerID), a.store.Server(t.ForeignID), a.settings()
+	if srv == nil || fsrv == nil {
+		return nil
+	}
+	want := map[string]bool{}
+	for _, k := range keys {
+		want[k] = true
+	}
+	var b strings.Builder
+	a.store.View(func(*State) {
+		for _, p := range t.Paths {
+			k := p.Method + "|" + p.Family
+			if want[k] && p.Failed == "" {
+				fmt.Fprintf(&b, "( r=$(timeout 4 %s probe check -addr %s -n 2 2>/dev/null); echo \"TP-PROBE %s ${r%%%% *}\" ) &\n", probeBin, shq(hsTarget(t, p, srv, fsrv, set)), k)
+			}
+		}
+	})
+	if b.Len() == 0 {
+		return nil
+	}
+	b.WriteString("wait\n")
+	rctx, cancel := context.WithTimeout(ctx, optReadMax)
+	defer cancel()
+	out, _ := ir.Run(rctx, b.String(), nil)
+	var ok map[string]bool
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) >= 2 && f[0] == "TP-PROBE" {
+			if ok == nil {
+				ok = map[string]bool{}
+			}
+			ok[f[1]] = len(f) > 2 && f[2] == "ok"
+		}
+	}
+	return ok
+}
+
+// optWait waits until every key in keys answers (or optWaitUp passes): a fresh check of each
+// path from the Iran server (optProbe), else the switcher's state. A read that fails keeps
+// what the last one said; every optProgress the job says what it waits for.
 func (a *App) optWait(ctx context.Context, j *Job, ir Host, t *Tunnel, keys []string) (map[string]bool, *hsView) {
 	var ok map[string]bool
 	var v *hsView
 	start := time.Now()
 	said := start
+	fresh := true
 	for end := start.Add(optWaitUp); ctx.Err() == nil; {
-		if _, ok2, v2 := a.optPathsState(ctx, ir, t); ok2 != nil {
-			ok, v = ok2, v2
+		var p map[string]bool
+		if fresh {
+			p = a.optProbe(ctx, ir, t, keys)
+		}
+		if p != nil {
+			if ok == nil {
+				ok = map[string]bool{}
+			}
+			for k, x := range p {
+				ok[k] = x
+			}
+		} else {
+			fresh = false // no probe there: the switcher's view from now on
+			if _, ok2, v2 := a.optPathsState(ctx, ir, t); ok2 != nil {
+				ok, v = ok2, v2
+			}
 		}
 		all := ok != nil
 		var wait []string
@@ -560,12 +634,19 @@ func (a *App) optWait(ctx context.Context, j *Job, ir Host, t *Tunnel, keys []st
 	if ok == nil {
 		ok = map[string]bool{}
 	}
+	if v == nil && ctx.Err() == nil {
+		_, _, v = a.optPathsState(ctx, ir, t) // the switcher's measurements and reasons, for the log
+	}
+	if j != nil && len(keys) > 0 {
+		j.log("  checked in %s", optSecs(time.Since(start)))
+	}
 	return ok, v
 }
 
 // optApplyHS rebuilds the hot-standby paths of method m with its new options (see the top).
 func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev, next map[string]string, changed []string, u optUse) {
 	j.log("%s options changed (%s) — rebuilding only its paths; the other paths keep running", m.Title, strings.Join(changed, ", "))
+	begin := time.Now()
 	srv := a.store.Server(t.ServerID)
 	if srv == nil {
 		j.log("ERROR: Iran server not found")
@@ -656,9 +737,9 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 	case len(keys) == 0:
 		j.log("DONE — options saved")
 	case len(down) == 0:
-		j.log("DONE — %s runs with your options on %d path(s)", m.Title, len(up))
+		j.log("DONE in %s — %s runs with your options on %d path(s)", optSecs(time.Since(begin)), m.Title, len(up))
 	default:
-		j.log("FAILING — options saved and running, but %d of %d path(s) don't answer with them; the users stay on a working path", len(down), len(keys))
+		j.log("FAILING — options saved and running, but %d of %d path(s) don't answer with them; the users stay on a working path (%s)", len(down), len(keys), optSecs(time.Since(begin)))
 		a.pushTInfo(t, fmt.Sprintf("⚠ %s: %s doesn't answer with the options you set (%s) — kept as you set them; users stay on a working path", t.Name, m.Title, strings.Join(changed, ", ")))
 		j.finish("error")
 		return

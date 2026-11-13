@@ -309,13 +309,29 @@ const premiumRestartSec = 30
 const premiumLicenseBad = `licen[cs]e (ip|does not|has expired|is expired|is invalid|rejected|status (is )?unknown|issue|server returned failure|verification api failed)|invalid license|unknown license`
 const premiumLicenseServerDown = `server returned failure|verification api failed`
 
+// premiumReady matches what a Premium core logs once it runs (v2: its workers and health
+// service, v1: its control channel or server). The v2 core (2.0.0-hotfix8, seen live
+// 2026-11-13) never logs a license line at all, so the check waited its full 15 s on every
+// start — twice per apply, once per server — before a core that was long up.
+const premiumReady = `starting [0-9]+ workers|health service connected|receive socket ready|control channel established|started successfully|server started`
+
 const premiumLicenseCheck = `jl() { inv=$(systemctl show -p InvocationID --value $UNIT 2>/dev/null)
   if [ -n "$inv" ]; then journalctl _SYSTEMD_INVOCATION_ID=$inv --no-pager -o cat 2>/dev/null; else journalctl -u $UNIT -n 80 --no-pager -o cat 2>/dev/null; fi; }
-for i in $(seq 1 15); do
-  l=$(jl | sed 's/\x1b\[[0-9;]*m//g' | grep -i -E 'licen[cs]e is valid|` + premiumLicenseBad + `' | tail -1)
+ready=0
+for i in $(seq 1 30); do
+  J=$(jl | sed 's/\x1b\[[0-9;]*m//g')
+  l=$(echo "$J" | grep -i -E 'licen[cs]e is valid|` + premiumLicenseBad + `' | tail -1)
   case "$l" in
     *[Ii]s\ valid*) echo "Backhaul Premium license: valid"; exit 0 ;;
-    "") sleep 1 ;;
+    "")
+      # up with no verdict: seen on two reads half a second apart, so a bad verdict logged
+      # right after the start line is still caught
+      r=$(echo "$J" | grep -i -E '` + premiumReady + `' | tail -1)
+      if [ -n "$r" ]; then
+        ready=$((ready + 1))
+        if [ $ready -ge 2 ]; then echo "Backhaul Premium core up: $(echo "$r" | sed 's/^.*\] *//')"; exit 0; fi
+      fi
+      sleep 0.5 ;;
     *) if echo "$l" | grep -qiE '` + premiumLicenseServerDown + `'; then
          echo "Backhaul Premium license server is failing: $(echo "$l" | sed 's/^.*\] *//') — the vendor's license service doesn't answer properly (not this server's license); try again later"; exit 1
        fi
