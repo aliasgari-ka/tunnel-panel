@@ -27,6 +27,7 @@ type optHost struct {
 	tears  int
 	deploy int
 	t      *Tunnel
+	hang   bool // the switcher's state reads hang (an SSH session that never answers)
 }
 
 func (h *optHost) Label() string { return "opt" }
@@ -40,8 +41,13 @@ func (h *optHost) WriteFile(path string, b []byte, _ os.FileMode) error {
 	}
 	return nil
 }
-func (h *optHost) Run(_ context.Context, s string, _ func(string)) (string, error) {
+func (h *optHost) Run(ctx context.Context, s string, _ func(string)) (string, error) {
 	h.mu.Lock()
+	if h.hang && strings.Contains(s, `echo "K $(cat keys`) {
+		h.mu.Unlock()
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
 	defer h.mu.Unlock()
 	switch {
 	case strings.Contains(s, "echo TP-TEARDOWN-DONE"):
@@ -300,5 +306,41 @@ func TestOptionsAccess(t *testing.T) {
 	s.tunnelOptions(w, r)
 	if w.Code == http.StatusOK || tn.Options["gre"]["mtu"] != "1436" {
 		t.Fatalf("another account changed the options: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The switcher's state can't be read (a hung SSH session): the job still ends on its own
+// within the wait, says what it waited for meanwhile, and keeps the user's value as set —
+// the card never sits on "Applying…" until the job's 25-minute deadline.
+func TestOptionsJobEndsWhenSwitcherHangs(t *testing.T) {
+	defer func(w, r, p time.Duration) { optWaitUp, optReadMax, optProgress = w, r, p }(optWaitUp, optReadMax, optProgress)
+	optWaitUp, optReadMax, optProgress = 600*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond
+	a, tn, h := optSetup(t, func(key, cfg string) bool { return true })
+	h.hang = true
+	start := time.Now()
+	res, _, err := a.SaveOptions(tn, "gre", map[string]string{"mtu": "1380"}, false)
+	if err != nil || res["job"] == "" {
+		t.Fatalf("save: %v %v", res, err)
+	}
+	// saved at once, before the job does anything on the servers
+	if got := tn.Options["gre"]["mtu"]; got != "1380" || !tn.manualOpt("gre", "mtu") {
+		t.Fatalf("not saved at once as hand-set: mtu %q manual %v", got, tn.OptsManual)
+	}
+	j := optDone(t, a, res["job"])
+	log := strings.Join(j.Lines, "\n")
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("job took %v with hanging reads:\n%s", took, log)
+	}
+	if j.Status != "error" || !strings.Contains(log, "FAILING") || !strings.Contains(log, "can't be read yet") {
+		t.Fatalf("want a clear FAILING end with progress lines, got %s:\n%s", j.Status, log)
+	}
+	if !strings.Contains(h.cfg[1], "1380") || h.cfg[2] != "" {
+		t.Fatalf("only the gre path should be rebuilt with 1380: %q / %q", h.cfg[1], h.cfg[2])
+	}
+	if got := tn.Options["gre"]["mtu"]; got != "1380" || !tn.manualOpt("gre", "mtu") {
+		t.Fatalf("the user's value was replaced: mtu %q manual %v", got, tn.OptsManual)
+	}
+	if a.jobs.running(tn.ID) != "" {
+		t.Fatalf("tunnel still busy after the job ended")
 	}
 }

@@ -23,12 +23,19 @@ import (
 // own options) replaces it. A path that doesn't answer with it is reported as failing, with
 // the reason; the users stay on a working path. ↺ Defaults clears the manual marks.
 
-
 // optWaitUp is how long a rebuilt path has to answer the switcher's checks.
 var optWaitUp = 90 * time.Second
 
 // optPoll is how often the switcher's state is read meanwhile.
 var optPoll = 3 * time.Second
+
+// optReadMax bounds one read of the switcher's state: a read that hung on an SSH session
+// held the job (and the card's "Applying…") until the job's own 25-minute deadline.
+var optReadMax = 20 * time.Second
+
+// optProgress is how often the wait says it still waits (the card shows the job's last line:
+// one line for 90 s looked like a panel that hung).
+var optProgress = 15 * time.Second
 
 // optFull is a method's options with the defaults filled in, for comparing two of them.
 func optFull(m *Method, o map[string]string) map[string]string {
@@ -390,7 +397,9 @@ func optWhy(v *hsView, key, deployErr string) string {
 func (a *App) optPathsState(ctx context.Context, ir Host, t *Tunnel) (users string, ok map[string]bool, v *hsView) {
 	var seen int64
 	a.store.View(func(*State) { seen = t.HSSeen })
-	v, events, err := a.hsRead(ctx, ir, t, seen)
+	rctx, cancel := context.WithTimeout(ctx, optReadMax)
+	defer cancel()
+	v, events, err := a.hsRead(rctx, ir, t, seen)
 	if err != nil || v == nil {
 		return "", nil, nil
 	}
@@ -513,20 +522,40 @@ func (a *App) pinNow(to *Tunnel) *Tunnel {
 	return &c
 }
 
-// optWait polls the switcher until every key in keys answers (or optWaitUp passes).
-func (a *App) optWait(ctx context.Context, ir Host, t *Tunnel, keys []string) (map[string]bool, *hsView) {
+// optWait polls the switcher until every key in keys answers (or optWaitUp passes). A read
+// that fails keeps what the last one said; every optProgress the job says what it waits for.
+func (a *App) optWait(ctx context.Context, j *Job, ir Host, t *Tunnel, keys []string) (map[string]bool, *hsView) {
 	var ok map[string]bool
 	var v *hsView
-	for end := time.Now().Add(optWaitUp); ctx.Err() == nil; {
-		_, ok, v = a.optPathsState(ctx, ir, t)
+	start := time.Now()
+	said := start
+	for end := start.Add(optWaitUp); ctx.Err() == nil; {
+		if _, ok2, v2 := a.optPathsState(ctx, ir, t); ok2 != nil {
+			ok, v = ok2, v2
+		}
 		all := ok != nil
+		var wait []string
 		for _, k := range keys {
-			all = all && ok[k]
+			if !ok[k] {
+				all = false
+				wait = append(wait, k)
+			}
 		}
 		if all || !time.Now().Before(end) {
 			break
 		}
-		time.Sleep(optPoll)
+		if j != nil && time.Since(said) >= optProgress {
+			said = time.Now()
+			what := "the switcher's state can't be read yet"
+			if ok != nil {
+				what = strings.Join(wait, ", ") + " doesn't answer yet"
+			}
+			j.log("  … %s (%d s of %d s)", what, int(time.Since(start).Seconds()), int(optWaitUp.Seconds()))
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(optPoll):
+		}
 	}
 	if ok == nil {
 		ok = map[string]bool{}
@@ -584,7 +613,7 @@ func (a *App) optApplyHS(ctx context.Context, j *Job, t *Tunnel, m *Method, prev
 	var after *Tunnel
 	a.store.View(func(*State) { after = withOpts(t, m.ID, next, append([]HSPath(nil), t.Paths...)) })
 	errs := a.optRebuild(ctx, j, srv, ir, kh, before, after, u.run, m)
-	okNow, v := a.optWait(ctx, ir, t, keys)
+	okNow, v := a.optWait(ctx, j, ir, t, keys)
 	// the user's values stay whatever happens: a path that doesn't answer with them is shown
 	// as failing, with the reason, and the switcher keeps the users on a working path
 	var up, down []string
