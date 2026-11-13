@@ -4112,8 +4112,8 @@ const IGO = {
   kwg: { t: 'sw', label: 'Kernel WARP (all CPU cores)', help: 'for a busy server: the IPv4 WARPs run as kernel WireGuard, not inside the router; same accounts and exit IPs' },
 };
 // the number of WARP accounts is the panel's (warppool.go, WARP tab): minwarps / warpauto are not offered here any more
-const IGO_SEC = [['pool', 'WARP accounts', ['mode', 'minspeed']], ['google', 'Google · Gemini', ['gwarps', 'gcountries', 'gspread', 'grotate', 'gall']],
-  ['ig', 'Instagram', ['guard', 'musiccheck']], ['adv', 'Advanced', ['autokey', 'geosite', 'kwg']]];
+const IGO_SEC = [['pool', 'WARP accounts', ['minspeed']], ['google', 'Google · Gemini', ['gwarps', 'gcountries', 'gspread', 'grotate', 'gall']],
+  ['ig', 'Instagram', ['guard', 'musiccheck']], ['adv', 'Advanced', ['mode', 'autokey', 'geosite', 'kwg']]];
 const igoShow = (k, v) => k === 'mode' ? (v === 'balance' ? 'Spread the load' : 'One at a time') : IGO[k].t === 'sw' ? (v === 'on' ? 'on' : 'off') : v;
 async function igOptLoad(id) {
   IGOPT.err = '';
@@ -4143,7 +4143,8 @@ function igoWhy(k, i) {
   if (k === 'musiccheck' && !on('guard')) return ['off', 'Runs inside the WARP guard: turn the fast switch on.'];
   if (k === 'musiccheck' && n('musiccheck') > 0 && i.igacc !== 'SET') return ['warn', 'No Instagram test account yet: nothing is checked.', 'checks'];
   if (k === 'musiccheck' && n('musiccheck') > 0 && igAccBroken(i)) return ['warn', 'The test account is logged out: nothing is checked.', 'checks'];
-  if (k === 'mode' && val('mode') === 'balance') return ['warn', 'Instagram music may break: the users\' IP changes between WARPs.'];
+  if (k === 'mode' && val('mode') === 'balance') return ['info', 'Recommended. Only WARPs that leave from the same exit IP carry Instagram, so users keep one IP and music works; Google keeps its own WARP.'];
+  if (k === 'mode' && val('mode') === 'failover') return ['warn', 'The panel sets this back to "Spread the load" at night (03-06), unless the WARPs here are managed by hand.'];
   if (k === 'warpauto' && on('warpauto') && n('minwarps') === 0) return ['info', 'With 0 above, only the load decides (3 or more).'];
   if (k === 'guard' && i.guard === 'DOWN' && on('guard')) return ['warn', 'On, but its service isn\'t running: Re-apply in the ⋯ menu.'];
   if (k === 'kwg' && on('kwg') && /^\d+$/.test(i.kwg || '')) return ['info', `${+i.kwg} kernel interface(s) up`];

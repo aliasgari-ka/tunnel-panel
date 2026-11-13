@@ -406,6 +406,19 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 		}
 	}
 
+	// one way to use the WARPs everywhere: BALANCE. Users still keep one exit IP - the agent's pool
+	// guard lets only WARPs with the pool's exit IP carry Instagram (on warp6 that is one), and Google
+	// is pinned to its own WARP - while the load is spread when the IPv4 WARPs share an exit. Per-user
+	// sticky balancing is not possible here: the users reach the router through x-ui's Xray (a local
+	// redirect), so the router never sees who a connection belongs to, and Xray's balancers have no hash.
+	// Changing the mode rebuilds the router (a few seconds): only at night.
+	if !hold && used && inf["mode"] == "FAILOVER" && wpIsNight(d.Hour) {
+		if rc, _ := a.igRun(ctx, srv, []string{"set", "mode", "balance"}, "", 120, nil); rc == 0 {
+			a.igAutoLog(srv, "WARP", "info", "WARP mode: one at a time -> spread the load (users keep one exit IP)")
+			a.igForget(srv.ID)
+		}
+	}
+
 	// 2. what goes: broken ones at once when good ones are missing (so the agent can make new ones),
 	// the rest - and every surplus - at night, all in one router restart
 	good := plan.Good
