@@ -574,6 +574,13 @@ details.igsv .mi.on{color:var(--accent);font-weight:700}
   .igsv-top #igsvq{max-width:none}
   .igsv-help{position:static}.igsv-tip{inset-inline:10px;top:auto;width:auto}
 }
+/* IG routing · Servers summary */
+.igsum .stat b span{font-size:12.5px}
+.igsum .stat{grid-template-rows:auto auto auto}.igsum .stat .si{grid-row:1/4}
+.igsum-sub{display:block;background:none;border:0;padding:0;margin:2px 0 0;font-style:normal;font-size:11.5px;color:var(--muted);line-height:1.5}.igsum-sub b{font-size:inherit;font-weight:700;color:var(--fg)}
+.igsum b.igsum-warn,.igsum-warn{color:var(--warn)}
+.igsum-bad{cursor:pointer;border-color:color-mix(in srgb,var(--crit) 40%,var(--line))}.igsum-bad b{color:var(--crit)}
+.igsum-note{color:var(--muted);background:var(--panel-2);border-radius:8px;padding:8px 10px;border-inline-start:3px solid var(--accent);display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-bottom:12px;font-size:13px}
 /* IG routing · My sites (igSitesTab) */
 .igs-p{margin:0 0 10px;font-size:13px}
 .igs-row{display:flex;gap:8px}.igs-row .inp{flex:1;min-width:0}

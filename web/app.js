@@ -3497,23 +3497,38 @@ function igGSignin() {
 }
 
 // ---- servers
+// a server needs no attention: healthy, or only an old agent while it is being updated by itself
+function igFine(s) { const c = igCardState(s), au = (IG.data && IG.data.agentAuto) || {}; return c === 'OK' || c === 'UPDATE' && !au.halt; }
 function igServers(box) {
   const d = IG.data;
   if (!d) { box.innerHTML = '<div class="grid cards">' + '<div class="skel" style="height:150px"></div>'.repeat(4) + '</div>'; return; }
-  const L = igList(), ok = L.filter(s => igCardState(s) === 'OK').length, conn = L.reduce((a, s) => a + (+s.info.caught || 0), 0);
-  const bad = L.filter(s => !['OK', 'CHECKING'].includes(igCardState(s))).length, old = L.filter(s => ['UPDATE', 'NOAGENT'].includes(s.info.state) || s.info.outdated === '1').length;
-  box.insertAdjacentHTML('beforeend', `<div class="summary">
-    <div class="stat"><small>Servers</small><b>${L.length}</b></div><div class="stat"><small>Healthy</small><b>${ok}</b></div>
-    <div class="stat"><small>Connections routed</small><b>${conn}</b></div><div class="stat"><small>Need attention</small><b>${bad}</b></div></div>`);
-  if (old && d.agent) box.insertAdjacentHTML('beforeend', `<div class="mwarn">${old} server(s) don't run the current agent (<span class="mono">${esc(d.agent)}</span>). <button class="btn sm" id="igupd">Update them</button></div>`);
+  const SL = igList(), au = d.agentAuto || {};
+  // an old agent alone is no problem while it is being updated by itself
+  const fine = igFine;
+  const ok = SL.filter(fine).length;
+  const bad = SL.filter(s => !fine(s) && igCardState(s) !== 'CHECKING').length, old = SL.filter(s => ['UPDATE', 'NOAGENT'].includes(s.info.state) || s.info.outdated === '1' || (d.agent && s.info.sum && s.info.sum !== d.agent && s.info.state !== 'OFFLINE')).length;
+  // Instagram on each server: does it open now, and which kind of exit
+  const ex = { warp: 0, out: 0, own: 0 }; let igOn = 0, igOk = 0;
+  SL.forEach(s => { const v = s.info.ig || ''; if (!v) return; igOn++; if (s.info.igp === 'OK') igOk++; ex[/^warp/.test(v) ? 'warp' : /^proxy/.test(v) ? 'out' : 'own']++; });
+  const exw = [['warp', 'WARP'], ['out', L('outbound', 'خروجی')], ['own', L('own IP', 'IP سرور')]].filter(([k]) => ex[k]).map(([k, w]) => `${w} <b>${ex[k]}</b>`).join(' · ');
+  const cur = SL.length - old;
+  const agSmall = !d.agent ? L('Agent', 'Agent') : au.halt ? L('Agent · update stopped', 'Agent · به‌روزرسانی متوقف') : old ? L('Agent · updating by itself', 'Agent · در حال به‌روزرسانی خودکار') : L('Agent · up to date', 'Agent · به‌روز');
+  box.insertAdjacentHTML('beforeend', `<div class="summary igsum">
+    <div class="stat"><i class="si">🌐</i><small>${L('Healthy servers', 'سرورهای سالم')}</small><b><bdi>${ok}<span> / ${SL.length}</span></bdi></b></div>
+    <div class="stat${bad ? ' igsum-bad' : ''}" ${bad ? 'data-igbad role="button" tabindex="0"' : ''}><i class="si">⚠</i><small>${L('Need attention', 'نیازمند توجه')}</small><b>${bad}</b></div>
+    <div class="stat"><i class="si">📸</i><small>${L('Instagram opens', 'Instagram باز می‌شود')}</small><b class="${igOk < igOn ? 'igsum-warn' : ''}"><bdi>${igOk}<span> / ${igOn}</span></bdi></b><em class="igsum-sub" data-notr>${exw}</em></div>
+    <div class="stat" title="${esc(L('New agent versions reach every server by themselves, one server at a time.', 'نسخه‌ی جدید agent خودکار و یکی‌یکی روی همه سرورها نصب می‌شود.'))}"><i class="si">🧩</i><small>${agSmall}</small><b class="${au.halt ? 'igsum-warn' : ''}"><bdi>${d.agent ? cur : '—'}<span>${d.agent ? ' / ' + SL.length : ''}</span></bdi></b></div></div>`);
+  $('[data-igbad]', box) && ($('[data-igbad]', box).onclick = () => { IG.filter = 'bad'; igRender(); });
+  if (old && d.agent && au.halt) box.insertAdjacentHTML('beforeend', `<div class="mwarn">${L('The automatic agent update stopped: the new agent failed on the first server', 'به‌روزرسانی خودکار agent متوقف شد: agent جدید روی اولین سرور خطا داد')} (<span data-notr>${esc(au.haltWhy || '')}</span>). ${L('The other servers keep their agent.', 'بقیه سرورها agent خودشان را نگه داشتند.')} <button class="btn sm" id="igupd">${L('Try again', 'دوباره امتحان کن')}</button></div>`);
+  else if (old && d.agent) box.insertAdjacentHTML('beforeend', `<div class="igsum-note">${L(`${old} server(s) get the new agent by themselves, one at a time — nothing to do.`, `${old} سرور agent جدید را خودکار و یکی‌یکی می‌گیرند — لازم نیست کاری کنید.`)}${au.failed ? ' ' + L(`${au.failed} failed and are retried later.`, `${au.failed} سرور خطا داد و بعداً دوباره امتحان می‌شود.`) : ''} <button class="btn sm ghost" id="igupd">${L('Now', 'همین الان')}</button></div>`);
   if (!d.agent) box.insertAdjacentHTML('beforeend', `<div class="mwarn">The agent script isn't on the panel host (<span class="mono">/etc/igpm/igproxy.sh</span>), so install / update is unavailable. Everything else works.</div>`);
   $('#igupd', box) && ($('#igupd', box).onclick = () => igAct({ srv: 'all', action: 'deploy', old: 1 }, 'Update the agent on the servers with an old one? Each server routes everything direct for a few seconds; settings and WARPs are kept.', { title: 'Update agents' }));
-  if (!L.length) {
+  if (!SL.length) {
     box.insertAdjacentHTML('beforeend', `<div class="card empty"><div class="big">🌐</div><h3>No servers here yet</h3><p class="muted">Add one of your foreign servers: the igproxy agent is installed on it, then you choose here which way each service leaves.</p><button class="btn pri" data-igadd>+ Add server</button></div>`);
     return;
   }
-  const nbad = L.filter(s => igCardState(s) !== 'OK').length;
-  box.insertAdjacentHTML('beforeend', `<div class="filters"><button class="fchip" data-f="all">All <b>${L.length}</b></button><button class="fchip" data-f="bad">Needs attention <b>${nbad}</b></button>
+  const nbad = SL.filter(s => !igFine(s)).length;
+  box.insertAdjacentHTML('beforeend', `<div class="filters"><button class="fchip" data-f="all">All <b>${SL.length}</b></button><button class="fchip" data-f="bad">Needs attention <b>${nbad}</b></button>
     <input class="inp search" id="igq" placeholder="Search name or IP…" value="${esc(IG.q)}"><span class="faint" style="font-size:12px">updated ${new Date(d.t * 1000).toLocaleTimeString()}</span></div><div class="grid cards" id="igcards"></div>`);
   $$('[data-f]', box).forEach(b => { b.classList.toggle('on', b.dataset.f === IG.filter); b.onclick = () => { IG.filter = b.dataset.f; igRender(); }; });
   $('#igq', box).oninput = (e) => { IG.q = e.target.value; igCards(); };
@@ -3521,7 +3536,7 @@ function igServers(box) {
 }
 function igCards() {
   const q = IG.q.trim().toLowerCase();
-  const L = igList().filter(s => (IG.filter !== 'bad' || igCardState(s) !== 'OK') && (!q || (s.name + ' ' + s.host).toLowerCase().includes(q)));
+  const L = igList().filter(s => (IG.filter !== 'bad' || !igFine(s)) && (!q || (s.name + ' ' + s.host).toLowerCase().includes(q)));
   const box = $('#igcards'); if (!box) return;
   box.innerHTML = L.length ? L.map(igCard).join('') : '<div class="empty card"><div class="big">🔍</div>No server matches</div>';
   // the cards open like buttons: a click, or Enter / Space on the keyboard

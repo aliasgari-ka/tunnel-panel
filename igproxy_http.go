@@ -110,7 +110,7 @@ func (s *Server2) igServers(w http.ResponseWriter, r *http.Request) {
 			pending++
 		}
 	}
-	writeJSON(w, map[string]any{"servers": out, "candidates": cands, "agent": sum, "t": time.Now().Unix(), "pending": pending})
+	writeJSON(w, map[string]any{"servers": out, "candidates": cands, "agent": sum, "agentAuto": s.app.igAgentStatus(), "t": time.Now().Unix(), "pending": pending})
 }
 
 func (s *Server2) igInfoGet(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +192,7 @@ func (s *Server2) igAction(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				n++
-				if !s.app.igDeploy(ctx, x, out) {
+				if !s.app.igDeployAs(ctx, x, out, false) {
 					bad++
 					if multi {
 						t.add(x, "fail", "still does not run the new agent", out)
@@ -348,7 +348,7 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 			}
 			out(fmt.Sprintf("%s reached (state %s)", x.Name, inf["state"]))
 			if st := inf["state"]; st == "NOAGENT" || st == "UPDATE" || inf["outdated"] == "1" || in.Deploy {
-				return s.app.igDeploy(ctx, x, out)
+				return s.app.igDeployAs(ctx, x, out, false)
 			}
 			return true
 		}()
