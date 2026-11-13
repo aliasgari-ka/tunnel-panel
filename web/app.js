@@ -3651,10 +3651,10 @@ function igtSvc(i, s) {
   if (s.k === 'RELAY') return igtRow('warn', 'Services through the users\' route', '', '', esc(s.why), `<button class="btn sm" data-igdo="deploy">Update agent</button>`);
   const g = s.k === 'IG' ? 'ig' : 'google', name = { IG: 'Instagram', GOOGLE: 'Google', GEMINI: 'Gemini' }[s.k] || s.k;
   const cc = s.k === 'IG' ? i.igcc : i.gcc;
-  const det = [igtMs(s.ms), igSet(cc) && cc !== 'PROXY' ? `<span>${s.k === 'IG' ? 'Instagram' : 'Google'} sees <b class="mono">${esc(cc)}</b></span>` : ''].join('');
+  const det = [igtMs(s.ms), s.loc ? `<span>Gemini: <b>${esc(s.loc)}</b> <span class="faint">(browser check)</span></span>` : igSet(cc) && cc !== 'PROXY' ? `<span>${s.k === 'IG' ? 'Instagram' : 'Google'} sees <b class="mono">${esc(cc)}</b></span>` : ''].join('');
   let btn = '';
   if (!s.ok) btn = s.k === 'IG' ? igtTo(/^warp/.test(i.ig || '') ? 'warp' : /^proxy/.test(i.ig || '') ? 'proxies' : 'routes', /^warp/.test(i.ig || '') ? 'WARP tab' : /^proxy/.test(i.ig || '') ? 'Proxies tab' : 'Routes tab') : '<button class="btn sm" data-tt="diag">Diagnose</button>';
-  return igtRow(s.ok ? 'ok' : 'bad', name, via(g), det, s.ok ? '' : esc(s.why), btn);
+  return igtRow(s.ok ? (s.warn ? 'warn' : 'ok') : 'bad', name, via(g), det, s.ok && !s.warn ? '' : esc(s.why), btn);
 }
 function igtExit(i, e, spd, id) {
   const c = e.ok ? (e.warn ? 'warn' : 'ok') : e.idle ? 'idle' : 'bad';
@@ -3673,7 +3673,7 @@ function igtExit(i, e, spd, id) {
 }
 // the summary of a result: [level, headline]
 function igtSum(h) {
-  const bad = h.svcs.filter(s => !s.ok).length + h.exits.filter(e => !e.ok && !e.idle).length, warn = h.exits.filter(e => e.ok && e.warn).length;
+  const bad = h.svcs.filter(s => !s.ok).length + h.exits.filter(e => !e.ok && !e.idle).length, warn = h.exits.filter(e => e.ok && e.warn).length + h.svcs.filter(s => s.ok && s.warn).length;
   return bad ? ['bad', bad === 1 ? '1 problem' : bad + ' problems'] : warn ? ['warn', warn === 1 ? '1 thing to look at' : warn + ' things to look at'] : ['on', 'Everything works'];
 }
 function igtHealthDraw() {
