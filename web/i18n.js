@@ -1129,6 +1129,8 @@ window.TP_FA = {
 "🌍 Foreign (exit)": "🌍 خارج (خروجی)",
 "(leave empty to keep it; a new one signs the user out)": "(برای نگه داشتن خالی بگذارید؛ رمز تازه کاربر را از حساب بیرون می‌کند)",
 "(auto; 2-letter override)": "(خودکار؛ یا کد دوحرفی کشور)",
+"(set by hand — empty it to detect from the IP)": "(دستی تنظیم شده — خالی کنید تا از روی IP پیدا شود)",
+"(found from the IP; type 2 letters to set it by hand)": "(خودکار از روی IP؛ برای تنظیم دستی کد دوحرفی کشور را بنویسید)",
 "no tunnel on this pair yet": "هنوز تانلی روی این جفت نیست",
 "⚠ port clash": "⚠ تداخل پورت",
 "Users stay on the chosen path; they move only when it is down.": "کاربران روی مسیر انتخاب‌شده می‌مانند؛ فقط وقتی قطع شود جابه‌جا می‌شوند.",

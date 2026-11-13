@@ -75,6 +75,10 @@ type Server struct {
 	LastPath string `json:"lastPath,omitempty"` // how the panel last reached it
 	Country  string `json:"country,omitempty"`  // ISO-3166 alpha-2, for the flag (auto or manual)
 	City     string `json:"city,omitempty"`
+	// CountryManual: the country was typed by hand — automatic detection never replaces it.
+	// CountryIP: the address an automatic country was found for (a new address = detect again).
+	CountryManual bool   `json:"countryManual,omitempty"`
+	CountryIP     string `json:"countryIp,omitempty"`
 	// Igproxy: the server is on the IG routing page (it runs, or is to run, the igproxy agent)
 	Igproxy bool `json:"igproxy,omitempty"`
 }

@@ -49,8 +49,13 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			if _, err := fs.Stat(root, strings.TrimPrefix(r.URL.Path, "/")); err == nil {
-				// always revalidate: after an update the browser must not keep an old app.js
-				w.Header().Set("Cache-Control", "no-cache")
+				// always revalidate: after an update the browser must not keep an old app.js.
+				// The flags never change: a day in the browser cache.
+				if strings.HasPrefix(r.URL.Path, "/flags/") {
+					w.Header().Set("Cache-Control", "public, max-age=86400")
+				} else {
+					w.Header().Set("Cache-Control", "no-cache")
+				}
 				fileSrv.ServeHTTP(w, r)
 				return
 			}
@@ -830,6 +835,9 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 			in.HostKey, in.AgentToken, in.Prepared = "", "", false
 			// state only the panel sets: never taken from the form
 			in.Igproxy, in.Provisioned, in.Arch, in.OS, in.LastPath = false, 0, "", "", ""
+			// a country typed in the add form is a manual one; none = detected from the IP
+			in.Country, in.City, in.CountryIP = normCC(in.Country), "", ""
+			in.CountryManual = in.Country != ""
 			st.Servers = append(st.Servers, &in)
 			return nil
 		}
@@ -840,8 +848,13 @@ func (s *Server2) servers(w http.ResponseWriter, r *http.Request) {
 
 		x.Name, x.IPv4, x.IPv6, x.SSHHost, x.SSHPort, x.SSHUser = in.Name, in.IPv4, in.IPv6, in.SSHHost, in.SSHPort, in.SSHUser
 		x.Role, x.Proxy, x.Via = in.Role, in.Proxy, in.Via
-		if in.Country != "" {
-			x.Country = strings.ToUpper(in.Country)
+		// the form's country: unchanged = as it was; another code = set by hand (kept for good);
+		// "auto" (the form sends it for an emptied field) = back to automatic, detected again
+		// right after the save. A client that sends no country leaves it as it is.
+		if cc := normCC(in.Country); cc != "" && cc != x.Country {
+			x.Country, x.City, x.CountryManual, x.CountryIP = cc, "", true, ""
+		} else if strings.EqualFold(strings.TrimSpace(in.Country), "auto") && (x.Country != "" || x.CountryManual) {
+			x.Country, x.City, x.CountryManual, x.CountryIP = "", "", false, ""
 		}
 		if !isMasked(in.Password) {
 			x.Password = in.Password
