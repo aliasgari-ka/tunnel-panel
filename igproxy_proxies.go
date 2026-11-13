@@ -132,6 +132,7 @@ type igProxyRow struct {
 	Port    string       `json:"port"`
 	User    string       `json:"user,omitempty"` // masked
 	Key     string       `json:"key"`
+	Twin    string       `json:"twin"`            // the same for two lines with one host, port and user (one HTTP, one SOCKS5)
 	Bad     bool         `json:"bad,omitempty"`   // Instagram rejected its IP: out of rotation
 	Music   string       `json:"music,omitempty"` // the agent's last music test through it: ok / no / err …
 	MusicAt int64        `json:"musicAt,omitempty"`
@@ -182,7 +183,14 @@ func igPxLast(srv, key string) *igProxyTest {
 
 // igPxScript reads the proxy file on the server (#igpx-list) and, with test, tests every proxy
 // at once (#igpx-test). The password stays on the server: it goes from the file to curl only.
-func igPxScript(test bool, only int) string {
+// only: the proxy numbers to test (none = all)
+func igPxScript(test bool, only []int) string {
+	var on []string
+	for _, n := range only {
+		if n > 0 {
+			on = append(on, strconv.Itoa(n))
+		}
+	}
 	s := `#igpx-list
 f=` + igProxyFile + `; R=/run/igproxy
 [ -r "$f" ] || { grep -q "^VER=" /usr/local/bin/igproxy 2>/dev/null && echo __RC=0 || echo __RC=3; exit 0; }
@@ -195,7 +203,7 @@ done < "$f"
 `
 	if test {
 		s += `#igpx-test
-d=$(mktemp -d); n=0; only=` + strconv.Itoa(only) + `
+d=$(mktemp -d); n=0; only=" ` + strings.Join(on, " ") + ` "
 tst(){ # n type host port user pass
   local s=socks5h hh=$3 pw=$6 a tr ms g; [ "$2" = http ] && s=http; [ "$pw" = - ] && pw=""
   case "$hh" in \[*) ;; *:*) hh="[$hh]";; esac
@@ -206,7 +214,7 @@ tst(){ # n type host port user pass
   printf 'T\t%s\t%s\t%s\t%s\t%s\n' "$1" "${ms:--}" "$(sed -n 's/^ip=//p' <<<"$tr")" "$(sed -n 's/^loc=//p' <<<"$tr")" "${g:-000}"
 }
 while IFS= read -r l || [ -n "$l" ]; do
-  n=$((n+1)); read -r t h p u pw _ <<<"$l"; [ -z "$t" ] && continue; [ "$only" = 0 ] || [ "$only" = "$n" ] || continue
+  n=$((n+1)); read -r t h p u pw _ <<<"$l"; [ -z "$t" ] && continue; [ "$only" = "  " ] || [[ "$only" == *" $n "* ]] || continue
   tst "$n" "$t" "$h" "$p" "${u:--}" "${pw:--}" > "$d/$n" &
 done < "$f"
 wait; cat "$d"/* 2>/dev/null; rm -rf "$d"
@@ -240,8 +248,8 @@ func (a *App) igShell(ctx context.Context, srv *Server, script string, tmo time.
 }
 
 // igProxies reads (and with test, tests) a server's proxies.
-// only: test just proxy number only (0 = all)
-func (a *App) igProxies(ctx context.Context, srv *Server, test bool, only int) ([]*igProxyRow, error) {
+// only: test just these proxy numbers (none = all)
+func (a *App) igProxies(ctx context.Context, srv *Server, test bool, only ...int) ([]*igProxyRow, error) {
 	tmo := 40 * time.Second
 	if test {
 		tmo = 90 * time.Second
@@ -268,7 +276,7 @@ func (a *App) igProxies(ctx context.Context, srv *Server, test bool, only int) (
 			if u == "-" {
 				u = ""
 			}
-			r := &igProxyRow{N: n, Type: f[2], Host: f[3], Port: f[4], User: igMaskUser(u), Key: igProxyKey(f[2], f[3], f[4], u), Bad: f[6] == "1", user: u}
+			r := &igProxyRow{N: n, Type: f[2], Host: f[3], Port: f[4], User: igMaskUser(u), Key: igProxyKey(f[2], f[3], f[4], u), Twin: igProxyKey("", f[3], f[4], u), Bad: f[6] == "1", user: u}
 			rows = append(rows, r)
 			byN[n] = r
 		case f[0] == "M" && len(f) >= 4:
@@ -311,7 +319,13 @@ func (s *Server2) igProxyList(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, err.Error())
 		return
 	}
-	rows, err := s.app.igProxies(r.Context(), x, igStr(p["test"]) != "", atoiOr(igStr(p["n"])))
+	var only []int // "n": one proxy (the row's Test), "ns": "1,3,5" (the selected ones)
+	for _, f := range strings.Split(igStr(p["ns"])+","+igStr(p["n"]), ",") {
+		if n := atoiOr(strings.TrimSpace(f)); n > 0 {
+			only = append(only, n)
+		}
+	}
+	rows, err := s.app.igProxies(r.Context(), x, igStr(p["test"]) != "", only...)
 	if err != nil {
 		httpErr(w, 502, igLabel(x)+": "+err.Error())
 		return
@@ -340,7 +354,7 @@ var (
 // the whole line, so the same proxy with another password was added twice).
 func (a *App) igProxyAddOne(ctx context.Context, x *Server, p igProxyIn) igPxResult {
 	res := igPxResult{ID: x.ID, Name: igLabel(x)}
-	rows, err := a.igProxies(ctx, x, false, 0)
+	rows, err := a.igProxies(ctx, x, false)
 	if err != nil {
 		res.Status, res.Msg = "unreachable", err.Error()
 		return res
@@ -440,7 +454,7 @@ func (s *Server2) igProxyAdd(w http.ResponseWriter, r *http.Request) {
 
 // igProxyFind: the proxy with this key on the server now, whatever its number is by now.
 func (a *App) igProxyFind(ctx context.Context, x *Server, key string) (*igProxyRow, error) {
-	rows, err := a.igProxies(ctx, x, false, 0)
+	rows, err := a.igProxies(ctx, x, false)
 	if err != nil {
 		return nil, err
 	}

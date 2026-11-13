@@ -266,7 +266,7 @@ func TestIgProxyGuardScript(t *testing.T) {
 	if !strings.Contains(sc, `[ "$t $h $p $u" = 'http 192.0.2.2 8002 u'"'"'b' ]`) || !strings.Contains(sc, "sed -n '2p' /etc/igproxy/proxies") || !strings.Contains(sc, "igproxy 'proxy' 'del' '2' </dev/null") {
 		t.Errorf("guard script:\n%s", sc)
 	}
-	if sc := igPxScript(true, 0); strings.Contains(sc, "-U ") || !strings.Contains(sc, "#igpx-test") || !strings.Contains(sc, `hh="[$hh]"`) {
+	if sc := igPxScript(true, nil); strings.Contains(sc, "-U ") || !strings.Contains(sc, "#igpx-test") || !strings.Contains(sc, `hh="[$hh]"`) {
 		t.Errorf("test script:\n%s", sc)
 	}
 }

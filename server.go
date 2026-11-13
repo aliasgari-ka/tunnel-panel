@@ -168,6 +168,7 @@ func (a *App) routes() http.Handler {
 	g("/api/igproxy/proxies", "self", s.igProxyList)
 	g("/api/igproxy/proxy/add", "self", s.igProxyAdd)
 	g("/api/igproxy/proxy/cmd", "self", s.igProxyCmd)
+	g("/api/igproxy/proxy/bulk", "self", s.igProxyBulk)
 	g("/api/igproxy/enable", "self", s.igEnable)
 	g("/api/igproxy/copy", "self", s.igCopy)
 	g("/api/igproxy/backup", "self", s.igBackupRun)
