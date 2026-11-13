@@ -581,7 +581,7 @@ async function viewUsage(w) {
   const billTbl = () => !bills.length ? '' : `<details class="card pad udet"><summary><b>🧾 Iran servers — the whole bill</b> <span class="faint">what each Iran server's network card received, and how much of it the tunnels explain</span></summary><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Iran server</th><th>Σ Tunnels' traffic</th><th>💰 Tunnels' paid</th>${bills.some(b => b.other > 0) ? "<th>💰 Other tunnels on this server</th>" : ''}<th>Other (updates, tests…)</th><th>💰 Server received (bill)</th></tr></thead><tbody>${bills.map(b => `<tr><td><b>${flagOf(b.id)} ${nameOf(b.id)}</b></td><td>${fmtBytes(tot(b.x))}</td><td>${fmtBytes(b.x.p)}</td>${bills.some(x => x.other > 0) ? `<td>${fmtBytes(b.other)}</td>` : ''}<td>${fmtBytes(b.rest)}</td><td><b>${fmtBytes(b.recv)}</b></td></tr>`).join('')}</tbody></table></div></details>`;
 
   // the breakdown: one row per group, its share of the traffic, what it pays and its change
-  const segBy = [['iran', '🇮🇷 Iran server'], ['foreign', '🌍 Foreign server'], ['tunnel', '🛰 Tunnel']].concat(owners ? [['owner', '👤 Account']] : []);
+  const segBy = [['iran', `${flag('IR')} <span>Iran server</span>`], ['foreign', '🌍 Foreign server'], ['tunnel', '🛰 Tunnel']].concat(owners ? [['owner', '👤 Account']] : []);
   const breakdown = () => {
     const gs = groupsOf(by), live = by === 'tunnel' ? gs.filter(g => !g.list[0].deleted) : gs, dead = by === 'tunnel' ? gs.filter(g => g.list[0].deleted && tot(g.cur) > 0) : [];
     const all2 = Math.max(1, tot(sum(items, 'cur')));
@@ -1396,7 +1396,7 @@ function viewServers(w) {
   const split = h(`<div class="srvsplit">
     <aside class="card srvlist">
       ${all.length > 6 ? '<input class="sq" type="search" placeholder="Filter by name or IP…" data-sq>' : ''}
-      ${grp('iran', '🇮🇷 Iran · entry', ir, '+ Add')}
+      ${grp('iran', `${flag('IR')} <span>Iran · entry</span>`, ir, '+ Add')}
       ${grp('foreign', '🌍 Foreign · exit', hostShown ? ['host', ...fg] : fg, '+ Add')}
     </aside>
     <div class="srvdetail" data-detail></div>
