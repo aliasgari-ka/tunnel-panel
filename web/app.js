@@ -1270,6 +1270,13 @@ function viewSettings(w) {
       <label class="f">Domains<input name="Domains" class="mono" placeholder="panel.example.com, 1-2-3-4.sslip.io" data-dom></label>
       <div class="actions"><button class="btn pri">Save &amp; restart the panel</button><span class="faint" data-domnow style="font-size:12px"></span></div>
     </form>
+    <div class="card pad" id="auCard">
+      <h3>⬆ Automatic update</h3>
+      <p class="muted" style="font-size:13px;margin:6px 0">The panel looks for a new release on GitHub every few minutes and installs it by itself: checksum and version checked, never an older build, not while a job is running, rolled back if the panel doesn't come back. Then Repair re-applies the tunnels one at a time (Tunnels → 🛠 Repair decides what may move users; hand-set options are kept). Each update is reported in the admin chat.</p>
+      <label class="row f"><input type="checkbox" data-auon> <span>Install new versions automatically</span></label>
+      <div data-aubox><div class="skel" style="height:60px"></div></div>
+      <div class="actions"><button class="btn" data-aucheck>↻ Check now</button></div>
+    </div>
     <div class="card pad" id="bkCard">
       <h3>Backup &amp; restore</h3>
       <p class="muted" style="font-size:13px;margin:6px 0">One file with everything: servers (with their SSH passwords/keys), tunnels and their secrets, settings, users and history. A copy is also kept every day on this host (the last 14, next to the panel's state in <span class="mono">backups/</span>). Keep the file private.</p>
@@ -1304,6 +1311,7 @@ function viewSettings(w) {
       alertModal('Panel address', `Saved — the panel restarts in a few seconds.\n\nOpen it at ${r.url}\n(the first visit fetches the certificate, which can take a few seconds)${r.note ? '\n\n⚠ ' + r.note : ''}`);
     } catch (e) { alertModal('Panel address', e.message); }
   };
+  wireAutoUpdate($('#auCard', card));
   const bkf = $('#bkfile', card);
   $('#bkpick', card).onclick = () => bkf.click();
   bkf.onchange = async () => {
@@ -1314,6 +1322,31 @@ function viewSettings(w) {
     try { const r = await api('/backup', { data: await f.text() }); alertModal('Restored', r.ok); await loadAll(); renderView(); }
     catch (e) { $('#bkstat', card).textContent = ''; alertModal('Restore failed', e.message); }
   };
+}
+
+// Settings → ⬆ Automatic update: the switch, the versions and the last check / install
+function wireAutoUpdate(box) {
+  const on = $('[data-auon]', box), kv = $('[data-aubox]', box), btn = $('[data-aucheck]', box);
+  let timer = 0;
+  const RES = { ok: ['ok', '✅ installed'], rolled_back: ['bad', '↩ rolled back'], failed: ['bad', '❌ failed'] };
+  const paint = (u) => {
+    on.checked = !u.off;
+    const newer = u.latest && u.latest !== u.current;
+    const l = u.last;
+    kv.innerHTML = `<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 18px;font-size:13px;margin:8px 0">
+      <span class="faint">Running version</span><span><span class="mono" data-notr>${esc(u.current)}</span></span>
+      <span class="faint">Latest release</span><span>${u.latest ? `<span class="mono" data-notr>${esc(u.latest)}</span> ${newer ? (u.installing ? '<span class="chip warn">installing…</span>' : '<span class="chip warn">newer</span>') : '<span class="chip ok">up to date</span>'}` : '<span class="faint">not checked yet</span>'}</span>
+      <span class="faint">Last check</span><span>${u.checking ? '<span>checking…</span>' : u.lastCheck ? `<span>${ago(u.lastCheck)}</span> · <span class="faint"${u.checkErr ? ' style="color:var(--crit)"' : ''}>${esc(u.note || '')}</span>` : '<span class="faint">not yet — every</span> ' + u.every + ' <span class="faint">min</span>'}</span>
+      <span class="faint">Last update</span><span>${l ? `<span class="chip ${RES[l.result] ? RES[l.result][0] : ''}">${RES[l.result] ? RES[l.result][1] : esc(l.result)}</span> <span class="mono" dir="ltr" data-notr>${esc(l.from)} → ${esc(l.to)}</span> · <span>${ago(l.at)}</span>${l.result !== 'ok' && l.note ? `<div class="faint" style="font-size:12px">${esc(l.note)}</div>` : ''}` : '<span class="faint">none yet</span>'}</span>
+    </div>`;
+    btn.disabled = !!u.checking;
+    clearTimeout(timer);
+    if ((u.checking || u.installing) && document.body.contains(box)) timer = setTimeout(load, 3000);
+  };
+  const load = () => api('/autoupdate').then(paint).catch(e => { kv.innerHTML = `<span style="color:var(--crit)">${esc(e.message)}</span>`; });
+  on.onchange = async () => { try { paint(await api('/autoupdate/set', { Off: !on.checked })); toast('Saved'); } catch (e) { alertModal('Automatic update', e.message); } };
+  btn.onclick = async () => { try { await api('/autoupdate/check', {}); btn.disabled = true; setTimeout(load, 800); } catch (e) { alertModal('Automatic update', e.message); } };
+  load();
 }
 
 /* ---------------- users (admin) ---------------- */

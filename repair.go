@@ -571,7 +571,8 @@ func (a *App) repairRun(why, by string, auto bool, ts []*Tunnel, picked map[stri
 		if waiting > 0 {
 			b.WriteString("\n\nOpen Tunnels → 🛠 Repair in the panel to choose the ones marked ✋.")
 		}
-		if failed > 0 || waiting > 0 {
+		if failed > 0 || waiting > 0 || (auto && updReport.Swap(false)) {
+			// (after an automatic update the admin chat hears what was re-applied, even nothing)
 			a.push(head + b.String())
 		} else {
 			a.pushInfo(head + b.String())

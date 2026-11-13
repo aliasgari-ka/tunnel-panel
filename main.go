@@ -138,6 +138,7 @@ func main() {
 	go app.resWatch()
 	go app.resumeInterrupted()
 	go app.repairAfterUpdate()
+	go app.autoUpdateLoop()
 	go app.memNightly()
 	go app.standbyTrim()
 	go app.premiumFilterSweep()
@@ -166,6 +167,7 @@ func main() {
 	})
 	cookieSecure = *tlsMode != "" && *tlsMode != "self"
 	panelTLS = *tlsMode
+	panelAddr = *addr
 	log.Fatal(serve(*addr, *tlsMode, *dir, app.routes()))
 }
 
