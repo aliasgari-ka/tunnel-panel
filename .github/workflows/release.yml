@@ -29,7 +29,9 @@ jobs:
       - name: Build
         run: |
           bash build.sh amd64 arm64
-          cd dist && sha256sum tunnel-panel-amd64 tunnel-panel-arm64 > SHA256SUMS && cat SHA256SUMS
+          # VERSION: what the panels' automatic update installs (it must match the binary's --version)
+          dist/tunnel-panel-amd64 --version | awk '{print $2}' > dist/VERSION && cat dist/VERSION
+          cd dist && sha256sum tunnel-panel-amd64 tunnel-panel-arm64 VERSION > SHA256SUMS && cat SHA256SUMS
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -39,6 +41,7 @@ jobs:
             dist/tunnel-panel-amd64
             dist/tunnel-panel-arm64
             dist/SHA256SUMS
+            dist/VERSION
 
   # box64 runs the amd64-only Backhaul Premium v2 core on ARM servers (ipx needs it: qemu-user
   # can't open ipx's packet socket). Ubuntu 22.04 has no box64 package, so it is built here

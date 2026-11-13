@@ -77,7 +77,7 @@ func (a *App) routes() http.Handler {
 	reads := map[string]bool{"/api/me": true, "/api/mybot": true, "/api/settings": true, "/api/methods": true,
 		"/api/servers": true, "/api/tunnels": true, "/api/tunnels/status": true, "/api/tunnels/lastjob": true,
 		"/api/traffic": true, "/api/usage": true, "/api/jobs": true, "/api/bench/results": true, "/api/bench/active": true,
-		"/api/bench/history": true, "/api/repair/status": true, "/api/bench/status": true, "/api/bench/plan": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
+		"/api/bench/history": true, "/api/repair/status": true, "/api/autoupdate": true, "/api/bench/status": true, "/api/bench/plan": true, "/api/routes/skip": true, "/api/outages": true, "/api/backup": true,
 		"/api/helpers": true, "/api/users": true, "/api/owner": true, "/api/domain": true, "/api/ai": true,
 		"/api/igproxy/servers": true, "/api/igproxy/info": true, "/api/igproxy/backups": true, "/api/igproxy/gaccount": true,
 		"/api/igproxy/warps": true, "/api/igproxy/opts": true, "/api/igproxy/health": true, "/api/igproxy/runs": true, "/api/igproxy/auto/log": true, "/api/igproxy/sites": true}
@@ -137,6 +137,9 @@ func (a *App) routes() http.Handler {
 	g("/api/repair/apply", "self", s.repairApplyH)
 	g("/api/repair/status", "self", s.repairStatusH)
 	g("/api/repair/auto", "admin", s.repairAutoH)
+	g("/api/autoupdate", "admin", s.autoUpdateH)
+	g("/api/autoupdate/set", "admin", s.autoUpdateSetH)
+	g("/api/autoupdate/check", "admin", s.autoUpdateCheckH)
 	g("/api/ai", "admin", s.aiGet)
 	g("/api/ai/run", "admin", s.aiRunH)
 	g("/api/ai/apply", "admin", s.aiApplyH)

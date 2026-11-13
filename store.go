@@ -272,6 +272,8 @@ type State struct {
 	Cleanups []Cleanup `json:"cleanups,omitempty"`
 	// LastVersion is the panel version that ran last (a new one repairs tunnels once)
 	LastVersion string `json:"lastVersion,omitempty"`
+	// AutoUpdate: the automatic update's switch and what it last saw and did (autoupdate.go)
+	AutoUpdate *AutoUpdate `json:"autoUpdate,omitempty"`
 	// LastRepair: the last Repair run and what became of each tunnel (repair.go)
 	LastRepair *RepairRun `json:"lastRepair,omitempty"`
 	// RepairAuto: what the automatic Repair after an update may do: "" = only the fixes
