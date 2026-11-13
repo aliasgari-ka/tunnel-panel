@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -111,9 +112,11 @@ func (a *App) hsRemovePath(t *Tunnel, mid, fam string) (*Job, error) {
 		defer a.jobs.done(j)
 		ctx, cancel := j.context(5 * time.Minute)
 		defer cancel()
-		j.log("removing %s from this tunnel's hot-standby paths (by hand) — auto mode and Repair won't add it back; the other paths and their users are left alone", p.label())
-		if err := a.hsUpdatePathsRun(ctx, j, t, []HSPath{p}, nil, false); err != nil {
+		t0 := time.Now()
+		j.log("removing %s by hand — auto mode and Repair won't add it back; the other paths and their users are left alone", p.label())
+		if err := a.hsRemoveRun(ctx, j, t, p); err != nil {
 			j.log("ERROR: %v", err)
+			j.log("failed after %.1f s", time.Since(t0).Seconds())
 			j.finish("failed")
 			return
 		}
@@ -125,9 +128,78 @@ func (a *App) hsRemovePath(t *Tunnel, mid, fam string) (*Job, error) {
 			}
 			return nil
 		})
+		j.log("done in %.1f s", time.Since(t0).Seconds())
 		j.finish("ok")
 	}()
 	return j, nil
+}
+
+// hsRemoveRun takes path p out of t's running switcher and stops it, and nothing else: the
+// switcher gets the list without p (reloaded in place; users on p, which the checks before
+// rule out, would be moved to another path first), then p's unit and files go on both
+// servers at once. The other paths, their units and options are not touched.
+func (a *App) hsRemoveRun(ctx context.Context, j *Job, t *Tunnel, p HSPath) error {
+	key := p.Method + "|" + p.Family
+	var before, left, good []HSPath
+	a.store.View(func(*State) {
+		before = hsGood(t)
+		for _, o := range t.Paths {
+			if o.Method+"|"+o.Family != key {
+				left = append(left, o)
+			}
+		}
+	})
+	for _, o := range left {
+		if o.Failed == "" {
+			good = append(good, o)
+		}
+	}
+	if len(good) == 0 {
+		return fmt.Errorf("no path would be left")
+	}
+	if p.Failed != "" {
+		// it never ran (its deploy failed and was cleaned up then): no switcher knows it
+		_ = a.store.Update(func(*State) error { t.Paths = left; return nil })
+		j.log("%s never came up here — nothing to stop", p.label())
+		return nil
+	}
+	ir, kh, irErr, khErr := a.hsHosts(ctx, t)
+	if irErr != nil {
+		return fmt.Errorf("Iran server: %w", irErr)
+	}
+	if khErr != nil {
+		kh = nil // its teardown is kept as a cleanup, run once the server answers
+		j.log("foreign server can't be reached now (%v) — %s is stopped there once it answers", khErr, p.label())
+	}
+	var oldPaths []HSPath
+	var oldActive, oldFamily, oldPin string
+	_ = a.store.Update(func(*State) error {
+		oldPaths, oldActive, oldFamily, oldPin = t.Paths, t.Active, t.Family, t.HSPin
+		t.Paths = left
+		if t.HSPin == key {
+			t.HSPin = ""
+		}
+		if t.Active == p.Method && t.Family == p.Family {
+			t.Active, t.Family = good[0].Method, good[0].Family
+		}
+		return nil
+	})
+	if err := a.hsSwitcherUpdate(ctx, j, ir, t, before, good); err != nil {
+		// the old switcher may still run with p: the panel keeps it as it was
+		_ = a.store.Update(func(*State) error {
+			t.Paths, t.Active, t.Family, t.HSPin = oldPaths, oldActive, oldFamily, oldPin
+			return nil
+		})
+		return fmt.Errorf("switcher: %w", err)
+	}
+	t1 := time.Now()
+	a.teardownPaths(ctx, ir, kh, t, []HSPath{p}) // both servers at once
+	where := "both servers"
+	if kh == nil {
+		where = "the Iran server"
+	}
+	j.log("stopped %s and removed its files on %s (%.1f s)", p.label(), where, time.Since(t1).Seconds())
+	return nil
 }
 
 // hsUnremove takes mid|fam off t's removed list (no job). Reports whether it was on it.

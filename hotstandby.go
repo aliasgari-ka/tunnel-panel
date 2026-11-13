@@ -447,13 +447,25 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 13
+# tp-switcher 14
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
+# A new path list (conf, targets, keys) is taken on SIGHUP, without a restart: what is known
+# of each path that stays moves with it to its new index and the users stay on their path.
+# The panel sends it only to a switcher running this very script (the "running" file).
 cd "$(dirname "$0")" || exit 1
-. ./conf
-mapfile -t TL < targets
-for ((k=0; k<N; k++)); do read -r A[$k] H[$k] <<< "${TL[$k]}"; done
+# load: the path list. A path's own files are named by its key ("method|family" →
+# up-method.family.sh), so a path added or removed before it leaves them as they are.
+load() {
+  . ./conf; A=(); H=(); PK=(); PF=()
+  mapfile -t TL < targets; [ -s keys ] && mapfile -t PK < keys
+  for ((k=0; k<N; k++)); do read -r A[$k] H[$k] <<< "${TL[$k]}"; PF[$k]=${PK[$k]//|/.}; [ -n "${PF[$k]}" ] || PF[$k]=$k; done
+}
+# pinnew: the panel's pin.new becomes pin unless pin already names that path (then its press
+# stamp stays: a choice made in the panel moments before, not acted on yet, isn't wiped)
+pinnew() { [ -s pin.new ] || return 0; { [ -s pin ] && [ "$(cut -d' ' -f1 pin)" = "$(cat pin.new)" ]; } || cp pin.new pin; rm -f pin.new; }
+load; pinnew
+echo "$$ $(sha256sum < switch.sh | cut -c1-64)" > running
 ev() { echo "$(date +%s) $*" >> events.log; tail -n 300 events.log > events.tmp && mv events.tmp events.log; }
 tune() {
   # without the conntrack tool, connections on a path that died wait for their own timeout
@@ -479,10 +491,10 @@ use() { # use <k> <reason>: make-before-break — one atomic swap of the selecto
   # connections take the new path, the ones already open finish on the old one (it keeps
   # running). A dead path's own connections are cleared (flush) once it has stayed down
   # FLUSHAFTER s, so clients reconnect — see the check loop.
-  bash up-$1.sh >/dev/null 2>&1
+  bash up-${PF[$1]}.sh >/dev/null 2>&1
   ev switch "$active" "$1" "$2"; active=$1; echo "$1 $(date +%s)" > active
 }
-flush() { bash flush-$1.sh >/dev/null 2>&1; flushed[$1]=1; }
+flush() { bash flush-${PF[$1]}.sh >/dev/null 2>&1; flushed[$1]=1; }
 cost() { echo $(( ${qr[$1]:-999} + ${ql[$1]:-0} * 5 / 2 )); } # ms, 1 % loss ≈ 25 ms
 mb() { printf '%d.%d' $(($1 / 1000)) $((($1 % 1000) / 100)); }
 pc() { printf '%d.%d' $((${1:-0} / 10)) $((${1:-0} % 10)); }
@@ -543,13 +555,48 @@ cmpcancel() { # (killed only while it is still this shell's job: a finished one'
   [ -n "$cmppid" ] && jobs -p | grep -qx "$cmppid" && kill $cmppid 2>/dev/null
   cmppid=""; rm -f cmp.run cmp.done cmp.done.* cmp.tmp.*
 }
+# reload (SIGHUP, handled at the top of a round): the new path list. mp[old index] = new
+# index (-1: gone). The users stay on their path; when theirs is gone they go to the best one
+# left, as from a dead path, and its connections are cleared. reload.done answers the panel
+# with its reload.req: "<req> ok", or "<req> fail" (the list can't be matched: exit, and the
+# panel restarts the unit).
+remap() { local -n _r=$1; local -a _b=(); local k; for k in "${!_r[@]}"; do [ "${mp[$k]:--1}" -ge 0 ] && _b[${mp[$k]}]=${_r[$k]}; done; _r=(); for k in "${!_b[@]}"; do _r[$k]=${_b[$k]}; done; }
+mapix() { if [ -n "$1" ] && [ "$1" -ge 0 ] 2>/dev/null; then echo "${mp[$1]:--1}"; else echo -1; fi; }
+reload() {
+  reload=""; local rq="" k v s b old=$active; [ -s reload.req ] && read -r rq < reload.req
+  local -a ok_=("${PK[@]}") of_=("${PF[@]}"); local -A at_=()
+  cmpcancel; load
+  if [ ${#PK[@]} -lt $N ] || [ ${#ok_[@]} = 0 ]; then echo "$rq fail" > reload.done; exit 0; fi
+  for ((k=0; k<N; k++)); do at_[${PK[$k]}]=$k; done
+  mp=(); for k in "${!ok_[@]}"; do mp[$k]=${at_[${ok_[$k]}]:--1}; done
+  for v in ok since fails qr ql sp spb spat flushed dropat leftat; do remap $v; done
+  active=$(mapix $active); failfrom=$(mapix $failfrom); vfrom=$(mapix $vfrom); vto=$(mapix $vto)
+  [ $vfrom -ge 0 ] && [ $vto -ge 0 ] || verifyat=0
+  lastpin=""; rm -f c[0-9]*; pinnew
+  bash base.sh >/dev/null 2>&1
+  if [ $active -ge 0 ]; then
+    # the same selector again (one atomic swap, open connections untouched): its rules may be new
+    bash up-${PF[$active]}.sh >/dev/null 2>&1
+    s=""; [ -s active ] && read -r _ s < active; echo "$active ${s:-$(date +%s)}" > active
+  else
+    now=$(date +%s); b=$(pick); [ $b -ge 0 ] || b=0
+    use $b "path $old left the list — took path $b"
+    [ "$old" -ge 0 ] 2>/dev/null && [ -n "${of_[$old]}" ] && bash flush-${of_[$old]}.sh >/dev/null 2>&1
+  fi
+  echo "$rq ok" > reload.done
+}
+# nap: sleep that a SIGHUP cuts short; waitall: the round's checks, all ended (a SIGHUP
+# interrupts wait, and a check still running would write its result under an old index)
+nap() { sleep $1 & local s=$!; wait $s 2>/dev/null; kill $s 2>/dev/null; }
+waitall() { local p; for p in "$@"; do while kill -0 $p 2>/dev/null; do wait $p; done; done; }
+reload=""; declare -a mp; trap 'reload=1' HUP
 declare -a ok since fails qr ql sp spb spat flushed dropat leftat
 active=-1; cmpid=0; cmppid=""
 # failfrom: the path an outage moved the users off (auto mode takes them back to it, see below)
 failfrom=-1
 rm -f cmp.run cmp.done cmp.tmp cmp.done.* cmp.tmp.*
 bash base.sh >/dev/null 2>&1
-if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash up-$a.sh >/dev/null 2>&1; active=$a; }; fi
+if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash up-${PF[$a]}.sh >/dev/null 2>&1; active=$a; }; fi
 [ $active -ge 0 ] || use 0 "start"
 # backoff: after a comparison that changed nothing, the next waits 30 min, doubling to 2 h
 tune; n=0; cmpat=0; backoff=1800; hold=0; badsince=0; cmploss=0
@@ -561,6 +608,7 @@ FLUSHAFTER=$(( ${GRACE:-0} + 15 ))
 VERIFY=${VERIFY:-300}; verifyat=0; vfrom=-1; vto=-1; vso=0; vlo=0; vco=0
 pindone=""; [ -s pin.done ] && read -r pindone < pin.done
 while true; do
+  [ -n "$reload" ] && reload
   M=manual; [ -s mode ] && read -r M < mode
   P0=0; PN=""; [ -s pin ] && read -r P0 PN < pin; [ -n "$P0" ] && [ "$P0" -ge 0 ] 2>/dev/null && [ "$P0" -lt $N ] || P0=0
   all=0; [ "${fails[$active]:-0}" -gt 0 ] && all=1
@@ -579,7 +627,7 @@ while true; do
       pids+=($!)
     fi
   done
-  wait "${pids[@]}"
+  waitall "${pids[@]}"
   now=$(date +%s); : > status.tmp
   for ((k=0; k<N; k++)); do
     if [ -f c$k ]; then
@@ -732,7 +780,7 @@ while true; do
   # the users' path just missed a check: look again at once instead of after EVERY, so a dead
   # path is left within seconds (still FAILS misses in a row, so a single lost check isn't one)
   # (then every EVERY s through the grace: each round pings every path, which takes a while)
-  if [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -gt 0 ] && [ "${fails[$active]}" -lt $FAILS ]; then sleep 0.3; else sleep $EVERY; fi
+  if [ "${ok[$active]}" != 1 ] && [ "${fails[$active]:-0}" -gt 0 ] && [ "${fails[$active]}" -lt $FAILS ]; then nap 0.3; else nap $EVERY; fi
 done
 `
 
@@ -753,28 +801,27 @@ func (a *App) hsSwitcherPlan(t *Tunnel, paths []HSPath) SidePlan {
 		dir + "/down.sh":   {Content: []byte("#!/bin/bash\n" + hsSelectDown(t)), Mode: 0o755},
 	}
 	files[dir+"/base.sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + hsBase(t, paths) + "exit 0\n"), Mode: 0o755}
-	// the chosen path goes to pin.new; the setup keeps the pin already there when it names the
-	// same path, so a reinstall (Repair renewing the switcher) never wipes a choice made in
-	// the panel moments before — with its press stamp — that the old switcher hadn't acted on
-	files[dir+"/pin.new"] = FileSpec{Content: []byte(hsPinIndex(t, paths) + "\n"), Mode: 0o644}
+	// each path's own files are named by its key, not its place in the list: removing one path
+	// leaves every other path's files byte for byte as they were (named by index, all those
+	// after it changed — 19 of 22 files rewritten to take one path out)
 	var targets []string
-	for k, p := range paths {
-		files[fmt.Sprintf("%s/up-%d.sh", dir, k)] = FileSpec{Content: []byte("#!/bin/bash\n" + hsSelectUp(t, p, srv, fsrv, set) + "exit 0\n"), Mode: 0o755}
-		files[fmt.Sprintf("%s/flush-%d.sh", dir, k)] = FileSpec{Content: []byte("#!/bin/bash\n" + hsFlush(t, p, srv, fsrv, set)), Mode: 0o755}
+	for _, p := range paths {
+		f := hsPathFile(p)
+		files[dir+"/up-"+f+".sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + hsSelectUp(t, p, srv, fsrv, set) + "exit 0\n"), Mode: 0o755}
+		files[dir+"/flush-"+f+".sh"] = FileSpec{Content: []byte("#!/bin/bash\n" + hsFlush(t, p, srv, fsrv, set)), Mode: 0o755}
 		targets = append(targets, hsTarget(t, p, srv, fsrv, set)+" "+hsPingTarget(t, p, srv, fsrv, set))
 	}
 	files[dir+"/targets"] = FileSpec{Content: []byte(strings.Join(targets, "\n") + "\n"), Mode: 0o644}
-	// the switcher comes back on the path in "active", by its index: a list with a path added
-	// or removed before it would put the users on another path, so the index follows its path
-	// (keys: "method|family" per index; gone = it starts without one, as on a fresh deploy)
-	var keys []string
-	for _, p := range paths {
-		keys = append(keys, p.Method+"|"+p.Family)
-	}
-	files[dir+"/keys.new"] = FileSpec{Content: []byte(strings.Join(keys, "\n") + "\n"), Mode: 0o644}
-	keepActive := hsKeepActive(dir)
-	keepPin := fmt.Sprintf("cd %s && { [ -s pin ] && [ \"$(cut -d' ' -f1 pin)\" = \"$(cat pin.new)\" ] || cp pin.new pin; } && rm -f pin.new\n", shq(dir))
-	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: keepActive + keepPin + panelPortsSetup + hsConntrackSetup, Unit: Unit{
+	// keys.new and pin.new are made by the setup, not written as files: both are used up on
+	// the server (keys.new → keys, pin.new → pin), so as files they counted as changed on
+	// every deploy. The switcher comes back on the path in "active", by its index: a list with
+	// a path added or removed before it would put the users on another path, so the index
+	// follows its path (keys: "method|family" per index; gone = it starts without one). The
+	// chosen path goes to pin.new; the switcher keeps the pin already there when it names the
+	// same path, so a reinstall never wipes a choice (with its press stamp) not acted on yet.
+	keysNew := fmt.Sprintf("printf '%%s\\n' %s > %s/keys.new\nprintf '%%s\\n' %s > %s/pin.new\n",
+		shqAll(hsKeys(paths)), shq(dir), hsPinIndex(t, paths), shq(dir))
+	return SidePlan{Files: files, Artifacts: []Artifact{probeArt}, Setup: keysNew + hsKeepActive(dir) + panelPortsSetup + hsConntrackSetup, Unit: Unit{
 		Desc: "Hot standby switcher " + t.Name, ExecStart: "/bin/bash " + dir + "/switch.sh", ExecStopPost: dir + "/down.sh"}}
 }
 
