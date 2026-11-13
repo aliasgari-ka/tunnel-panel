@@ -2020,7 +2020,7 @@ function tunnelCard(t) {
     <div class="tc-h"><div class="tc-t"><span class="sflag" aria-hidden="true">🛰</span><div class="tc-tn"><h3 title="${esc(t.name)}" data-notr>${esc(t.name)}</h3>${ownerChip(t.owner)}</div></div>${active ? `<span class="pill on"><span class="led"></span>running</span>` : `<span class="pill off"><span class="led"></span>stopped</span>`}</div>
     <div class="tc-r" title="${esc(serverName(t.serverId))} → ${esc(fg ? fg.name : 'this panel host')}">
       <span class="tc-end"><span class="ef">${fl(ir, flag('IR'))}</span><span class="en"><small>Iran server</small><b class="nm">${srvNm(t.serverId)}</b></span><span class="sd" data-ir></span></span>
-      <span class="ln${t.active ? ' on' : ''}"></span>
+      <span class="tc-mid"><span class="ln${t.active ? ' on' : ''}"></span><span class="tc-m">${chips}</span></span>
       <span class="tc-end r"><span class="sd" data-fg></span><span class="en"><small>Foreign server</small><b class="nm">${fg ? nm(fg.name) : 'panel host'}</b></span><span class="ef">${fl(fg, fg ? '🌍' : '🖥')}</span></span>
     </div>
     <dl class="kvt">
@@ -2030,7 +2030,6 @@ function tunnelCard(t) {
       <div><dt>If it fails</dt><dd>${keep}</dd></div>
       ${t.note ? `<div class="wide"><dt>Note</dt><dd>${esc(t.note)}</dd></div>` : ''}
     </dl>
-    <div class="tc-m">${chips}</div>
     ${t.active ? `<div class="traf" data-traf="${t.id}">
       <div class="rates"><span class="dn" title="foreign → Iran (download)">↓ <b data-rd>…</b></span><span class="up" title="Iran → foreign (upload)">↑ <b data-ru>…</b></span></div>
       <svg class="spark" viewBox="0 0 100 38" preserveAspectRatio="none" aria-hidden="true"><path class="ad"/><path class="pd"/><path class="pu"/></svg>

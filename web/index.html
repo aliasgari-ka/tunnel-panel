@@ -1021,6 +1021,16 @@ details.igs-card[open]>summary{border-bottom:1px solid var(--line)}
 .tc-m .chip.fo{border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
 .tc-m .chip.warn{border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
 .tdet .traf .spark{height:46px}
+/* tunnel page: the status chips sit on the route line; rates and totals share one line; standby paths in two columns */
+.tdet .tc-mid{flex:1;min-width:0;position:relative;display:flex;align-items:center;justify-content:center;align-self:stretch}
+.tdet .tc-mid .ln{position:absolute;inset-inline:0;top:50%;margin:0}
+.tdet .tc-mid .tc-m{position:relative;justify-content:center;padding:0 8px;background:var(--panel);max-width:100%}
+.tdet .traf{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:baseline;gap:4px 14px}
+.tdet .traf .meta:not([data-speed]){grid-column:2;grid-row:1;justify-content:flex-end;gap:4px 12px}
+.tdet .traf .spark{grid-column:1/-1;height:34px}
+.tdet .traf [data-speed]{grid-column:1/-1}
+.tdet .tc-hs .hsl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.tdet .tc-hs .hsl>.hsset{grid-column:1/-1}
 .tdet .traf [data-speed]{display:block}.tdet .traf [data-speed]:empty{display:none}
 .tdet .tc-idle{min-height:0;padding:12px;font-size:12.5px;border:1px dashed var(--line);background:transparent}
 .tc-hs{display:flex;flex-direction:column;gap:6px}
@@ -1073,6 +1083,11 @@ details.tshape>.ff{margin-top:10px;padding:12px;background:var(--panel-2);border
   .tc-r{flex-direction:column;align-items:stretch;gap:0}
   .tc-end,.tc-end.r{max-width:none;flex-direction:row;justify-content:flex-start;text-align:start}
   .tc-end.r .sd{order:3}.tc-end.r .ef{order:0}.tc-end.r .en{order:1;flex:1}.tc-end .en{flex:1}
+  .tdet .tc-mid{justify-content:flex-start;align-items:stretch;gap:12px}
+  .tdet .tc-mid .ln{position:static;flex:none;margin:0;margin-inline-start:21px}
+  .tdet .tc-mid .tc-m{background:transparent;padding:6px 0;justify-content:flex-start}
+  .tdet .tc-hs .hsl{grid-template-columns:1fr}
+  .tdet .traf{grid-template-columns:1fr}.tdet .traf .meta:not([data-speed]){grid-column:1;grid-row:auto;justify-content:space-between}
   .tc-r .ln{min-height:14px;min-width:0;flex:none;border-top:0!important;border-inline-start:2px dashed var(--line);margin-inline-start:21px;width:0}
   .tc-r .ln.on{border-inline-start:2px solid var(--good)}.tc.down .tc-r .ln.on{border-inline-start:2px dashed var(--crit)}
   .kvt{grid-template-columns:repeat(2,minmax(0,1fr))}
