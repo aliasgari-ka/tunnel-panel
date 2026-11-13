@@ -323,3 +323,39 @@ func TestDownCauseSchedule(t *testing.T) {
 		t.Fatalf("an up path keeps its cause: %+v", c)
 	}
 }
+
+// 2026-11-13, "تانل هلند 1": the card said "foreign server: the CPU is overloaded (load 4.2
+// on 2 cores)" for Plain GRE and Backhaul Premium. nl's two cores were ~45% busy; the load
+// came from many short threads (Premium under box64, a crash-looping qemu core). GRE lost
+// 73% of its packets on the route; Premium's emulated core overflowed its tun queue.
+func TestDownCauseLoadIsNotCPU(t *testing.T) {
+	busy := strings.Replace(dcActive, "LOAD 0.20 2\n", "LOAD 4.20 2\nCPU 45\n", 1)
+	in := dcSides(dcActive+"FWD 1\n", busy+"PROBE 1\n")
+	if c := dcClassify(in); c.code == "cpu" {
+		t.Fatalf("load 4.2 with the CPU 45%% busy named the CPU: %s", c.en)
+	}
+	hot := strings.Replace(dcActive, "LOAD 0.20 2\n", "LOAD 4.20 2\nCPU 97\n", 1)
+	dcCheck(t, dcSides(dcActive+"FWD 1\n", hot+"PROBE 1\n"), "cpu", "foreign", "97% busy, load 4.2 on 2 cores", "97% مشغول")
+	// an older answer without the busy sample still judges by the load
+	old := strings.Replace(dcActive, "LOAD 0.20 2\n", "LOAD 4.20 2\n", 1)
+	dcCheck(t, dcSides(dcActive+"FWD 1\n", old+"PROBE 1\n"), "cpu", "foreign", "load 4.2 on 2 cores")
+}
+
+func TestDownCauseL3Loss(t *testing.T) {
+	ir := strings.Replace(dcActive, "PING small 0\n", "PING small 100\n", 1) + "IF up 100 200\nIF2 133 360\nINNER 70\n"
+	kh := strings.Replace(dcActive, "LOAD 0.20 2\n", "LOAD 4.20 2\nCPU 45\n", 1) + "PROBE 1\nIF up 50 60\nIF2 59 166\n"
+	in := dcSides(ir, kh)
+	in.Method, in.Title, in.Proto, in.L3, in.IfaceKnown, in.FwdPort = "gre", "GRE", "GRE", true, true, 0
+	dcCheck(t, in, "l3_loss", "route", "loses most of this tunnel's GRE packets", "70%", "sent 160, received 33")
+}
+
+func TestDownCauseCoreSlow(t *testing.T) {
+	kh := strings.Replace(dcActive, "LOAD 0.20 2\n", "LOAD 4.20 2\nCPU 48\n", 1) + "PROBE 1\nEMU\nST ESTAB 192.0.2.10:443 198.51.100.20:443\nR 443 0 95\n"
+	for i := 0; i < 30; i++ {
+		kh += "J @1794481650 13-Nov 01:18:52 [WARN] NetToTun channel full, dropping packet\n"
+	}
+	ir := dcActive + "FWD 1\nST LISTEN 0.0.0.0:443 *:*\nST ESTAB 198.51.100.20:443 192.0.2.10:443\n"
+	in := dcSides(ir, kh)
+	in.Method, in.Title = "premium", "Backhaul Premium"
+	dcCheck(t, in, "core_slow", "foreign", "can't keep up", "30 times", "under emulation", "NetToTun channel full")
+}

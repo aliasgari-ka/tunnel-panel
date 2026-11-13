@@ -50,9 +50,11 @@ type DownCause struct {
 }
 
 const (
-	dcEvery  = 15 * time.Minute // a cause this old is looked for again while the path stays down
-	dcMinGap = 5 * time.Minute  // never more often than this per path
-	dcRecent = 15 * time.Minute // log lines this recent count as "now"
+	dcEvery   = 15 * time.Minute // a cause this old is looked for again while the path stays down
+	dcMinGap  = 5 * time.Minute  // never more often than this per path
+	dcRecent  = 15 * time.Minute // log lines this recent count as "now"
+	dcCPUBusy = 90               // % of all cores busy (one-second sample) that counts as overloaded
+	dcSlowMin = 20               // "queue full, dropping" lines in the recent log that prove a core too slow
 )
 
 // dcSem: at most two hunts at a time across the panel.
@@ -102,6 +104,7 @@ type dcSide struct {
 	MemAvail, MemTotal     int64       // kB
 	Load                   float64
 	NProc                  int
+	CPU                    int // % of all cores busy over one second, -1 = not measured
 	OOM, NAT, Raw, InDrop  []string
 	UFW, InPolicy          string
 	Reach                  []dcReach
@@ -132,7 +135,7 @@ if ! systemctl cat "$u" >/dev/null 2>&1; then echo NOUNIT; else
 systemctl show -p ActiveState -p SubState -p NRestarts "$u" 2>/dev/null | sed 's/^/P /'
 t=$(systemctl show -p ActiveEnterTimestamp --value "$u" 2>/dev/null); [ -n "$t" ] && echo "SINCE $(date -d "$t" +%s 2>/dev/null)"
 pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null)
-[ "${pid:-0}" != 0 ] && tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null | grep -q qemu && echo EMU
+[ "${pid:-0}" != 0 ] && { tr '\0' ' ' </proc/$pid/cmdline; readlink /proc/$pid/exe; } 2>/dev/null | grep -qE 'qemu|box64' && echo EMU
 cg=$(systemctl show -p ControlGroup --value "$u" 2>/dev/null)
 pids=$( { cat /sys/fs/cgroup$cg/cgroup.procs /sys/fs/cgroup/systemd$cg/cgroup.procs; } 2>/dev/null | paste -sd'|')
 if [ -n "$pids" ]; then
@@ -154,11 +157,13 @@ if [ -n "$ifc" ]; then
     echo "IF $st $(cat /sys/class/net/$ifc/statistics/rx_packets) $(cat /sys/class/net/$ifc/statistics/tx_packets)"
   else echo "IF missing"; fi
 fi
-[ -n "$inner" ] && echo "INNER $(loss -c3 -W2 -i0.3 -q "$inner")"
+[ -n "$inner" ] && echo "INNER $(loss -c10 -W2 -i0.2 -q "$inner")"
 [ "$probe" -gt 0 ] && echo "PROBE $(ss -Htln "sport = :$probe" 2>/dev/null | grep -c .)"
 [ "$fwd" -gt 0 ] && echo "FWD $(ss -Htln "sport = :$fwd" 2>/dev/null | grep -c .)"
 awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{print "MEM",a+0,t+0}' /proc/meminfo
 echo "LOAD $(cut -d' ' -f1 /proc/loadavg) $(nproc)"
+c1=$(head -n1 /proc/stat); sleep 1; c2=$(head -n1 /proc/stat)
+echo "$c1 $c2" | awk '$1=="cpu"&&$12=="cpu"{t=0;for(i=2;i<=9;i++)t-=$i;for(i=13;i<=20;i++)t+=$i;id=$16+$17-$5-$6;if(t>0)printf "CPU %.0f\n",100*(t-id)/t}'
 journalctl -k --since -3h -o short-unix --no-pager 2>/dev/null | grep -ai 'killed process' | tail -n 3 | cut -c1-200 | sed 's/^/OOM /'
 { iptables -w -t nat -S; ip6tables -w -t nat -S; } 2>/dev/null | grep -E -- '-j (REDIRECT|DNAT|TPROXY)' | grep -vE -- '^-A TP|-j TP' | head -n 30 | sed 's/^/NAT /'
 { iptables -w -t mangle -S; } 2>/dev/null | grep -E -- '-j TPROXY' | head -n 10 | sed 's/^/NAT /'
@@ -294,6 +299,8 @@ func dcParse(s *dcSide, out string) {
 				s.Load, _ = strconv.ParseFloat(f[1], 64)
 				s.NProc, _ = strconv.Atoi(f[2])
 			}
+		case "CPU":
+			s.CPU = int(num(1))
 		case "OOM":
 			s.OOM = append(s.OOM, rest)
 		case "NAT":
@@ -315,7 +322,7 @@ func dcParse(s *dcSide, out string) {
 }
 
 func newDCSide(where, whereFa, server, peer string) *dcSide {
-	return &dcSide{Where: where, WhereFa: whereFa, Server: server, Peer: peer, PingSmall: -1, PingBig: -1, Inner: -1,
+	return &dcSide{Where: where, WhereFa: whereFa, Server: server, Peer: peer, PingSmall: -1, PingBig: -1, Inner: -1, CPU: -1,
 		Probe: -1, Fwd: -1, MemAvail: -1, MemTotal: -1, Pkts: [2][2]int64{{-1, -1}, {-1, -1}}}
 }
 
@@ -480,7 +487,7 @@ func dcClassify(in *dcInput) *dcResult {
 			extra = append(extra, fmt.Sprintf("%s: the core crashed %d times in 24 h%s", s.Where, s.Panics24, last))
 		}
 		if s.Emulated {
-			extra = append(extra, s.Where+": the core is an x86 build running under emulation (qemu) on this ARM server — slower, and crashes the emulator causes are possible")
+			extra = append(extra, s.Where+": the core is an x86 build running under emulation (qemu/box64) on this ARM server — slower, and crashes the emulator causes are possible")
 		}
 	}
 	res := func(side, code, en, fa, act, actFa string, restart bool, ev ...string) *dcResult {
@@ -719,6 +726,7 @@ func dcClassify(in *dcInput) *dcResult {
 	}
 
 	// 4. L3 paths: the interface, packets sent and received, the inner address
+	var l3ev []string
 	if in.L3 {
 		if in.IfaceKnown {
 			for _, s := range sides {
@@ -741,6 +749,7 @@ func dcClassify(in *dcInput) *dcResult {
 		if in.IR.Inner >= 0 {
 			ev = append(ev, fmt.Sprintf("test: ping from Iran to the foreign side's tunnel address: %d%% lost", in.IR.Inner))
 		}
+		l3ev = ev
 		switch {
 		case d(in.IR, 1) > 0 && d(in.KH, 0) == 0:
 			return res("route", "l3_drop_out",
@@ -784,6 +793,15 @@ func dcClassify(in *dcInput) *dcResult {
 		}
 	}
 
+	// most (not all) of an L3 tunnel's packets lost on the way: the pings through the
+	// tunnel fail while the cores run and the servers still reach each other
+	if in.L3 && in.IR.Inner >= 50 {
+		return res("route", "l3_loss",
+			fmt.Sprintf("the route loses most of this tunnel's %s packets: %d%% of the pings through the tunnel to the foreign side's tunnel address were lost", in.Proto, in.IR.Inner),
+			fmt.Sprintf("مسیر بیشتر بسته‌های %s این تانل را گم می‌کند: %d%% پینگ‌ها از داخل تانل به آدرس تانلِ سمت خارج گم شد", in.Proto, in.IR.Inner),
+			actRouteEn, actRouteFa, false, l3ev...)
+	}
+
 	// 6. the route cutting the connection again and again; Paqet's losses
 	for _, s := range sides {
 		mins := map[int64]bool{}
@@ -822,11 +840,28 @@ func dcClassify(in *dcInput) *dcResult {
 				fmt.Sprintf("%s: حافظه تقریباً پر است (%d مگابایت آزاد از %d) — هسته‌ها از پسش برنمی‌آیند", s.nameFa(), s.MemAvail/1024, s.MemTotal/1024),
 				"free memory on that server", "روی آن سرور حافظه آزاد کنید", false)
 		}
-		if s.NProc > 0 && s.Load > float64(2*s.NProc) {
+		// the load average alone is no proof: many short-lived threads (Go cores, an
+		// emulator) push it past 2× the cores while half the CPU is idle. Busy time is.
+		if s.NProc > 0 && (s.CPU >= dcCPUBusy || s.CPU < 0 && s.Load > float64(2*s.NProc)) {
+			busy, busyFa := "", ""
+			if s.CPU >= 0 {
+				busy, busyFa = fmt.Sprintf("%d%% busy, ", s.CPU), fmt.Sprintf("%d%% مشغول، ", s.CPU)
+			}
 			return res(sideID(s), "cpu",
-				fmt.Sprintf("%s: the CPU is overloaded (load %.1f on %d cores)", s.name(), s.Load, s.NProc),
-				fmt.Sprintf("%s: پردازنده بیش از حد درگیر است (بار %.1f روی %d هسته)", s.nameFa(), s.Load, s.NProc),
+				fmt.Sprintf("%s: the CPU is overloaded (%sload %.1f on %d cores)", s.name(), busy, s.Load, s.NProc),
+				fmt.Sprintf("%s: پردازنده بیش از حد درگیر است (%sبار %.1f روی %d هسته)", s.nameFa(), busyFa, s.Load, s.NProc),
 				"find what keeps that server's CPU busy", "ببینید چه چیزی پردازنده‌ی آن سرور را درگیر کرده", false)
+		}
+		// the core itself can't keep up: its queue toward the tun interface overflows
+		if n, l := dcCountRecent(s, dcSlowRe, now-int64(dcRecent/time.Second)); n >= dcSlowMin {
+			en, fa := "", ""
+			if s.Emulated {
+				en, fa = " — it is an x86 build running under emulation on this ARM server, which is much slower", " — نسخه‌ی x86 است که روی این سرور ARM زیر شبیه‌ساز اجرا می‌شود و خیلی کندتر است"
+			}
+			return res(sideID(s), "core_slow",
+				fmt.Sprintf("%s: the %s can't keep up and drops packets (its queue is full: %d times in its recent log)%s", s.name(), core, n, en),
+				fmt.Sprintf("%s: %s از پس ترافیک برنمی‌آید و بسته‌ها را دور می‌ریزد (صفش پر است: %d بار در لاگ اخیرش)%s", s.nameFa(), coreFa, n, fa),
+				"keep the users on a lighter path on this server, or give the server more CPU", "کاربران را روی مسیر سبک‌تری روی این سرور نگه دارید، یا پردازنده‌ی سرور را بیشتر کنید", false, dcEv(s, l))
 		}
 		if len(s.OOM) > 0 {
 			return res(sideID(s), "oom_other",
@@ -1305,4 +1340,21 @@ func dcLog(j *Job, c *DownCause) {
 	if c.Action != "" {
 		j.log("      what to do: %s", c.Action)
 	}
+}
+
+// dcSlowRe: a core whose own queue overflows (Backhaul Premium's NetToTun/TunToNet channel)
+var dcSlowRe = regexp.MustCompile(`(?i)channel full, dropping packet|worker \d+ dropped packet`)
+
+// dcCountRecent counts a side's log lines since from that match re, and returns the newest.
+func dcCountRecent(s *dcSide, re *regexp.Regexp, from int64) (int, dcLine) {
+	n := 0
+	var last dcLine
+	for _, l := range s.Journal {
+		if l.At > 0 && l.At < from || !re.MatchString(l.Text) {
+			continue
+		}
+		n++
+		last = l
+	}
+	return n, last
 }
