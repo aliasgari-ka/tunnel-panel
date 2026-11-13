@@ -1275,7 +1275,7 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 			in.Updated = time.Now().Unix()
 			in.Active, in.Secrets, in.Failover = "", nil, nil
 			// the panel's own bookkeeping never comes from the request
-			in.Paths, in.Applying, in.HSPin, in.HSSeen, in.HSOff = nil, "", "", 0, nil
+			in.Paths, in.Applying, in.HSPin, in.HSSeen, in.HSOff, in.HSWant = nil, "", "", 0, nil, nil
 			in.OptsManual, in.PathNet = nil, nil
 			if !admin {
 				in.Owner = user

@@ -2250,11 +2250,22 @@ function hsRows(t) {
     if (v.rtt && v.rtt[i] >= 0) out.push(v.rtt[i] + ' ms');
     if (v.loss && v.loss[i] >= 0) out.push(v.loss[i].toFixed(1) + '% loss');
     if (v.kbps && v.kbps[i] > 0) out.push((v.kbps[i] / 1000).toFixed(1) + ' Mbps');
-    return out.length ? `<span class="hq mono">${out.join(' · ')}</span>` : '';
+    return (out.length ? `<span class="hq mono">${out.join(' · ')}</span>` : '') + hsIdleHtml(v, i);
   };
   const na = (i) => !ok[i] && v.cause && v.cause[i] && v.cause[i].code === 'proto_filter';
   return `<div class="hsl">${v.paths.map((p, i) =>
     `<div class="${ok[i] ? 'ok' : na(i) ? 'na' : 'bad'}${i === v.active ? ' cur' : ''}"><span class="hi">${ok[i] ? '✓' : na(i) ? '⛔' : '✕'}</span><span class="hm"><span class="hn">${esc(p)}${i === v.pin ? ' <span class="faint">📌 chosen</span>' : ''}</span>${q(i)}</span>${i === v.active ? '<b class="hu">← users</b>' : (ok[i] && v.keys ? `<button type="button" class="btn sm ghost" data-hspin="${esc(v.keys[i])}" title="move the users here now — open connections finish where they are, nobody is cut">use</button>` : '')}${hsRowMenu(v, ok, i)}</div>`).join('')}</div>`;
+}
+// what a standby path's cores burn while the users are elsewhere (the hourly standby check):
+// shown from 10 % of a core, so an expensive standby is seen before it slows the server down
+function hsIdleHtml(v, i) {
+  const ir = v.idleIr ? v.idleIr[i] : -1, kh = v.idleKh ? v.idleKh[i] : -1;
+  const top = Math.max(ir == null ? -1 : ir, kh == null ? -1 : kh);
+  if (i === v.active || top < 10) return '';
+  const side = (n, en, fa) => n >= 0 ? `${L(en, fa)} ${n}%` : null;
+  const parts = [side(ir, 'Iran', 'ایران'), side(kh, 'foreign', 'خارج')].filter(Boolean).join(' · ');
+  const title = L('CPU (% of one core) this path\'s cores used with no users on it, measured by the hourly standby check — ', 'پردازنده (درصد یک هسته) که هسته‌های این مسیر بدون کاربر مصرف کردند، در بررسی ساعتی مسیرهای آماده — ') + parts;
+  return `<span class="hq${top >= 25 ? ' hidle-hi' : ''}" title="${esc(title)}" data-notr>⏻ ${L('idle core', 'هسته‌ی بیکار')}: ${top}% CPU <span class="faint">(${esc(parts)})</span></span>`;
 }
 // a down path's proven cause: one sentence naming the side; the evidence and what to do on expand
 function hsCauseHtml(c, key, canRestart, name) {

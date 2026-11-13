@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"tunnelpanel/internal/agent"
+	"tunnelpanel/internal/pktfilter"
 	"tunnelpanel/internal/probe"
 )
 
@@ -16,6 +17,10 @@ func main() {
 	// the benchmark pushes this same binary to both servers and uses it as a path probe
 	if len(os.Args) > 1 && os.Args[1] == "probe" {
 		os.Exit(probe.Main(os.Args[2:]))
+	}
+	// narrows the Backhaul Premium core's raw-socket filter to its own carrier (pktfilter)
+	if len(os.Args) > 1 && os.Args[1] == "pktfilter" {
+		os.Exit(pktfilter.Main(os.Args[2:]))
 	}
 	connect := flag.String("connect", "", "panel agent address host:port")
 	token := flag.String("token", "", "agent token from the panel")

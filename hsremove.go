@@ -100,6 +100,15 @@ func (a *App) hsRemovePath(t *Tunnel, mid, fam string) (*Job, error) {
 		if p, why = hsRemoveCheckLocked(t, v, key); why == "" && !contains(t.HSOff, key) {
 			t.HSOff = append(append([]string(nil), t.HSOff...), key)
 		}
+		if why == "" { // removed by hand: no longer a path the user asked for
+			var keep []string
+			for _, k := range t.HSWant {
+				if k != key {
+					keep = append(keep, k)
+				}
+			}
+			t.HSWant = keep
+		}
 		return nil
 	})
 	if why != "" {
@@ -228,6 +237,7 @@ func (a *App) hsRestorePath(t *Tunnel, mid, fam string) (*Job, error) {
 	if !a.hsUnremove(t, mid, fam) {
 		return nil, fmt.Errorf("that path isn't removed on this tunnel")
 	}
+	a.hsWantPath(t, mid+"|"+fam, true) // put back by hand: auto mode keeps it (hscost.go)
 	var up bool
 	a.store.View(func(*State) { up = t.HotStandby && t.Active != "" && len(t.Paths) > 0 })
 	if !up {

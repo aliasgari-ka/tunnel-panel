@@ -204,6 +204,7 @@ type App struct {
 	hsViews     map[string]*hsView     // hot-standby switchers' state, as last read
 	dc          dcState                // the cause finder's results for down paths (downcause.go)
 	hsKicks     map[string]hsKick      // "tunnel id|method|family" -> the panel's last restarts of a down path (hskick.go)
+	idleUse     map[string]idleCPU     // "tunnel id|method|family" -> what the standby core burned with no users (standbytrim.go)
 	healthCache map[string]string      // tunnel id -> "" healthy / reason, from the monitor
 	foNext      map[string]time.Time   // tunnel id -> next automatic failover allowed
 	failbacks   sync.Map               // tunnel id -> job id of its running fail-back check

@@ -371,8 +371,8 @@ func (a *App) applyRoute(t *Tunnel, mid, fam string, keep bool) (*Job, error) {
 	// another method the route allows that isn't running as a path (it failed, or was turned
 	// on for the route since): start that one path and move the users there. Rebuilding the
 	// tunnel for it restarted every path and cut all users.
-	if up && !running && (mid != prev || fam != old) && a.hsCandidate(t, m, fam) {
-		return a.hsAddJob(t, mid, fam)
+	if up && !running && (mid != prev || fam != old) && a.hsCandidateBase(t, m, fam) {
+		return a.hsAddJob(t, mid, fam) // asked for by hand: also where auto mode leaves it out for its cost
 	}
 	if err := a.switchFamily(t, m, fam); err != nil {
 		return nil, err
