@@ -290,6 +290,8 @@ type State struct {
 	IgAutoLog []IgAutoEvent                    `json:"igAutoLog,omitempty"`
 	// WarpPool: each server's automatic WARP accounts (warppool.go)
 	WarpPool map[string]*WarpPool `json:"warpPool,omitempty"`
+	// IgSites: My sites (igsites.go) per server: related domain -> the site it was added with
+	IgSites map[string]map[string]string `json:"igSites,omitempty"`
 	// HostHW: this panel host's cores, RAM and disk (the servers keep theirs in Server.HW)
 	HostHW *Hardware `json:"hostHw,omitempty"`
 }

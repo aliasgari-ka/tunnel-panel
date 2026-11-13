@@ -46,6 +46,7 @@ const (
 // IgAutoSvc is the automatic state of one service of one server.
 type IgAutoSvc struct {
 	Off   bool   `json:"off,omitempty"`   // the person turned the automatic repair off
+	Auto  bool   `json:"auto,omitempty"`  // a person picked Auto (older domain services: Spotify …; igsvc.go)
 	Pin   string `json:"pin,omitempty"`   // the exit the person pinned ("" = Auto)
 	Want  string `json:"want,omitempty"`  // the route to be on: the pin, or the last route that worked
 	Cur   string `json:"cur,omitempty"`   // the route the panel moved to while Want is broken ("" = none)
@@ -721,12 +722,13 @@ func (a *App) igBorrowProxy(ctx context.Context, srv *Server) string {
 
 // igAutoView is what the page gets per server
 type igAutoView struct {
-	IG     *IgAutoSvc        `json:"ig,omitempty"`
-	Pins   map[string]string `json:"pins,omitempty"` // GOOGLE / YTM pins
-	Live   string            `json:"live,omitempty"` // Instagram's country on the users' route, measured by the panel
-	LiveAt int64             `json:"liveAt,omitempty"`
-	Last   []IgAutoEvent     `json:"last,omitempty"` // the server's last events
-	Warp   *WarpPool         `json:"warp,omitempty"` // the automatic WARP pool (warppool.go)
+	IG     *IgAutoSvc           `json:"ig,omitempty"`
+	Pins   map[string]string    `json:"pins,omitempty"` // GOOGLE / YTM pins
+	Live   string               `json:"live,omitempty"` // Instagram's country on the users' route, measured by the panel
+	LiveAt int64                `json:"liveAt,omitempty"`
+	Last   []IgAutoEvent        `json:"last,omitempty"` // the server's last events
+	Warp   *WarpPool            `json:"warp,omitempty"` // the automatic WARP pool (warppool.go)
+	Svc    map[string]igSvcView `json:"svc,omitempty"`  // every service: Auto / pinned, its last check (igsvc.go)
 }
 
 func (a *App) igAutoViewOf(id string) *igAutoView {
@@ -756,6 +758,7 @@ func (a *App) igAutoViewOf(id string) *igAutoView {
 			}
 		}
 	})
+	v.Svc = a.igSvcViewOf(id)
 	igAutoMem.Lock()
 	if l := igAutoMem.live[id]; l != nil && l.CC != "" {
 		v.Live, v.LiveAt = l.CC, l.At.Unix()

@@ -3247,8 +3247,11 @@ async function pollJob(jobId, tunnelId) {
 // leave each server (a proxy, Cloudflare WARP, the server's IPv6 or direct). Every action runs
 // "igproxy <command>" on the server as one of the panel's jobs (output in a drawer).
 const IG = { data: null, cur: null, tab: 'routes', sub: recall('tp-igsub') || 'servers', filter: 'all', q: '' };
-const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', SNAP: 'Snapchat', CUSTOM: 'My sites' };
-const IGWIDE = ['ADULT', 'SPOTIFY', 'SCLOUD', 'SNAP', 'CUSTOM'];
+const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', SNAP: 'Snapchat',
+  OPENAI: 'ChatGPT', CLAUDE: 'Claude', COPILOT: 'Copilot', PERPLEX: 'Perplexity', GROK: 'Grok', AICODE: 'AI tools', X: 'X', TIKTOK: 'TikTok', REDDIT: 'Reddit', LINKEDIN: 'LinkedIn',
+  PINTEREST: 'Pinterest', TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', DISCORD: 'Discord', NETFLIX: 'Netflix', DISNEY: 'Disney+', PRIME: 'Prime Video', TWITCH: 'Twitch',
+  APPLE: 'Apple Music', GAMES: 'Steam · games', DEV: 'GitHub · Docker', CUSTOM: 'My sites' };
+const IGWIDE = Object.keys(IGSV).filter(g => !['IG', 'GOOGLE', 'YTM'].includes(g)); // domain-only: no IPv6 / WARP-IPv6
 const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'], GUARD: ['WARP guard not running', 'bad'],
   IGIR: ['Instagram in a no-music country', 'bad'], NOEXIT: ['no exit for Instagram', 'bad'], NOWARP: ['WARP missing', 'warn'],
   FIXED: ['fixed automatically', 'warn'], CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
@@ -3766,26 +3769,221 @@ function igAutoHist(s) {
   const ic = { fix: '🔧', back: '↩', fail: '⚠', info: '·' };
   return `<details class="igst-more igah"><summary>${L('Automatic fixes', 'تعمیرهای خودکار')} <span class="faint">${ev.length}</span></summary><div class="igah-l" data-notr>${ev.map(e => `<div class="igah-r ${e.kind}"><span class="faint mono">${new Date(e.t * 1000).toLocaleString(window.tpLang === 'fa' ? 'fa-IR' : undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><span>${ic[e.kind] || '·'} ${esc(e.svc === 'IG' ? 'Instagram' : e.svc)}: ${esc(e.msg)}</span></div>`).join('')}</div></details>`;
 }
-function igViaOpts(svc, cur, nprox, i) {
-  const o = ['proxy']; for (let k = 1; k <= nprox; k++) o.push('proxy' + k); o.push('warp'); if (!IGWIDE.includes(svc)) o.push('warp6', 'ipv6'); o.push('direct');
-  if (cur && !o.includes(cur)) o.push(cur);
-  return o.map(v => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(igViaW(v, i))}</option>`).join('');
+// ---- Routes tab: every service as a small chip in its group (AI, social, messaging, video & music,
+// developer, adult, my sites). The chip says its exit (Auto · WARP …) and its last check (✓ + the
+// country the service sees, or ⚠); a tap opens its exit menu. Changes go at once (the agent swaps
+// its routing rules live: no router restart). The words are in both languages here (L).
+const IGSVC = { // key: [name, monogram, colour]
+  OPENAI: ['ChatGPT', 'AI', '#10a37f'], GOOGLE: ['Gemini · Google', 'G', '#4285f4'], CLAUDE: ['Claude', 'C', '#d97757'], COPILOT: ['Copilot · Bing', 'Co', '#0f6cbd'],
+  PERPLEX: ['Perplexity', 'P', '#1f8a8a'], GROK: ['Grok', 'Gk', '#3a3a3f'], AICODE: ['Cursor · AI tools', '&lt;/&gt;', '#6d5bd0'],
+  IG: ['Instagram', 'IG', '#d62976'], X: ['X · Twitter', 'X', '#2b2b30'], TIKTOK: ['TikTok', 'Tk', '#ee1d52'], SNAP: ['Snapchat', 'S', '#c9a800'],
+  REDDIT: ['Reddit', 'R', '#ff4500'], LINKEDIN: ['LinkedIn', 'in', '#0a66c2'], PINTEREST: ['Pinterest', 'P', '#e60023'],
+  TELEGRAM: ['Telegram', 'T', '#229ed9'], WHATSAPP: ['WhatsApp', 'W', '#1fa855'], DISCORD: ['Discord', 'D', '#5865f2'],
+  YTM: ['YouTube Music', '♪', '#ff0033'], SPOTIFY: ['Spotify', 'S', '#1db954'], SCLOUD: ['SoundCloud', 'SC', '#ff5500'], NETFLIX: ['Netflix', 'N', '#e50914'],
+  DISNEY: ['Disney+', 'D+', '#113ccf'], PRIME: ['Prime Video', 'PV', '#00a8e1'], TWITCH: ['Twitch', 'Tw', '#9146ff'], APPLE: ['Apple Music', '♫', '#fa2d48'], GAMES: ['Steam · games', 'St', '#1b2838'],
+  DEV: ['GitHub · Docker · npm', '{ }', '#24292f'], ADULT: [null, '18', '#8a3b5c'], CUSTOM: [null, '★', '#5357f0'] };
+const IGCATS = [['ai', 'AI', 'هوش مصنوعی', ['OPENAI', 'GOOGLE', 'CLAUDE', 'COPILOT', 'PERPLEX', 'GROK', 'AICODE']],
+  ['social', 'Social', 'شبکه‌های اجتماعی', ['IG', 'X', 'TIKTOK', 'SNAP', 'REDDIT', 'LINKEDIN', 'PINTEREST']],
+  ['msg', 'Messaging', 'پیام‌رسان‌ها', ['TELEGRAM', 'WHATSAPP', 'DISCORD']],
+  ['media', 'Video, music & games', 'ویدیو، موسیقی و بازی', ['YTM', 'SPOTIFY', 'SCLOUD', 'NETFLIX', 'DISNEY', 'PRIME', 'TWITCH', 'APPLE', 'GAMES']],
+  ['dev', 'Developers', 'برنامه‌نویسی', ['DEV']], ['adult', 'Adult', 'بزرگسالان', ['ADULT']], ['mine', 'My sites', 'سایت‌های من', ['CUSTOM']]];
+const IGSV_GUARD = ['IG', 'GOOGLE', 'YTM']; // their own guards (igauto.go, the agent's Google / Gemini watch)
+const igsvName = (g, i) => g === 'ADULT' ? L('Adult', 'بزرگسالان') : g === 'CUSTOM' ? L('My sites', 'سایت‌های من') + ` (${+((i || {}).ncustom) || 0})` : IGSVC[g][0];
+const igsvHasAuto = (g) => g !== 'CUSTOM' && !!IGSVC[g];
+// the exit word on the chip (short)
+const igsvVia = (v) => { v = v || ''; if (v === 'proxy') return L('Proxy', 'پراکسی'); if (/^proxy\d+$/.test(v)) return L('Proxy ', 'پراکسی ') + v.slice(5); return { warp: 'WARP', warp6: 'WARP v6', ipv6: 'IPv6', direct: L('Direct', 'مستقیم') }[v] || v || '—'; };
+// [mode, pin] of one service: auto | pin | manual | off
+function igsvMode(s, g) {
+  const au = s.auto || {}, sv = (au.svc || {})[g];
+  if (g === 'IG') { const a = au.ig || {}; return a.off ? ['off', ''] : a.pin ? ['pin', a.pin] : ['auto', '']; }
+  if (g === 'GOOGLE' || g === 'YTM') { const p = au.pins && au.pins[g]; return p ? ['pin', p] : ['auto', '']; }
+  return sv ? [sv.mode, sv.pin || ''] : [IGWIDE.includes(g) && !['ADULT', 'SPOTIFY', 'SCLOUD', 'SNAP', 'CUSTOM'].includes(g) ? 'auto' : 'manual', ''];
+}
+// [class ok|bad|warn|'', short text, tooltip] of one service's last check
+function igsvCheck(s, g) {
+  const i = s.info || {}, sv = ((s.auto || {}).svc || {})[g];
+  const seen = (cc) => L('seen from ', 'دیده‌شده از ') + igCCName(cc);
+  if (g === 'IG' || g === 'GOOGLE') {
+    if (i[g.toLowerCase()] === undefined) return ['', '·', ''];
+    const [lvl] = igLine(s, g);
+    let cc = '';
+    if (g === 'IG' && igSet(i.igcc)) cc = i.igcc; else if (g === 'GOOGLE' && igSet(i.gdom)) cc = igDomCC(i.gdom) || '.' + i.gdom;
+    return [lvl, (lvl === 'ok' ? '✓' : '⚠') + (cc ? ' ' + cc : ''), cc ? (cc.startsWith('.') ? 'google' + cc : seen(cc)) : ''];
+  }
+  if (g === 'CUSTOM' || g === 'ADULT' || !sv || !sv.ok) return ['', '·', L('not checked yet', 'هنوز بررسی نشده')];
+  if (sv.ok === 'ok') return ['ok', '✓' + (sv.cc ? ' ' + sv.cc : ''), (sv.cc ? seen(sv.cc) + ' · ' : '') + L('opens on the users\' route', 'روی مسیر کاربران باز می‌شود')];
+  return ['bad', '⚠', L(`doesn't open on the users' route (http ${sv.code})`, `روی مسیر کاربران باز نمی‌شود (http ${sv.code})`)];
+}
+function igsvChip(s, g) {
+  const i = s.info || {}, v = i[g.toLowerCase()], [mode, pin] = igsvMode(s, g), [cc, ct, tip] = igsvCheck(s, g), [, mono, col] = IGSVC[g];
+  const old = v === undefined; // the agent here doesn't know this service yet
+  const sv = ((s.auto || {}).svc || {})[g] || {}, moved = (g === 'IG' ? (s.auto && s.auto.ig && s.auto.ig.cur) : sv.cur) || '';
+  const pill = old ? L('needs update', 'نیاز به آپدیت') : (mode === 'auto' ? `${L('Auto', 'خودکار')} · ` : mode === 'pin' ? '📌 ' : '') + esc(igsvVia(v));
+  const pc = old ? 'v-old' : mode === 'auto' ? 'v-auto' : igViaC(v);
+  const items = old ? '' : igsvOpts(s, g).map(([k, t]) => {
+    const on = k === 'auto' ? mode === 'auto' : k === 'off' ? mode === 'off' : mode !== 'auto' && mode !== 'off' && k === (pin || v);
+    return `<button class="mi${on ? ' on' : ''}" data-sv="${g}" data-to="${esc(k)}">${on ? '✓ ' : ''}${t}</button>`;
+  }).join('');
+  return `<details class="more igsv${old ? ' old' : ''}" data-k="${g}">
+    <summary class="igsv-c ${cc}" title="${esc(tip || '')}"><span class="igsv-ic" style="--bc:${col}" aria-hidden="true">${mono}</span>
+      <span class="igsv-b"><span class="igsv-n" data-notr>${esc(igsvName(g, i))}</span><span class="igsv-r"><span class="igsv-p ${pc}" data-notr>${pill}</span>${moved ? `<span class="igsv-mv" title="${esc(L('its usual exit failed: Auto moved it for now', 'خروجی همیشگی‌اش خراب شد: خودکار موقتاً جابه‌جایش کرد'))}">↻</span>` : ''}<span class="igsv-s ${cc}" data-notr>${ct}</span></span></span></summary>
+    ${old ? '' : `<div class="pop"><div class="igsv-h" data-notr>${esc(igsvName(g, i))}</div>${items}</div>`}</details>`;
+}
+// the exits one service can take on this server: [value, label]
+function igsvOpts(s, g) {
+  const i = s.info || {}, wide = IGWIDE.includes(g), o = [];
+  if (igsvHasAuto(g)) o.push(['auto', L('Auto (recommended)', 'خودکار (پیشنهادی)')]);
+  o.push(['warp', 'WARP' + (+i.warps ? '' : L(' — none on this server', ' — این سرور ندارد'))]);
+  if (!wide) o.push(['warp6', 'WARP IPv6']);
+  o.push(['proxy', L('Proxy (fastest)', 'پراکسی (سریع‌ترین)') + (+i.proxies ? '' : L(' — none on this server', ' — این سرور ندارد'))]);
+  for (let k = 1; k <= (+i.proxies || 0); k++) { const r = igRelayOf(i, 'proxy' + k); o.push(['proxy' + k, L('Only proxy ', 'فقط پراکسی ') + k + (r ? ' · ' + esc(r) : '')]); }
+  if (!wide) o.push(['ipv6', L("Server's IPv6", 'IPv6 سرور')]);
+  o.push(['direct', L("Direct (server's own IP)", 'مستقیم (IP خود سرور)')]);
+  if (g === 'IG') o.push(['off', L("Don't fix automatically", 'خودکار درست نکن')]);
+  return o;
+}
+async function igsvSet(s, set) {
+  if (set.IG === 'off') { delete set.IG; await igAutoSet(s, 'IG', 'off'); }
+  if (!Object.keys(set).length) return;
+  toast(L('Applying…', 'در حال اعمال…'));
+  try {
+    s.auto = Object.assign(s.auto || {}, await api('/igproxy/svc', { ID: s.id, Set: set }));
+    toast(L('Done — applied without cutting users', 'انجام شد — بدون قطع کاربران اعمال شد'));
+    igRefreshAfter({ srv: s.id });
+  } catch (e) { toast(e.message); }
+}
+const IGSVQ = { q: '' };
+function igsvDraw() {
+  const s = IG.cur, i = s.info || {}, box = $('#igtab');
+  const q = IGSVQ.q.trim().toLowerCase();
+  const old = i.openai === undefined;
+  const all = IGCATS.flatMap(c => c[3]), bad = all.filter(g => igsvCheck(s, g)[0] === 'bad').length;
+  const bulk = (c) => `<details class="more igsv-bulk"><summary class="btn sm ghost" title="${esc(L('the whole group at once', 'همهٔ این گروه با هم'))}">${L('All', 'همه')} ▾</summary><div class="pop">
+    ${[['auto', L('All → Auto', 'همه ← خودکار')], ['warp', L('All → WARP', 'همه ← WARP')], ['proxy', L('All → Proxy', 'همه ← پراکسی')], ['direct', L('All → Direct', 'همه ← مستقیم')]]
+      .map(([k, t]) => `<button class="mi" data-bulk="${c[0]}" data-to="${k}">${t}</button>`).join('')}</div></details>`;
+  box.innerHTML = `<div class="card pad igsvw">
+    <div class="igsv-top"><input class="inp" id="igsvq" type="search" placeholder="${esc(L('Search services…', 'جستجوی سرویس…'))}" value="${esc(IGSVQ.q)}" autocomplete="off">
+      <span class="igsv-sum">${all.length} ${L('services', 'سرویس')}${bad ? ` · <b class="bad">${bad} ⚠</b>` : ''}</span>
+      <details class="igsv-help"><summary title="${esc(L('What the exits mean', 'معنی خروجی‌ها'))}" aria-label="?">ⓘ</summary><div class="igsv-tip">${L(
+        '<b>Auto</b> — the panel picks a working exit and fixes it by itself. <b>WARP</b> — Cloudflare WARP. <b>Proxy</b> — the fastest working proxy. <b>IPv6</b> — the server\'s own IPv6. <b>Direct</b> — the server\'s own IP. ✓ = opens for users (with the country it is seen from), ⚠ = doesn\'t. Changes apply at once without cutting users.',
+        '<b>خودکار</b> — پنل خروجی سالم را انتخاب و خودش درستش می‌کند. <b>WARP</b> — WARP کلادفلر. <b>پراکسی</b> — سریع‌ترین پراکسی سالم. <b>IPv6</b> — IPv6 خود سرور. <b>مستقیم</b> — IP خود سرور. ✓ = برای کاربران باز می‌شود (با کشوری که دیده می‌شود)، ⚠ = باز نمی‌شود. تغییرها فوری و بدون قطع کاربران اعمال می‌شوند.')}</div></details></div>
+    ${old ? `<div class="igsv-old"><span>${L('This server\'s agent is older: ChatGPT, Claude, Telegram, Netflix and the other new services work after an update.', 'agent این سرور قدیمی است: ChatGPT، Claude، تلگرام، نتفلیکس و سرویس‌های جدید دیگر بعد از به‌روزرسانی کار می‌کنند.')}</span><button class="btn sm pri" data-igsvdep>${L('Update agent', 'به‌روزرسانی agent')}</button></div>` : ''}
+    ${(() => { // groups of one chip (developers, adult, my sites) share one row
+      const secs = IGCATS.map(c => [c, c[3].filter(g => !q || (igsvName(g, i) + ' ' + g + ' ' + c[1] + ' ' + c[2]).toLowerCase().includes(q))]).filter(x => x[1].length);
+      const sec = ([c, keys]) => `<section class="igsv-cat"><div class="igsv-ch"><h4>${L(c[1], c[2])}</h4><span class="count">${keys.length}</span><span class="grow"></span>${keys.length > 1 && !old ? bulk(c) : ''}</div>
+        <div class="igsv-g">${keys.map(g => igsvChip(s, g)).join('')}</div></section>`;
+      let h = '', row = [];
+      const flush = () => { if (row.length) h += row.length > 1 ? `<div class="igsv-row">${row.map(sec).join('')}</div>` : sec(row[0]); row = []; };
+      secs.forEach(x => { if (x[1].length === 1) row.push(x); else { flush(); h += sec(x); } });
+      flush();
+      return h || `<p class="muted">${L('No service matches.', 'سرویسی پیدا نشد.')}</p>`;
+    })()}
+    <div class="igsv-foot"><button class="btn sm" id="igrd">${L('Route details', 'جزئیات مسیرها')}</button></div></div>`;
+  const qi = $('#igsvq', box);
+  qi.oninput = () => { IGSVQ.q = qi.value; const p = qi.selectionStart; igsvDraw(); const n = $('#igsvq'); n.focus(); try { n.setSelectionRange(p, p); } catch (e) { } };
+  $$('[data-sv]', box).forEach(b => b.onclick = () => {
+    const g = b.dataset.sv, to = b.dataset.to; b.closest('details').removeAttribute('open');
+    const [mode, pin] = igsvMode(s, g);
+    if ((to === 'auto' && mode === 'auto') || (to === 'off' && mode === 'off') || (to === (pin || i[g.toLowerCase()]) && mode !== 'auto' && mode !== 'off')) return;
+    igsvSet(s, { [g]: to });
+  });
+  $$('[data-bulk]', box).forEach(b => b.onclick = () => {
+    const c = IGCATS.find(x => x[0] === b.dataset.bulk), to = b.dataset.to; b.closest('details').removeAttribute('open');
+    const set = {}; c[3].forEach(g => { if (i[g.toLowerCase()] !== undefined && (to !== 'auto' || igsvHasAuto(g))) set[g] = to; });
+    const name = L(c[1], c[2]), word = { auto: L('Auto', 'خودکار'), warp: 'WARP', proxy: L('Proxy', 'پراکسی'), direct: L('Direct', 'مستقیم') }[to];
+    if (!confirm(L(`All of "${name}" (${Object.keys(set).length} services) → ${word}?`, `همهٔ «${name}» (${Object.keys(set).length} سرویس) ← ${word}؟`))) return;
+    igsvSet(s, set);
+  });
+  $$('[data-igsvdep]', box).forEach(b => b.onclick = () => igAct(igS({ action: 'deploy' }), `Install / update the agent on ${s.name}? A few seconds without routing; settings and WARPs are kept.`));
+  $('#igrd', box).onclick = () => igAct(igS({ action: 'routes' }), null, { refresh: false });
+}
+// ---- My sites: one card per site (its own domain + every subdomain, and the other domains it
+// loads), delete = all of them; adding finds those other domains first (igsites.go).
+const IGSITE = { find: null, busy: false, seq: 0 };
+const igsRoute = (r, i) => r ? igsvVia(r) : L('My sites route', 'مسیر سایت‌های من') + ' (' + igsvVia(i.custom) + ')';
+const igsSub = (d) => `<span class="mono" dir="ltr" data-notr>${esc(d)}</span> <span class="faint">${L('+ all subdomains', '+ همه‌ی زیردامنه‌ها')}</span>`;
+function igSitesTab() {
+  const s = IG.cur, i = s.info || {};
+  const nprox = +i.proxies || 0;
+  $('#igtab').innerHTML = `<div class="card pad sec igs-add"><h3>${L('Add a site', 'افزودن سایت')}</h3>
+     <p class="muted igs-p">${L('Type the site or paste any link of it: the whole site is routed — its domain, every subdomain, and the other domains it loads (CDN, API, images, login).', 'نام سایت یا هر لینکی از آن را بنویسید: کل سایت مسیر می‌گیرد — دامنه‌اش، همه‌ی زیردامنه‌ها، و دامنه‌های دیگری که بارگذاری می‌کند (CDN، API، تصاویر، ورود).')}</p>
+     <div class="igs-row"><input id="igcs" class="inp mono" dir="ltr" placeholder="example.com / https://…" autocomplete="off" spellcheck="false"><button class="btn" id="igcf">${L('Find', 'پیدا کن')}</button></div>
+     <div id="igsfind"></div>
+     <div class="ff igs-opt"><label class="f">${L('Route', 'مسیر')}<select id="igcr" class="inp"><option value="">${esc(igsRoute('', i))}</option><option value="warp">WARP</option><option value="proxy">${L('Proxy (fastest)', 'پراکسی (سریع‌ترین)')}</option>
+       ${Array.from({ length: nprox }, (_, k) => `<option value="proxy${k + 1}">${L('Only proxy ', 'فقط پراکسی ')}${k + 1}</option>`).join('')}<option value="direct">${L('Direct', 'مستقیم')}</option></select></label>
+     <label class="f row"><input type="checkbox" id="igcall"> ${L('On every server in view', 'روی همه سرورهای نمایش‌داده‌شده')}</label></div>
+     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igcadd" disabled>${L('Add', 'افزودن')}</button></div></div>
+   <div class="card pad sec"><h3>${L('My sites', 'سایت‌های من')} <span id="igsn" class="count"></span></h3><div id="igsl"><div class="skel" style="height:60px"></div></div></div>`;
+  const inp = $('#igcs'), go = $('#igcf');
+  const find = async () => {
+    const v = inp.value.trim(); if (!v) return;
+    const seq = ++IGSITE.seq;
+    go.disabled = true; go.textContent = L('Looking…', 'در حال بررسی…');
+    $('#igsfind').innerHTML = `<div class="skel" style="height:44px;margin-top:10px"></div>`;
+    try { const f = await api('/igproxy/sites/find', { Site: v }); if (seq === IGSITE.seq) { IGSITE.find = f; igsFindDraw(); } }
+    catch (e) { if (seq === IGSITE.seq) { IGSITE.find = null; $('#igsfind').innerHTML = `<div class="mwarn igs-w">${esc(e.message)}</div>`; $('#igcadd').disabled = true; } }
+    go.disabled = false; go.textContent = L('Find', 'پیدا کن');
+  };
+  go.onclick = find;
+  inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); find(); } };
+  inp.oninput = () => { if (IGSITE.find) { IGSITE.find = null; $('#igsfind').innerHTML = ''; $('#igcadd').disabled = true; } };
+  $('#igcadd').onclick = async () => {
+    const f = IGSITE.find; if (!f) return;
+    const doms = $$('#igsfind input[data-d]:checked').map(x => x.dataset.d), all = $('#igcall').checked;
+    const b = $('#igcadd'); b.disabled = true; b.textContent = L('Adding…', 'در حال افزودن…');
+    try {
+      const r = await api('/igproxy/sites/add', { Srv: all ? 'all' : s.id, View: igView(), Site: f.site, Route: $('#igcr').value, Domains: doms });
+      const bad = (r.results || []).filter(x => !x.ok);
+      toast(bad.length ? bad.map(x => x.name + ': ' + x.msg).join(' · ') : L(`Added: ${f.site} + ${doms.length} related domains`, `افزوده شد: ${f.site} + ${doms.length} دامنه‌ی مرتبط`));
+      inp.value = ''; IGSITE.find = null; $('#igsfind').innerHTML = '';
+      igSitesLoad();
+    } catch (e) { toast(e.message); }
+    b.textContent = L('Add', 'افزودن'); b.disabled = !IGSITE.find;
+  };
+  if (IGSITE.find) igsFindDraw();
+  igSitesLoad();
+}
+function igsFindDraw() {
+  const f = IGSITE.find, box = $('#igsfind'); if (!box || !f) return;
+  const rel = f.related || [];
+  box.innerHTML = `<div class="igs-found"><div class="igs-main">✓ ${igsSub(f.site)}</div>
+    ${f.google ? `<div class="mwarn igs-w">${L('This is a Google domain: Google has its own route (Routes tab → Gemini · Google). Adding it here moves it ahead of that.', 'این دامنه‌ی Google است: Google مسیر خودش را دارد (تب مسیرها ← Gemini · Google). اضافه‌کردن اینجا جلوتر از آن می‌نشیند.')}</div>` : ''}
+    ${f.err ? `<div class="faint igs-note">${L("The panel couldn't open the site to look for its other domains — only its own domain is added.", 'پنل نتوانست سایت را برای پیداکردن دامنه‌های دیگرش باز کند — فقط دامنه‌ی خودش اضافه می‌شود.')}</div>` : ''}
+    ${rel.length ? `<div class="igs-rh">${L('It also loads these — keep them on the same route so the site works fully:', 'این‌ها را هم بارگذاری می‌کند — همین مسیر بمانند تا سایت کامل کار کند:')}</div>
+      <div class="igs-rel">${rel.map(r => `<label class="igs-ck${r.sure ? '' : ' maybe'}" title="${esc(r.hit || '')}"><input type="checkbox" data-d="${esc(r.d)}"${r.sure ? ' checked' : ''}> ${igsSub(r.d)}${r.sure ? '' : ` <span class="chip">${L('maybe', 'شاید')}</span>`}</label>`).join('')}</div>`
+      : f.err ? '' : `<div class="faint igs-note">${L('No other domain found: the site loads everything from its own domain.', 'دامنه‌ی دیگری پیدا نشد: سایت همه‌چیز را از دامنه‌ی خودش بارگذاری می‌کند.')}</div>`}
+    ${f.left ? `<div class="faint igs-note">${L(`${f.left} shared libraries / analytics / Google domains left out (routing them would move other sites too).`, `${f.left} کتابخانه‌ی مشترک / آنالیتیکس / دامنه‌ی Google کنار گذاشته شد (مسیر دادن به آن‌ها سایت‌های دیگر را هم جابه‌جا می‌کند).`)}</div>` : ''}</div>`;
+  $('#igcadd').disabled = false;
+}
+async function igSitesLoad() {
+  const s = IG.cur, i = s.info || {}, box = $('#igsl'); if (!box) return;
+  let r;
+  try { r = await api('/igproxy/sites?id=' + encodeURIComponent(s.id)); } catch (e) { box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+  if (!$('#igsl') || IG.cur !== s) return;
+  const sites = r.sites || [];
+  $('#igsn').textContent = sites.length;
+  if (!sites.length) { box.innerHTML = `<p class="muted">${L('No site yet.', 'هنوز سایتی نیست.')}</p>`; return; }
+  box.innerHTML = `<div class="igs-list">${sites.map((c, n) => {
+    const warn = c.doms.some(d => (d.also || []).length || d.covered);
+    return `<details class="igs-card"><summary><span class="igsv-ic" style="--bc:#5357f0" aria-hidden="true">${esc((c.site[0] || '?').toUpperCase())}</span>
+      <span class="igs-b"><span class="igs-n" data-notr><bdi>${esc(c.site)}</bdi></span><span class="faint igs-s">${L('+ all subdomains', '+ همه‌ی زیردامنه‌ها')}${c.doms.length > 1 ? ` · ${c.doms.length} ${L('domains', 'دامنه')}` : ''}${warn ? ' · <b class="igs-ov">⚠ ' + L('overlap', 'هم‌پوشانی') + '</b>' : ''}</span></span>
+      <span class="igsv-p igs-rp ${c.route ? igViaC(c.route) : 'v-auto'}" data-notr title="${esc(igsRoute(c.route, i))}">${esc(c.route ? igsvVia(c.route) : L('Default', 'پیش‌فرض') + ': ' + igsvVia(i.custom))}</span>
+      <button class="btn sm ghost danger igs-del" data-del="${n}" title="${esc(L('Delete the site and all its domains', 'حذف سایت با همه‌ی دامنه‌هایش'))}">✕</button></summary>
+      <div class="igs-doms">${c.doms.map(d => `<div class="igs-d"><span>${d.rule.startsWith('domain:') ? igsSub(d.d) : `<span class="mono" dir="ltr" data-notr>${esc(d.rule)}</span>`}</span>
+        ${d.route !== c.route ? `<span class="igsv-p ${d.route ? igViaC(d.route) : 'v-auto'}" data-notr>${esc(igsRoute(d.route, i))}</span>` : ''}
+        ${(d.also || []).length ? `<span class="chip warn" title="${esc(L('My sites wins over the service\'s route for this domain', 'برای این دامنه، سایت‌های من بر مسیر سرویس مقدم است'))}">${L('also in', 'در لیست')} ${esc(d.also.map(x => (IGSVC[x] && IGSVC[x][0]) || igsvName(x, i)).join(', '))}${L('', ' هم هست')}</span>` : ''}
+        ${d.covered ? `<span class="chip" title="${esc(L('already covered by that domain', 'آن دامنه همین را پوشش می‌دهد'))}">${L('inside', 'داخل')} <span dir="ltr" data-notr>${esc(d.covered)}</span></span>` : ''}</div>`).join('')}</div></details>`;
+  }).join('')}</div>`;
+  $$('[data-del]', box).forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const c = sites[+b.dataset.del];
+    if (!confirm(L(`Delete ${c.site} and all its ${c.doms.length} domain(s)? They go back to their normal route at once.`, `${c.site} با همه‌ی ${c.doms.length} دامنه‌اش حذف شود؟ فوراً به مسیر عادی برمی‌گردند.`))) return;
+    try { await api('/igproxy/sites/del', { ID: s.id, Site: c.site }); toast(L('Deleted', 'حذف شد')); igSitesLoad(); igRefreshAfter({ srv: s.id }); } catch (er) { toast(er.message); }
+  });
 }
 const igSecret = 'type="text" class="inp mono secret" autocomplete="off" data-lpignore="true" data-1p-ignore spellcheck="false"';
 const IGTAB = {
-  routes() {
-    const i = IG.cur.info;
-    $('#igtab').innerHTML = `<div class="card pad"><table class="tbl igt"><tr><th>Service</th><th>Goes out through</th><th></th></tr>
-      ${Object.keys(IGSV).map(g => `<tr><td><b>${IGSV[g]}</b>${g === 'CUSTOM' ? ` <span class="faint">(${+i.ncustom || 0} sites)</span>` : ''}${g === 'GOOGLE' && /^warp/.test(i.google || '') ? ' ' + igGccChip(i) : ''} ${igCC(g, i, IG.cur)}</td>
-      <td><select data-g="${g}" data-cur="${esc(i[g.toLowerCase()])}">${igViaOpts(g, i[g.toLowerCase()], +i.proxies || 0, i)}</select></td>
-      <td style="text-align:end"><button class="btn sm pri" data-ap="${g}" hidden>Apply</button></td></tr>`).join('')}</table>
-      <div class="mdesc">Proxy = the fastest healthy proxy · "Proxy N" = only that one · WARP = Cloudflare WARP · IPv6 = the server's own IPv6 (Instagram, Google, YouTube Music only) · Direct = the server's own IP.
-      The router restarts (a few seconds) only when a setting really changes.</div>
-      <div class="actions" style="margin-top:12px"><button class="btn sm" id="igrd">Route details</button></div></div>`;
-    $$('#igtab select[data-g]').forEach(sel => sel.onchange = () => { const ch = sel.value !== sel.dataset.cur; sel.classList.toggle('chg', ch); $(`[data-ap="${sel.dataset.g}"]`).hidden = !ch; });
-    $$('[data-ap]').forEach(b => b.onclick = () => igAct(igS({ action: 'route', svc: b.dataset.ap, via: $(`select[data-g="${b.dataset.ap}"]`).value })));
-    $('#igrd').onclick = () => igAct(igS({ action: 'routes' }), null, { refresh: false });
-  },
+  routes() { igsvDraw(); },
   proxies() { igpxTab(); },
   warp() {
     const i = IG.cur.info, gA = i.gw !== undefined, id = IG.cur.id, wp = (IG.cur.auto && IG.cur.auto.warp) || {};
@@ -3810,16 +4008,7 @@ const IGTAB = {
     igWarpDraw(IG.wcache && IG.wcache[id]);
     igWarpLoad(id);
   },
-  sites() {
-    const i = IG.cur.info;
-    $('#igtab').innerHTML = `<div class="card pad sec"><h3>My sites <span class="faint" style="font-size:12px;font-weight:500">each with all its subdomains</span></h3><div id="igcl" class="lines"><div class="skel" style="height:60px"></div></div></div>
-     <div class="card pad sec"><h3>Add a site</h3><div class="ff"><label class="f">Site<input id="igcs" class="inp mono" placeholder="example.com"></label>
-     <label class="f">Route<select id="igcr" class="inp"><option value="">the "My sites" route (${esc(igViaW(i.custom, i))})</option><option value="proxy">Proxy</option><option value="warp">WARP</option><option value="direct">Direct</option></select></label>
-     <label class="f row"><input type="checkbox" id="igcall"> On every server in view</label></div>
-     <div class="actions" style="margin-top:12px"><button class="btn pri" id="igcadd">Add</button></div></div>`;
-    $('#igcadd').onclick = () => igAct({ srv: $('#igcall').checked ? 'all' : IG.cur.id, action: 'custom_add', site: $('#igcs').value.trim(), route: $('#igcr').value });
-    igListInto('#igcl', 'custom_list', false, 'custom_del');
-  },
+  sites() { igSitesTab(); },
   settings() { igOptTab(); },
   checks() {
     const i = IG.cur.info, st = (v) => `<span class="pill ${v === 'SET' || v === 'ON' ? 'on' : 'off'}"><span class="led"></span>${v === 'SET' || v === 'ON' ? 'set' : 'not set'}</span>`;

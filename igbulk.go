@@ -250,6 +250,11 @@ func (s *Server2) igRoutesApply(w http.ResponseWriter, r *http.Request) {
 				out("-> igproxy route " + c.Svc + " " + c.Via)
 				if rc, said := s.app.igRun(ctx, x, []string{"route", c.Svc, c.Via}, "", 180, out); rc != 0 {
 					failed = append(failed, igSvcName(c.Svc)+": "+lastLineOf(said))
+				} else if d := igSvcByKey[c.Svc]; d != nil && d.Auto != nil {
+					via := c.Via
+					s.app.igAutoPut(x.ID, c.Svc, func(a *IgAutoSvc) {
+						a.Off, a.Auto, a.Pin, a.Want, a.Cur, a.Why, a.Tries, a.Next = false, false, via, via, "", "", 0, 0
+					})
 				}
 			}
 			s.app.igForget(x.ID)
@@ -291,5 +296,9 @@ func (s *Server2) igRoutesApply(w http.ResponseWriter, r *http.Request) {
 }
 
 func igSvcName(g string) string {
-	return map[string]string{"IG": "Instagram", "GOOGLE": "Google", "YTM": "YouTube Music", "ADULT": "Adult", "SPOTIFY": "Spotify", "SCLOUD": "SoundCloud", "SNAP": "Snapchat", "CUSTOM": "My sites"}[g]
+	return map[string]string{"IG": "Instagram", "GOOGLE": "Google", "YTM": "YouTube Music", "ADULT": "Adult", "SPOTIFY": "Spotify", "SCLOUD": "SoundCloud", "SNAP": "Snapchat", "CUSTOM": "My sites",
+		"OPENAI": "ChatGPT", "CLAUDE": "Claude", "COPILOT": "Copilot", "PERPLEX": "Perplexity", "GROK": "Grok", "AICODE": "AI tools",
+		"X": "X", "TIKTOK": "TikTok", "REDDIT": "Reddit", "LINKEDIN": "LinkedIn", "PINTEREST": "Pinterest", "TELEGRAM": "Telegram",
+		"WHATSAPP": "WhatsApp", "DISCORD": "Discord", "NETFLIX": "Netflix", "DISNEY": "Disney+", "PRIME": "Prime Video", "TWITCH": "Twitch",
+		"APPLE": "Apple Music · iCloud", "GAMES": "Steam · games", "DEV": "GitHub · Docker · npm"}[g]
 }
