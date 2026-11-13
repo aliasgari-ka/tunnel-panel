@@ -479,6 +479,7 @@ func (a *App) quickHost(ctx context.Context, srv *Server) (Host, error) {
 			if sh, ok := h.(*SSHHost); ok {
 				reachCache.Unlock()
 				if _, err := sh.client(); err == nil {
+					a.maybeBetterPath(srv, strings.TrimPrefix(k, srv.ID+"|"))
 					return sh, nil
 				}
 				reachCache.Lock()

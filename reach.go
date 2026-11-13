@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -136,12 +137,16 @@ func (a *App) recordPath(srv *Server, path string) {
 	_ = a.store.Update(func(*State) error { srv.LastPath = path; return nil })
 }
 
-func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...any)) (Host, string, error) {
-	type cand struct {
-		path string
-		dial dialFunc
-		v6   bool
-	}
+// sshCand is one way to reach a server over SSH, in the order sshReach tries them.
+type sshCand struct {
+	path string
+	dial dialFunc
+	v6   bool
+}
+
+// sshCands lists the SSH paths to srv: a proxy, direct, direct over IPv6, then jump hosts.
+func (a *App) sshCands(ctx context.Context, srv *Server) []sshCand {
+	type cand = sshCand
 	var cands []cand
 
 	// explicit proxy first (if configured), then plain direct
@@ -169,6 +174,11 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		}
 	}
 
+	return cands
+}
+
+func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...any)) (Host, string, error) {
+	cands := a.sshCands(ctx, srv)
 	// a connection already open on any path first: dialling the earlier ones anew (a
 	// filtered direct address: 15-35 s each) before reaching it made checks time out
 	pooled := func() (Host, string) {
@@ -187,6 +197,7 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		return nil, ""
 	}
 	if h, path := pooled(); h != nil {
+		a.maybeBetterPath(srv, path)
 		return h, path, nil
 	}
 	// one dial per server at a time: concurrent callers (the monitor, a status page, a job)
@@ -455,3 +466,97 @@ type bufConn struct {
 }
 
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// A server reached over a fallback path (direct SSH over IPv6, a jump host) stayed on it:
+// the cached connection is used first while it answers a keepalive, also long after the
+// direct path works again. Seen 2026-11-13 on usa-kharej: during a short SSH lock-out the
+// panel fell back to "jump via xe108 iran"; once direct SSH worked again it kept the jump,
+// whose Iran->foreign leg let keepalives through but stalled every script (MSS down to 64,
+// cwnd 1), so the server page showed "traffic: EOF" / "live load unavailable".
+// So every betterPathEvery the panel tries the better paths in the background and, when
+// one connects, uses it from then on; the fallback connection is closed a minute later
+// (scripts running on it can finish).
+var betterPath = struct {
+	sync.Mutex
+	last map[string]time.Time
+}{last: map[string]time.Time{}}
+
+const betterPathEvery = 2 * time.Minute
+
+// betterPathWanted: path is a fallback worth leaving (not the preferred direct / proxy path).
+func betterPathWanted(path string) bool {
+	return strings.HasPrefix(path, "jump via ") || path == "direct SSH over IPv6"
+}
+
+// betterPathDue says whether srv may try its better paths now, and marks the try.
+func betterPathDue(serverID string, now time.Time) bool {
+	betterPath.Lock()
+	defer betterPath.Unlock()
+	if t, ok := betterPath.last[serverID]; ok && now.Sub(t) < betterPathEvery {
+		return false
+	}
+	betterPath.last[serverID] = now
+	return true
+}
+
+// maybeBetterPath starts a background try of srv's better paths when it is on a fallback.
+func (a *App) maybeBetterPath(srv *Server, path string) {
+	if srv == nil || !betterPathWanted(path) || !betterPathDue(srv.ID, time.Now()) {
+		return
+	}
+	go a.tryBetterPath(srv, path)
+}
+
+// tryBetterPath dials the paths sshReach prefers to cur (never another jump host) and, on
+// the first that connects, caches it and retires cur's connection.
+func (a *App) tryBetterPath(srv *Server, cur string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	unlock, err := reachDialLock(ctx, srv.ID)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	for _, c := range a.sshCands(ctx, srv) {
+		if c.path == cur || strings.HasPrefix(c.path, "jump via ") {
+			return // nothing better than what is in use
+		}
+		key := srv.ID + "|" + c.path
+		reachCache.Lock()
+		old, _ := reachCache.m[key].(*SSHHost)
+		reachCache.Unlock()
+		if old != nil && old.alive() {
+			retireKey(srv.ID + "|" + cur)
+			return
+		}
+		sh := newSSHHost(a.store, srv, c.dial)
+		sh.v6 = c.v6
+		dctx, dcancel := context.WithTimeout(ctx, 15*time.Second)
+		err := clientCtx(dctx, sh)
+		dcancel()
+		if err != nil {
+			continue
+		}
+		reachCache.Lock()
+		if prev, ok := reachCache.m[key].(*SSHHost); ok && prev != sh {
+			prev.Close()
+		}
+		reachCache.m[key] = sh
+		reachCache.Unlock()
+		retireKey(srv.ID + "|" + cur)
+		a.recordPath(srv, c.path)
+		log.Printf("ssh %s: back on %s (was %s)", srv.Name, c.path, cur)
+		return
+	}
+}
+
+// retireKey forgets one cached connection now and closes it a minute later.
+func retireKey(key string) {
+	reachCache.Lock()
+	h := reachCache.m[key]
+	delete(reachCache.m, key)
+	reachCache.Unlock()
+	if c, ok := h.(interface{ Close() }); ok {
+		time.AfterFunc(time.Minute, c.Close)
+	}
+}
