@@ -74,6 +74,7 @@ type igServerView struct {
 	Host    string            `json:"host"`
 	Country string            `json:"country,omitempty"`
 	Info    map[string]string `json:"info"`
+	Auto    *igAutoView       `json:"auto,omitempty"` // the automatic repair (igauto.go)
 }
 
 func (s *Server2) igServers(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +87,7 @@ func (s *Server2) igServers(w http.ResponseWriter, r *http.Request) {
 		if host == "" {
 			host = x.IPv6
 		}
-		out = append(out, igServerView{x.ID, x.Owner, x.Name, host, x.Country, infos[x.ID]})
+		out = append(out, igServerView{x.ID, x.Owner, x.Name, host, x.Country, infos[x.ID], s.app.igAutoViewOf(x.ID)})
 	}
 	// servers that could join: foreign servers of this account not on the page yet
 	type cand struct {
