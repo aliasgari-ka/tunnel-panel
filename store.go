@@ -292,6 +292,8 @@ type State struct {
 	WarpPool map[string]*WarpPool `json:"warpPool,omitempty"`
 	// IgSites: My sites (igsites.go) per server: related domain -> the site it was added with
 	IgSites map[string]map[string]string `json:"igSites,omitempty"`
+	// IgSubs: Outbounds subscriptions (igoutbound_http.go); the URL holds a token: never sent to the page
+	IgSubs []*IgSub `json:"igSubs,omitempty"`
 	// HostHW: this panel host's cores, RAM and disk (the servers keep theirs in Server.HW)
 	HostHW *Hardware `json:"hostHw,omitempty"`
 }

@@ -164,11 +164,14 @@ type igPxBulkOut struct {
 }
 
 func igPxName(r *igProxyRow) string {
-	t := "HTTP"
-	if r.Type == "socks5" {
-		t = "SOCKS5"
+	k := r.Kind
+	if k == "" {
+		k = r.Type
 	}
-	return t + " " + r.Host + ":" + r.Port
+	if r.Remark != "" {
+		return igOutBadge(k) + " " + r.Remark + " (" + r.Host + ":" + r.Port + ")"
+	}
+	return igOutBadge(k) + " " + r.Host + ":" + r.Port
 }
 
 func (a *App) igProxyBulkDel(ctx context.Context, x *Server, keys []string, moves map[string]string) (*igPxBulkOut, int, error) {

@@ -24,7 +24,10 @@ import (
 	"time"
 )
 
-const igProxyFile = "/etc/igproxy/proxies"
+const (
+	igProxyFile = "/etc/igproxy/proxies"
+	igXoutTB    = 12300 // the agent's XOUT_TB: 127.0.0.1:12300+n = Xray outbound n (tests)
+)
 
 // ---- one proxy, checked before it reaches the agent
 
@@ -131,6 +134,11 @@ type igProxyRow struct {
 	Host    string       `json:"host"`
 	Port    string       `json:"port"`
 	User    string       `json:"user,omitempty"` // masked
+	Kind    string       `json:"kind"`             // http / socks5 / vless-reality / vmess / trojan / ss / hy2 / xray
+	Badge   string       `json:"badge"`            // HTTP, SOCKS5, VLESS·Reality …
+	Remark  string       `json:"remark,omitempty"` // an Xray config's name
+	Sub     string       `json:"sub,omitempty"`    // the subscription it came from (its id)
+	Gone    bool         `json:"gone,omitempty"`   // no longer in that subscription
 	Key     string       `json:"key"`
 	Twin    string       `json:"twin"`            // the same for two lines with one host, port and user (one HTTP, one SOCKS5)
 	Bad     bool         `json:"bad,omitempty"`   // Instagram rejected its IP: out of rotation
@@ -208,6 +216,7 @@ tst(){ # n type host port user pass
   local s=socks5h hh=$3 pw=$6 a tr ms g; [ "$2" = http ] && s=http; [ "$pw" = - ] && pw=""
   case "$hh" in \[*) ;; *:*) hh="[$hh]";; esac
   a=(-x "$s://$hh:$4"); [ -n "$5" ] && [ "$5" != - ] && a+=(--proxy-user "$5:$pw")
+  [ "$2" = xray ] && a=(-x "socks5h://127.0.0.1:$((` + strconv.Itoa(igXoutTB) + `+$1))")   # an Xray outbound: the router's test socket for line n
   tr=$(curl -s -m 10 "${a[@]}" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
   ms=$(curl -s -m 8 "${a[@]}" -o /dev/null -w '%{http_code} %{time_total}' https://i.instagram.com/ 2>/dev/null | awk '$1!="000"{printf "%d",$2*1000}')
   g=$(curl -s -m 8 "${a[@]}" -o /dev/null -w '%{http_code}' https://www.google.com/generate_204 2>/dev/null)
@@ -276,7 +285,13 @@ func (a *App) igProxies(ctx context.Context, srv *Server, test bool, only ...int
 			if u == "-" {
 				u = ""
 			}
-			r := &igProxyRow{N: n, Type: f[2], Host: f[3], Port: f[4], User: igMaskUser(u), Key: igProxyKey(f[2], f[3], f[4], u), Twin: igProxyKey("", f[3], f[4], u), Bad: f[6] == "1", user: u}
+			r :=&igProxyRow{N: n, Type: f[2], Host: f[3], Port: f[4], User: igMaskUser(u), Key: igProxyKey(f[2], f[3], f[4], u), Twin: igProxyKey("", f[3], f[4], u), Bad: f[6] == "1", user: u, Kind: f[2]}
+			if f[2] == "xray" { // the 4th field is kind~remark~hash, not a user: shown as the type and name
+				r.User = ""
+				r.Kind, r.Remark = igOutLabel(u)
+				r.Twin = r.Key // two configs to one server are different outbounds
+			}
+			r.Badge = igOutBadge(r.Kind)
 			rows = append(rows, r)
 			byN[n] = r
 		case f[0] == "M" && len(f) >= 4:
@@ -300,6 +315,7 @@ func (a *App) igProxies(ctx context.Context, srv *Server, test bool, only ...int
 	for _, r := range rows {
 		r.Test = igPxLast(srv.ID, r.Key)
 	}
+	igOutsRemember(srv.ID, rows)
 	return rows, nil
 }
 
@@ -330,7 +346,24 @@ func (s *Server2) igProxyList(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 502, igLabel(x)+": "+err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"proxies": rows, "t": time.Now().Unix()})
+	subs, from, gone := s.app.igSubsFor(user, admin)
+	mine := []igSubView{}
+	for _, v := range subs {
+		if contains(v.Servers, x.ID) {
+			v.Gone = 0
+			for _, r := range rows {
+				if gone[x.ID][r.Key] && from[x.ID][r.Key] == v.ID {
+					v.Gone++
+				}
+			}
+			mine = append(mine, v)
+		}
+	}
+	for _, r := range rows {
+		r.Sub = from[x.ID][r.Key]
+		r.Gone = gone[x.ID][r.Key]
+	}
+	writeJSON(w, map[string]any{"proxies": rows, "subs": mine, "t": time.Now().Unix()})
 }
 
 type igPxResult struct {
@@ -414,6 +447,10 @@ func (s *Server2) igProxyAdd(w http.ResponseWriter, r *http.Request) {
 	p, err := igBody(r)
 	if err != nil {
 		httpErr(w, 400, err.Error())
+		return
+	}
+	if strings.TrimSpace(igStr(p["text"])) != "" { // Outbounds: links / subscription / JSON / proxies, many at once
+		s.igOutAdd(w, r, p)
 		return
 	}
 	px, err := igProxyNorm(igStr(p["type"]), igStr(p["host"]), igStr(p["port"]), igStr(p["user"]), igStr(p["pass"]))

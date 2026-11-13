@@ -87,7 +87,7 @@ func (s *Server2) igServers(w http.ResponseWriter, r *http.Request) {
 		if host == "" {
 			host = x.IPv6
 		}
-		out = append(out, igServerView{x.ID, x.Owner, x.Name, host, x.Country, infos[x.ID], s.app.igAutoViewOf(x.ID)})
+		out = append(out, igServerView{x.ID, x.Owner, x.Name, host, x.Country, igWithOuts(x.ID, infos[x.ID]), s.app.igAutoViewOf(x.ID)})
 	}
 	// servers that could join: foreign servers of this account not on the page yet
 	type cand struct {
@@ -122,7 +122,7 @@ func (s *Server2) igInfoGet(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 50*time.Second)
 	defer cancel()
-	writeJSON(w, s.app.igInfo(ctx, x))
+	writeJSON(w, igWithOuts(x.ID, s.app.igInfo(ctx, x)))
 }
 
 func igBody(r *http.Request) (map[string]any, error) {

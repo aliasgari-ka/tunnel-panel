@@ -684,7 +684,7 @@ func (a *App) igBorrowProxy(ctx context.Context, srv *Server) string {
 		}
 		for _, l := range lines {
 			f := strings.Fields(l)
-			if len(f) < 3 || (f[0] != "http" && f[0] != "socks5") || own[f[1]] {
+			if len(f) < 3 || (f[0] != "http" && f[0] != "socks5" && f[0] != "xray") || own[f[1]] {
 				continue
 			}
 			k := f[1] + ":" + f[2]
