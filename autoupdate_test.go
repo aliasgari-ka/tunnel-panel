@@ -56,6 +56,12 @@ func (f *fakeGitHub) handler(t *testing.T) http.Handler {
 		name := "tunnel-panel-" + runtime.GOARCH
 		switch {
 		case r.URL.Path == "/repos/"+updRepo+"/releases/latest":
+			tag := `"` + f.ver + `"`
+			w.Header().Set("ETag", tag)
+			if r.Header.Get("If-None-Match") == tag {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"assets": []map[string]any{
 				{"name": name, "url": base + "/a/bin"}, {"name": "SHA256SUMS", "url": base + "/a/sums"}, {"name": "VERSION", "url": base + "/a/ver"}}})
 		case r.URL.Path == "/a/ver":
@@ -94,6 +100,9 @@ func updTestApp(t *testing.T, gh *fakeGitHub) (*App, *[]string, *[]string) {
 	srv := httptest.NewServer(gh.handler(t))
 	t.Cleanup(srv.Close)
 	dataDir, updAPI, version = dir, srv.URL, "1111111-20261113"
+	updCache.Lock()
+	updCache.etag, updCache.rel = "", nil
+	updCache.Unlock()
 	var mu sync.Mutex
 	var pushed, installs []string
 	a := &App{store: st, jobs: newJobs(), agents: newAgentHub()}
@@ -270,3 +279,29 @@ func TestApplyScript(t *testing.T) {
 }
 
 func testSleep() { time.Sleep(10 * time.Millisecond) }
+
+// an unchanged release is answered 304 (free) and its VERSION is not fetched again
+func TestAutoUpdateETag(t *testing.T) {
+	gh := &fakeGitHub{ver: "1111111-20261113", compare: "identical"}
+	a, _, _ := updTestApp(t, gh)
+	for i := 0; i < 3; i++ {
+		if note, err := a.autoUpdateCheck(); err != nil || note != "up to date" {
+			t.Fatalf("check %d: %q %v", i, note, err)
+		}
+	}
+	n := 0
+	for _, c := range gh.calls {
+		if c == "/a/ver" {
+			n++
+		}
+	}
+	if n != 1 || len(gh.calls) != 4 {
+		t.Fatalf("calls %v", gh.calls)
+	}
+	gh.mu.Lock()
+	gh.ver, gh.bin, gh.compare = "2222222-20261114", fakeBin("2222222-20261114"), "ahead"
+	gh.mu.Unlock()
+	if note, _ := a.autoUpdateCheck(); !strings.Contains(note, "installing 2222222") {
+		t.Fatalf("a changed release was not seen: %q", note)
+	}
+}
