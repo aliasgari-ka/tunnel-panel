@@ -2927,7 +2927,7 @@ function tunnelModal(t) {
 // each, each method's trend as a sparkline. The benchmark runs on the server; the page only
 // watches it (BN.job survives navigation, /bench/active re-attaches after a reload).
 let benchTimer = null, benchPoll = null;
-const BN = { job: null, req: null, view: {}, fam: '', route: '' };
+const BN = { job: null, req: null, view: {}, fam: '', only: '', open: new Set(), prog: null };
 const bnKey = (i, f) => i + '|' + (f || '');
 const bnAge = (u) => { const s = Math.max(0, Math.floor(Date.now() / 1000) - u); return s < 90 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
 const bnIn = (u) => { const s = u - Math.floor(Date.now() / 1000); return s <= 600 ? 'within 10 min' : s < 3600 ? `in ${Math.round(s / 60)} min` : s < 86400 ? `in ${Math.round(s / 3600)} h` : `in ${Math.round(s / 86400)} d`; };
@@ -2946,15 +2946,14 @@ function bnSpark(pts) {
   return `<svg class="bn-spark" viewBox="0 0 ${w} ${hh}" preserveAspectRatio="none" aria-hidden="true"><title>${esc(tip)}</title><path d="${d}"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="1.8"/></svg>`;
 }
 function viewBench(w) {
-  w.innerHTML = topbar('Benchmark', 'Which methods work on each route right now, and which is best — measured on a temporary tunnel, live tunnels are not touched.',
+  w.innerHTML = topbar('Benchmark', 'One line per route: the method users are on, the best one, when it was measured and what to do next. Click a route for the whole comparison.',
     '<button class="btn sm" id="bnpair">＋ Another pair</button>');
-  w.appendChild(h(`<div class="bn"><div id="bnauto"></div><div id="bnrun"></div>
-    <div class="bn-filters"><label class="bn-sel"><span>Route</span><select id="bnroute"><option value="">All routes</option></select></label>
-      <div class="seg" id="bnfam"><button data-f="" class="on">All</button><button data-f="v4">IPv4</button><button data-f="v6">IPv6</button></div></div>
+  w.appendChild(h(`<div class="bn"><div id="bnrun"></div><div id="bnauto"></div>
     <div id="bnlist"><div class="skel" style="height:160px"></div></div><div id="bnfoot"></div></div>`));
-  $$('#bnfam button', w).forEach(b => { b.classList.toggle('on', b.dataset.f === BN.fam); b.onclick = () => { BN.fam = b.dataset.f; $$('#bnfam button').forEach(x => x.classList.toggle('on', x === b)); bnPaint(); }; });
-  $('#bnroute', w).onchange = (e) => { BN.route = e.target.value; bnPaint(); };
   $('#bnpair', w).onclick = () => bnPairModal();
+  // one click handler for the whole list: rows open and close, buttons act on their route
+  $('#bnlist', w).onclick = bnClick;
+  $('#bnlist', w).onkeydown = (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.hasAttribute && e.target.hasAttribute('data-row')) { e.preventDefault(); bnClick(e); } };
   bnLoad();
   // re-attach to a running (or just finished) benchmark
   api('/bench/active').then(a => { if (a && a.job && (a.running || BN.job === a.job)) bnWatch(a.job, a.req || {}); }).catch(() => {});
@@ -3002,38 +3001,158 @@ function bnUse(p, fam) {
   users.forEach(m => standby.delete(m));
   return { users, standby };
 }
+// where a route stands on one family: the run shown, who is on what, the best, and the one next step
+// kind: live (measuring now) · none (never measured) · fail (the last run measured nothing) · bad (the
+// users' method failed) · better (another method is clearly faster) · old (measured too long ago) ·
+// good (users are on the best, or close) · idle (no tunnel runs on this family here)
+const BN_RANK = { live: 0, bad: 1, fail: 2, better: 3, none: 4, old: 5, good: 6, idle: 7 };
+function bnState(p, f) {
+  const { hist, st } = BND;
+  const runs = hist.filter(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f); // newest first
+  const running = !!(BN.req && BN.req.iranId === p.iran && (BN.req.foreignId || '') === p.foreign && (BN.req.family || 'v4') === f && BN.running);
+  let run = runs[0] || null, results = run ? run.results || [] : [];
+  const live = running && BND.live && BND.live.length;
+  if (live) { results = BND.live; run = { at: Math.max(...BND.live.map(r => r.at || 0)) || Math.floor(Date.now() / 1000), live: true }; }
+  const ok = results.filter(r => r.ok), best = ok[0] || null;
+  const { users, standby } = bnUse(p, f);
+  const uOk = ok.find(x => users.has(x.method)) || null;
+  const uRes = uOk || results.find(x => users.has(x.method)) || null;
+  const fail = (st.fails || []).find(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f);
+  const now = Math.floor(Date.now() / 1000), every = (st.hours || 24) * 3600;
+  const age = run && !run.live ? now - run.at : 0;
+  const stale = !!run && !run.live && (age > 7 * 86400 || age > 2 * every);
+  let kind, gain = 0;
+  if (running) kind = 'live';
+  else if (!users.size) kind = 'idle'; // no one is on it here: shown, never flagged
+  else if (!run) kind = 'none';
+  else if ((fail && fail.at > run.at) || !ok.length) kind = 'fail';
+  else if (!uOk) kind = 'bad';
+  else if (best.method !== uOk.method && (gain = (best.downMbps || 0) / Math.max(0.1, uOk.downMbps || 0) - 1) >= 0.15) kind = 'better';
+  else if (stale) kind = 'old';
+  else kind = 'good';
+  return { runs, run, results, ok, best, users, standby, uOk, uRes, fail, age, stale, kind, gain, running };
+}
+// the filter chips group the kinds
+const BN_GROUP = { good: 'good', better: 'better', bad: 'fail', fail: 'fail', old: 'old', none: 'old' };
 function bnPaint() {
   const list = $('#bnlist');
   if (!list || !BND) return;
-  const { hist, st, skip } = BND;
   const routes = bnRoutes();
-  // the route picker
-  const sel = $('#bnroute');
-  if (BN.route && !routes.some(p => p.k === BN.route)) BN.route = '';
-  sel.innerHTML = `<option value="">All routes (${routes.length})</option>` + routes.map(p => `<option value="${esc(p.k)}" data-notr>${esc(p.label)}</option>`).join('');
-  sel.value = BN.route;
-  bnAutoCard();
-  const shown = routes.filter(p => !BN.route || p.k === BN.route);
-  if (!shown.length) { list.innerHTML = `<div class="card empty"><div class="big">📊</div><h3>No routes yet</h3><p class="muted">Add a tunnel, or measure a pair of servers with “＋ Another pair”.</p></div>`; bnFoot(); return; }
-  list.innerHTML = '';
-  shown.forEach(p => { try { list.appendChild(bnCard(p)); } catch (e) { console.error(e); list.appendChild(h(`<div class="card pad bn-card"><b data-notr>${esc(p.label)}</b><div class="faint">couldn't be drawn: ${esc(e.message)}</div></div>`)); } });
+  BN.byKey = new Map(routes.map(p => [p.k, p]));
+  // the family shown: the one users are on (most routes), IPv4 when equal
+  if (!['v4', 'v6'].includes(BN.fam)) { const n = (f) => routes.filter(p => bnUse(p, f).users.size).length; BN.fam = n('v6') > n('v4') ? 'v6' : 'v4'; }
+  const f = BN.fam;
+  const all = routes.filter(p => p.fams.includes(f)).map(p => ({ p, s: bnState(p, f) }));
+  bnTop(all, routes);
+  if (!routes.length) { list.innerHTML = `<div class="card empty"><div class="big">📊</div><h3>No routes yet</h3><p class="muted">Add a tunnel, or measure a pair of servers with “＋ Another pair”.</p></div>`; bnFoot(); return; }
+  if (BN.only && !all.some(x => BN_GROUP[x.s.kind] === BN.only)) BN.only = '';
+  const shown = all.filter(x => !BN.only || BN_GROUP[x.s.kind] === BN.only);
+  const order = (a, b) => BN_RANK[a.s.kind] - BN_RANK[b.s.kind] || (b.s.gain - a.s.gain) || a.p.label.localeCompare(b.p.label);
+  // routes users are on first; the ones no tunnel runs on (measured only) folded below
+  const main = shown.filter(x => x.s.users.size || x.s.running).sort(order), rest = shown.filter(x => !main.includes(x)).sort(order);
+  const head = `<div class="bn-or bn-oh"><span>Route</span><span>Users are on</span><span>★ Best now</span><span>Measured</span><span>Next step</span><span></span></div>`;
+  const rows = (xs) => xs.map(x => { try { return bnRow(x.p, f, x.s); } catch (e) { console.error(e); return `<div class="bn-or"><span data-notr>${esc(x.p.label)}</span><span class="faint">couldn't be drawn: ${esc(e.message)}</span></div>`; } }).join('');
+  const restOpen = BN.restOpen || !main.length || rest.some(x => BN.open.has(x.p.k + '|' + f));
+  list.innerHTML = (main.length ? `<div class="card bn-ot">${head}${rows(main)}</div>` : '')
+    + (rest.length ? `<details class="bn-rest"${restOpen ? ' open' : ''}><summary>${main.length ? `Routes no tunnel runs on over ${famName(f)} (${rest.length})` : `Measured routes (${rest.length})`} <span class="faint">— measured only</span></summary><div class="card bn-ot">${head}${rows(rest)}</div></details>` : '')
+    + (!main.length && !rest.length ? `<div class="card pad faint">${BN.only ? 'Nothing here with this filter.' : `No route has ${famName(f)} on both servers.`}</div>` : '');
+  const rd = $('.bn-rest', list); if (rd) rd.ontoggle = () => { BN.restOpen = rd.open; };
+  // the open rows' "Every method" plans, from the server once per route
+  $$('[data-plan]', list).forEach(bnPlan);
   bnFoot();
 }
-function bnCard(p) {
-  const { hist, st, skip } = BND;
-  const fams = p.fams.filter(f => !BN.fam || f === BN.fam);
-  const fl = (id, d) => { const s = id ? serverById(id) : null; return s && s.country ? flag(s.country) : d; };
-  const tnames = p.tunnels.map(t => `<span class="chip" data-notr>${esc(t.name)}</span>`).join('');
-  const card = h(`<div class="card bn-card"><div class="bn-head">
-      <div class="bn-route">${fl(p.iran, flag('IR'))} ${srvNm(p.iran)} <span class="faint">→</span> ${fl(p.foreign, p.foreign ? '🌍' : '🖥')} ${srvNm(p.foreign, 'this panel host')}</div>
-      <div class="bn-tn">${p.users ? `<span class="pill on"><span class="led"></span>${p.users === 1 ? 'tunnel running' : `${p.users} tunnels running`}</span>` : p.tunnels.length ? '<span class="pill off">tunnel stopped</span>' : '<span class="pill off">no tunnel</span>'}${tnames}</div></div></div>`);
-  if (!fams.length) card.appendChild(h(`<div class="bn-fam"><div class="faint">${BN.fam ? `No ${famName(BN.fam)} on this route.` : 'These two servers have no address family in common.'}</div></div>`));
-  fams.forEach(f => card.appendChild(bnFamSection(p, f)));
-  $$('[data-err]', card).forEach(b => b.onclick = () => alertModal('Why it failed', b.dataset.err));
-  $$('[data-apply]', card).forEach(b => b.onclick = () => applyBenchToTunnel({ iran: p.iran, foreign: p.foreign, family: b.dataset.fam }, b.dataset.apply));
-  $$('[data-run]', card).forEach(b => b.onclick = () => bnRunModal(p, b.dataset.run));
-  $$('[data-hv]', card).forEach(b => b.onclick = () => { BN.view[p.k + '|' + b.dataset.fam] = b.dataset.hv || undefined; bnPaint(); });
-  return card;
+// the line above the table: the family, how many routes stand where (each a filter), the automatic benchmark
+function bnTop(all, routes) {
+  const box = $('#bnauto'); if (!box || !BND) return;
+  const st = BND.st, hrs = st.hours, now = Math.floor(Date.now() / 1000);
+  const due = (st.routes || []).filter(r => r.next).sort((a, b) => a.next - b.next)[0];
+  const cnt = (g) => all.filter(x => BN_GROUP[x.s.kind] === g).length;
+  const fams = ['v4', 'v6'].map(f => [f, routes.filter(p => p.fams.includes(f)).length]);
+  const chip = (g, icon, one, many) => { const n = cnt(g); return n ? `<button class="bn-c ${g}${BN.only === g ? ' on' : ''}" data-only="${g}">${icon} <span>${n === 1 ? one : many.replace('#', n)}</span></button>` : ''; };
+  const tip = hrs ? `only the methods running on each route, at most ${st.autoMB || 3} MB each way per method; every method once in ${(st.fullEvery || 7) * hrs} h` : 'routes are measured only when you run the benchmark';
+  box.innerHTML = `<div class="card bn-top">
+    <div class="seg sm" id="bnfam">${fams.map(([f, n]) => `<button data-f="${f}" class="${f === BN.fam ? 'on' : ''}">${famName(f)} <small>${n}</small></button>`).join('')}</div>
+    <div class="bn-cs">${chip('good', '✓', '1 on the best', '# on the best')}${chip('better', '★', '1 has a faster method', '# have a faster method')}${chip('fail', '✕', '1 failed', '# failed')}${chip('old', '⏱', '1 to measure', '# to measure')}</div>
+    <span class="bn-sp1"></span>
+    <div class="bn-au" title="${esc(tip)}"><span>${hrs ? `🤖 Automatic every ${hrs} h` : '🤖 Automatic benchmark is off'}</span>${hrs && due ? `<small class="faint">${due.next <= now ? 'a route is due now' : 'next ' + bnIn(due.next)}</small>` : ''}
+      ${isAdmin() ? `<form class="bn-edit" id="bnaf"><label><span>every</span><input name="hours" class="mono" inputmode="numeric" value="${esc(st.set || '')}" placeholder="24" aria-label="hours"><span>h</span></label><button class="btn sm">Save</button></form>` : ''}</div></div>`;
+  $$('#bnfam button', box).forEach(b => b.onclick = () => { BN.fam = b.dataset.f; BN.only = ''; bnPaint(); });
+  $$('[data-only]', box).forEach(b => b.onclick = () => { BN.only = BN.only === b.dataset.only ? '' : b.dataset.only; bnPaint(); });
+  const fm = $('#bnaf', box);
+  if (fm) fm.onsubmit = oneAtATime(fm, async () => { try { await api('/bench/auto', { hours: fm.hours.value.trim() }); toast('Saved'); if (STATE.settings) STATE.settings.autoBench = fm.hours.value.trim(); bnLoad(); } catch (e) { alertModal('Automatic benchmark', e.message); } });
+}
+// one route on one line; open, its whole comparison right under it
+function bnRow(p, f, s) {
+  const k = p.k + '|' + f, open = BN.open.has(k), busy = !!BN.job && BN.running;
+  const fl = (id, d) => { const s2 = id ? serverById(id) : null; return s2 && s2.country ? flag(s2.country) : d; };
+  const on = p.tunnels.filter(t => t.active);
+  const tn = p.tunnels.length ? `<small class="bn-tns"><span class="led${on.length ? ' on' : ''}"></span><span data-notr>${p.tunnels.map(t => esc(t.name)).join(', ')}</span></small>` : '<small class="faint">no tunnel</small>';
+  const nums = (x) => `<span class="bn-nm"><b>↓ ${bnMb(x.downMbps || 0)}</b> <span class="faint">↑ ${bnMb(x.upMbps || 0)}</span></span>`;
+  const lat = (x) => `<small class="faint">${(x.rttMs || 0).toFixed(0)} ms${x.lossKnown ? ` · <span class="${x.lossPct >= 5 ? 'bn-bad' : ''}">${x.lossPct.toFixed(0)}% loss</span>` : ''}</small>`;
+  // who is on what
+  let usersCell;
+  if (s.users.size) {
+    const um = [...s.users], more = um.length > 1 ? ` <small class="faint">+${um.length - 1}</small>` : '';
+    const x = s.uRes, mid = x ? x.method : um[0];
+    usersCell = `<div class="bn-oc"><span class="bn-mt">👥 <b>${esc(methodTitle(mid))}</b>${more}</span>${s.uOk ? `<span>${nums(s.uOk)} ${lat(s.uOk)}</span>` : x && !x.skipped ? `<button class="bn-why bn-bad" data-err="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>` : s.run ? '<small class="faint">not measured in this run</small>' : ''}</div>`;
+  } else {
+    const other = f === 'v4' ? 'v6' : 'v4';
+    usersCell = bnUse(p, other).users.size ? `<small class="faint">users are on ${famName(other)}</small>` : '<small class="faint">—</small>';
+  }
+  const bestCell = s.best ? `<div class="bn-oc"><span class="bn-mt"><span class="bn-star">★</span> <b>${esc(methodTitle(s.best.method))}</b></span><span>${nums(s.best)} ${lat(s.best)}</span></div>`
+    : s.run && !s.run.live ? '<small class="bn-bad">no method worked</small>' : '<small class="faint">—</small>';
+  // when
+  let when;
+  if (s.running) {
+    const pr = BN.prog && BN.prog.n ? `${BN.prog.i}/${BN.prog.n}` : '';
+    when = `<span class="pill acc">measuring${pr ? ' ' + pr : '…'}</span>`;
+  } else if (!s.run) when = '<span class="pill off">never</span>';
+  else when = `<span class="pill ${s.age > 7 * 86400 ? 'bad' : s.stale ? 'warn' : 'on'}" title="${esc(new Date(s.run.at * 1000).toLocaleString())}">${bnAge(s.run.at)}</span>`;
+  // the one next step
+  const runBtn = (pri) => `<button class="btn sm${pri ? ' pri' : ''}" data-run="${f}"${busy ? ' disabled title="one benchmark at a time — wait for the running one"' : ''}>▶ Run</button>`;
+  const applyBtn = (pri) => s.best && p.tunnels.length ? `<button class="btn sm${pri ? ' pri' : ''}" data-apply="${esc(s.best.method)}" data-fam="${f}" title="Switch one of this route's tunnels to ${esc(methodTitle(s.best.method))}">Apply ★</button>` : '';
+  const next = {
+    live: '<small class="faint">results come in as each method finishes</small>',
+    none: `<small class="faint">not measured yet</small>${runBtn(true)}`,
+    fail: `${s.fail && (!s.run || s.fail.at > s.run.at) ? `<button class="bn-why bn-bad" data-err="${esc(s.fail.error)}">✕ ${esc(shortErr(s.fail.error))}</button>` : '<small class="bn-bad">✕ nothing worked</small>'}${runBtn(true)}`,
+    bad: `<small class="bn-bad">users' method failed</small>${applyBtn(true)}${runBtn(false)}`,
+    better: `<small class="bn-up">★ ${Math.round(s.gain * 100)}% faster ↓</small>${applyBtn(true)}`,
+    old: `<small class="bn-old2">⏱ measure again</small>${runBtn(true)}`,
+    good: `<small class="bn-ok">✓ on the best</small>`,
+    idle: !s.run || s.stale || !s.ok.length ? runBtn(false) : '',
+  }[s.kind];
+  return `<div class="bn-or k-${s.kind}${open ? ' open' : ''}" data-k="${esc(p.k)}" data-f="${f}" data-row tabindex="0" role="button" aria-expanded="${open}">
+      <div class="bn-rt"><b>${fl(p.iran, flag('IR'))} ${srvNm(p.iran)} <span class="faint">→</span> ${fl(p.foreign, p.foreign ? '🌍' : '🖥')} ${srvNm(p.foreign, 'this panel host')}</b>${tn}</div>
+      ${usersCell}${bestCell}<div class="bn-ow">${when}</div><div class="bn-nx">${next}</div><span class="bn-cv">▾</span></div>`
+    + (open ? `<div class="bn-ox" data-k="${esc(p.k)}" data-f="${f}">${bnFamSection(p, f).outerHTML}<div class="bn-pl" data-plan="${esc(k)}"></div></div>` : '');
+}
+// what "Every method" would measure on an open route, and what stays out and why (/bench/plan)
+function bnPlan(box) {
+  const k = box.dataset.plan, [iran, foreign, fam] = k.split('|'), maxMB = (BND.st || {}).maxMB || 6;
+  const paint = (pl) => {
+    const n = (pl.methods || []).length, left = pl.left || [], off = pl.off || [];
+    box.innerHTML = `<span class="faint">Every method here: ${bnCostAll(n, pl.maxMB || maxMB)}</span>${off.length ? ` <span class="chip" title="left out on this route (Routes page): measured only, not deployed">${off.length === 1 ? '1 left out on this route' : `${off.length} left out on this route`}</span>` : ''}`
+      + (left.length ? `<details class="bn-adv"><summary>Not measured (${left.length})</summary><div class="bn-left">${left.map(x => `<div><b>${esc(methodTitle(x.method))}</b> <span class="faint">${esc(x.why)}</span></div>`).join('')}</div></details>` : '');
+  };
+  BN.plans = BN.plans || {};
+  if (BN.plans[k]) return paint(BN.plans[k]);
+  api(`/bench/plan?iran=${encodeURIComponent(iran)}&foreign=${encodeURIComponent(foreign || '')}&family=${fam}`).then(pl => { BN.plans[k] = pl; if (box.isConnected) paint(pl); }).catch(() => {});
+}
+function bnClick(e) {
+  const el = e.target.closest('[data-k]'); if (!el) return;
+  const p = BN.byKey && BN.byKey.get(el.dataset.k), f = el.dataset.f; if (!p) return;
+  const b = e.target.closest('button,a,summary,input,select,label');
+  if (b) {
+    if (b.dataset.err !== undefined) alertModal('Why it failed', b.dataset.err);
+    else if (b.dataset.apply) applyBenchToTunnel({ iran: p.iran, foreign: p.foreign, family: b.dataset.fam || f }, b.dataset.apply);
+    else if (b.dataset.run) bnRunModal(p, b.dataset.run);
+    else if (b.dataset.hv !== undefined) { BN.view[p.k + '|' + (b.dataset.fam || f)] = b.dataset.hv || undefined; bnPaint(); }
+    return;
+  }
+  if (!el.hasAttribute('data-row')) return;
+  const k = p.k + '|' + f;
+  if (BN.open.has(k)) BN.open.delete(k); else BN.open.add(k);
+  bnPaint();
 }
 function bnFamSection(p, f) {
   const { hist, st, skip } = BND;
@@ -3104,20 +3223,6 @@ function bnFamSection(p, f) {
     ${ok.length ? `<div class="bn-rows">${rows}</div>` : run ? '<div class="bn-none">No method worked in this run.</div>' : '<div class="bn-none faint">Not measured yet — run the benchmark to see which methods work here.</div>'}
     ${fails}
     <div class="bn-meta">${next}${runs.length > 1 ? `<details class="bn-hist"${pick ? ' open' : ''}><summary>History · ${runs.length} runs</summary><div class="bn-hl">${hl}</div></details>` : ''}</div></div>`);
-}
-// the automatic benchmark: how often, what it costs, editable here (admin)
-function bnAutoCard() {
-  const box = $('#bnauto'); if (!box || !BND) return;
-  const st = BND.st, hrs = st.hours, now = Math.floor(Date.now() / 1000);
-  const due = (st.routes || []).filter(r => r.next).sort((a, b) => a.next - b.next)[0];
-  const fails = (st.fails || []).length;
-  box.innerHTML = `<div class="card bn-auto"><div class="bn-ai">🤖</div><div class="bn-at">
-      <b>${hrs ? `Automatic benchmark every ${hrs} h` : 'Automatic benchmark is off'}</b>
-      <small>${hrs ? `only the methods running on each route, at most ${st.autoMB || 3} MB each way per method; every method once in ${(st.fullEvery || 7) * hrs} h` : 'routes are measured only when you run the benchmark'}</small>${due ? `<small class="bn-nx">${due.next <= now ? 'a route is due now' : 'next ' + bnIn(due.next)}</small>` : ''}</div>
-      ${fails ? `<span class="pill bad" title="routes whose last run measured nothing — see the route">${fails === 1 ? '1 route failed' : `${fails} routes failed`}</span>` : ''}
-      ${isAdmin() ? `<form class="bn-edit" id="bnaf"><label><span>every</span><input name="hours" class="mono" inputmode="numeric" value="${esc(st.set || '')}" placeholder="24" aria-label="hours"><span>h</span></label><button class="btn sm">Save</button></form>` : ''}</div>`;
-  const f = $('#bnaf', box);
-  if (f) f.onsubmit = oneAtATime(f, async () => { try { await api('/bench/auto', { hours: f.hours.value.trim() }); toast('Saved'); if (STATE.settings) STATE.settings.autoBench = f.hours.value.trim(); bnLoad(); } catch (e) { alertModal('Automatic benchmark', e.message); } });
 }
 function bnFoot() {
   const box = $('#bnfoot'); if (!box) return;
@@ -3190,6 +3295,7 @@ function bnRunCard(j, req, job) {
   const lines = j.lines || [];
   let i = 0, n = 0, cur = '';
   lines.forEach(l => { const mm = /── \[(\d+)\/(\d+)\] (.+) ──/.exec(l); if (mm) { i = +mm[1]; n = +mm[2]; cur = mm[3]; } });
+  BN.prog = { i, n };
   const running = j.status === 'running';
   const label = `${serverName(req.iranId)} → ${req.foreignId ? serverName(req.foreignId) : 'this panel host'}`;
   const last = [...lines].reverse().find(l => /^DONE/.test(l)) || '';
