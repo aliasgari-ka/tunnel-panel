@@ -55,6 +55,7 @@ type IgAutoSvc struct {
 	Tries int    `json:"tries,omitempty"` // failed tries of Want since the move
 	Alert int64  `json:"alert,omitempty"` // last "nothing works" alert
 	Back  int64  `json:"back,omitempty"`  // when it last went back to Want (igexit.go: older tries are forgotten after 6 h)
+	Via   string `json:"via,omitempty"`   // Instagram: its WARPs enter Cloudflare through this server (igwarpvia.go)
 }
 
 // IgAutoEvent is one line of the short history.
@@ -550,6 +551,10 @@ func (a *App) igAutoFix(ctx context.Context, srv *Server, inf map[string]string,
 		return
 	}
 	cands := igCandidates(p, want, srv.Country)
+	// both WARP families fail: the same WARPs entering Cloudflare through another server, before a proxy
+	if igIsWarp(want) && inf["warps"] != "0" && inf["warps"] != "" {
+		cands = igInsertVia(cands)
+	}
 	// none of the server's own: a proxy of another server of the same owner
 	if len(cands) == 0 {
 		if r := a.igBorrowProxy(ctx, srv); r != "" {
@@ -563,12 +568,30 @@ func (a *App) igAutoFix(ctx context.Context, srv *Server, inf map[string]string,
 		if c == route {
 			continue
 		}
+		if c == "via" {
+			cc, d, ok := a.igWarpVia(ctx, srv, want)
+			if !ok {
+				continue
+			}
+			a.igAutoPut(srv.ID, "IG", func(s *IgAutoSvc) {
+				s.Want, s.Via = want, d.Name
+				s.Cur, s.Why, s.Since, s.Tries, s.Next = "", "", 0, 0, 0
+			})
+			a.igAutoMark(srv.ID, igProbe{Live: cc, FB: p.FB}, 0)
+			msg := fmt.Sprintf("%s on %s (%s) -> %s through %s (%s)", why, igRouteWord(route), orDash(p0.Live), igRouteWord(want), d.Name, cc)
+			a.igAutoLog(srv, "IG", "fix", msg)
+			a.push(fmt.Sprintf("🔀 Instagram on %s: %s", igLabel(srv), msg))
+			return
+		}
 		cc, err := a.igAutoRoute(ctx, srv, c)
 		if err == nil && cc != "" && !igNoMusic(cc) {
 			now := time.Now()
 			back := c == want
 			a.igAutoPut(srv.ID, "IG", func(s *IgAutoSvc) {
 				s.Want = want
+				if !igIsWarp(c) {
+					s.Via = "" // not on WARP any more (the forward stays: the WARPs keep using it)
+				}
 				if back {
 					s.Cur, s.Why, s.Since, s.Tries, s.Next = "", "", 0, 0, 0
 				} else {
@@ -891,4 +914,58 @@ func (s *Server2) igAutoLogGet(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	writeJSON(w, out)
+}
+
+// igAutoStart: a server just added to IG Routing gets every service on Auto (Instagram, Google ·
+// Gemini, YouTube Music and each service that has an Auto) and its first checks at once on the
+// users' route, instead of at the next rounds of the loops. Nothing for a person to set.
+func (a *App) igAutoStart(ctx context.Context, x *Server, out func(string)) {
+	keys := []string{"IG", "GOOGLE", "YTM"}
+	for _, k := range igServices {
+		if d := igSvcByKey[k]; d != nil && len(d.Auto) > 0 && !contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	for _, k := range keys {
+		a.igAutoPut(x.ID, k, func(s *IgAutoSvc) {
+			*s = IgAutoSvc{Auto: true}
+		})
+	}
+	a.igAutoLog(x, "SVC", "info", "new server: every service on Auto")
+	out("-> every service on Auto; checking Instagram, Gemini and YouTube Music on the users' route now")
+	for i := 0; i < 3 && ctx.Err() == nil && a.igAutoCheck(ctx, x); i++ {
+		time.Sleep(igAutoTick)
+	}
+	for i := 0; i < 3 && ctx.Err() == nil && a.igExCheck(ctx, x); i++ {
+		time.Sleep(igExTick)
+	}
+	if ctx.Err() == nil {
+		a.igSvcCheck(ctx, x)
+	}
+	v := a.igAutoViewOf(x.ID)
+	ig := "no answer yet"
+	if v.Live != "" {
+		ig = v.Live
+	}
+	line := "Instagram reads " + ig
+	if v.IG != nil && v.IG.Cur != "" {
+		line += " (moved to " + igRouteWord(v.IG.Cur) + ")"
+	} else if v.IG != nil && v.IG.Via != "" {
+		line += " (WARP through " + v.IG.Via + ")"
+	}
+	for _, k := range []string{"GOOGLE", "YTM"} {
+		e := v.Ex[k]
+		w := e.OK
+		if w == "" {
+			w = "not read yet"
+		}
+		if e.Bad != "" {
+			w += ": " + e.Bad
+		}
+		if e.Cur != "" {
+			w += " (moved to " + igRouteWord(e.Cur) + ")"
+		}
+		line += "; " + igSvcName(k) + " " + w
+	}
+	out(line)
 }
