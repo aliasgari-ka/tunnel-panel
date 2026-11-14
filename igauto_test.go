@@ -45,17 +45,44 @@ func TestIgParseProbe(t *testing.T) {
 func TestIgCandidates(t *testing.T) {
 	p := igProbe{Route: "warp6", Exits: []igExitCC{{Route: "direct", CC: "DE"}, {Route: "proxy1", CC: "RU"}, {Route: "proxy2", CC: "US"},
 		{Route: "proxy3", CC: "DE"}, {Route: "proxy4", CC: "IR"}, {Route: "proxy5", CC: "NL", Music: "ok"}, {Route: "warp1", CC: "IR"}}}
-	// WARP reads IR: not a candidate; DE server: own country first, then Europe (music-tested first), the own IP after the proxies, RU last
+	// WARP (IPv6) reads IR: warp6 is not a candidate, WARP over IPv4 is (its own reading comes when it
+	// is set); DE server: own country first, then Europe (music-tested first), the own IP after the proxies, RU last
 	got := igCandidates(p, "warp6", "DE")
-	want := []string{"proxy3", "proxy5", "proxy2", "direct", "proxy1"}
+	want := []string{"warp", "proxy3", "proxy5", "proxy2", "direct", "proxy1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
-	// a WARP in a music country: back to the route it should be on, first
+	// a WARP in a music country: back to the route it should be on, first, then the other family
 	p.Exits = append(p.Exits, igExitCC{Route: "warp2", CC: "DE"})
 	p.Route = "proxy3"
-	if got := igCandidates(p, "warp6", "DE"); got[0] != "warp6" || contains(got, "proxy3") {
+	if got := igCandidates(p, "warp6", "DE"); len(got) < 2 || got[0] != "warp6" || got[1] != "warp" || contains(got, "proxy3") {
 		t.Fatalf("got %v", got)
+	}
+	// on WARP over IPv4 the other family is warp6
+	if got := igCandidates(p, "warp", "DE"); len(got) < 2 || got[0] != "warp" || got[1] != "warp6" {
+		t.Fatalf("got %v", got)
+	}
+	// no WARP on the server: no WARP candidate
+	q := igProbe{Route: "warp6", Exits: []igExitCC{{Route: "proxy1", CC: "DE"}}}
+	if got := igCandidates(q, "warp6", "DE"); !reflect.DeepEqual(got, []string{"proxy1"}) {
+		t.Fatalf("got %v", got)
+	}
+	// a route that is not WARP: no WARP added
+	if got := igCandidates(p, "proxy1", "DE"); contains(got, "warp") || contains(got, "warp6") {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// Ger-hertzener, 2026-11-14: Instagram on warp6, both WARPs' IPv6 read IR, their IPv4 DE, the own
+// IP IR, two German proxies. WARP over IPv4 comes before the proxies.
+func TestIgCandidatesGerHertzener(t *testing.T) {
+	p := igParseProbe([]string{"L IR", "F ", "R warp6", "O IR", "P 1 1.2.3.4 DE", "P 2 5.6.7.8 DE", "W 1 IR", "W 2 IR"})
+	got := igCandidates(p, "warp6", "DE")
+	if len(got) == 0 || got[0] != "warp" {
+		t.Fatalf("WARP over IPv4 first: %v", got)
+	}
+	if contains(got, "warp6") || contains(got, "direct") {
+		t.Fatalf("no IR exit: %v", got)
 	}
 }
 

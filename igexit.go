@@ -20,7 +20,8 @@ package main
 // 6 h, and taken back only when it passes twice in a row; a fail soon after a move back makes
 // the next try later (Tries is kept until the exit has held for 6 h), so it does not flap.
 //
-// A pinned exit (a person picked one on the page) and "off" are never touched. A route somebody
+// A pinned exit (a person picked one on the page) is read like the others, so the page shows
+// what the users really get on it, but never moved; "off" is not read. A route somebody
 // changed outside the panel is followed as the new Want. The panel host's users' Google never
 // leaves through its own IP (gemhome.go: the Google test account's exit), and no server relays
 // through it either.
@@ -28,7 +29,9 @@ package main
 // Why not the signed-in browser check (gbrowser): the test account lives on the panel host's own
 // IP alone, which the users never get, and the signed-out app has stopped saying where Google
 // places an exit (2026-11-14: Russia's WARPs and Turkey looked the same). Google's own country
-// for the IP is the signal both the page and the agent's gdom use.
+// for the IP is the signal both the page and the agent's gdom use. On warp6 the reading also asks
+// whether IPv6 really passes through the WARPs: a WARP whose IPv6 is dead falls back to Cloudflare's
+// shared IPv4, where the keyless page reads fine but signed-in users are refused.
 //
 // Instagram has its own ladder (igauto.go); the newer services theirs (igsvc.go).
 
@@ -70,6 +73,11 @@ type igExRead struct {
 	Code string // http code ("000" = no connection)
 	Dom  string // Gemini: Google's domain for the exit ("de", "com", "com.tr"); YTM: YouTube's GL
 	Flag string // "region" = the service's own "not available here" page
+	// V6: on warp6 only, whether IPv6 really passes through the WARPs that carry the service
+	// ("ok", "no"; "" = not on warp6 / not measured). A WARP whose IPv6 is dead still answers over
+	// Cloudflare's shared IPv4: the keyless page reads fine there, a signed-in Gemini does not
+	// (Ger-hertzener, 2026-11-14: "WARP IPv6" ✓, users refused).
+	V6 string
 }
 
 // igExDomCC: Google's domain as a country code ("com.tr" -> TR, "co.uk" -> GB, "com" -> "").
@@ -95,6 +103,9 @@ func igExVerdict(svc string, r *igExRead) (string, string) {
 	code := r.Code
 	if code == "" || code == "000" {
 		return "bad", "no answer"
+	}
+	if r.V6 == "no" {
+		return "bad", "WARP IPv6 passes no IPv6"
 	}
 	switch svc {
 	case "GOOGLE":
@@ -132,7 +143,9 @@ func igExVerdict(svc string, r *igExRead) (string, string) {
 }
 
 // igExScript reads the services through socks port 127.0.0.1:port of the server
-// (12370 = the users' route, 12371 = the server's own IP). One line "X <SVC> <code> <dom> <flag>".
+// (12370 = the users' route, 12371 = the server's own IP). One line "X <SVC> <code> <dom> <flag> <v6>".
+// On the users' route a service on warp6 also gets v6: IPv6 to an IPv6 address through each WARP
+// test port of the WARPs that carry it (gb = Google's own, wb = the rest; config.json).
 func igExScript(svcs []string, port int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `#igexit
@@ -148,7 +161,7 @@ g(){ local c d fl=- i
   done
   d=$(grep -oE 'og[.]qtm[^"]*","[a-z.]{2,8}"' "$f" | head -1 | sed -E 's/.*"([a-z.]+)"$/\1/')
   grep -qsi "not supported in your country\|isn.t currently supported\|not available in your country\|not available in your region" "$f" && fl=region
-  echo "X GOOGLE ${c:-000} ${d:--} $fl"; }
+  echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE)"; }
 y(){ local r c d fl=- i
   for i in 1 2; do
     r=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -o "$f" -w '%%{http_code} %%{redirect_url}' https://music.youtube.com/ 2>/dev/null); c=${r%%%% *}
@@ -157,8 +170,13 @@ y(){ local r c d fl=- i
   case "${r#* }" in *unavailable-in-region*|*not-available*) fl=region;; esac
   grep -qsi "unavailable-in-region\|not available in your country\|isn.t available in your country" "$f" && fl=region
   d=$(grep -oE '"GL":"[A-Z]{2}"' "$f" | head -1 | cut -d'"' -f4)
-  echo "X YTM ${c:-000} ${d:--} $fl"; }
+  echo "X YTM ${c:-000} ${d:--} $fl $(v6 YTM)"; }
 `, port, port)
+	if port == gemRelayPort {
+		b.WriteString(igExV6Sh)
+	} else {
+		b.WriteString("v6(){ echo -; }\n")
+	}
 	for _, s := range svcs {
 		switch s {
 		case "GOOGLE":
@@ -170,6 +188,30 @@ y(){ local r c d fl=- i
 	b.WriteString("rm -f \"$f\"\necho __RC=0\n")
 	return b.String()
 }
+
+// igExV6Sh: v6 <SVC> -> ok | no | - (not on warp6, or no WARP test port found). Every WARP that may
+// carry the service must pass: the balancer can pick any of them. A failed one is asked again once
+// (a tunnel that just came up).
+const igExV6Sh = `v6(){
+  [ "$(awk -F= -v s="$1" '$1==s{print $2}' /etc/igproxy/routes 2>/dev/null)" = warp6 ] || { echo -; return; }
+  local b=wb p n=0 ok=0 i; [ "$1" = GOOGLE ] && b=gb
+  for p in $(python3 -c 'import json,sys
+c=json.load(open("/etc/igproxy/config.json")); r=c.get("routing",{})
+sel=[x for B in r.get("balancers",[]) if B.get("tag")==sys.argv[1] for x in B.get("selector",[])]
+ins={x["outboundTag"]:x["inboundTag"][0] for x in r.get("rules",[]) if x.get("outboundTag") and len(x.get("inboundTag") or [])==1 and str(x["inboundTag"][0]).startswith("wtest")}
+port={i.get("tag"):i.get("port") for i in c.get("inbounds",[])}
+for o in c.get("outbounds",[]):
+  t=o.get("tag","")
+  if t.startswith("warp") and any(t.startswith(s) for s in sel) and ins.get(t) in port: print(port[ins[t]])' "$b" 2>/dev/null); do
+    n=$((n+1))
+    for i in 1 2; do
+      curl -s -m 10 -x "socks5://127.0.0.1:$p" 'https://[2606:4700:4700::1111]/cdn-cgi/trace' 2>/dev/null | grep -q '^ip=.*:' && { ok=$((ok+1)); break; }
+      sleep 2
+    done
+  done
+  [ "$n" = 0 ] && { echo -; return; }
+  [ "$ok" = "$n" ] && echo ok || echo no; }
+`
 
 // igExParse reads the script's lines; false = the relay is not there (an old agent).
 func igExParse(lines []string) (map[string]*igExRead, bool) {
@@ -189,6 +231,9 @@ func igExParse(lines []string) (map[string]*igExRead, bool) {
 		}
 		if len(f) > 4 && f[4] == "region" {
 			r.Flag = "region"
+		}
+		if len(f) > 5 && (f[5] == "ok" || f[5] == "no") {
+			r.V6 = f[5]
 		}
 		out[f[1]] = r
 	}
@@ -353,7 +398,8 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 	var svcs []string
 	for _, k := range igExSvcs {
 		route := inf[strings.ToLower(k)]
-		if route == "" || !igExIsAuto(recs[k]) {
+		// a pinned exit is read too (the page shows what the users get on it), never moved
+		if route == "" || (recs[k] != nil && recs[k].Off) {
 			continue
 		}
 		if gemIsHome(srv) && route == "direct" {
@@ -373,6 +419,11 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 	for _, k := range svcs {
 		route := inf[strings.ToLower(k)]
 		rec := recs[k]
+		if !igExIsAuto(rec) {
+			v, why := igExVerdict(k, read[k])
+			igExMark(srv.ID, k, read[k], v, why)
+			continue
+		}
 		// a route nobody here chose: followed
 		if rec != nil && rec.Cur != "" && route != rec.Cur && route != rec.Want {
 			a.igAutoPut(srv.ID, k, func(s *IgAutoSvc) { s.Want, s.Cur, s.Why, s.Tries, s.Next = route, "", "", 0, 0 })
