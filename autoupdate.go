@@ -301,15 +301,27 @@ func updCommit(v string) string {
 var updHTTP = &http.Client{Timeout: 3 * time.Minute}
 
 func updGet(ctx context.Context, url, accept string) (*http.Response, error) {
+	return updGetIf(ctx, url, accept, "")
+}
+
+// updGetIf is updGet with If-None-Match: a 304 answer comes back as is (GitHub doesn't
+// count it against the 60-an-hour quota the panel host shares with everything else on it).
+func updGetIf(ctx context.Context, url, accept, etag string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "tunnel-panel-update")
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 	resp, err := updHTTP.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotModified && etag != "" {
+		return resp, nil
 	}
 	if resp.StatusCode != 200 {
 		resp.Body.Close()
@@ -318,13 +330,42 @@ func updGet(ctx context.Context, url, accept string) (*http.Response, error) {
 	return resp, nil
 }
 
+// updCache: the last release read and its ETag — an unchanged release costs no API quota.
+var updCache struct {
+	sync.Mutex
+	etag string
+	rel  *updRelease
+}
+
 // updLatest reads the latest release: the binary for this arch, SHA256SUMS and VERSION.
 func updLatest(ctx context.Context) (*updRelease, error) {
-	resp, err := updGet(ctx, updAPI+"/repos/"+updRepo+"/releases/latest", "application/vnd.github+json")
+	updCache.Lock()
+	etag, cached := updCache.etag, updCache.rel
+	updCache.Unlock()
+	if cached == nil {
+		etag = ""
+	}
+	resp, err := updGetIf(ctx, updAPI+"/repos/"+updRepo+"/releases/latest", "application/vnd.github+json", etag)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub release: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		c := *cached
+		return &c, nil
+	}
+	out, err := updParseRelease(ctx, resp)
+	if err == nil && resp.Header.Get("ETag") != "" {
+		updCache.Lock()
+		updCache.etag, updCache.rel = resp.Header.Get("ETag"), out
+		updCache.Unlock()
+		c := *out
+		return &c, nil
+	}
+	return out, err
+}
+
+func updParseRelease(ctx context.Context, resp *http.Response) (*updRelease, error) {
 	var rel struct {
 		Assets []updAsset `json:"assets"`
 	}
