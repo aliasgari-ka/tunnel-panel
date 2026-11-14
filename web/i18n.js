@@ -398,6 +398,7 @@ window.TP_FA = {
 "Gemini API key": "کلید API Gemini",
 "Gemini connections of the last 10 minutes, per exit.": "اتصال‌های Gemini در ۱۰ دقیقه اخیر، به تفکیک هر خروجی.",
 "Gemini failing": "Gemini دچار خطا",
+"YouTube Music failing": "YouTube Music دچار خطا",
 "Gemini key": "کلید Gemini",
 "Gemini test": "تست Gemini",
 "Gemini users": "کاربران Gemini",

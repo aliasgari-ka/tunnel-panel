@@ -3426,7 +3426,7 @@ const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music',
   APPLE: 'Apple Music', GAMES: 'Steam · games', DEV: 'GitHub · Docker', CUSTOM: 'My sites' };
 const IGWIDE = Object.keys(IGSV).filter(g => !['IG', 'GOOGLE', 'YTM'].includes(g)); // domain-only: no IPv6 / WARP-IPv6
 const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'], GUARD: ['WARP guard not running', 'bad'],
-  IGIR: ['Instagram in a no-music country', 'bad'], NOEXIT: ['no exit for Instagram', 'bad'], NOWARP: ['WARP missing', 'warn'],
+  IGIR: ['Instagram in a no-music country', 'bad'], YTMFAIL: ['YouTube Music failing', 'bad'], NOEXIT: ['no exit for Instagram', 'bad'], NOWARP: ['WARP missing', 'warn'],
   FIXED: ['fixed automatically', 'warn'], CHECKING: ['checking…', 'acc'], NOAGENT: ['not installed', 'warn'], SUDO: ['needs sudo without password', 'warn'], PAUSED: ['paused', 'warn'], UPDATE: ['old agent', 'warn'], OFFLINE: ['offline', 'bad'] };
 const igBad = (s) => (IGST[s] || ['', 'bad'])[1] === 'bad';
 // a proxy that is one of our servers (the agent's relay: own IP = port 12371, WARP n = 12371+n) -> "internal · name"
@@ -3721,7 +3721,8 @@ function igExWhy(w) {
     'Google refuses the IP (403)': L('Google refuses the IP (403)', 'گوگل این IP را رد می‌کند (403)'),
     'Google asks for a captcha': L('Google asks for a captcha', 'گوگل کپچا می‌خواهد'),
     'YouTube Music not offered there': L('YouTube Music not offered there', 'YouTube Music آنجا ارائه نمی‌شود'),
-    'YouTube refuses the IP (403)': L('YouTube refuses the IP (403)', 'یوتیوب این IP را رد می‌کند (403)') })[why] || igWhyWord(why);
+    'YouTube refuses the IP (403)': L('YouTube refuses the IP (403)', 'یوتیوب این IP را رد می‌کند (403)'),
+    'WARP IPv6 passes no IPv6': L('WARP IPv6 passes no IPv6 (users get the shared Cloudflare IPv4)', 'IPv6 از WARP رد نمی‌شود (کاربران IPv4 مشترک Cloudflare را می‌گیرند)') })[why] || igWhyWord(why);
   return (rw ? rw + ': ' : '') + t;
 }
 // the auto-picked exit of Google / YouTube Music (igexit.go), or ''
@@ -3732,6 +3733,12 @@ function igExLine(s, g) {
   const t = L(`picked by the panel while ${igExitWord(ex.want, i)} fails; ${igExitWord(ex.want, i)} is tried again` + (next ? ` in ${next} min` : ' soon'),
     `پنل این را انتخاب کرد چون ${igExitWord(ex.want, i)} کار نمی‌کند؛ ${igExitWord(ex.want, i)} دوباره امتحان می‌شود` + (next ? ` (${next} دقیقه دیگر)` : ''));
   return `<span title="${esc(t)}">${L('auto:', 'خودکار:')} <bdi><b>${esc(igExitWord(ex.cur, i))}</b></bdi>${ex.where ? ` · <bdi class="igl-cc">${esc(/^[A-Z]{2}$/.test(ex.where) ? igCCName(ex.where) : ex.where)}</bdi>` : ''} <span class="igl-why">— <bdi>${esc(igExWhy(ex.why))}</bdi></span></span>`;
+}
+// the panel's own last reading of the users' route says bad (igexit.go; also on a pinned exit), or ''
+function igExBad(s, g) {
+  const ex = s.auto && s.auto.ex && s.auto.ex[g];
+  if (!ex || ex.ok !== 'bad' || ex.mode === 'off' || (ex.mode === 'auto' && ex.cur)) return '';
+  return `<span class="igl-why">${esc(igExWhy(ex.bad))}</span>`;
 }
 // [level, html] for one service: level ok | warn | bad
 function igLine(s, g) {
@@ -3759,12 +3766,14 @@ function igLine(s, g) {
     const ax = igExLine(s, g);
     if (i.gem === 'FAIL') { lvl = 'bad'; mark = '✗'; body = `${L("Gemini doesn't open", 'Gemini باز نمی‌شود')} ${via(eff)}`; }
     else if (ax && !IG_GBAD.includes(d)) { lvl = 'warn'; mark = '⚠'; body = ax; }
+    else if (igExBad(s, g)) { lvl = 'bad'; mark = '✗'; body = `${shown}${igExBad(s, g)} ${via(route)}`; }
     else if (IG_GBAD.includes(d)) { lvl = 'bad'; mark = '✗'; body = `${shown}${L('— Gemini is not offered there', '— Gemini آنجا ارائه نمی‌شود')} ${via(eff)}`; }
     else if (missing || (/^warp/.test(route) && i.gcc === 'PROXY')) { lvl = 'warn'; mark = '⚠'; body = `${shown}${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(+i.proxies ? 'proxy' : 'direct', i))}</b>`; }
     else body = `${shown}${via(route)}`;
   } else {
     const ax = igExLine(s, g);
     if (ax) { lvl = 'warn'; mark = '⚠'; body = ax; }
+    else if (igExBad(s, g)) { lvl = 'bad'; mark = '✗'; body = `${igExBad(s, g)} ${via(route)}`; }
     else if (missing) { lvl = 'warn'; mark = '⚠'; body = `${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
     else body = via(route);
   }
@@ -3776,7 +3785,8 @@ function igCardState(s) {
   const i = s.info || {};
   if (!i.ig || igBad(i.state) || i.state === 'CHECKING') return i.state;
   const ls = igSvcLines(s);
-  if (ls.some(([l]) => l === 'bad')) return ['OK', 'NOWARP', 'UPDATE'].includes(i.state) ? 'IGIR' : i.state;
+  // the pill names the service that is bad (IG, GOOGLE, YTM lines in this order)
+  if (ls.some(([l]) => l === 'bad')) return ['OK', 'NOWARP', 'UPDATE'].includes(i.state) ? (ls[0][0] === 'bad' ? 'IGIR' : ls[1][0] === 'bad' ? 'GEMFAIL' : 'YTMFAIL') : i.state;
   const exCur = s.auto && s.auto.ex && Object.values(s.auto.ex).some(x => x && x.mode === 'auto' && x.cur);
   if (ls.some(([l]) => l === 'warn')) return (s.auto && s.auto.ig && s.auto.ig.cur) || exCur ? 'FIXED' : ['OK', 'UPDATE'].includes(i.state) ? 'NOWARP' : i.state;
   return i.state;

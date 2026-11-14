@@ -116,4 +116,41 @@ func TestIgExScript(t *testing.T) {
 	if strings.Contains(s, "%!") {
 		t.Error("format error in the script")
 	}
+	// the users' route asks IPv6 through the WARPs; the own-IP read (12371) does not
+	if !strings.Contains(s, "v6(){\n  [ \"$(awk") ||!strings.Contains(s, "2606:4700:4700::1111") || !strings.Contains(s, "$(v6 GOOGLE)") {
+		t.Error("users' route: no IPv6 check")
+	}
+	if o := igExScript([]string{"GOOGLE"}, 12371); strings.Contains(o, "2606:4700") || !strings.Contains(o, "v6(){ echo -; }") {
+		t.Error("own IP: the IPv6 check is for the users' route only")
+	}
+	// v6 is defined before g / y run
+	if strings.Index(s, "v6(){") > strings.LastIndex(s, "\ng\n") {
+		t.Error("v6 defined after it is used")
+	}
+}
+
+// Ger-hertzener, 2026-11-14: Google on warp6, the WARP's IPv6 dead (IPv6-only hosts: no answer),
+// so Gemini left through Cloudflare's shared IPv4: page 200, google.com - "ok" on the keyless read,
+// refused to the signed-in users. Now bad, and the ladder moves on.
+func TestIgExVerdictV6(t *testing.T) {
+	m, ok := igExParse([]string{"X GOOGLE 200 com - no", "X YTM 200 DE - ok", "X GOOGLE2 200 de -"})
+	if !ok || m["GOOGLE"].V6 != "no" || m["YTM"].V6 != "ok" || m["GOOGLE2"].V6 != "" {
+		t.Fatalf("parse: %+v %+v %+v", m["GOOGLE"], m["YTM"], m["GOOGLE2"])
+	}
+	if v, why := igExVerdict("GOOGLE", m["GOOGLE"]); v != "bad" || why != "WARP IPv6 passes no IPv6" {
+		t.Errorf("dead WARP IPv6: %q %q", v, why)
+	}
+	if v, _ := igExVerdict("YTM", m["YTM"]); v != "ok" {
+		t.Errorf("YTM with IPv6: %q", v)
+	}
+	if v, _ := igExVerdict("YTM", &igExRead{Code: "200", Dom: "DE", V6: "no"}); v != "bad" {
+		t.Errorf("YTM on a dead WARP IPv6: %q", v)
+	}
+	// an older script's line (no v6 field) reads as before
+	if m2, _ := igExParse([]string{"X GOOGLE 200 com -"}); m2["GOOGLE"].V6 != "" {
+		t.Error("no field = not measured")
+	}
+	if v, _ := igExVerdict("GOOGLE", &igExRead{Code: "200", Dom: "com"}); v != "ok" {
+		t.Error("not on warp6: unchanged")
+	}
 }

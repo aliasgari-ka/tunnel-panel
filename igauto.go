@@ -238,15 +238,31 @@ func igRank(e igExitCC, home string) int {
 }
 
 // igCandidates: the routes to try for Instagram, best first (WARP = Want, when one of the server's
-// WARPs reads a music country now).
+// WARPs reads a music country now; then the other WARP family).
+//
+// The WARP test ports read the WARPs in the family Instagram is on now: on warp6 every account
+// leaves through its own IPv6, which Instagram may place in IR while the same accounts' shared
+// Cloudflare IPv4 reads DE (Ger-hertzener, 2026-11-14: warp6 = IR, so the panel went to a proxy
+// and never tried WARP over IPv4). So the other family is always a candidate when the server has
+// a WARP; igAutoFix sets it and reads the users' route before keeping it.
 func igCandidates(p igProbe, want, home string) []string {
 	var out []string
 	if igIsWarp(want) {
+		hasWarp := false
 		for _, e := range p.Exits {
-			if strings.HasPrefix(e.Route, "warp") && igRank(e, home) >= 0 {
-				out = append(out, want)
-				break
+			if strings.HasPrefix(e.Route, "warp") {
+				hasWarp = true
+				if igRank(e, home) >= 0 && !contains(out, want) {
+					out = append(out, want)
+				}
 			}
+		}
+		if hasWarp {
+			other := "warp"
+			if want == "warp" {
+				other = "warp6"
+			}
+			out = append(out, other)
 		}
 	}
 	type c struct {
