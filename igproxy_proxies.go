@@ -153,7 +153,7 @@ func igProxyKey(t, h, p, u string) string {
 	return hex.EncodeToString(s[:])[:12]
 }
 
-// igMaskUser keeps enough of a user to tell two apart: "nodemaven5Jfgq" -> "node…gq".
+// igMaskUser keeps enough of a user to tell two apart: "proxyusr7Kq" -> "prox…Kq".
 func igMaskUser(u string) string {
 	if u == "" || u == "-" {
 		return ""

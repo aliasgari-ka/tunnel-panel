@@ -796,7 +796,11 @@ func igFromOutbound(m map[string]any) (*igOut, error) {
 // ---- subscriptions
 
 // igFetchSub downloads a subscription (base64 or a plain list of links; Clash YAML is not read).
-var igSubClient = &http.Client{Timeout: 25 * time.Second}
+var igSubClient = func() *http.Client {
+	c := *igSiteClient
+	c.Timeout = 25 * time.Second
+	return &c
+}()
 
 func igFetchSub(ctx context.Context, raw string) ([]string, error) {
 	u, err := url.Parse(raw)

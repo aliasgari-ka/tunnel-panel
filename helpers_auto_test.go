@@ -216,7 +216,37 @@ func fakeVendor(t *testing.T, bin []byte) *int32 {
 	old := vendorHelpers["backhaul_premium"]
 	vendorHelpers["backhaul_premium"] = []string{srv.URL + "/backhaul_premium_%s.tar.gz", srv.URL + "/backhaul_premium_%s.tar.gz"}
 	t.Cleanup(func() { vendorHelpers["backhaul_premium"] = old })
+	pinVendor(t, bin)
 	return &hits
+}
+
+// pinVendor adds bin's sha256 to the known amd64 builds for this test.
+func pinVendor(t *testing.T, bin []byte) {
+	sum := sha256.Sum256(bin)
+	old := vendorSHA256["backhaul_premium"]["amd64"]
+	vendorSHA256["backhaul_premium"]["amd64"] = append(append([]string{}, old...), hex.EncodeToString(sum[:]))
+	t.Cleanup(func() { vendorSHA256["backhaul_premium"]["amd64"] = old })
+}
+
+// The vendor serves plain HTTP: a build whose sha256 is not pinned is refused, even when
+// both mirrors serve the same file (someone on the path can swap both).
+func TestVendorUnknownBuildRefused(t *testing.T) {
+	helperTestDir(t)
+	fakeVendor(t, fakeELF(0x3e, []byte("pinned")))
+	evil := fakeELF(0x3e, []byte("swapped on the path"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(vendorTGZ(evil)) }))
+	t.Cleanup(srv.Close)
+	vendorHelpers["backhaul_premium"] = []string{srv.URL + "/a_%s.tgz", srv.URL + "/b_%s.tgz"}
+	delete(vendorDown, "backhaul_premium-amd64")
+	if _, err := fetchVendorHelper("backhaul_premium-amd64"); err == nil || !strings.Contains(err.Error(), "unknown build") {
+		t.Fatalf("unpinned build accepted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(helpersDir(), "backhaul_premium-amd64")); err == nil {
+		t.Fatalf("unpinned build was stored")
+	}
+	if sc := vendorOnHostScript("backhaul_premium", "amd64", "/opt/x"); !strings.Contains(sc, vendorSHA256["backhaul_premium"]["amd64"][0]) || !strings.Contains(sc, "unknown vendor build") {
+		t.Fatalf("on-host script does not check the pinned sha256")
+	}
 }
 
 // A missing Premium v2 core is downloaded from the vendor at first need and kept; an

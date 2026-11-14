@@ -35,13 +35,20 @@ func (a *App) backupFileJSON() ([]byte, error) {
 	var err error
 	hs := backupHelpers()
 	a.store.View(func(st *State) {
+		c := *st
+		// the session key signs every login cookie: a copy of it would let the holder of the
+		// file sign in as any account without a password. A restore makes a new one anyway.
+		c.Secret = backupNoSecret
 		out, err = json.MarshalIndent(struct {
 			*State
 			HelperFiles map[string][]byte `json:"helperFiles,omitempty"`
-		}{st, hs}, "", "  ")
+		}{&c, hs}, "", "  ")
 	})
 	return out, err
 }
+
+// backupNoSecret stands in for the session key in a backup that leaves the panel host.
+const backupNoSecret = "not-in-backup"
 
 func backupName(t time.Time) string {
 	return "tunnel-panel-backup-" + t.In(tehran).Format("2006-01-02-150405") + ".json"
@@ -143,6 +150,9 @@ func (a *App) restoreBackup(data []byte) (string, error) {
 	if _, err := a.saveLocalBackupAs("-pre-restore"); err != nil {
 		return "", fmt.Errorf("could not back up the current state first: %v", err)
 	}
+	// never take the session key from a file: a fresh one logs out every cookie made
+	// before (including any made with a key that was in an old backup)
+	st.Secret = randHex(32)
 	if err := a.store.replace(st); err != nil {
 		return "", err
 	}
