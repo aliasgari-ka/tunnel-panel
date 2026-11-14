@@ -339,7 +339,7 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"ok": "1"})
 		return
 	}
-	id, err := s.app.igJob(user, "add server "+x.Name, 15*time.Minute, func(ctx context.Context, out func(string)) bool {
+	id, err := s.app.igJob(user, "add server "+x.Name, 30*time.Minute, func(ctx context.Context, out func(string)) bool {
 		ok := func() bool {
 			inf := s.app.igInfo(ctx, x)
 			if inf["state"] == "OFFLINE" {
@@ -364,6 +364,9 @@ func (s *Server2) igEnable(w http.ResponseWriter, r *http.Request) {
 			s.app.igForget(in.ID)
 			out("not added: fix the above and add it again")
 		} else if ok {
+			if !wasOn {
+				s.app.igAutoStart(ctx, x, out)
+			}
 			out(x.Name + " added")
 		}
 		return ok

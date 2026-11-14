@@ -3740,6 +3740,14 @@ function igExBad(s, g) {
   if (!ex || ex.ok !== 'bad' || ex.mode === 'off' || (ex.mode === 'auto' && ex.cur)) return '';
   return `<span class="igl-why">${esc(igExWhy(ex.bad))}</span>`;
 }
+// the panel has no reading of its own of this service on the users' route (igauto.go / igexit.go)
+function igNotRead(s, g) {
+  const au = s.auto;
+  if (!au) return false; // an older panel: nothing to tell
+  if (g === 'IG') return !(au.ig && au.ig.off) && !au.liveAt;
+  const ex = au.ex && au.ex[g];
+  return !!ex && ex.mode !== 'off' && !ex.ok;
+}
 // [level, html] for one service: level ok | warn | bad
 function igLine(s, g) {
   const i = s.info || {}, au = s.auto || {}, route = i[g.toLowerCase()] || '';
@@ -3759,7 +3767,7 @@ function igLine(s, g) {
     else if (IG_NOMUSIC.includes(cc)) { lvl = 'bad'; mark = '✗'; body = `${where(cc)}${L('— no music', '— بدون موسیقی')} ${via(eff)}${missing ? ` <span class="igl-why">${L('(WARP missing)', '(WARP نیست)')}</span>` : ''}`; }
     else if (cur) { lvl = 'warn'; mark = '⚠'; body = `${L('fixed automatically:', 'خودکار درست شد:')} <span class="igl-why">${esc(igWhyWord(au.ig.why))} ${L('→', '←')} </span><b>${esc(igExitWord(cur, i))}</b>${cc ? ` · ${where(cc)}` : ''}`; }
     else if (missing) { lvl = 'warn'; mark = '⚠'; body = `${where(cc)}${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
-    else body = `${where(cc)}${via(route)}`;
+    else body = `${where(cc)}${via(route)}${au.ig && au.ig.via && /^warp/.test(route) ? ` <span class="igl-why">${L('through ', 'از طریق ')}<bdi>${esc(au.ig.via)}</bdi></span>` : ''}`;
   } else if (g === 'GOOGLE') {
     const d = i.gdom && i.gdom !== '-' ? i.gdom : '', cc = igDomCC(d);
     const shown = cc ? where(cc) : d ? `<b class="igl-cc">google.${esc(d)}</b> ` : '';
@@ -3777,6 +3785,8 @@ function igLine(s, g) {
     else if (missing) { lvl = 'warn'; mark = '⚠'; body = `${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
     else body = via(route);
   }
+  // not measured by the panel on the users' route yet: no check mark (the agent's own word is not proof)
+  if (lvl === 'ok' && igNotRead(s, g)) { mark = '…'; body += ` <span class="igl-why" title="${esc(L("the panel has not checked the users' route yet", 'پنل هنوز مسیر کاربران را بررسی نکرده'))}">${L('· checking…', '· در حال بررسی…')}</span>`; }
   return [lvl, `<div class="igl ${lvl}"><span class="igl-m">${mark}</span><span class="igl-n">${name}</span><span class="igl-b">${body}</span>${tags}</div>`];
 }
 const igSvcLines = (s) => ['IG', 'GOOGLE', 'YTM'].map(g => igLine(s, g));
