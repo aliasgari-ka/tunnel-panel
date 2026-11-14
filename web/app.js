@@ -3695,6 +3695,29 @@ function igWhyWord(w) {
   const m = /^Instagram sees ([A-Z]{2})$/.exec(w); if (m) return L('Instagram saw ', 'Instagram دید: ') + igCCName(m[1]);
   return w;
 }
+// igexit.go's reason ("WARP IPv6: Gemini not offered in RU") in the page's language
+function igExWhy(w) {
+  w = String(w || '');
+  const k = w.indexOf(': '), r = k > 0 ? w.slice(0, k) : '', why = k > 0 ? w.slice(k + 2) : w;
+  const rw = { 'own IP': L('own IP', 'IP خود سرور'), 'proxies': L('outbounds', 'خروجی‌ها') }[r] || r.replace(/^proxy (\d+)$/, L('outbound $1', 'خروجی $1'));
+  let m, t = why;
+  if ((m = /^Gemini not offered in ([A-Z]{2})$/.exec(why))) t = L('Gemini not offered in ' + igCCName(m[1]), 'در ' + igCCName(m[1]) + ' Gemini ارائه نمی‌شود');
+  else t = ({ 'Gemini not offered there': L('Gemini not offered there', 'Gemini آنجا ارائه نمی‌شود'),
+    'Google refuses the IP (403)': L('Google refuses the IP (403)', 'گوگل این IP را رد می‌کند (403)'),
+    'Google asks for a captcha': L('Google asks for a captcha', 'گوگل کپچا می‌خواهد'),
+    'YouTube Music not offered there': L('YouTube Music not offered there', 'YouTube Music آنجا ارائه نمی‌شود'),
+    'YouTube refuses the IP (403)': L('YouTube refuses the IP (403)', 'یوتیوب این IP را رد می‌کند (403)') })[why] || igWhyWord(why);
+  return (rw ? rw + ': ' : '') + t;
+}
+// the auto-picked exit of Google / YouTube Music (igexit.go), or ''
+function igExLine(s, g) {
+  const ex = s.auto && s.auto.ex && s.auto.ex[g];
+  if (!ex || ex.mode !== 'auto' || !ex.cur) return '';
+  const i = s.info || {}, next = ex.next ? Math.max(0, Math.round((ex.next * 1000 - Date.now()) / 60000)) : 0;
+  const t = L(`picked by the panel while ${igExitWord(ex.want, i)} fails; ${igExitWord(ex.want, i)} is tried again` + (next ? ` in ${next} min` : ' soon'),
+    `پنل این را انتخاب کرد چون ${igExitWord(ex.want, i)} کار نمی‌کند؛ ${igExitWord(ex.want, i)} دوباره امتحان می‌شود` + (next ? ` (${next} دقیقه دیگر)` : ''));
+  return `<span title="${esc(t)}">${L('auto:', 'خودکار:')} <bdi><b>${esc(igExitWord(ex.cur, i))}</b></bdi>${ex.where ? ` · <bdi class="igl-cc">${esc(/^[A-Z]{2}$/.test(ex.where) ? igCCName(ex.where) : ex.where)}</bdi>` : ''} <span class="igl-why">— <bdi>${esc(igExWhy(ex.why))}</bdi></span></span>`;
+}
 // [level, html] for one service: level ok | warn | bad
 function igLine(s, g) {
   const i = s.info || {}, au = s.auto || {}, route = i[g.toLowerCase()] || '';
@@ -3718,12 +3741,16 @@ function igLine(s, g) {
   } else if (g === 'GOOGLE') {
     const d = i.gdom && i.gdom !== '-' ? i.gdom : '', cc = igDomCC(d);
     const shown = cc ? where(cc) : d ? `<b class="igl-cc">google.${esc(d)}</b> ` : '';
+    const ax = igExLine(s, g);
     if (i.gem === 'FAIL') { lvl = 'bad'; mark = '✗'; body = `${L("Gemini doesn't open", 'Gemini باز نمی‌شود')} ${via(eff)}`; }
+    else if (ax && !IG_GBAD.includes(d)) { lvl = 'warn'; mark = '⚠'; body = ax; }
     else if (IG_GBAD.includes(d)) { lvl = 'bad'; mark = '✗'; body = `${shown}${L('— Gemini is not offered there', '— Gemini آنجا ارائه نمی‌شود')} ${via(eff)}`; }
     else if (missing || (/^warp/.test(route) && i.gcc === 'PROXY')) { lvl = 'warn'; mark = '⚠'; body = `${shown}${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(+i.proxies ? 'proxy' : 'direct', i))}</b>`; }
     else body = `${shown}${via(route)}`;
   } else {
-    if (missing) { lvl = 'warn'; mark = '⚠'; body = `${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
+    const ax = igExLine(s, g);
+    if (ax) { lvl = 'warn'; mark = '⚠'; body = ax; }
+    else if (missing) { lvl = 'warn'; mark = '⚠'; body = `${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
     else body = via(route);
   }
   return [lvl, `<div class="igl ${lvl}"><span class="igl-m">${mark}</span><span class="igl-n">${name}</span><span class="igl-b">${body}</span>${tags}</div>`];
@@ -3735,7 +3762,8 @@ function igCardState(s) {
   if (!i.ig || igBad(i.state) || i.state === 'CHECKING') return i.state;
   const ls = igSvcLines(s);
   if (ls.some(([l]) => l === 'bad')) return ['OK', 'NOWARP', 'UPDATE'].includes(i.state) ? 'IGIR' : i.state;
-  if (ls.some(([l]) => l === 'warn')) return s.auto && s.auto.ig && s.auto.ig.cur ? 'FIXED' : ['OK', 'UPDATE'].includes(i.state) ? 'NOWARP' : i.state;
+  const exCur = s.auto && s.auto.ex && Object.values(s.auto.ex).some(x => x && x.mode === 'auto' && x.cur);
+  if (ls.some(([l]) => l === 'warn')) return (s.auto && s.auto.ig && s.auto.ig.cur) || exCur ? 'FIXED' : ['OK', 'UPDATE'].includes(i.state) ? 'NOWARP' : i.state;
   return i.state;
 }
 function igCard(s) {
