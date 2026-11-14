@@ -347,6 +347,8 @@ function renderView() {
 const USAGE = { gran: '' }; // the chart's step the user picked (hour / day); '' = by the range
 async function viewUsage(w) {
   const TZ = 12600, fa = document.documentElement.dir === 'rtl'; // Tehran is UTC+3:30 all year
+  // text the chart writes itself (it is not translated in place): the translator is loaded in Persian only
+  const tt = (x) => window.tpT ? window.tpT(x) : x;
   const nowU = Math.floor(Date.now() / 1000), hourS = nowU - (nowU + TZ) % 3600, today = nowU - (nowU + TZ) % 86400;
   const thrIn = (u) => new Date((u + TZ) * 1000).toISOString().slice(0, 14) + '00';
   const thrOut = (v) => Math.floor(Date.parse(v.slice(0, 13) + ':00Z') / 1000) - TZ;
@@ -477,15 +479,33 @@ async function viewUsage(w) {
   const hourly = r.step === 3600;
   const gran = !hourly ? 'd' : USAGE.gran === 'h' || USAGE.gran === 'd' ? (r.n <= 25 ? 'h' : USAGE.gran) : r.n <= 72 ? 'h' : 'd';
   const bins = [];
-  {
-    const raw = Array.from({ length: r.n }, (_, i) => ({ t: r.from + i * r.step, d: 0, u: 0, p: 0 }));
-    scope.forEach(t => (t.series || []).forEach((s, i) => { const b = raw[i]; if (b && s) { b.d += s.d || 0; b.u += s.u || 0; b.p += s.p || 0; } }));
-    // not the empty steps before counting started (a 30-day range on a panel counting for 11 days)
-    raw.filter(b => b.t < nowU && b.t + r.step > (r.started || 0)).forEach(b => {
-      const k = gran === 'd' && hourly ? b.t - (b.t + TZ) % 86400 : b.t;
-      const last = bins[bins.length - 1];
-      if (last && last.t === k) { last.d += b.d; last.u += b.u; last.p += b.p; } else bins.push({ t: k, d: b.d, u: b.u, p: b.p, step: gran === 'd' ? 86400 : r.step });
-    });
+  const raw = Array.from({ length: r.n }, (_, i) => ({ t: r.from + i * r.step, d: 0, u: 0, p: 0, c: 0, cu: 0 }));
+  scope.forEach(t => (t.series || []).forEach((s, i) => { const b = raw[i]; if (b && s) { b.d += s.d || 0; b.u += s.u || 0; b.p += s.p || 0; } }));
+  // not the empty steps before counting started (a 30-day range on a panel counting for 11 days)
+  raw.forEach((b, i) => {
+    if (!(b.t < nowU && b.t + r.step > (r.started || 0))) return;
+    const k = gran === 'd' && hourly ? b.t - (b.t + TZ) % 86400 : b.t;
+    const last = bins[bins.length - 1];
+    if (last && last.t === k) { last.d += b.d; last.u += b.u; last.p += b.p; last.ix.push(i); } else bins.push({ t: k, d: b.d, u: b.u, p: b.p, c: 0, cu: 0, step: gran === 'd' ? 86400 : r.step, ix: [i] });
+  });
+  // a step the range covers only in part (today so far, a range that starts mid-day, the day
+  // counting started): marked, left out of the line and the average. The last one is also
+  // drawn to where it is heading — a day by how far the day before had got at this time of
+  // day (nights are quiet: by the clock alone 06:00 would read as a quarter of the day)
+  bins.forEach(b => { b.cov = Math.max(0, Math.min(b.t + b.step, tEnd) - Math.max(b.t, r.from, r.started || 0)); b.part = b.cov < b.step - 60; });
+  const lastB = bins[bins.length - 1];
+  if (lastB && lastB.part && lastB.t >= Math.max(r.from, r.started || 0)) {
+    const done = Math.min(lastB.t + lastB.step, tEnd) - lastB.t;
+    let frac = done / lastB.step;
+    const y0 = lastB.t - 86400;
+    if (lastB.step === 86400 && hourly && Math.max(r.from, r.started || 0) <= y0) {
+      let all = 0, part = 0;
+      raw.forEach(h => { if (h.t >= y0 && h.t < y0 + 86400) { const v = h.d + h.u; all += v; part += v * Math.min(1, Math.max(0, (y0 + done - h.t) / 3600)); } });
+      if (all > 0 && part > 0) { frac = part / all; lastB.byDay = true; }
+    }
+    lastB.frac = frac;
+    // too early to tell (the first minutes of a day): marked, not projected
+    if (frac >= 0.08) lastB.proj = { d: lastB.d / frac, u: lastB.u / frac, p: lastB.p / frac };
   }
   // the date and the hours each isolated: "20 آبان" beside "23:00–00:00" read in either direction
   const binLbl = (b, long) => b.step === 86400 ? `<bdi>${fmtD(b.t, long ? { weekday: 'short', ...dOpt } : dOpt)}</bdi>` : (long || r.n > 25 ? `<bdi>${fmtD(b.t, dOpt)}</bdi> ` : '') + `<bdi>${fmtD(b.t, hOpt)}${long ? '–' + fmtD(b.t + 3600, hOpt) : ''}</bdi>`;
@@ -513,23 +533,39 @@ async function viewUsage(w) {
   const chart = () => {
     const N = bins.length;
     if (!N) return '<div class="faint sempty">No traffic in this range.</div>';
-    let mx = Math.max(1, ...bins.map(b => Math.max(tot(b), b.p)));
+    // a step that is still running is drawn to where it is heading (dashed), its bar what came so far
+    const pv = (b) => b.proj || b;
+    let mx = Math.max(1, ...bins.map(b => Math.max(tot(pv(b)), pv(b).p, hasCard ? pv(b).c : 0)));
     const unit = [2 ** 40, 2 ** 30, 2 ** 20, 1024, 1].find(x => mx / 3 >= x) || 1;
     const st = niceStep(mx / 3 / unit) * unit;
     mx = st * 3;
     const W = N * 10, H = 100, g = N > 120 ? 0 : N > 40 ? 1.5 : 2.5;
     const y = (v) => H - v / mx * H;
-    const bars = bins.map((b, i) => `<rect class="cd" x="${i * 10 + g}" y="${y(b.d)}" width="${10 - 2 * g}" height="${H - y(b.d)}"/><rect class="cu" x="${i * 10 + g}" y="${y(b.d + b.u)}" width="${10 - 2 * g}" height="${H - y(b.u)}"/>`).join('');
-    const line = bins.map((b, i) => `${i ? 'L' : 'M'}${i * 10 + 5},${y(b.p).toFixed(2)}`).join('');
+    const bars = bins.map((b, i) => `<g${b.part ? ' class="cpart"' : ''}><rect class="cd" x="${i * 10 + g}" y="${y(b.d)}" width="${10 - 2 * g}" height="${H - y(b.d)}"/><rect class="cu" x="${i * 10 + g}" y="${y(b.d + b.u)}" width="${10 - 2 * g}" height="${H - y(b.u)}"/></g>`
+      + (b.proj ? `<rect class="cproj" x="${i * 10 + g}" y="${y(tot(b.proj))}" width="${10 - 2 * g}" height="${H - y(tot(b.proj))}"/>` : '')).join('');
+    // a line over the whole steps; to a running last step it goes dashed, to its projection
+    const lineOf = (f) => {
+      let d = '', pen = false, dash = '';
+      bins.forEach((b, i) => { if (b.part) { pen = false; return; } d += `${pen ? 'L' : 'M'}${i * 10 + 5},${y(f(b)).toFixed(2)}`; pen = true; });
+      const n = bins.length;
+      if (n > 1 && bins[n - 1].proj && !bins[n - 2].part) dash = `M${(n - 2) * 10 + 5},${y(f(bins[n - 2])).toFixed(2)}L${(n - 1) * 10 + 5},${y(f(bins[n - 1].proj)).toFixed(2)}`;
+      return { d, dash };
+    };
+    const lp = lineOf(b => b.p), lc = hasCard ? lineOf(b => b.c) : null;
+    const path = (cls, l) => (l.d ? `<path class="${cls}" d="${l.d}"/>` : '') + (l.dash ? `<path class="${cls} cdash" d="${l.dash}"/>` : '');
+    const avgOn = full.length >= 2 && avgT > 0;
     const every = Math.max(1, Math.ceil(N / (window.innerWidth < 600 ? 4 : 8)));
-    const xl = bins.map((b, i) => i % every ? '' : `<span style="left:${(i + 0.5) / N * 100}%">${binLbl(b)}</span>`).join('');
+    const xl = bins.map((b, i) => i % every && i !== N - 1 ? '' : `<span style="left:${(i + 0.5) / N * 100}%">${binLbl(b)}</span>`).join('');
+    const pb = bins[N - 1];
+    const ptag = pb.part ? `<span class="upart" style="left:${(N - 0.5) / N * 100}%;top:${y(Math.max(tot(pv(pb)), pv(pb).p, hasCard ? pv(pb).c : 0))}%">⏳ ${tt('so far')}</span>` : '';
     return `<div class="uchart" dir="ltr" data-notr>
       <div class="uyax">${[3, 2, 1].map(k => `<span style="top:${(1 - k / 3) * 100}%">${fmtBytes(st * k)}</span>`).join('')}</div>
-      <div class="uplot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${[1, 2].map(k => `<line class="cg" x1="0" x2="${W}" y1="${H * k / 3}" y2="${H * k / 3}"/>`).join('')}<rect class="chov" x="0" y="0" width="0" height="${H}"/>${bars}<path class="cp" d="${line}"/></svg><div class="utip" hidden></div></div>
+      <div class="uplot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${[1, 2].map(k => `<line class="cg" x1="0" x2="${W}" y1="${H * k / 3}" y2="${H * k / 3}"/>`).join('')}<rect class="chov" x="0" y="0" width="0" height="${H}"/>${bars}${avgOn ? `<line class="cavg" x1="0" x2="${W}" y1="${y(avgT)}" y2="${y(avgT)}"/>` : ''}${lc ? path('cc', lc) : ''}${path('cp', lp)}</svg>
+        ${avgOn ? `<span class="uavg" style="top:${y(avgT)}%">${tt('Average')} ${fmtBytes(avgT)}</span>` : ''}${ptag}<div class="utip" hidden></div></div>
       <div class="uxax">${xl}</div></div>`;
   };
-  const table = () => `<div class="uscroll uhours"><table class="tbl utbl"><thead><tr><th>${gran === 'd' ? 'Day (Tehran)' : 'Hour (Tehran)'}</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Total</th><th>💰 Paid</th><th>Coefficient</th></tr></thead><tbody>${bins.slice().reverse().map(b => `<tr><td class="mono">${binLbl(b, true)}</td><td>${fmtBytes(b.d)}</td><td>${fmtBytes(b.u)}</td><td><b>${fmtBytes(tot(b))}</b></td><td>${fmtBytes(b.p)}</td><td><b class="${coefCls(b)}">${coefTxt(b)}</b></td></tr>`).join('')}</tbody>
-    <tfoot><tr><td><b>Total</b></td><td>${fmtBytes(cur.d)}</td><td>${fmtBytes(cur.u)}</td><td><b>${fmtBytes(tot(cur))}</b></td><td><b>${fmtBytes(cur.p)}</b></td><td><b class="${coefCls(cur)}">${coefTxt(cur)}</b></td></tr></tfoot></table></div>`;
+  const table = () => `<div class="uscroll uhours"><table class="tbl utbl"><thead><tr><th>${gran === 'd' ? 'Day (Tehran)' : 'Hour (Tehran)'}</th><th>⬇ Download</th><th>⬆ Upload</th><th>Σ Users' traffic</th><th>💰 Paid</th><th>Coefficient</th>${hasCard ? '<th>🧾 Iran servers received</th><th>Beyond the users\' traffic</th>' : ''}</tr></thead><tbody>${bins.slice().reverse().map(b => `<tr><td class="mono">${binLbl(b, true)}${b.part ? ' <span class="faint">⏳</span>' : ''}</td><td>${fmtBytes(b.d)}</td><td>${fmtBytes(b.u)}</td><td><b>${fmtBytes(tot(b))}</b></td><td>${fmtBytes(b.p)}</td><td><b class="${coefCls(b)}">${coefTxt(b)}</b></td>${hasCard ? `<td>${fmtBytes(b.c)}</td><td>${b.cu > 1 << 20 ? `<b class="${ratioCls(b.c / b.cu)}">×${(b.c / b.cu).toFixed(2)}</b> <span class="faint">${b.c >= b.cu ? '+' : '−'}${fmtBytes(Math.abs(b.c - b.cu))}</span>` : '—'}</td>` : ''}</tr>`).join('')}</tbody>
+    <tfoot><tr><td><b>Total</b></td><td>${fmtBytes(cur.d)}</td><td>${fmtBytes(cur.u)}</td><td><b>${fmtBytes(tot(cur))}</b></td><td><b>${fmtBytes(cur.p)}</b></td><td><b class="${coefCls(cur)}">${coefTxt(cur)}</b></td>${hasCard ? `<td><b>${fmtBytes(allC)}</b></td><td>${allCU > 1 << 20 ? `<b class="${ratioCls(allC / allCU)}">×${(allC / allCU).toFixed(2)}</b> <span class="faint">${allC >= allCU ? '+' : '−'}${fmtBytes(Math.abs(allC - allCU))}</span>` : '—'}</td>` : ''}</tr></tfoot></table></div>`;
 
   // what looks unusual, in the scope: overhead, jumps and drops against the period before,
   // a live tunnel with no traffic, one hour far above the tunnel's usual, an Iran server
@@ -578,6 +614,32 @@ async function viewUsage(w) {
   }
   odd.sort((a, b) => b.w - a.w);
   bills.sort((a, b) => b.recv - a.recv);
+  // the chart's comparison: what the scope's Iran servers' network cards received (the data
+  // center's bill), step by step, against the users' traffic of every tunnel on those cards
+  // (another account's included: the card carries theirs too). Only while the scope is whole
+  // Iran servers — one tunnel or foreign server shares its card with others. The admin's only:
+  // an account sees its own tunnels, not everything else the cards carry.
+  const cardOn = isAdmin() && (!sel || sel.by === 'iran');
+  const cards = new Map(); // network card -> { an Iran server on it, its counts, the tunnels on it }
+  if (cardOn) {
+    scope.forEach(t => { if (t.serverId === '~') return; const n = nicOf(t.serverId); if (n.u && !cards.has(n.key)) cards.set(n.key, { id: t.serverId, u: n.u, tun: [] }); });
+    cards.forEach(k => (k.u.series || []).forEach((s, i) => { if (raw[i] && s) raw[i].c += s.d || 0; }));
+    // a tunnel deleted before routes were kept ran on one of them too: with every Iran server in
+    // the scope its users' bytes count, or they read as bytes nobody used (~1.5 TB/day in 11-2026)
+    (r.tunnels || []).forEach(x => { const t = byId.get(x.id); if (!t || (t.serverId === '~' ? sel : !cards.has(nicOf(t.serverId).key))) return;
+      if (t.serverId !== '~') cards.get(nicOf(t.serverId).key).tun.push(x);
+      (x.series || []).forEach((s, i) => { if (raw[i] && s) raw[i].cu += (s.d || 0) + (s.u || 0); }); });
+    bins.forEach(b => b.ix.forEach(i => { b.c += raw[i].c; b.cu += raw[i].cu; }));
+    if (lastB && lastB.proj) { lastB.proj.c = lastB.c / lastB.frac; lastB.proj.cu = lastB.cu / lastB.frac; }
+  }
+  const hasCard = cardOn && bins.some(b => b.c > 0);
+  // the range's numbers above the chart: averages over whole steps only
+  const full = bins.filter(b => !b.part);
+  const sumK = (list, f) => list.reduce((a, b) => a + f(b), 0);
+  const avgT = full.length ? sumK(full, tot) / full.length : 0;
+  const allT = sumK(bins, tot), allP = sumK(bins, b => b.p), allC = sumK(bins, b => b.c), allCU = sumK(bins, b => b.cu);
+  const ratio = (a, b) => b > 1 << 20 ? a / b : 0;
+  const ratioCls = (v) => v > 1.3 ? 'ucoef bad' : v > 1.1 ? 'ucoef warn' : 'ucoef';
   const billTbl = () => !bills.length ? '' : `<details class="card pad udet"><summary><b>🧾 Iran servers — the whole bill</b> <span class="faint">what each Iran server's network card received, and how much of it the tunnels explain</span></summary><div class="uscroll"><table class="tbl utbl"><thead><tr><th>Iran server</th><th>Σ Tunnels' traffic</th><th>💰 Tunnels' paid</th>${bills.some(b => b.other > 0) ? "<th>💰 Other tunnels on this server</th>" : ''}<th>Other (updates, tests…)</th><th>💰 Server received (bill)</th></tr></thead><tbody>${bills.map(b => `<tr><td><b>${flagOf(b.id)} ${nameOf(b.id)}</b></td><td>${fmtBytes(tot(b.x))}</td><td>${fmtBytes(b.x.p)}</td>${bills.some(x => x.other > 0) ? `<td>${fmtBytes(b.other)}</td>` : ''}<td>${fmtBytes(b.rest)}</td><td><b>${fmtBytes(b.recv)}</b></td></tr>`).join('')}</tbody></table></div></details>`;
 
   // the breakdown: one row per group, its share of the traffic, what it pays and its change
@@ -604,18 +666,41 @@ async function viewUsage(w) {
     <div><b>Coefficient</b> = paid ÷ total traffic. ×1.00 means you pay exactly what the users used; ×1.15 means 15 % more (tunnel headers, health checks, tests).</div>
     <div class="faint">Each Iran server's intake is counted separately per foreign server, so an Iran server with two foreign servers is split between them.${cur.est ? ' Hours before this was counted (marked ≈) are estimated from the whole Iran server.' : ''}${scope.some(t => t.serverId === '~') ? ' Tunnels deleted before their route was kept (route unknown) are counted at ×1: the panel cannot tell which Iran server they ran on.' : ''}</div></details>`;
 
+  // beside the list: each Iran server's intake against its users' traffic, over the range —
+  // where the bytes nobody used are (a row shows the page for that Iran server only)
+  const srvVs = () => {
+    if (!hasCard) return '';
+    const rows = [...cards.values()].map(k => ({ id: k.id, c: k.u.down || 0, cu: k.tun.reduce((a, x) => a + x.down + x.up, 0) })).filter(e => e.c > 0).sort((a, b) => (b.c - b.cu) - (a.c - a.cu));
+    if (!rows.length) return '';
+    const unk = sel ? 0 : (r.tunnels || []).reduce((a, x) => { const t = byId.get(x.id); return t && t.serverId === '~' ? a + x.down + x.up : a; }, 0);
+    return `<div class="card pad usrv"><h3>🧾 Iran servers vs users</h3><small class="faint">What each Iran server received, against its tunnels' users' traffic. Most extra first.</small><div class="usrvh"><span>Iran server</span><span class="usrvk"><i></i><span>users</span> <i class="x"></i><span>extra</span></span><span>Extra</span></div>
+      ${rows.map(e => { const rr = ratio(e.c, e.cu), w = e.c > 0 ? Math.min(100, e.cu / e.c * 100) : 0;
+        return `<button class="usrvr${sel && sel.by === 'iran' && sel.key === e.id ? ' on' : ''}" data-srv="${esc(e.id)}" title="${esc(tt('received') + ' ' + fmtBytes(e.c) + ' · ' + tt('users') + ' ' + fmtBytes(e.cu))}"><span class="ubname"><span class="sflag">${flagOf(e.id)}</span><span class="sinfo"><b>${nameOf(e.id)}</b></span></span>
+          <span class="usrvb"><i style="width:${w.toFixed(1)}%"></i></span>
+          <span class="usrvn"><b>${e.c >= e.cu ? '+' : '−'}${fmtBytes(Math.abs(e.c - e.cu))}</b> <em class="${ratioCls(rr)}">${rr ? '×' + rr.toFixed(2) : '—'}</em></span></button>`; }).join('')}
+      ${unk > 2 ** 30 ? `<small class="faint"><span>Deleted tunnels whose route was not kept:</span> <bdi>${fmtBytes(unk)}</bdi> <span>— they ran on these servers, so the extra above looks bigger.</span></small>` : ''}</div>`;
+  };
   const pickName = () => { if (!sel) return ''; const g = groupsOf(sel.by).find(x => x.key === sel.key); return g ? `<span class="sflag">${g.flag}</span> <b>${g.name}</b>` : ''; };
   box.innerHTML = `${sel ? `<div class="upick"><span class="faint">Showing only:</span> ${pickName()} <button class="btn sm ghost" data-unpick>✕ Show all</button></div>` : ''}
     ${notes.length ? `<div class="card pad faint unote">${notes.join('<br>')}</div>` : ''}
     ${kpis}
     <div class="card pad uchartc"><div class="uhrow"><h3>${gran === 'd' ? 'Day by day' : 'Hour by hour'}</h3>
-      <span class="ulegk"><span><i class="kd"></i>⬇ Download</span><span><i class="ku"></i>⬆ Upload</span><span><i class="kp"></i>💰 You pay for</span></span>
+      <span class="ulegk"><span><i class="kd"></i>⬇ Download</span><span><i class="ku"></i>⬆ Upload</span><span><i class="kp"></i>💰 You pay for</span>${hasCard ? `<span title="What the Iran servers' network cards received — the data center's bill. Above the users' traffic: tunnel headers, health checks, tests and anything else on those servers."><i class="kc"></i>🧾 Iran servers received</span>` : ''}${full.length >= 2 ? `<span><i class="ka"></i>${gran === 'd' ? 'Average day' : 'Average hour'}</span>` : ''}</span>
       ${hourly && r.n > 25 ? `<div class="seg sm" data-ugr><button class="${gran === 'h' ? 'on' : ''}" data-g="h">By hour</button><button class="${gran === 'd' ? 'on' : ''}" data-g="d">By day</button></div>` : ''}</div>
+      ${bins.length ? `<div class="usum">
+        <span class="usumi"><small>Σ Users' traffic</small><b>${fmtBytes(allT)}</b></span>
+        ${full.length ? `<span class="usumi"><small>${gran === 'd' ? 'A full day, on average' : 'A full hour, on average'}</small><b>${fmtBytes(avgT)}</b></span>` : ''}
+        <span class="usumi"><small>💰 You pay for</small><b>${fmtBytes(allP)} <em class="${ratioCls(ratio(allP, allT))}">${ratio(allP, allT) ? '×' + ratio(allP, allT).toFixed(2) : ''}</em></b></span>
+        ${hasCard ? `<span class="usumi" title="Against the users' traffic of every tunnel on these Iran servers"><small>🧾 Iran servers received</small><b>${fmtBytes(allC)} <em class="${ratioCls(ratio(allC, allCU))}">${ratio(allC, allCU) ? '×' + ratio(allC, allCU).toFixed(2) : ''}</em></b></span>
+        <span class="usumi"><small>Beyond the users' traffic</small><b>${allC >= allCU ? '+' : '−'}${fmtBytes(Math.abs(allC - allCU))} <em class="faint">${allCU > 1 << 20 ? (allC >= allCU ? '+' : '−') + Math.abs((allC - allCU) / allCU * 100).toFixed(1) + '%' : ''}</em></b></span>` : ''}
+      </div>` : ''}
       ${chart()}
+      ${lastB && lastB.part ? `<small class="faint upnote">⏳ <span>${gran === 'd' ? 'The last day is not over: its bar is what came so far, left out of the average.' : 'The last hour is not over: its bar is what came so far, left out of the average.'}</span>${lastB.proj ? ` <span>${lastB.byDay ? 'The dashed outline is the whole day at this pace, by how the day before went at this time.' : gran === 'd' ? 'The dashed outline is the whole day at this pace.' : 'The dashed outline is the whole hour at this pace.'}</span>` : ''}</small>` : ''}
       <details class="utd"><summary>Show as a table</summary><div data-utbl></div></details></div>
     <div class="ugrid2">${breakdown()}
-      <div class="card pad uodd"><h3>⚠ Worth a look</h3>${odd.length ? odd.slice(0, 8).map(o => `<div class="uoddr"${o.k ? ` data-ot="${esc(o.k)}"` : ''}><span class="uoic">${o.ic}</span><div><div><b>${o.name}</b> <span>${o.what}</span></div>${o.val ? `<div class="uoval">${o.val}</div>` : ''}${o.hint ? `<small class="faint">${o.hint}</small>` : ''}</div></div>`).join('') + (odd.length > 8 ? `<small class="faint"><span>and</span> ${odd.length - 8} <span>more</span></small>` : '') : '<div class="faint">Nothing unusual in this range.</div>'}</div></div>
-    ${billTbl()}${legend}`;
+      <div class="uside"><div class="card pad uodd"><h3>⚠ Worth a look</h3>${odd.length ? odd.slice(0, 8).map(o => `<div class="uoddr"${o.k ? ` data-ot="${esc(o.k)}"` : ''}><span class="uoic">${o.ic}</span><div><div><b>${o.name}</b> <span>${o.what}</span></div>${o.val ? `<div class="uoval">${o.val}</div>` : ''}${o.hint ? `<small class="faint">${o.hint}</small>` : ''}</div></div>`).join('') + (odd.length > 8 ? `<small class="faint"><span>and</span> ${odd.length - 8} <span>more</span></small>` : '') : '<div class="faint">Nothing unusual in this range.</div>'}</div>
+      ${srvVs()}${legend}</div></div>
+    ${billTbl()}`;
 
   // wiring
   const pickSet = (v) => { remember('tp-usage-pick', v ? JSON.stringify(v) : ''); renderView(); };
@@ -623,16 +708,59 @@ async function viewUsage(w) {
   $$('.ubrow', box).forEach(b => b.onclick = () => pickSet(sel && sel.by === by && sel.key === b.dataset.k ? null : { by, key: b.dataset.k }));
   $$('[data-ot]', box).forEach(b => b.onclick = () => { const id = b.dataset.ot.slice(2); remember('tp-usage-by', 'tunnel'); pickSet({ by: 'tunnel', key: id }); });
   const un = $('[data-unpick]', box); if (un) un.onclick = () => pickSet(null);
+  $$('[data-srv]', box).forEach(b => b.onclick = () => { const k = b.dataset.srv; pickSet(sel && sel.by === 'iran' && sel.key === k ? null : { by: 'iran', key: k }); });
   $$('[data-ugr] [data-g]', box).forEach(b => b.onclick = () => { USAGE.gran = b.dataset.g; renderView(); });
   const td = $('.utd', box); td.ontoggle = () => { if (td.open && !td.dataset.done) { td.dataset.done = 1; $('[data-utbl]', td).innerHTML = table(); } };
   const plot = $('.uplot', box);
   if (plot) {
     const tip = $('.utip', plot), hov = $('.chov', plot), N = bins.length;
+    // who made a step: the breakdown's grouping (by tunnel when one of its rows is picked)
+    const gk = sel && sel.by === by ? 'tunnel' : by;
+    const gname = new Map(groupsOf(gk).map(g => [g.key, g]));
+    const plain = (x) => { const e = document.createElement('div'); e.innerHTML = x; return e.textContent; };
+    const topOf = (b) => {
+      const m = new Map();
+      scope.forEach(t => { let v = 0; b.ix.forEach(i => { const s = t.series && t.series[i]; if (s) v += (s.d || 0) + (s.u || 0); }); if (v > 0) { const k = KEY[gk](t); m.set(k, (m.get(k) || 0) + v); } });
+      return [...m].sort((a, c) => c[1] - a[1]);
+    };
+    const chg = (a, c) => {
+      if (!(c > 1 << 30)) return '<b>—</b>';
+      const v = (a - c) / c * 100, x = Math.abs(v);
+      return `<b class="${x < 0.5 ? '' : v > 0 ? 'utup' : 'utdn'}">${x < 0.5 ? '= 0%' : (v > 0 ? '▲ ' : '▼ ') + (x >= 100 ? Math.round(x) : x.toFixed(1)) + '%'}</b>`;
+    };
+    const dur = (s) => (s >= 3600 ? `${Math.floor(s / 3600)}${uH} ` : '') + `${Math.floor(s % 3600 / 60)}${uM}`;
     const move = (e) => {
       const rc = plot.getBoundingClientRect(), i = Math.min(N - 1, Math.max(0, Math.floor((e.clientX - rc.left) / rc.width * N))), b = bins[i];
       hov.setAttribute('x', i * 10); hov.setAttribute('width', 10);
       tip.hidden = false;
-      tip.innerHTML = `<b>${binLbl(b, true)}</b><span><i class="kd"></i>${tpT('⬇ Download')}</span><b>${fmtBytes(b.d)}</b><span><i class="ku"></i>${tpT('⬆ Upload')}</span><b>${fmtBytes(b.u)}</b><span>${tpT('Σ Total')}</span><b>${fmtBytes(tot(b))}</b><span><i class="kp"></i>${tpT('💰 You pay for')}</span><b>${fmtBytes(b.p)} <em class="${coefCls(b)}">${coefTxt(b)}</em></b>`;
+      const day = b.step === 86400, cmp = b.proj || (b.part ? null : b), before = i > 0 && !bins[i - 1].part ? bins[i - 1] : null;
+      let h = `<b>${binLbl(b, true)}${b.part ? ` <span class="utpart">⏳ ${tt('so far')} · <bdi>${dur(b.cov)}</bdi></span>` : ''}</b>`;
+      h += `<span><i class="kd"></i>${tt('⬇ Download')}</span><b>${fmtBytes(b.d)}</b><span><i class="ku"></i>${tt('⬆ Upload')}</span><b>${fmtBytes(b.u)}</b>`;
+      h += `<span>${tt("Σ Users' traffic")}</span><b>${fmtBytes(tot(b))}</b>`;
+      if (b.proj) h += `<span>${tt(day ? '≈ The whole day at this pace' : '≈ The whole hour at this pace')}</span><b>≈ ${fmtBytes(tot(b.proj))}</b>`;
+      if (cmp && before) h += `<span>${tt(day ? 'vs the day before' : 'vs the hour before')}</span>${chg(tot(cmp), tot(before))}`;
+      if (cmp && full.length >= 2) h += `<span>${tt(day ? 'vs the average day' : 'vs the average hour')}</span>${chg(tot(cmp), avgT)}`;
+      h += `<hr><span><i class="kp"></i>${tt('💰 You pay for')}</span><b>${fmtBytes(b.p)} <em class="${coefCls(b)}">${coefTxt(b)}</em></b>`;
+      if (hasCard) {
+        const rr = ratio(b.c, b.cu);
+        h += `<span><i class="kc"></i>${tt('🧾 Iran servers received')}</span><b>${fmtBytes(b.c)} <em class="${ratioCls(rr)}">${rr ? '×' + rr.toFixed(2) : '—'}</em></b>`;
+        if (rr) h += `<span>${tt("Beyond the users' traffic")}</span><b>${b.c >= b.cu ? '+' : '−'}${fmtBytes(Math.abs(b.c - b.cu))} <em class="faint">${(b.c >= b.cu ? '+' : '−') + Math.abs((b.c - b.cu) / b.cu * 100).toFixed(1)}%</em></b>`;
+      }
+      // which Iran server the extra is on (each card against the tunnels routed to it)
+      if (hasCard && cards.size > 1 && b.c > b.cu) {
+        const ex = [...cards.values()].map(k => { let c = 0, cu = 0; b.ix.forEach(i => { const s = k.u.series && k.u.series[i]; if (s) c += s.d || 0; k.tun.forEach(x => { const q = x.series && x.series[i]; if (q) cu += (q.d || 0) + (q.u || 0); }); }); return { k, c, cu, x: c - cu }; })
+          .filter(e => e.x > 2 ** 30 && e.x > e.cu * 0.03).sort((a, c) => c.x - a.x);
+        if (ex.length) {
+          h += `<span class="uttop">${tt('Most of the extra is on')}</span>`;
+          ex.slice(0, 2).forEach(e => { h += `<span class="utname">${flagOf(e.k.id)} ${esc(tt(plain(nameOf(e.k.id))))}</span><b>+${fmtBytes(e.x)} <em class="${ratioCls(ratio(e.c, e.cu))}">${ratio(e.c, e.cu) ? '×' + ratio(e.c, e.cu).toFixed(2) : ''}</em></b>`; });
+        }
+      }
+      const top = topOf(b), all = top.reduce((a, x) => a + x[1], 0);
+      if (top.length > 1 && all > 0) {
+        h += `<hr><span class="uttop">${tt('Biggest shares')}</span>`;
+        top.slice(0, 3).forEach(([k, v]) => { const g = gname.get(k); h += `<span class="utname">${g ? g.flag + ' ' + esc(tt(plain(g.name))) : '—'}</span><b>${(v / all * 100).toFixed(0)}%</b>`; });
+      }
+      tip.innerHTML = h;
       const x = (i + 0.5) / N * rc.width;
       tip.style.left = Math.min(Math.max(0, x - tip.offsetWidth / 2), rc.width - tip.offsetWidth) + 'px';
     };
