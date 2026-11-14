@@ -10,7 +10,7 @@ package main
 // at 22:39; by 2026-11-12 morning Google had ended the session again (SID cookies cleared,
 // the rest of the profile intact, browser never restarted).
 //
-// So: gemFix never offers the home server its own IP, the panel refuses that route there (one
+// So: the exit ladder (igexit.go) never offers the home server its own IP, the panel refuses that route there (one
 // server or many), and gemHomeGuard puts it back within one gemAcctTick if anything else
 // (a shell, an agent, the watch job) sets it anyway, and says so.
 //

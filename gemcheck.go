@@ -248,18 +248,13 @@ func gemWhy(p gemPage) string {
 	return ""
 }
 
-// ---- the loop. The agent measures the Google country of the users' route (gdom) every 10
-// minutes; when Google is about to be moved, gemFix checks each candidate in the test browser,
-// without the account (see the top of this file).
+// ---- the loop: the relay allow-lists. Google's exit is moved by igexit.go (Google's own country
+// for the users' route); gemFix's move is gone: its signed-out browser check stopped passing any
+// exit on 2026-11-14 (Google no longer says where it places the IP).
 
-const (
-	gemTick        = 20 * time.Minute
-	gemServerEvery = 6 * time.Hour // a server's Google is moved at most this often
-)
+const gemTick = 20 * time.Minute
 
 func (a *App) gemLoop() {
-	moved := map[string]time.Time{}
-	var signedOutSent time.Time
 	time.Sleep(3 * time.Minute)
 	relays := newRelayState()
 	for ; ; time.Sleep(gemTick) {
@@ -272,29 +267,5 @@ func (a *App) gemLoop() {
 			}
 		})
 		a.relaySync(list, relays)
-		// one move per round at most: few signed-in visits
-		for _, s := range list {
-			want := gemWantDom(s)
-			if s.Owner != "" || want == "" || time.Since(moved[s.ID]) < gemServerEvery {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			inf := a.igInfo(ctx, s)
-			cancel()
-			if d := inf["gdom"]; d == "" || d == "-" || gemDomIs(d, want) {
-				continue
-			}
-			moved[s.ID] = time.Now()
-			res := a.gemFix(s, inf)
-			if strings.Contains(res, "signed out") || strings.HasPrefix(res, gemNoBrowser) { // tried again next round; told once a day
-				delete(moved, s.ID)
-				if time.Since(signedOutSent) < 24*time.Hour {
-					break
-				}
-				signedOutSent = time.Now()
-			}
-			a.push(fmt.Sprintf("🌍 Google places the users of %s in .%s (not .%s)\n→ %s", igLabel(s), inf["gdom"], want, res))
-			break
-		}
 	}
 }

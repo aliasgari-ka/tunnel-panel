@@ -18,9 +18,8 @@ package main
 // the page said "healthy" (2026-11-13). While the agent's fallback is active the panel leaves
 // that server alone.
 //
-// Only Instagram is moved. Google keeps its own guards (the agent's gem_watch, gemFix,
-// gemhome.go: the hub's users' Google never leaves through 152.53.86.103); YouTube Music has no
-// country signal. The page shows all three honestly.
+// Only Instagram is moved here. Google and YouTube Music have their own ladder (igexit.go;
+// gemhome.go: the hub's users' Google never leaves through 152.53.86.103).
 
 import (
 	"context"
@@ -55,6 +54,7 @@ type IgAutoSvc struct {
 	Next  int64  `json:"next,omitempty"`  // when Want is tried again
 	Tries int    `json:"tries,omitempty"` // failed tries of Want since the move
 	Alert int64  `json:"alert,omitempty"` // last "nothing works" alert
+	Back  int64  `json:"back,omitempty"`  // when it last went back to Want (igexit.go: older tries are forgotten after 6 h)
 }
 
 // IgAutoEvent is one line of the short history.
@@ -729,6 +729,7 @@ type igAutoView struct {
 	Last   []IgAutoEvent        `json:"last,omitempty"` // the server's last events
 	Warp   *WarpPool            `json:"warp,omitempty"` // the automatic WARP pool (warppool.go)
 	Svc    map[string]igSvcView `json:"svc,omitempty"`  // every service: Auto / pinned, its last check (igsvc.go)
+	Ex     map[string]igExView  `json:"ex,omitempty"`   // Google / YouTube Music: the auto-picked exit (igexit.go)
 }
 
 func (a *App) igAutoViewOf(id string) *igAutoView {
@@ -759,6 +760,7 @@ func (a *App) igAutoViewOf(id string) *igAutoView {
 		}
 	})
 	v.Svc = a.igSvcViewOf(id)
+	v.Ex = a.igExViewOf(id, a.igSvcRecs(id))
 	igAutoMem.Lock()
 	if l := igAutoMem.live[id]; l != nil && l.CC != "" {
 		v.Live, v.LiveAt = l.CC, l.At.Unix()
