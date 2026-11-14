@@ -3005,7 +3005,7 @@ function bnUse(p, fam) {
 // kind: live (measuring now) · none (never measured) · fail (the last run measured nothing) · bad (the
 // users' method failed) · better (another method is clearly faster) · old (measured too long ago) ·
 // good (users are on the best, or close) · idle (no tunnel runs on this family here)
-const BN_RANK = { live: 0, bad: 1, fail: 2, better: 3, none: 4, old: 5, good: 6, idle: 7 };
+const BN_RANK = { live: 0, bad: 1, fail: 2, better: 3, unmeasured: 4, none: 4, old: 5, good: 6, idle: 7 };
 function bnState(p, f) {
   const { hist, st } = BND;
   const runs = hist.filter(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f); // newest first
@@ -3026,14 +3026,15 @@ function bnState(p, f) {
   else if (!users.size) kind = 'idle'; // no one is on it here: shown, never flagged
   else if (!run) kind = 'none';
   else if ((fail && fail.at > run.at) || !ok.length) kind = 'fail';
-  else if (!uOk) kind = 'bad';
+  // the users' method failed in this run, or this run left it out (a partial run, or skipped)
+  else if (!uOk) kind = uRes && !uRes.skipped ? 'bad' : 'unmeasured';
   else if (best.method !== uOk.method && (gain = (best.downMbps || 0) / Math.max(0.1, uOk.downMbps || 0) - 1) >= 0.15) kind = 'better';
   else if (stale) kind = 'old';
   else kind = 'good';
   return { runs, run, results, ok, best, users, standby, uOk, uRes, fail, age, stale, kind, gain, running };
 }
 // the filter chips group the kinds
-const BN_GROUP = { good: 'good', better: 'better', bad: 'fail', fail: 'fail', old: 'old', none: 'old' };
+const BN_GROUP = { good: 'good', better: 'better', bad: 'fail', fail: 'fail', old: 'old', none: 'old', unmeasured: 'old' };
 function bnPaint() {
   const list = $('#bnlist');
   if (!list || !BND) return;
@@ -3116,6 +3117,7 @@ function bnRow(p, f, s) {
     none: `<small class="faint">not measured yet</small>${runBtn(true)}`,
     fail: `${s.fail && (!s.run || s.fail.at > s.run.at) ? `<button class="bn-why bn-bad" data-err="${esc(s.fail.error)}">✕ ${esc(shortErr(s.fail.error))}</button>` : '<small class="bn-bad">✕ nothing worked</small>'}${runBtn(true)}`,
     bad: `<small class="bn-bad">users' method failed</small>${applyBtn(true)}${runBtn(false)}`,
+    unmeasured: `<small class="bn-old2">users' method not measured</small>${runBtn(true)}${applyBtn(false)}`,
     better: `<small class="bn-up">★ ${Math.round(s.gain * 100)}% faster ↓</small>${applyBtn(true)}`,
     old: `<small class="bn-old2">⏱ measure again</small>${runBtn(true)}`,
     good: `<small class="bn-ok">✓ on the best</small>`,
