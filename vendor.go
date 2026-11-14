@@ -24,6 +24,26 @@ var vendorHelpers = map[string][]string{
 	},
 }
 
+// vendorSHA256 are the builds we know (sha256 of the extracted binary). The vendor serves
+// plain HTTP, so a copy whose hash is not listed here is refused: anyone on the path could
+// have swapped it, and it runs as root on every tunnel server. A new vendor release goes in
+// by adding its hash here (or uploading a trusted copy).
+var vendorSHA256 = map[string]map[string][]string{
+	"backhaul_premium": {
+		"amd64": {"6eec5c5624bdafd47ee4f92a0b2e4c6e89719a2cc471d48c97f47d47997c081f"},
+		"arm64": {"33bd6f9ff7778105f7aea9a6316bea6e51b3154bf00d4fb52a4fdfc9aa31a383"},
+	},
+}
+
+func vendorKnown(base, arch, sum string) bool {
+	for _, s := range vendorSHA256[base][arch] {
+		if s == sum {
+			return true
+		}
+	}
+	return false
+}
+
 type vendorResult struct {
 	Source, SHA256, Note string
 	Size                 int64
@@ -87,7 +107,13 @@ func fetchVendorHelper(name string) (*vendorResult, error) {
 		}
 		b, _ := os.ReadFile(tmp)
 		sum := sha256.Sum256(b)
-		ok = append(ok, got{u, hex.EncodeToString(sum[:]), tmp})
+		hs := hex.EncodeToString(sum[:])
+		if !vendorKnown(base, arch, hs) {
+			os.Remove(tmp)
+			errs = append(errs, fmt.Sprintf("%s: unknown build (sha256 %s…), refused — upload a copy you trust", u, hs[:12]))
+			continue
+		}
+		ok = append(ok, got{u, hs, tmp})
 	}
 	defer func() {
 		for _, g := range ok {
@@ -98,12 +124,12 @@ func fetchVendorHelper(name string) (*vendorResult, error) {
 		vendorDown[name] = time.Now().Add(6 * time.Hour)
 		return nil, fmt.Errorf("could not download %s from the vendor: %s", name, strings.Join(errs, "; "))
 	}
-	note := "only one vendor mirror answered, so the copy could not be cross-checked"
+	note := "only one vendor mirror answered; its build matches a pinned sha256"
 	if len(ok) > 1 {
 		if ok[0].sum != ok[1].sum {
 			return nil, fmt.Errorf("the two vendor mirrors served different files (%s vs %s) — refusing; upload a copy you trust", ok[0].sum[:12], ok[1].sum[:12])
 		}
-		note = "both vendor mirrors served the identical file"
+		note = "both vendor mirrors served the identical file, matching a pinned sha256"
 	}
 	dst := filepath.Join(helpersDir(), name)
 	if err := os.Rename(ok[0].path, dst); err != nil {
@@ -125,9 +151,15 @@ func vendorOnHostScript(base, arch, dest string) string {
 		return ""
 	}
 	mach := map[string]string{"amd64": "3e00", "arm64": "b700"}[arch]
-	var us []string
+	var us, pins []string
 	for _, u := range urls {
 		us = append(us, shq(fmt.Sprintf(u, arch)))
+	}
+	for _, p := range vendorSHA256[base][arch] {
+		pins = append(pins, p)
+	}
+	if len(pins) == 0 {
+		return "echo 'no pinned build of this helper for this architecture — upload a copy you trust'; exit 1\n"
 	}
 	return fmt.Sprintf(`D=%[1]s
 m() { od -An -tx1 -j18 -N2 "$1" 2>/dev/null | tr -d ' \n'; }
@@ -142,6 +174,7 @@ mv "$1" p.tgz
 tar -xzf p.tgz 2>/dev/null || { echo "vendor file is not a tar.gz"; exit 1; }
 f=""; for x in $(find . -type f); do [ "$(m "$x")" = %[2]s ] && { f=$x; break; }; done
 [ -n "$f" ] || { echo "no %[4]s binary inside the vendor archive"; exit 1; }
+h=$(sha256sum "$f" | cut -d' ' -f1); case " %[5]s " in *" $h "*) ;; *) echo "unknown vendor build (sha256 $(echo $h | cut -c1-12)…), refused — upload a copy you trust"; exit 1;; esac
 mkdir -p "$(dirname "$D")" && install -m0755 "$f" "$D" && echo "installed from the vendor on this host: $(sha256sum "$D" | cut -c1-16)…"
-`, shq(dest), mach, strings.Join(us, " "), arch)
+`, shq(dest), mach, strings.Join(us, " "), arch, strings.Join(pins, " "))
 }

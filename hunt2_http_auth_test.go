@@ -219,8 +219,16 @@ func TestHunt2LoginLimiter(t *testing.T) {
 			t.Fatalf("user try %d: %d", i, c)
 		}
 	}
-	if c := try("203.0.113.1:1000", "boss"); c != 429 {
-		t.Fatalf("try %d on one username: %d, want 429", loginMaxUser+1, c)
+	// past the per-name limit a try is slowed down, not refused: a few addresses guessing
+	// must not keep the real owner out
+	loginSlow = 50 * time.Millisecond
+	defer func() { loginSlow = 3 * time.Second }()
+	t0 := time.Now()
+	if c := try("203.0.113.1:1000", "boss"); c != 401 {
+		t.Fatalf("try %d on one username: %d, want 401 (slowed)", loginMaxUser+1, c)
+	}
+	if time.Since(t0) < loginSlow {
+		t.Fatalf("try past the per-name limit was not slowed down")
 	}
 	if c := try("203.0.113.2:1000", "ali"); c != 401 {
 		t.Fatalf("another username: %d", c)

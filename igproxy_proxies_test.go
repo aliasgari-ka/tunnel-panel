@@ -49,8 +49,8 @@ func TestIgProxyNorm(t *testing.T) {
 			t.Errorf("%v accepted as %q", c, p.line())
 		}
 	}
-	if igMaskUser("nodemaven5Jfgq") != "node…gq" || igMaskUser("bob") != "b…" || igMaskUser("-") != "" {
-		t.Errorf("mask: %q %q", igMaskUser("nodemaven5Jfgq"), igMaskUser("bob"))
+	if igMaskUser("proxyusr7Kq") != "prox…Kq" || igMaskUser("bob") != "b…" || igMaskUser("-") != "" {
+		t.Errorf("mask: %q %q", igMaskUser("proxyusr7Kq"), igMaskUser("bob"))
 	}
 }
 
@@ -214,13 +214,13 @@ func pxList(t *testing.T, call func(string, string, string) *httptest.ResponseRe
 // stays with that proxy.
 func TestIgProxyListMasked(t *testing.T) {
 	_, hosts, call := igPxSetup(t)
-	hosts["a1"].lines = []string{"http 151.242.115.57 11000 nodemaven5Jfgq S3cr3t-pass", "socks5 [2001:db8::7] 1080 - -"}
+	hosts["a1"].lines = []string{"http 203.0.113.57 11000 proxyusr7Kq S3cr3t-pass", "socks5 [2001:db8::7] 1080 - -"}
 	w := call("boss", "list", `{"srv":"a1","test":1}`)
-	if strings.Contains(w.Body.String(), "S3cr3t") || strings.Contains(w.Body.String(), "nodemaven5Jfgq") {
+	if strings.Contains(w.Body.String(), "S3cr3t") || strings.Contains(w.Body.String(), "proxyusr7Kq") {
 		t.Fatalf("password or full user in the answer: %s", w.Body)
 	}
 	v := pxList(t, call, "a1", false)
-	if len(v.Proxies) != 2 || v.Proxies[0].User != "node…gq" || v.Proxies[1].User != "" || v.Proxies[1].Host != "[2001:db8::7]" {
+	if len(v.Proxies) != 2 || v.Proxies[0].User != "prox…Kq" || v.Proxies[1].User != "" || v.Proxies[1].Host != "[2001:db8::7]" {
 		t.Fatalf("rows: %+v", v.Proxies)
 	}
 	if tt := v.Proxies[0].Test; tt == nil || !tt.OK || tt.MS != 210 || tt.IP != "203.0.113.50" || tt.Loc != "DE" || !tt.Google {

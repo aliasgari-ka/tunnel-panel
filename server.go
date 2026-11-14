@@ -206,6 +206,9 @@ func securityHeaders(h http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		if cookieSecure && r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		// a second line behind esc(): even a missed escape can't run script in a page that
 		// can run commands as root on every server (inline styles are used, inline scripts not)
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -355,12 +358,21 @@ func clientIP(r *http.Request) string {
 
 // Sign-in tries: 5 per 5 minutes per address (an IPv6 /64: one host usually holds a whole
 // /64, so per IPv6 address there was no limit), and 20 per 5 minutes per username (many
-// addresses guessing one account).
+// addresses guessing one account; past that each try is slowed, not refused).
 const (
 	loginWindow  = 5 * time.Minute
 	loginMaxIP   = 5
 	loginMaxUser = 20
 )
+
+// loginSlow is the wait for each try at an account past its per-name limit (a var for tests).
+var loginSlow = 3 * time.Second
+
+// loginDummyHash is checked for names that have no account, so both answers take as long.
+var loginDummyHash = func() string {
+	h, _ := bcrypt.GenerateFromPassword([]byte(randHex(16)), bcrypt.DefaultCost)
+	return string(h)
+}()
 
 // loginKey is what the per-address limit counts against.
 func loginKey(ip string) string {
@@ -541,9 +553,10 @@ func (s *Server2) login(w http.ResponseWriter, r *http.Request) {
 	}
 	uk := userKey(in.Username)
 	if !s.try(uk, loginMaxUser) {
-		s.attemptOK(ip) // not a guess this address made
-		httpErr(w, 429, "Too many failed attempts. Wait 5 minutes and try again.")
-		return
+		// Many wrong guesses at this account from other addresses: slow every try down
+		// instead of refusing, so nobody can keep the real owner out with a few addresses.
+		// Each address is still held to its own limit above.
+		time.Sleep(loginSlow)
 	}
 	var hash string
 	s.app.store.View(func(st *State) {
@@ -553,7 +566,10 @@ func (s *Server2) login(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	})
-	if hash == "" || bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil {
+	if hash == "" {
+		hash = loginDummyHash // same bcrypt cost, so the answer time doesn't tell which accounts exist
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil || hash == loginDummyHash {
 		httpErr(w, 401, "Wrong username or password.")
 		return
 	}
