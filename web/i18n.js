@@ -1702,6 +1702,7 @@ window.TP_FA = {
 "▶ Run": "▶ اجرا",
 "Apply ★": "اعمال ★",
 "users' method failed": "روش کاربران ناموفق بود",
+"users' method not measured": "روش کاربران اندازه‌گیری نشد",
 "⏱ measure again": "⏱ دوباره اندازه بگیرید",
 "✓ on the best": "✓ روی بهترین",
 "✕ nothing worked": "✕ هیچ روشی کار نکرد",
