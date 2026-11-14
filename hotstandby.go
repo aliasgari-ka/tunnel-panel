@@ -463,7 +463,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 14
+# tp-switcher 15
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 # A new path list (conf, targets, keys) is taken on SIGHUP, without a restart: what is known
@@ -613,7 +613,15 @@ failfrom=-1
 rm -f cmp.run cmp.done cmp.tmp cmp.done.* cmp.tmp.*
 bash base.sh >/dev/null 2>&1
 if [ -f active ]; then read -r a _ < active; [ -n "$a" ] && [ "$a" -lt $N ] && { bash up-${PF[$a]}.sh >/dev/null 2>&1; active=$a; }; fi
-[ $active -ge 0 ] || use 0 "start"
+# a fresh start (a rebuild wiped this directory): on the path chosen in the panel (pin), not on
+# path 0 — a rebuild put the users on a dead Plain GRE and the choice was never acted on (seen
+# live on تانل آمریکا, 2026-11-14). For FRESH s after it, nobody being on any path yet, a path
+# that doesn't answer is left at once, and the chosen one taken as soon as it answers.
+fresh=0
+if [ $active -lt 0 ]; then
+  s0=0; [ -s pin ] && read -r s0 _ < pin; [ -n "$s0" ] && [ "$s0" -ge 0 ] 2>/dev/null && [ "$s0" -lt $N ] || s0=0
+  use $s0 "start"; fresh=$(date +%s)
+fi
 # backoff: after a comparison that changed nothing, the next waits 30 min, doubling to 2 h
 tune; n=0; cmpat=0; backoff=1800; hold=0; badsince=0; cmploss=0
 # after an automatic move: VERIFY s later the new path is measured under the users' traffic and
@@ -678,7 +686,18 @@ while true; do
     fi
   elif [ -z "$PN" ] && [ "$P0" != "${lastpin:-$P0}" ] && [ "$P0" != "$active" ] && [ "${ok[$P0]}" = 1 ]; then pinmove=1
   fi
-  if [ $pinmove = 1 ]; then
+  freshmv=0
+  if [ $fresh -gt 0 ]; then
+    if [ $((now - fresh)) -gt ${FRESH:-120} ] || { [ $active = $P0 ] && [ "${ok[$active]}" = 1 ]; }; then fresh=0
+    elif [ $active != $P0 ] && [ "${ok[$P0]}" = 1 ]; then
+      use $P0 "path $P0 (chosen) answers — the users go there after the start"; fresh=0; freshmv=1; hold=$((now + HOLD))
+    elif [ "${ok[$active]}" != 1 ]; then
+      b=$(pick); [ $b -ge 0 ] && { use $b "path $active doesn't answer at the start — took path $b until path $P0 (chosen) does"; freshmv=1; }
+    fi
+  fi
+  if [ $freshmv = 1 ]; then
+    : # moved at the start: the rest waits for the next round
+  elif [ $pinmove = 1 ]; then
     use $P0 "chosen in the panel"
     # a choice made by hand holds for HOLD against auto mode's comparisons (it moved the users
     # straight back off a lossy path someone picked on purpose); a path that dies is still left
@@ -879,6 +898,12 @@ func hsPinIndex(t *Tunnel, paths []HSPath) string {
 	}
 	for k, p := range paths {
 		if p.Method+"|"+p.Family == want {
+			return strconv.Itoa(k)
+		}
+	}
+	// the chosen path didn't come up in this deploy: the tunnel's own method, else the first
+	for k, p := range paths {
+		if p.Method == t.Active && p.Family == t.Family {
 			return strconv.Itoa(k)
 		}
 	}
@@ -1083,9 +1108,15 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		return false
 	}
 	a.setActive(t, m.ID)
-	j.log("DONE — hot standby: %d of %d paths running; users go through %s now", len(good), len(paths), good[0].label())
+	// the switcher starts the users on the chosen path (pin.new), not on the first one: the
+	// log said "Plain GRE" while they were meant for (and, now, put on) BackPack reverse
+	first := good[0]
+	if k, err := strconv.Atoi(hsPinIndex(t, good)); err == nil && k >= 0 && k < len(good) {
+		first = good[k]
+	}
+	j.log("DONE — hot standby: %d of %d paths running; users start on %s (another one at once if it doesn't answer)", len(good), len(paths), first.label())
 	j.finish("ok")
-	a.pushTInfo(t, fmt.Sprintf("✅ %s: hot standby with %d paths (active: %s)", t.Name, len(good), good[0].label()))
+	a.pushTInfo(t, fmt.Sprintf("✅ %s: hot standby with %d paths (active: %s)", t.Name, len(good), first.label()))
 	return true
 }
 

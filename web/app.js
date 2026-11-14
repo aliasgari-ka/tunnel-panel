@@ -2962,14 +2962,26 @@ function viewBench(w) {
 }
 let BND = null; // the page's data: history, schedule, switches, live results of the running route
 async function bnLoad() {
-  let hist = [], st = {}, skip = {};
-  try { [hist, st, skip] = await Promise.all([api('/bench/history'), api('/bench/status').catch(() => ({})), api('/routes/skip').catch(() => ({}))]); } catch (e) {}
+  let hist = [], st = {}, skip = {}, tl = null;
+  try { [hist, st, skip, tl] = await Promise.all([api('/bench/history'), api('/bench/status').catch(() => ({})), api('/routes/skip').catch(() => ({})), api('/tunnels').catch(() => null)]); } catch (e) {}
+  // "Users are on" needs the switcher's view as it is now: the tunnels as loaded with the page
+  // (or by another page long ago) had none or an old one, and hot-standby tunnels showed their
+  // own method (Plain GRE) while the users were on BackPack reverse — right only on a later paint
+  bnFreshTunnels(tl);
   let live = null;
   if (BN.job && BN.req && BN.req.iranId) {
     try { live = await api(`/bench/results?iran=${encodeURIComponent(BN.req.iranId)}&foreign=${encodeURIComponent(BN.req.foreignId || '')}&family=${BN.req.family || 'v4'}`); } catch (e) {}
   }
   BND = { hist: hist || [], st: st || {}, skip: skip || {}, live };
   bnPaint();
+}
+// bnFreshTunnels takes into STATE.tunnels what the page reads of each tunnel from a fresh /tunnels list
+function bnFreshTunnels(list) {
+  if (!Array.isArray(list)) return;
+  list.forEach(n => {
+    const t = STATE.tunnels.find(x => x.id === n.id);
+    if (t) { Object.assign(t, { active: n.active, family: n.family, paths: n.paths, hotStandby: n.hotStandby, hsPin: n.hsPin, failover: n.failover, health: n.health }); t.hs = n.hs; }
+  });
 }
 // the routes the page shows: the visible tunnels' pairs, the measured pairs and the scheduled ones
 function bnRoutes() {
@@ -2996,6 +3008,9 @@ function bnUse(p, fam) {
     const hs = t.hs;
     if (t.hotStandby && hs && hs.keys && hs.keys.length) {
       hs.keys.forEach((k, i) => { const [m, f] = k.split('|'); if (f !== fam) return; if (i === hs.active) users.add(m); else if ((hs.ok || [])[i]) standby.add(m); });
+    } else if (t.hotStandby && t.hsPin) {
+      // the switcher not read yet (a panel restart): the path chosen for the users, not the tunnel's own method
+      const [m, f] = t.hsPin.split('|'); if (f === fam) users.add(m);
     } else if (t.family === fam) users.add(t.active);
   });
   users.forEach(m => standby.delete(m));
