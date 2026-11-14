@@ -238,6 +238,11 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 		old := rerr == nil && read && cur != hsSwitcherVersion
 		switcherText := fmt.Sprintf("switcher %s → %s (renewed in place)", switcherVer(cur), switcherVer(hsSwitcherVersion))
 		switch {
+		case err != nil && a.hsSwitcherRuns(cctx, ir, t):
+			// the state could not be read (a slow or dropped SSH session) but the switcher runs:
+			// a rebuild for that cut every user of a working tunnel (2026-11-14, تانل آمریکا:
+			// the repair after an update tore it down ~20 s). Looked at again next time
+			rt.Note = "switcher state could not be read (" + err.Error() + "), but the switcher runs — no rebuild"
 		case err != nil:
 			add(rkReapply, "switcher not running: "+err.Error(), impUsers, "both")
 			ask(askRebuild)
@@ -251,6 +256,14 @@ func (a *App) repairCheck(ctx context.Context, t *Tunnel) (*RepairTunnel, *repai
 			// xe108 rebuilt after every update because one path never passes data there).
 			// An older switcher is still renewed — in place, nobody is cut
 			rt.Note = fmt.Sprintf("%d of %d standby paths down — users are on a working one; no rebuild", bad, len(v.OK))
+			if old {
+				add(rkSwitcher, switcherText, impBlip, "both")
+			}
+		case bad > 0 && bad < len(v.OK) && v.Active >= 0 && v.Active < len(v.OK):
+			// the users' path is down but others answer: the switcher moves them to one within
+			// its grace (auto and manual alike) — a rebuild cuts them all for longer, and its
+			// fresh switcher used to start them on path 0 whatever was chosen
+			rt.Note = fmt.Sprintf("%d of %d paths down, the users' one too — the switcher moves them to a working one; no rebuild", bad, len(v.OK))
 			if old {
 				add(rkSwitcher, switcherText, impBlip, "both")
 			}
@@ -746,4 +759,17 @@ func (a *App) repairAfterUpdate() {
 	if _, err := a.RepairAuto("after the update to " + version); err != nil {
 		a.push("🛠 the repair after the update could not start: " + err.Error())
 	}
+}
+
+// hsSwitcherRuns: t's switcher unit is active and its directory there — asked on its own, in
+// a short command, when reading its state failed. Only an explicit answer counts: a session
+// that fails again says nothing, and the tunnel is treated as before (rebuilt).
+func (a *App) hsSwitcherRuns(ctx context.Context, h Host, t *Tunnel) bool {
+	out, _ := h.Run(ctx, fmt.Sprintf("[ -d %s ] && systemctl is-active -q %s && echo SWRUNS; true", shq(hsDir(t)), unitName(hsUnitTunnel(t))), nil)
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) == "SWRUNS" {
+			return true
+		}
+	}
+	return false
 }
