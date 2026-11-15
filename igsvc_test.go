@@ -80,3 +80,24 @@ func TestIgSvcDefs(t *testing.T) {
 		t.Error(s)
 	}
 }
+
+// Adult sites: WARP first on a server in a country that blocks them, own IP first elsewhere.
+func TestIgSvcPrefAdult(t *testing.T) {
+	d := igSvcByKey["ADULT"]
+	inf := map[string]string{"warps": "2", "proxies": "1"}
+	if c := igSvcCands(igSvcPref(d, &Server{Country: "TR"}), inf); strings.Join(c, ",") != "warp,proxy,direct" {
+		t.Fatalf("TR: %v", c)
+	}
+	if c := igSvcCands(igSvcPref(d, &Server{Country: "tr "}), map[string]string{"warps": "0", "proxies": "0"}); strings.Join(c, ",") != "direct" {
+		t.Fatalf("TR without WARP or proxy: %v", c)
+	}
+	if c := igSvcCands(igSvcPref(d, &Server{Country: "DE"}), inf); c[0] != "direct" {
+		t.Fatalf("DE: %v", c)
+	}
+	if c := igSvcCands(igSvcPref(igSvcByKey["X"], &Server{Country: "TR"}), inf); c[0] != "direct" {
+		t.Fatalf("another service in TR: %v", c)
+	}
+	if c := igSvcPref(d, nil); strings.Join(c, ",") != strings.Join(igAutoOwn, ",") {
+		t.Fatalf("no server: %v", c)
+	}
+}
