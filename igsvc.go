@@ -68,9 +68,13 @@ var (
 		{"GAMES", "media", igAutoOwn, "https://store.steampowered.com/", "", ""},
 		// developer
 		{"DEV", "dev", igAutoOwn, "https://github.com/", "", ""},
-		// adult (not checked from our servers)
+		// adult (not checked from our servers; WARP first where the country blocks it: igSvcPref)
 		{"ADULT", "adult", igAutoOwn, "", "", ""},
 	}
+	// countries whose ISPs block adult sites (DNS / SNI resets): a server there opens them only
+	// through WARP or a proxy (turk 2026-11-15: own IP = TLS reset on every big site, WARP = 200)
+	igAdultBlocked = map[string]bool{"TR": true, "IR": true, "RU": true, "IN": true, "PK": true, "SA": true, "AE": true,
+		"QA": true, "KW": true, "OM": true, "BH": true, "EG": true, "JO": true, "ID": true, "MY": true, "BD": true, "VN": true}
 	igSvcByKey = func() map[string]*igSvcDef {
 		m := map[string]*igSvcDef{}
 		for i := range igSvcStart {
@@ -224,7 +228,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if !igSvcIsAuto(rec, k) {
 			continue
 		}
-		cands := igSvcCands(d.Auto, inf)
+		cands := igSvcCands(igSvcPref(&d, srv), inf)
 		want := cands[0]
 		if rec != nil && rec.Cur != "" && contains(cands, rec.Cur) {
 			want = rec.Cur
@@ -283,7 +287,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if !igSvcIsAuto(rec, k) || live[k] == nil {
 			continue
 		}
-		cands := igSvcCands(d.Auto, inf)
+		cands := igSvcCands(igSvcPref(&d, srv), inf)
 		cur := igSvcKind(inf[strings.ToLower(k)])
 		moved := rec != nil && rec.Cur != ""
 		if !live[k].OK {
@@ -336,6 +340,16 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 }
 
 // igSvcCands: the exits of an Auto service that exist on this server ("direct" is always there)
+// igSvcPref: the service's exits in order of preference on this server. Adult sites on a server
+// in a country that blocks them go WARP first (then a proxy, the own IP last): they are not
+// checked, so Auto would otherwise leave them on the blocked own IP for good.
+func igSvcPref(d *igSvcDef, srv *Server) []string {
+	if d.Key == "ADULT" && srv != nil && igAdultBlocked[strings.ToUpper(strings.TrimSpace(srv.Country))] {
+		return igAutoAI
+	}
+	return d.Auto
+}
+
 func igSvcCands(pref []string, inf map[string]string) []string {
 	var out []string
 	for _, k := range pref {
