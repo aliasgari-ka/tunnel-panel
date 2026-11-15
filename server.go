@@ -1244,7 +1244,9 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "bad request")
 		return
 	}
-	if in.Family != "v6" {
+	// an edit may leave the family out (or send the one the form was opened with): the
+	// tunnel keeps its own, see below
+	if in.Family != "" && in.Family != "v6" {
 		in.Family = "v4"
 	}
 	// the name ends up in unit files and logs: no control characters
@@ -1294,9 +1296,16 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 	// a running tunnel whose hot standby was switched (or never built) is rebuilt: the
 	// flag alone changed nothing on the servers, so it showed hot standby with one path
 	var rebuild *Tunnel
+	// what else a running tunnel needs on its servers after the save (editapply.go)
+	var move, refam, reports *Tunnel
+	var before Tunnel
+	var moveTo struct{ iran, foreign, fam string }
 	err := s.app.store.Update(func(st *State) error {
 		if in.ID == "" {
 			in.ID = newID()
+			if in.Family == "" {
+				in.Family = "v4"
+			}
 			if in.Index = s.app.store.nextIndexLocked(st); in.Index == 0 {
 				return fmt.Errorf("All 249 tunnel slots are in use (hot-standby paths take one each) — delete a tunnel first.")
 			}
@@ -1324,12 +1333,22 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		if t == nil || !visible(user, admin, t.Owner) {
 			return fmt.Errorf("tunnel not found")
 		}
-		if t.Active != "" && (t.ServerID != in.ServerID || t.ForeignID != in.ForeignID || t.Family != in.Family) {
-			return fmt.Errorf("Stop the tunnel before changing its servers or address family.")
+		// the family of a running hot-standby tunnel is the path the users are on now — the
+		// switcher moves them between IPv4 and IPv6 by itself — so the form's value (read
+		// when it was opened) is no change; nor is a family left out
+		if in.Family == "" || (t.Active != "" && t.HotStandby && len(t.Paths) > 0) {
+			in.Family = t.Family
+		}
+		running := t.Active != ""
+		moved := running && (t.ServerID != in.ServerID || t.ForeignID != in.ForeignID)
+		if moved || (running && t.Family != in.Family) {
+			if id := s.app.jobs.running(t.ID); id != "" {
+				return fmt.Errorf("A job is still running on this tunnel — wait for it to end (or cancel it), then save again. Nothing was changed.")
+			}
 		}
 		// refuse before changing anything: a failed Update doesn't roll back
 		cand := *t
-		cand.Ports, cand.ServerID = in.Ports, in.ServerID
+		cand.Ports, cand.ServerID, cand.ForeignID = in.Ports, in.ServerID, in.ForeignID
 		cand.Options = map[string]map[string]string{}
 		for mid, opts := range t.Options {
 			cand.Options[mid] = opts
@@ -1343,7 +1362,23 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		if err := portClash(st, &cand, ""); err != nil {
 			return err
 		}
-		t.Name, t.ServerID, t.ForeignID, t.Family, t.Ports, t.Note = in.Name, in.ServerID, in.ForeignID, in.Family, in.Ports, in.Note
+		before = *t
+		before.Paths = append([]HSPath(nil), t.Paths...)
+		switch {
+		case moved:
+			// stopped on the servers it runs on first, then started on the new ones: the
+			// servers and family are written by the move once the stop is done
+			move = t
+			moveTo.iran, moveTo.foreign, moveTo.fam = in.ServerID, in.ForeignID, in.Family
+		case running && t.Family != in.Family:
+			refam = t // applied over the other family (ApplyRoute writes it)
+		default:
+			t.ServerID, t.ForeignID, t.Family = in.ServerID, in.ForeignID, in.Family
+		}
+		if running && t.Ports != in.Ports {
+			reports = t
+		}
+		t.Name, t.Ports, t.Note = in.Name, in.Ports, in.Note
 		t.Shape = normalizeShape(in.Shape)
 		t.NoFailover = in.NoFailover
 		t.HotStandby = in.HotStandby
@@ -1377,12 +1412,27 @@ func (s *Server2) tunnelSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]string{"ok": "1", "id": in.ID}
-	if rebuild != nil {
-		if j, err := s.app.rebuildMode(rebuild); err != nil {
-			out["warn"] = "Saved, but not applied yet (" + err.Error() + ") — press Re-apply on the tunnel."
-		} else {
-			out["job"] = j.ID
-		}
+	// one job puts the whole edit into effect: a move or a rebuild re-applies everything,
+	// so the new ports go with it
+	var j *Job
+	switch {
+	case move != nil:
+		j, err = s.app.moveTunnel(move, moveTo.iran, moveTo.foreign, moveTo.fam)
+	case rebuild != nil:
+		j, err = s.app.rebuildMode(rebuild)
+	case refam != nil:
+		var mid string
+		s.app.store.View(func(*State) { mid = refam.Active })
+		j, err = s.app.ApplyRoute(refam, mid, in.Family)
+	case reports != nil:
+		j, err = s.app.applyPortEdit(reports, &before)
+	}
+	if err != nil && move != nil {
+		out["warn"] = "Saved, but the tunnel stays on its servers (" + err.Error() + ") — edit it again once the job is over."
+	} else if err != nil {
+		out["warn"] = "Saved, but not applied yet (" + err.Error() + ") — press Re-apply on the tunnel."
+	} else if j != nil {
+		out["job"] = j.ID
 	}
 	writeJSON(w, out)
 }

@@ -2828,7 +2828,9 @@ function tunnelModal(t) {
           <label class="f">Address family<select name="family"><option value="v4"${t.family === 'v6' ? '' : ' selected'}>IPv4 underlay</option><option value="v6"${t.family === 'v6' ? ' selected' : ''}>IPv6 underlay</option></select></label>
           <label class="f">Ports<input name="ports" class="mono" value="${esc(t.ports || '443')}" placeholder="443,8080=80,2000-2010"><small class="fhelp">e.g. <bdi class="mono">443,8080=80,2000-2010</bdi></small></label>
         </div>
+        <small class="fhelp" id="tFamHelp"></small>
         <div class="faint tnote">Users hit the Iran server on these ports; traffic is forwarded to the foreign server over the tunnel.</div>
+        <div id="tEditWarn"></div>
       </div>
       <div class="set1"><div><b>⚡ Keep users connected</b><small class="fhelp" id="tModeHelp"></small></div>
         <label class="sw1"><input type="checkbox" id="tAuto"${t.hotStandby ? ' checked' : ''}><i></i></label></div>
@@ -2889,10 +2891,29 @@ function tunnelModal(t) {
     // a running tunnel is rebuilt on Save when the switch no longer matches what runs on the servers
     + (t.active && $('#tAuto', m).checked !== ((t.paths || []).length > 0) ? ' <span class="twarn">Saving rebuilds the running tunnel now — its users drop for about a minute.</span>' : '');
     paintPaths(); };
-  $('#tAuto', m).onchange = paintMode;
+  // a running tunnel: what Save does on its servers, said before it is pressed. With "Keep users
+  // connected" the family is the path the users are on now (the switcher moves them between
+  // IPv4 and IPv6 itself): not something to change here, so the field is locked
+  const fam0 = t.family === 'v6' ? 'v6' : 'v4';
+  const paintEdit = () => {
+    const famEl = $('[name=family]', m), hsRun = !!t.active && $('#tAuto', m).checked && (t.paths || []).length > 0;
+    famEl.disabled = hsRun;
+    if (hsRun) famEl.value = fam0;
+    $('#tFamHelp', m).innerHTML = hsRun ? `<span>Users are on</span> ${famName(fam0)} <span>now — with Keep users connected the switcher picks the family itself.</span>` : '';
+    if (!t.active) { $('#tEditWarn', m).innerHTML = ''; return; }
+    const moved = $('[name=serverId]', m).value !== t.serverId || ($('[name=foreignId]', m).value || '') !== (t.foreignId || '');
+    const w = moved ? 'Saving moves the tunnel now: it stops on the old servers and starts on the new ones — its users drop for about a minute.'
+      : !hsRun && famEl.value !== fam0 ? 'Saving switches the running tunnel to this address family now.'
+      : $('[name=ports]', m).value.trim() !== (t.ports || '') ? 'Saving applies the new ports now — only what uses them is rebuilt.' : '';
+    $('#tEditWarn', m).innerHTML = w ? `<div class="twarn" style="margin-top:6px">${w}</div>` : '';
+  };
+  $('#tAuto', m).onchange = () => { paintMode(); paintEdit(); };
   paintMode();
-  $('[name=serverId]', m).addEventListener('change', paintPaths);
-  $('[name=foreignId]', m).addEventListener('change', paintPaths);
+  paintEdit();
+  $('[name=serverId]', m).addEventListener('change', () => { paintPaths(); paintEdit(); });
+  $('[name=foreignId]', m).addEventListener('change', () => { paintPaths(); paintEdit(); });
+  $('[name=family]', m).addEventListener('change', paintEdit);
+  $('[name=ports]', m).addEventListener('input', paintEdit);
   $('#tf', m).onsubmit = oneAtATime($('#tf', m), async (ev) => {
     const fd = Object.fromEntries(new FormData(ev.target));
     const picks = $$('[data-path]', m);
@@ -2902,6 +2923,8 @@ function tunnelModal(t) {
       if (before !== after) { try { await api('/routes/skip', { iran: p.iran, foreign: p.foreign, off: offNow }); } catch (e) { alertModal('Error', e.message); return; } }
     }
     if (t.id) fd.ID = t.id;
+    // an edit sends the family only when it was changed here: the server keeps the tunnel's own
+    if (t.id && (!fd.family || fd.family === fam0)) delete fd.family;
     fd.noFailover = !!t.noFailover;
     fd.hotStandby = $('#tAuto', m).checked;
     fd.hsAuto = fd.hotStandby && (t.hotStandby ? !!t.hsAuto : true); // manual/auto stays switchable in the tunnel's window
