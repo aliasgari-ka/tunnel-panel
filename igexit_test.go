@@ -201,6 +201,30 @@ func TestIgExViewNoRead(t *testing.T) {
 	}
 }
 
+// Colab refused on Google's exit fails the exit; not read ("-", an old agent) or no
+// answer ("000") says nothing.
+func TestIgExVerdictColab(t *testing.T) {
+	m, _ := igExParse([]string{"X GOOGLE 200 de - - proxy2 404", "X YTM 200 DE - - - -"})
+	if m["GOOGLE"].Colab != "404" {
+		t.Fatalf("colab %q", m["GOOGLE"].Colab)
+	}
+	if v, why := igExVerdict("GOOGLE", m["GOOGLE"]); v != "bad" || why != "Google Colab refuses the IP (404)" {
+		t.Fatalf("404: %s %q", v, why)
+	}
+	for _, l := range []string{"X GOOGLE 200 de - - direct 200", "X GOOGLE 200 de - - direct -", "X GOOGLE 200 de - - direct 000", "X GOOGLE 200 de - - direct"} {
+		m, _ := igExParse([]string{l})
+		if v, why := igExVerdict("GOOGLE", m["GOOGLE"]); v != "ok" {
+			t.Errorf("%q: %s %q", l, v, why)
+		}
+	}
+	if v, _ := igExVerdict("GOOGLE", &igExRead{Code: "200", Dom: "de", Colab: "403"}); v != "bad" {
+		t.Fatal("403 passed")
+	}
+	if !strings.Contains(igExScript([]string{"GOOGLE"}, gemRelayPort), "colab.research.google.com") {
+		t.Fatal("script reads no Colab")
+	}
+}
+
 func TestIgExVerdictV6(t *testing.T) {
 	m, ok := igExParse([]string{"X GOOGLE 200 com - no", "X YTM 200 DE - ok", "X GOOGLE2 200 de -"})
 	if !ok || m["GOOGLE"].V6 != "no" || m["YTM"].V6 != "ok" || m["GOOGLE2"].V6 != "" {
