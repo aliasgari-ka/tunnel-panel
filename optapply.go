@@ -444,6 +444,15 @@ func optPathStat(v *hsView, key string) string {
 // others didn't. The switcher is redeployed (same paths, same order, users kept on their
 // path) only when its own files for these paths change (an L3 path became a forwarder…).
 func (a *App) optRebuild(ctx context.Context, j *Job, srv *Server, ir, kh Host, from, to *Tunnel, ps []HSPath, m *Method) map[string]string {
+	errs := a.optRebuildPaths(ctx, j, srv, ir, kh, from, to, ps, m)
+	// the switcher's own files for the paths (selector rules, flush, targets) follow the
+	// options too: compared as files (the pin, which this job may have moved for the users, is the setup's)
+	a.optSwitcherSync(ctx, j, ir, from, to)
+	return errs
+}
+
+// optRebuildPaths is optRebuild without the switcher: only the paths ps of method m.
+func (a *App) optRebuildPaths(ctx context.Context, j *Job, srv *Server, ir, kh Host, from, to *Tunnel, ps []HSPath, m *Method) map[string]string {
 	errs := map[string]string{}
 	for _, p := range ps {
 		key := p.Method + "|" + p.Family
@@ -507,17 +516,22 @@ func (a *App) optRebuild(ctx context.Context, j *Job, srv *Server, ir, kh Host, 
 			j.log("  ✓ deployed on both servers in %s — checking that it answers", optSecs(time.Since(t0)))
 		}
 	}
-	// the switcher's own files for the paths (selector rules, flush, targets) follow the
-	// options too: compared as files (the pin, which this job may have moved for the users, is the setup's)
+	return errs
+}
+
+// optSwitcherSync redeploys the switcher (same paths, same order, users kept on their path)
+// when its own files differ between from and to; false = nothing to do.
+func (a *App) optSwitcherSync(ctx context.Context, j *Job, ir Host, from, to *Tunnel) bool {
 	good := hsGood(from)
 	swOld, swNew := a.hsSwitcherPlan(from, good), a.hsSwitcherPlan(to, good)
-	if !reflect.DeepEqual(swOld.Files, swNew.Files) {
-		j.log("== switcher: same paths, new rules for the rebuilt ones (users stay on their path) ==")
-		if err := a.hsSwitcherUpdate(ctx, j, ir, a.pinNow(to), good, good); err != nil {
-			j.log("  WARN: switcher: %v", err)
-		}
+	if reflect.DeepEqual(swOld.Files, swNew.Files) {
+		return false
 	}
-	return errs
+	j.log("== switcher: same paths, new rules for the rebuilt ones (users stay on their path) ==")
+	if err := a.hsSwitcherUpdate(ctx, j, ir, a.pinNow(to), good, good); err != nil {
+		j.log("  WARN: switcher: %v", err)
+	}
+	return true
 }
 
 // pinNow is to with the pin as stored now (the switcher's pin.new must name the users' choice).
