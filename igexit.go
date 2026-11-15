@@ -32,6 +32,14 @@ package main
 // for the IP is the signal both the page and the agent's gdom use. On warp6 the reading also asks
 // whether IPv6 really passes through the WARPs: a WARP whose IPv6 is dead falls back to Cloudflare's
 // shared IPv4, where the keyless page reads fine but signed-in users are refused.
+// The same shared exit shows on IPv4 WARP ("warp") and on a warp6 that slips to it: Google places
+// it in no country (google.com) although the server stands in Germany or Turkey. On a WARP route
+// of a server outside the US that reading is a fail (Ger-hertzener 2026-11-15: Google on WARP read
+// google.com, users signed in got no Gemini; its own IP read google.de and works).
+//
+// A reading that never comes (the users' route cannot be read) or never decides (Google answers
+// without a country) is not "checking" for ever: it is shown as such, and three undecided
+// readings in a row (30 min) count as a fail, so the ladder moves the service.
 //
 // Instagram has its own ladder (igauto.go); the newer services theirs (igsvc.go).
 
@@ -55,7 +63,13 @@ const (
 	igExSettle   = 5 * time.Second
 	igExProxyMax = 4 // single outbounds tried per fix
 	igExRelayMax = 3 // other servers tried as a relay per fix
+	igExUnkTimes = 3 // undecided readings in a row that count as a fail
+	igExNoRead   = 25 * time.Minute
 )
+
+// igExStarted: readings live in memory; before this much time has passed since the start the
+// card may still say "checking", after it a missing reading is shown as missing.
+var igExStarted = time.Now()
 
 // the services this file moves
 var igExSvcs = []string{"GOOGLE", "YTM"}
@@ -78,6 +92,10 @@ type igExRead struct {
 	// Cloudflare's shared IPv4: the keyless page reads fine there, a signed-in Gemini does not
 	// (Ger-hertzener, 2026-11-14: "WARP IPv6" ✓, users refused).
 	V6 string
+	// Route: the service's route on the agent when it was read (users' route only); Home: the
+	// server's own country (from the panel)
+	Route string
+	Home  string
 }
 
 // igExDomCC: Google's domain as a country code ("com.tr" -> TR, "co.uk" -> GB, "com" -> "").
@@ -126,6 +144,9 @@ func igExVerdict(svc string, r *igExRead) (string, string) {
 		if strings.HasPrefix(code, "5") || d == "" || d == "-" {
 			return "", "" // Google answered without its country: no verdict
 		}
+		if home := strings.ToUpper(strings.TrimSpace(r.Home)); cc == "" && igIsWarp(r.Route) && home != "" && home != "US" {
+			return "bad", "Google places this WARP in no country (google." + d + "), not " + home + ": signed-in Gemini is refused"
+		}
 		return "ok", ""
 	case "YTM":
 		if r.Flag == "region" {
@@ -161,7 +182,7 @@ g(){ local c d fl=- i
   done
   d=$(grep -oE 'og[.]qtm[^"]*","[a-z.]{2,8}"' "$f" | head -1 | sed -E 's/.*"([a-z.]+)"$/\1/')
   grep -qsi "not supported in your country\|isn.t currently supported\|not available in your country\|not available in your region" "$f" && fl=region
-  echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE)"; }
+  echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE) $(rt GOOGLE)"; }
 y(){ local r c d fl=- i
   for i in 1 2; do
     r=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -o "$f" -w '%%{http_code} %%{redirect_url}' https://music.youtube.com/ 2>/dev/null); c=${r%%%% *}
@@ -170,12 +191,13 @@ y(){ local r c d fl=- i
   case "${r#* }" in *unavailable-in-region*|*not-available*) fl=region;; esac
   grep -qsi "unavailable-in-region\|not available in your country\|isn.t available in your country" "$f" && fl=region
   d=$(grep -oE '"GL":"[A-Z]{2}"' "$f" | head -1 | cut -d'"' -f4)
-  echo "X YTM ${c:-000} ${d:--} $fl $(v6 YTM)"; }
+  echo "X YTM ${c:-000} ${d:--} $fl $(v6 YTM) $(rt YTM)"; }
 `, port, port)
 	if port == gemRelayPort {
 		b.WriteString(igExV6Sh)
+		b.WriteString("rt(){ local r; r=$(awk -F= -v s=\"$1\" '$1==s{v=$2} END{print v}' /etc/igproxy/routes 2>/dev/null); echo \"${r:--}\"; }\n")
 	} else {
-		b.WriteString("v6(){ echo -; }\n")
+		b.WriteString("v6(){ echo -; }\nrt(){ echo -; }\n")
 	}
 	for _, s := range svcs {
 		switch s {
@@ -234,6 +256,9 @@ func igExParse(lines []string) (map[string]*igExRead, bool) {
 		}
 		if len(f) > 5 && (f[5] == "ok" || f[5] == "no") {
 			r.V6 = f[5]
+		}
+		if len(f) > 6 && f[6] != "-" {
+			r.Route = f[6]
 		}
 		out[f[1]] = r
 	}
@@ -296,6 +321,7 @@ type igExLive struct {
 	Why  string
 	At   time.Time
 	Bad  int
+	Unk  int // undecided readings in a row
 }
 
 var igExMem = struct {
@@ -304,6 +330,14 @@ var igExMem = struct {
 }{live: map[string]map[string]*igExLive{}}
 
 func igExMark(id, svc string, r *igExRead, v, why string) int {
+	n, _, _ := igExMarkV(id, svc, r, v, why)
+	return n
+}
+
+// igExMarkV keeps one reading: v ok | bad | "" (undecided) | none (no reading at all). The
+// igExUnkTimes-th undecided reading in a row becomes a fail; it returns the fails in a row and
+// the verdict as kept.
+func igExMarkV(id, svc string, r *igExRead, v, why string) (int, string, string) {
 	igExMem.Lock()
 	defer igExMem.Unlock()
 	m := igExMem.live[id]
@@ -319,6 +353,16 @@ func igExMark(id, svc string, r *igExRead, v, why string) int {
 	if r != nil {
 		l.Read = *r
 	}
+	switch v {
+	case "":
+		l.Unk++
+		if l.Unk >= igExUnkTimes {
+			v, why = "bad", "Google gives no clear answer on this exit (30 min)"
+		}
+	case "none":
+	default:
+		l.Unk = 0
+	}
 	l.OK, l.Why, l.At = v, why, time.Now()
 	switch v {
 	case "ok":
@@ -326,7 +370,7 @@ func igExMark(id, svc string, r *igExRead, v, why string) int {
 	case "bad":
 		l.Bad++
 	}
-	return l.Bad
+	return l.Bad, v, why
 }
 
 // igExIsAuto: the panel may move this service of this server (not pinned, not off).
@@ -374,6 +418,12 @@ func (a *App) igExRun(ctx context.Context, srv *Server, svcs []string, port int)
 	if !ok {
 		return nil
 	}
+	for _, r := range m {
+		r.Home = srv.Country
+		if port != gemRelayPort {
+			r.Route = ""
+		}
+	}
 	return m
 }
 
@@ -412,6 +462,9 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 	}
 	read := a.igExRun(ctx, srv, svcs, gemRelayPort)
 	if read == nil {
+		for _, k := range svcs {
+			igExMark(srv.ID, k, nil, "none", "the users' route could not be read")
+		}
 		return false
 	}
 	again := false
@@ -437,7 +490,7 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 		}
 		r := read[k]
 		v, why := igExVerdict(k, r)
-		bad := igExMark(srv.ID, k, r, v, why)
+		bad, v, why := igExMarkV(srv.ID, k, r, v, why)
 		switch v {
 		case "ok":
 			if rec != nil && rec.Cur != "" && now.Unix() >= rec.Next {
@@ -740,9 +793,17 @@ func (a *App) igExViewOf(id string, recs map[string]*IgAutoSvc) map[string]igExV
 			}
 		}
 		igExMem.Lock()
-		if l := igExMem.live[id][k]; l != nil && time.Since(l.At) < 25*time.Minute {
+		if l := igExMem.live[id][k]; l != nil && time.Since(l.At) < igExNoRead {
 			v.OK, v.Bad, v.At = l.OK, l.Why, l.At.Unix()
 			v.Where = igExWhere(k, &l.Read)
+			if v.OK == "" {
+				v.Bad = "Google answered without saying where it places this exit"
+			}
+		} else if v.Mode != "off" && time.Since(igExStarted) >= igExNoRead {
+			v.OK, v.Bad = "none", "not read for 25 min"
+			if l != nil {
+				v.At = l.At.Unix()
+			}
 		}
 		igExMem.Unlock()
 		out[k] = v
