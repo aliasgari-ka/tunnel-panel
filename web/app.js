@@ -3747,6 +3747,8 @@ function igExWhy(w) {
     'Google asks for a captcha': L('Google asks for a captcha', 'گوگل کپچا می‌خواهد'),
     'YouTube Music not offered there': L('YouTube Music not offered there', 'YouTube Music آنجا ارائه نمی‌شود'),
     'YouTube refuses the IP (403)': L('YouTube refuses the IP (403)', 'یوتیوب این IP را رد می‌کند (403)'),
+    'Google Colab refuses the IP (403)': L('Google Colab refuses the IP (403)', 'Google Colab این IP را رد می‌کند (403)'),
+    'Google Colab refuses the IP (404)': L('Google Colab refuses the IP (404)', 'Google Colab این IP را رد می‌کند (404)'),
     'Google gives no clear answer on this exit (30 min)': L('Google gives no clear answer on this exit (30 min)', 'گوگل روی این خروجی جواب روشنی نمی‌دهد (۳۰ دقیقه)'),
     "the users' route could not be read": L("the users' route could not be read", 'مسیر کاربران خوانده نشد'),
     'not read for 25 min': L('not read for 25 min', '۲۵ دقیقه خوانده نشده'),

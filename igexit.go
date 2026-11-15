@@ -41,6 +41,13 @@ package main
 // without a country) is not "checking" for ever: it is shown as such, and three undecided
 // readings in a row (30 min) count as a fail, so the ladder moves the service.
 //
+// Google Colab rides on Google's route (the agent's Google list has research.google.com and
+// colab.* since 2026-11-15) and refuses many IPs Gemini accepts: Google answers 403 or 404 on
+// colab.research.google.com there (usa, usa-kharej, xe107-germany's own IPs, 2026-11-15). The
+// Google reading also fetches Colab and an exit where it is refused fails, so the ladder moves
+// Google to one where both open. An older agent still sends Colab out of the server's own IP:
+// Colab is not read there ("-"), it would say nothing about Google's exit.
+//
 // Instagram has its own ladder (igauto.go); the newer services theirs (igsvc.go).
 
 import (
@@ -96,6 +103,9 @@ type igExRead struct {
 	// server's own country (from the panel)
 	Route string
 	Home  string
+	// Colab: Google Colab's http code on the same route ("" = not read: an agent whose Google
+	// list does not carry Colab)
+	Colab string
 }
 
 // igExDomCC: Google's domain as a country code ("com.tr" -> TR, "co.uk" -> GB, "com" -> "").
@@ -132,6 +142,9 @@ func igExVerdict(svc string, r *igExRead) (string, string) {
 		}
 		if code == "429" {
 			return "bad", "Google asks for a captcha"
+		}
+		if r.Colab == "403" || r.Colab == "404" {
+			return "bad", "Google Colab refuses the IP (" + r.Colab + ")"
 		}
 		if r.Flag == "region" {
 			return "bad", "Gemini not offered there"
@@ -182,7 +195,14 @@ g(){ local c d fl=- i
   done
   d=$(grep -oE 'og[.]qtm[^"]*","[a-z.]{2,8}"' "$f" | head -1 | sed -E 's/.*"([a-z.]+)"$/\1/')
   grep -qsi "not supported in your country\|isn.t currently supported\|not available in your country\|not available in your region" "$f" && fl=region
-  echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE) $(rt GOOGLE)"; }
+  echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE) $(rt GOOGLE) $(cb)"; }
+cb(){ local c i  # Colab: only where the agent sends it on Google's route
+  grep -q 'domain:research[.]google[.]com' /usr/local/bin/igproxy 2>/dev/null || { echo -; return; }
+  for i in 1 2; do
+    c=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -o /dev/null -w '%%{http_code}' https://colab.research.google.com/ 2>/dev/null)
+    [ "${c:-000}" != 000 ] && break; sleep 2
+  done
+  echo "${c:-000}"; }
 y(){ local r c d fl=- i
   for i in 1 2; do
     r=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -o "$f" -w '%%{http_code} %%{redirect_url}' https://music.youtube.com/ 2>/dev/null); c=${r%%%% *}
@@ -259,6 +279,9 @@ func igExParse(lines []string) (map[string]*igExRead, bool) {
 		}
 		if len(f) > 6 && f[6] != "-" {
 			r.Route = f[6]
+		}
+		if len(f) > 7 && f[7] != "-" && f[7] != "000" {
+			r.Colab = f[7]
 		}
 		out[f[1]] = r
 	}
