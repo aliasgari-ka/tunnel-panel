@@ -3740,11 +3740,17 @@ function igExWhy(w) {
   const rw = { 'own IP': L('own IP', 'IP خود سرور'), 'proxies': L('outbounds', 'خروجی‌ها') }[r] || r.replace(/^proxy (\d+)$/, L('outbound $1', 'خروجی $1'));
   let m, t = why;
   if ((m = /^Gemini not offered in ([A-Z]{2})$/.exec(why))) t = L('Gemini not offered in ' + igCCName(m[1]), 'در ' + igCCName(m[1]) + ' Gemini ارائه نمی‌شود');
+  else if ((m = /^Google places this WARP in no country \((google\.[a-z.]+)\), not ([A-Z]{2}): signed-in Gemini is refused$/.exec(why)))
+    t = L(`Google places this WARP in no country (${m[1]}), not ${igCCName(m[2])}: signed-in Gemini is refused`, `گوگل این WARP را در هیچ کشوری نمی‌گذارد (${m[1]})، نه ${igCCName(m[2])}: Gemini با حساب واردشده رد می‌شود`);
   else t = ({ 'Gemini not offered there': L('Gemini not offered there', 'Gemini آنجا ارائه نمی‌شود'),
     'Google refuses the IP (403)': L('Google refuses the IP (403)', 'گوگل این IP را رد می‌کند (403)'),
     'Google asks for a captcha': L('Google asks for a captcha', 'گوگل کپچا می‌خواهد'),
     'YouTube Music not offered there': L('YouTube Music not offered there', 'YouTube Music آنجا ارائه نمی‌شود'),
     'YouTube refuses the IP (403)': L('YouTube refuses the IP (403)', 'یوتیوب این IP را رد می‌کند (403)'),
+    'Google gives no clear answer on this exit (30 min)': L('Google gives no clear answer on this exit (30 min)', 'گوگل روی این خروجی جواب روشنی نمی‌دهد (۳۰ دقیقه)'),
+    "the users' route could not be read": L("the users' route could not be read", 'مسیر کاربران خوانده نشد'),
+    'not read for 25 min': L('not read for 25 min', '۲۵ دقیقه خوانده نشده'),
+    'Google answered without saying where it places this exit': L('Google answered without saying where it places this exit', 'گوگل جواب داد ولی نگفت این خروجی را کجا می‌گذارد'),
     'WARP IPv6 passes no IPv6': L('WARP IPv6 passes no IPv6 (users get the shared Cloudflare IPv4)', 'IPv6 از WARP رد نمی‌شود (کاربران IPv4 مشترک Cloudflare را می‌گیرند)') })[why] || igWhyWord(why);
   return (rw ? rw + ': ' : '') + t;
 }
@@ -3769,7 +3775,13 @@ function igNotRead(s, g) {
   if (!au) return false; // an older panel: nothing to tell
   if (g === 'IG') return !(au.ig && au.ig.off) && !au.liveAt;
   const ex = au.ex && au.ex[g];
-  return !!ex && ex.mode !== 'off' && !ex.ok;
+  return !!ex && ex.mode !== 'off' && !ex.ok && !ex.at;
+}
+// the panel could not read the service, or Google answered without a verdict: why, or ''
+function igExNone(s, g) {
+  const ex = s.auto && s.auto.ex && s.auto.ex[g];
+  if (!ex || ex.mode === 'off' || !(ex.ok === 'none' || (!ex.ok && ex.at))) return '';
+  return `<span class="igl-why">${L('not checked:', 'بررسی نشد:')} <bdi>${esc(igExWhy(ex.bad || ''))}</bdi></span>`;
 }
 // [level, html] for one service: level ok | warn | bad
 function igLine(s, g) {
@@ -3798,6 +3810,7 @@ function igLine(s, g) {
     if (i.gem === 'FAIL') { lvl = 'bad'; mark = '✗'; body = `${L("Gemini doesn't open", 'Gemini باز نمی‌شود')} ${via(eff)}`; }
     else if (ax && !IG_GBAD.includes(d)) { lvl = 'warn'; mark = '⚠'; body = ax; }
     else if (igExBad(s, g)) { lvl = 'bad'; mark = '✗'; body = `${shown}${igExBad(s, g)} ${via(route)}`; }
+    else if (igExNone(s, g)) { lvl = 'warn'; mark = '⚠'; body = `${shown}${via(route)} ${igExNone(s, g)}`; }
     else if (IG_GBAD.includes(d)) { lvl = 'bad'; mark = '✗'; body = `${shown}${L('— Gemini is not offered there', '— Gemini آنجا ارائه نمی‌شود')} ${via(eff)}`; }
     else if (missing || (/^warp/.test(route) && i.gcc === 'PROXY')) { lvl = 'warn'; mark = '⚠'; body = `${shown}${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(+i.proxies ? 'proxy' : 'direct', i))}</b>`; }
     else body = `${shown}${via(route)}`;
@@ -3805,6 +3818,7 @@ function igLine(s, g) {
     const ax = igExLine(s, g);
     if (ax) { lvl = 'warn'; mark = '⚠'; body = ax; }
     else if (igExBad(s, g)) { lvl = 'bad'; mark = '✗'; body = `${igExBad(s, g)} ${via(route)}`; }
+    else if (igExNone(s, g)) { lvl = 'warn'; mark = '⚠'; body = `${via(route)} ${igExNone(s, g)}`; }
     else if (missing) { lvl = 'warn'; mark = '⚠'; body = `${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
     else body = via(route);
   }

@@ -132,6 +132,75 @@ func TestIgExScript(t *testing.T) {
 // Ger-hertzener, 2026-11-14: Google on warp6, the WARP's IPv6 dead (IPv6-only hosts: no answer),
 // so Gemini left through Cloudflare's shared IPv4: page 200, google.com - "ok" on the keyless read,
 // refused to the signed-in users. Now bad, and the ladder moves on.
+// Google on a WARP that it places in no country (google.com) fails outside the US: that is
+// Cloudflare's shared exit, where signed-in users get no Gemini (Ger-hertzener 2026-11-15).
+func TestIgExVerdictWarpNoCountry(t *testing.T) {
+	for _, c := range []struct {
+		route, home, dom, want string
+	}{
+		{"warp", "DE", "com", "bad"},
+		{"warp6", "TR", "com", "bad"},
+		{"warp", "US", "com", "ok"},    // a US server: google.com is its own country
+		{"warp", "DE", "de", "ok"},     // placed in Germany
+		{"direct", "DE", "com", "ok"},  // not a WARP: unchanged
+		{"warp", "", "com", "ok"},      // no country known for the server
+		{"warp6", "GB", "co.uk", "ok"}, // co.uk is a country
+	} {
+		v, why := igExVerdict("GOOGLE", &igExRead{Code: "200", Dom: c.dom, Route: c.route, Home: c.home})
+		if v != c.want {
+			t.Errorf("%+v: %s %q", c, v, why)
+		}
+		if v == "bad" && !strings.Contains(why, "not "+c.home) {
+			t.Errorf("%+v: why %q", c, why)
+		}
+	}
+	m, _ := igExParse([]string{"X GOOGLE 200 com - - warp", "X YTM 200 DE - - -", "X GOOGLE2 200 com - ok"})
+	if m["GOOGLE"].Route != "warp" || m["YTM"].Route != "" {
+		t.Fatalf("route %q %q", m["GOOGLE"].Route, m["YTM"].Route)
+	}
+}
+
+// An undecided reading is kept as such; the third in a row is a fail. "none" (no reading)
+// touches neither count.
+func TestIgExMarkUndecided(t *testing.T) {
+	id := "test-undecided"
+	defer func() { igExMem.Lock(); delete(igExMem.live, id); igExMem.Unlock() }()
+	if n, v, _ := igExMarkV(id, "GOOGLE", nil, "", ""); n != 0 || v != "" {
+		t.Fatalf("1st: %d %q", n, v)
+	}
+	igExMarkV(id, "GOOGLE", nil, "none", "x")
+	igExMarkV(id, "GOOGLE", nil, "", "")
+	n, v, why := igExMarkV(id, "GOOGLE", nil, "", "")
+	if v != "bad" || n != 1 || why == "" {
+		t.Fatalf("3rd: %d %q %q", n, v, why)
+	}
+	if _, v, _ := igExMarkV(id, "GOOGLE", nil, "ok", ""); v != "ok" {
+		t.Fatal("ok")
+	}
+	if _, v, _ := igExMarkV(id, "GOOGLE", nil, "", ""); v != "" {
+		t.Fatal("count not reset by ok")
+	}
+}
+
+// The card's view: a reading that never came is "none" once the panel has run long enough.
+func TestIgExViewNoRead(t *testing.T) {
+	a := &App{}
+	old := igExStarted
+	defer func() { igExStarted = old }()
+	igExStarted = time.Now()
+	if v := a.igExViewOf("test-noread", nil)["GOOGLE"]; v.OK != "" {
+		t.Fatalf("just started: %+v", v)
+	}
+	igExStarted = time.Now().Add(-igExNoRead)
+	v := a.igExViewOf("test-noread", nil)["GOOGLE"]
+	if v.OK != "none" || v.Bad == "" {
+		t.Fatalf("after the deadline: %+v", v)
+	}
+	if v := a.igExViewOf("test-noread", map[string]*IgAutoSvc{"GOOGLE": {Off: true}})["GOOGLE"]; v.OK != "" {
+		t.Fatalf("off: %+v", v)
+	}
+}
+
 func TestIgExVerdictV6(t *testing.T) {
 	m, ok := igExParse([]string{"X GOOGLE 200 com - no", "X YTM 200 DE - ok", "X GOOGLE2 200 de -"})
 	if !ok || m["GOOGLE"].V6 != "no" || m["YTM"].V6 != "ok" || m["GOOGLE2"].V6 != "" {
