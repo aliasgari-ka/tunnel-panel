@@ -102,3 +102,33 @@ func TestWpDumpScripts(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "wptest.sh"), []byte(wpTestScript), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "igwarps.sh"), []byte(igWarpScript), 0o644)
 }
+
+// A broken standby must not cost the users a router restart by day: it goes at once only when no
+// account carries them (xe107 2026-11-16: removed and re-made every 6 h, 4 restarts in the day).
+func TestWpBadNowOnlyWithoutACarrier(t *testing.T) {
+	now := time.Now().Unix()
+	d := IgWarps{Warps: []IgWarp{
+		{N: 1, State: "ok", Age: 90000},
+		{N: 2, State: "out", Why: "music", Age: 90000},
+	}}
+	p := wpPlan(d, nil, 2, true, true, now)
+	if p.Carry != 1 || p.Good != 1 || len(p.Bad) != 1 {
+		t.Fatalf("plan: carry %d good %d bad %d, want 1 1 1", p.Carry, p.Good, len(p.Bad))
+	}
+	short := p.Good < 2 // carry 1 + spare 1
+	if wpBadNow(short, false, "", p.Carry, 1) {
+		t.Error("by day, with a WARP carrying the users, the broken standby must wait for the night")
+	}
+	if !wpBadNow(short, true, "", p.Carry, 1) {
+		t.Error("at night the broken standby goes")
+	}
+	// the carrier itself is broken: nobody to cut, the agent needs room for a new account - at once
+	d.Warps[0].State = "repair"
+	p = wpPlan(d, nil, 2, true, true, now)
+	if p.Carry != 0 || !wpBadNow(true, false, "", p.Carry, 1) {
+		t.Errorf("no carrier (carry %d): broken ones must go at once", p.Carry)
+	}
+	if wpBadNow(true, false, "IR", 0, 1) || wpBadNow(false, true, "", 0, 1) {
+		t.Error("never when every new WARP reads a no-music country, nor when nothing is short")
+	}
+}

@@ -23,7 +23,7 @@ package main
 // music signal without a test account) - and removes what is not needed: dead accounts, accounts
 // whose exit reads a no-music country, and accounts beyond the need. Removing restarts the router
 // for a few seconds (the agent rebuilds its config), so a surplus is removed only at night (03-06
-// server time), all in one restart; when good accounts are missing, broken ones go at once so the
+// server time), all in one restart; when users have no WARP left to ride, broken ones go at once so the
 // agent can make new ones. Google's own WARPs, the WARPs carrying users and accounts younger than
 // 2 h are never removed. A hand add / delete holds the trims for 24 h; "Manage by hand" stops the
 // pool for that server.
@@ -169,7 +169,7 @@ func igGwList(s string) []int {
 
 // wpRank scores one account: 100 carries users, 60 works (failover spare), 50 a standby that
 // passed its test, 20 not tested yet, 15 the agent gives it a new account now, 10 being repaired,
-// below that broken (removed when good ones are missing, or at night).
+// below that broken (removed at night, or at once when users have no WARP to ride).
 func wpRank(w IgWarp, d IgWarps, bal, igOn bool, now int64) int {
 	fresh := w.TestAt > 0 && now-w.TestAt < int64(wpTestEvery/time.Second)
 	s := 0
@@ -216,10 +216,11 @@ func wpRank(w IgWarp, d IgWarps, bal, igOn bool, now int64) int {
 
 type wpPlanT struct {
 	Test   []IgWarp // standbys to test now
-	Bad    []IgWarp // broken / no-music: removed when good ones are missing (or at night)
+	Bad    []IgWarp // broken / no-music: removed at night (at once only when users have no WARP to ride)
 	Extra  []IgWarp // good ones beyond the need: removed at night
 	Good   int
 	Untest int
+	Carry  int // accounts carrying users now (rank 100)
 }
 
 // wpPlan sorts a server's accounts into keep / test / remove. keepN = the non-Google need.
@@ -252,6 +253,9 @@ func wpPlan(d IgWarps, gw []int, keepN int, bal, igOn bool, now int64) wpPlanT {
 		switch {
 		case x.s >= 50:
 			p.Good++
+			if x.s >= 100 {
+				p.Carry++
+			}
 			if x.s >= 100 || kept < keepN {
 				kept++
 			} else if !young {
@@ -272,6 +276,18 @@ func wpPlan(d IgWarps, gw []int, keepN int, bal, igOn bool, now int64) wpPlanT {
 		}
 	}
 	return p
+}
+
+// wpBadNow: may the broken accounts be removed right now? Removing one restarts the router (every
+// user of the server is cut for a few seconds) and the agent's refill restarts it again, so by day
+// that is done only when users have no WARP to ride: while enough accounts still carry them, a
+// broken standby waits for the night. (xe107, 2026-11-16: a no-music standby was removed and made
+// again every 6 h - 12:57, 13:00, 19:03, 19:06 - four restarts in the day for a spare nobody used.)
+func wpBadNow(short, night bool, noExit string, carrying, carry int) bool {
+	if !short || noExit != "" {
+		return false
+	}
+	return night || carrying < carry
 }
 
 // ---- the loop
@@ -421,8 +437,8 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 		}
 	}
 
-	// 2. what goes: broken ones at once when good ones are missing (so the agent can make new ones),
-	// the rest - and every surplus - at night, all in one router restart
+	// 2. what goes: broken ones at once when users have no WARP left to ride (so the agent can make
+	// new ones), the rest - a broken standby, every surplus - at night, all in one router restart
 	good := plan.Good
 	short := used && good < carry+spare
 	var trim []IgWarp
@@ -437,7 +453,7 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 				}
 			}
 		}
-	case short && np.NoExit == "":
+	case wpBadNow(short, night, np.NoExit, plan.Carry, carry):
 		trim = plan.Bad
 	case night:
 		trim = append(append(trim, plan.Bad...), plan.Extra...)
