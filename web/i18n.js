@@ -1315,7 +1315,7 @@ window.TP_FA = {
 "One at a time": "یکی در هر لحظه",
 "Spread the load": "پخش بار",
 "Recommended. Only WARPs that leave from the same exit IP carry Instagram, so users keep one IP and music works; Google keeps its own WARP.": "پیشنهادی. فقط WARPهایی که از یک IP خروجی بیرون می‌روند Instagram را می‌برند، پس IP کاربران ثابت می‌ماند و موزیک کار می‌کند؛ Google هم WARP خودش را نگه می‌دارد.",
-"The panel sets this back to \"Spread the load\" at night (03-06), unless the WARPs here are managed by hand.": "پنل این را شب (۳ تا ۶) به «پخش بار» برمی‌گرداند، مگر WARPهای این سرور دستی مدیریت شوند.",
+"The panel sets this back to \"Spread the load\" in the quiet hours (03-07 Tehran time), unless the WARPs here are managed by hand.": "پنل این را در ساعت خلوت (۳ تا ۷ صبح به وقت تهران) به «پخش بار» برمی‌گرداند، مگر WARPهای این سرور دستی مدیریت شوند.",
 "Minimum speed": "حداقل سرعت",
 "a slower WARP is not chosen (its music must work too)": "WARP کندتر انتخاب نمی‌شود (موزیکش هم باید کار کند)",
 "Keep at least": "دست‌کم نگه دار",

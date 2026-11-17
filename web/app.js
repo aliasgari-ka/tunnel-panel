@@ -4635,7 +4635,7 @@ function igoWhy(k, i) {
   if (k === 'musiccheck' && n('musiccheck') > 0 && i.igacc !== 'SET') return ['warn', 'No Instagram test account yet: nothing is checked.', 'checks'];
   if (k === 'musiccheck' && n('musiccheck') > 0 && igAccBroken(i)) return ['warn', 'The test account is logged out: nothing is checked.', 'checks'];
   if (k === 'mode' && val('mode') === 'balance') return ['info', 'Recommended. Only WARPs that leave from the same exit IP carry Instagram, so users keep one IP and music works; Google keeps its own WARP.'];
-  if (k === 'mode' && val('mode') === 'failover') return ['warn', 'The panel sets this back to "Spread the load" at night (03-06), unless the WARPs here are managed by hand.'];
+  if (k === 'mode' && val('mode') === 'failover') return ['warn', 'The panel sets this back to "Spread the load" in the quiet hours (03-07 Tehran time), unless the WARPs here are managed by hand.'];
   if (k === 'warpauto' && on('warpauto') && n('minwarps') === 0) return ['info', 'With 0 above, only the load decides (3 or more).'];
   if (k === 'guard' && i.guard === 'DOWN' && on('guard')) return ['warn', 'On, but its service isn\'t running: Re-apply in the ⋯ menu.'];
   if (k === 'kwg' && on('kwg') && /^\d+$/.test(i.kwg || '')) return ['info', `${+i.kwg} kernel interface(s) up`];
@@ -4748,7 +4748,7 @@ function igWarpLine(s, d) {
     if (p.untest) sub.push(L(`Testing ${N(p.untest)} spare${p.untest === 1 ? '' : 's'}.`, `در حال تست ${N(p.untest)} یدک.`));
   }
   if (!p.off && p.at && p.hold > now) sub.push(L('Changed by hand — the panel leaves the count alone until ', 'دستی تغییر کرد — پنل تا این زمان تعداد را دست نمی‌زند: ') + new Date(p.hold * 1000).toLocaleString(fa ? 'fa-IR' : undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
-  else if (!p.off && p.at && p.used && (p.extra || 0) + (p.bad || 0) > 0) sub.push(L(`${N(p.extra + p.bad)} not needed — removed tonight (03–06; the router restarts for a few seconds).`, `${N(p.extra + p.bad)} لازم نیست — امشب حذف می‌شود (۳ تا ۶ صبح؛ روتر چند ثانیه ری‌استارت می‌شود).`));
+  else if (!p.off && p.at && p.used && (p.extra || 0) + (p.bad || 0) > 0) sub.push(L(`${N(p.extra + p.bad)} not needed — removed in the quiet hours (03–07 Tehran time; the router restarts for a few seconds).`, `${N(p.extra + p.bad)} لازم نیست — در ساعت خلوت حذف می‌شود (۳ تا ۷ صبح به وقت تهران؛ روتر چند ثانیه ری‌استارت می‌شود).`));
   return `<div class="igst wline ${lvl}" data-notr><div class="igst-top"><span class="igst-dot"></span><div class="igst-t"><b>${esc(head)}</b>${sub.map(x => `<small>${esc(x)}</small>`).join('')}</div></div></div>`;
 }
 async function igWarpMode(s, mode) {

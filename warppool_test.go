@@ -132,3 +132,56 @@ func TestWpBadNowOnlyWithoutACarrier(t *testing.T) {
 		t.Error("never when every new WARP reads a no-music country, nor when nothing is short")
 	}
 }
+
+// The users are in Iran: the quiet hours are theirs (03-07 Tehran), whatever the server's clock.
+func TestWpIsNightIsTehranTime(t *testing.T) {
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 17, h, m, 0, 0, time.UTC) }
+	for _, c := range []struct {
+		t    time.Time
+		want bool
+	}{
+		{at(23, 29), false}, // 02:59 Tehran
+		{at(23, 30), true},  // 03:00
+		{at(1, 30), true},   // 05:00
+		{at(3, 29), true},   // 06:59
+		{at(3, 30), false},  // 07:00
+		{at(4, 30), false},  // 08:00 Tehran = 05:30 in Germany: the old window cut people here
+		{at(12, 0), false},
+	} {
+		if got := wpIsNight(c.t); got != c.want {
+			t.Errorf("%s UTC: night %v, want %v", c.t.Format("15:04"), got, c.want)
+		}
+	}
+}
+
+// One bad look is not a verdict: by day an account is removed only after it has been broken for
+// wpBadWait (xe108's working carrier went as "not working" on one look, 2026-11-17).
+func TestWpBadSeenWaits(t *testing.T) {
+	now := int64(1_800_000_000)
+	w := IgWarp{N: 2, ID: "56865349", State: "down"}
+	seen, ripe := wpBadSeen(nil, []IgWarp{w}, now, wpBadWait)
+	if len(ripe) != 0 || seen["56865349"] != now {
+		t.Fatalf("first look: ripe %d seen %v", len(ripe), seen)
+	}
+	seen, ripe = wpBadSeen(seen, []IgWarp{w}, now+900, wpBadWait)
+	if len(ripe) != 0 || seen["56865349"] != now {
+		t.Fatalf("15 min: ripe %d seen %v", len(ripe), seen)
+	}
+	seen, ripe = wpBadSeen(seen, []IgWarp{w}, now+1800, wpBadWait)
+	if len(ripe) != 1 {
+		t.Fatalf("30 min: ripe %d, want 1", len(ripe))
+	}
+	// it worked again in between: forgotten, the clock starts anew
+	seen, _ = wpBadSeen(seen, nil, now+2000, wpBadWait)
+	if len(seen) != 0 {
+		t.Fatalf("good again: still remembered %v", seen)
+	}
+	_, ripe = wpBadSeen(seen, []IgWarp{w}, now+2700, wpBadWait)
+	if len(ripe) != 0 {
+		t.Fatal("broken again: must wait again")
+	}
+	// an old account without an id is named by its number
+	if k := wpBadKey(IgWarp{N: 3, ID: "none"}); k != "n3" {
+		t.Errorf("key %q", k)
+	}
+}

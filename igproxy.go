@@ -145,11 +145,20 @@ func igScript(args []string, input string, tmo int) string {
 	if input != "" {
 		cmd = fmt.Sprintf("printf '%%s\\n' %s | %s", shq(strings.TrimRight(input, "\n")), cmd)
 	}
-	return `grep -q "^VER=" /usr/local/bin/igproxy 2>/dev/null || { echo "igproxy is not installed here (missing, or the old v5) -> Install / update"; echo __RC=3; exit 0; }
+	return `grep -q "^VER=" /usr/local/bin/igproxy 2>/dev/null || {
+  if [ -s /usr/local/bin/igproxy ] && [ -s /etc/igproxy/routes ]; then echo "` + igForeignMsg + ` -> Install / update"
+  else echo "igproxy is not installed here (missing, or the old v5) -> Install / update"; fi
+  echo __RC=3; exit 0; }
 ` + cmd + `
 echo "__RC=$?"
 `
 }
+
+// igForeignMsg: the server has the agent's settings, but its igproxy command is another script.
+// xe108, 2026-11-16: the old v5 menu script was run by hand there and installed itself over the
+// agent - three hours without health checks or guard, and nothing told anyone. Such a server is
+// marked foreign=1 and gets the agent again by itself (igagentauto.go).
+const igForeignMsg = "the igproxy command on this server is not the agent (an old menu script replaced it)"
 
 // igClean turns raw output into what a person reads: no colour codes, and of a line redrawn
 // with \r (progress) only its last state.
@@ -228,6 +237,9 @@ func igParseInfo(rc int, text, agentSum string) map[string]string {
 		S["outdated"] = "1"
 	}
 	S["state"] = igStateOf(S, rc, text)
+	if rc == 3 && strings.Contains(text, igForeignMsg) {
+		S["foreign"] = "1"
+	}
 	return S
 }
 

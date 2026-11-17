@@ -3,7 +3,8 @@ package main
 // Automatic IG agent update: when the agent script on the panel host changes (a panel update,
 // or a new igproxy.sh next to igpm.sh), every IG server gets it by itself — one server at a
 // time, half a minute apart, the same clean update as "Update agents" (settings, routes and
-// WARPs are kept; a few seconds of direct routing on that one server).
+// WARPs are kept; a few seconds of direct routing on that one server), in the users' quiet hours
+// (03-07 Tehran). A server whose agent was replaced by another script gets it back at any hour.
 //
 // The first server of a new script is a canary: when it fails, the rollout of that script
 // stops and the admin chat is told, so a broken script never reaches every server. A server
@@ -60,11 +61,19 @@ func igAgentOld(inf map[string]string, sum string) bool {
 	if inf == nil || sum == "" {
 		return false
 	}
+	if inf["foreign"] == "1" {
+		return true // another script sits where the agent was: nothing watches this server until it is back
+	}
 	switch inf["state"] {
 	case "", "CHECKING", "OFFLINE", "NOAGENT", "SUDO", "PAUSED", "DOWN":
 		return false // unreachable, no agent (removed on purpose), paused by hand, or its router is down
 	}
 	return inf["state"] == "UPDATE" || inf["outdated"] == "1" || inf["sum"] != "" && inf["sum"] != sum
+}
+
+// igAgentNow: may the automatic update touch this server now?
+func igAgentNow(inf map[string]string, t time.Time) bool {
+	return wpIsNight(t) || inf["foreign"] == "1"
 }
 
 // igAgentNoted records one server's result for the script sum (auto or by hand).
@@ -144,6 +153,14 @@ func (a *App) igAgentAutoPass() {
 			continue
 		}
 		if r := u.Srv[x.ID]; r != nil && r.Next > now {
+			waiting++
+			continue
+		}
+		// An agent update is a few seconds without routing on that server: a new script goes out
+		// in the users' quiet hours (03-07 Tehran), not the minute it lands on the panel host.
+		// "Update agents" on the page still updates at once; a server whose agent was replaced
+		// by another script is repaired at any hour.
+		if !igAgentNow(infos[x.ID], time.Now()) {
 			waiting++
 			continue
 		}

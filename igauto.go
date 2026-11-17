@@ -302,6 +302,15 @@ func (a *App) igAutoGet(id string) IgAutoSvc {
 
 func (a *App) igAutoPut(id, svc string, fn func(s *IgAutoSvc)) {
 	_ = a.store.Update(func(st *State) error {
+		// a machine listed twice has one record, its driver's (igtwin.go): a pin or a switch set on
+		// the twin's card lands there too, so the driver never moves what a person pinned
+		tw := igTwinMap(st.Servers)
+		if d := tw[id]; d != "" {
+			id = d
+		}
+		if len(tw) > 0 {
+			defer igTwinCopy(st)
+		}
 		if st.IgAuto == nil {
 			st.IgAuto = map[string]map[string]*IgAutoSvc{}
 		}
@@ -345,13 +354,8 @@ func (a *App) igAutoLoop() {
 	time.Sleep(90 * time.Second) // after a restart: let the page read the servers first
 	for {
 		var list []*Server
-		a.store.View(func(st *State) {
-			for _, x := range st.Servers {
-				if x.Igproxy {
-					list = append(list, x)
-				}
-			}
-		})
+		a.store.View(func(st *State) { list = igDrivers(st.Servers) }) // one entry per machine (igtwin.go)
+		a.igTwinSync()
 		now := time.Now()
 		for i, srv := range list {
 			if t, ok := next[srv.ID]; ok && now.Before(t) {
