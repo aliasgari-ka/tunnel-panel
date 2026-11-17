@@ -27,9 +27,13 @@ package main
 // through it either.
 //
 // Why not the signed-in browser check (gbrowser): the test account lives on the panel host's own
-// IP alone, which the users never get, and the signed-out app has stopped saying where Google
-// places an exit (2026-11-14: Russia's WARPs and Turkey looked the same). Google's own country
-// for the IP is the signal both the page and the agent's gdom use. On warp6 the reading also asks
+// IP alone, which the users never get. Google's own country for the IP (the page's domain) is the
+// signal both the page and the agent's gdom use - but it cannot tell "google.com because the IP
+// is American" from "google.com because Google places it in Iran". The signed-out app can: it
+// prints the place ("Tehran Province, Iran / From your IP address"). It had stopped printing it on
+// 2026-11-14 and prints it again since 2026-11-17, so the reading asks the test browser too
+// (igExPlace, at most every 30 min per server and after every move): a place decides - a country
+// without Gemini fails, any other passes; no place leaves the keyless reading as it was. On warp6 the reading also asks
 // whether IPv6 really passes through the WARPs: a WARP whose IPv6 is dead falls back to Cloudflare's
 // shared IPv4, where the keyless page reads fine but signed-in users are refused.
 // The same shared exit shows on IPv4 WARP ("warp") and on a warp6 that slips to it: Google places
@@ -106,6 +110,9 @@ type igExRead struct {
 	// Colab: Google Colab's http code on the same route ("" = not read: an agent whose Google
 	// list does not carry Colab)
 	Colab string
+	// Place: where the signed-out Gemini app says Google places the users' exit ("Nuremberg,
+	// Germany"; "" = the test browser gave no place). It decides when it is there.
+	Place string
 }
 
 // igExDomCC: Google's domain as a country code ("com.tr" -> TR, "co.uk" -> GB, "com" -> "").
@@ -148,6 +155,12 @@ func igExVerdict(svc string, r *igExRead) (string, string) {
 		}
 		if r.Flag == "region" {
 			return "bad", "Gemini not offered there"
+		}
+		if r.Place != "" { // what a browser is told: the truth for signed-in users
+			if gemPlaceBad(r.Place) {
+				return "bad", "Google places the users in " + r.Place + ": no Gemini there"
+			}
+			return "ok", ""
 		}
 		d := strings.ToLower(r.Dom)
 		cc := igExDomCC(d)
@@ -345,6 +358,43 @@ type igExLive struct {
 	At   time.Time
 	Bad  int
 	Unk  int // undecided readings in a row
+	// a ladder that found no passing exit is not climbed again at once: every try moves the route
+	// through all the exits, and most moves restart the server's router (its users are cut)
+	FixFails int
+	FixNext  time.Time
+}
+
+// igExFixWait: may the ladder be tried now? ok=false -> not before the returned time.
+func igExFixWait(id, svc string, now time.Time) (bool, time.Time) {
+	igExMem.Lock()
+	defer igExMem.Unlock()
+	if l := igExMem.live[id][svc]; l != nil && now.Before(l.FixNext) {
+		return false, l.FixNext
+	}
+	return true, time.Time{}
+}
+
+// igExFixDone notes how a ladder try ended: found = an exit passed (the count starts anew);
+// else the next try waits 30 min, 1 h, 2 h … 6 h.
+func igExFixDone(id, svc string, found bool, now time.Time) {
+	igExMem.Lock()
+	defer igExMem.Unlock()
+	m := igExMem.live[id]
+	if m == nil {
+		m = map[string]*igExLive{}
+		igExMem.live[id] = m
+	}
+	l := m[svc]
+	if l == nil {
+		l = &igExLive{}
+		m[svc] = l
+	}
+	if found {
+		l.FixFails, l.FixNext = 0, time.Time{}
+		return
+	}
+	l.FixNext = now.Add(igExBackAfter(l.FixFails))
+	l.FixFails++
 }
 
 var igExMem = struct {
@@ -490,6 +540,9 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 		route := inf[strings.ToLower(k)]
 		rec := recs[k]
 		if !igExIsAuto(rec) {
+			if k == "GOOGLE" {
+				a.igExPlace(ctx, srv, read[k], false) // a pinned exit is never moved, but the card says the truth
+			}
 			v, why := igExVerdict(k, read[k])
 			igExMark(srv.ID, k, read[k], v, why)
 			continue
@@ -506,6 +559,9 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 			}
 		}
 		r := read[k]
+		if k == "GOOGLE" {
+			a.igExPlace(ctx, srv, r, false)
+		}
 		v, why := igExVerdict(k, r)
 		bad, v, why := igExMarkV(srv.ID, k, r, v, why)
 		switch v {
@@ -517,6 +573,9 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 			if bad < igExBadTimes {
 				again = true
 				continue
+			}
+			if ok, _ := igExFixWait(srv.ID, k, now); !ok {
+				continue // the ladder found nothing a while ago: not climbed again yet
 			}
 			a.igExFix(ctx, srv, k, route, why)
 			inf = a.igInfo(ctx, srv) // proxies may have been added
@@ -551,8 +610,64 @@ func (a *App) igExSet(ctx context.Context, srv *Server, svc, via string) (string
 	if m == nil {
 		return "", nil, fmt.Errorf("no reading")
 	}
+	if svc == "GOOGLE" {
+		a.igExPlace(ctx, srv, m[svc], true) // the exit just changed: ask the browser now
+	}
 	v, _ := igExVerdict(svc, m[svc])
 	return v, m[svc], nil
+}
+
+// ---- where Google places the users' exit (the test browser)
+
+const igExPlaceEvery = 30 * time.Minute
+
+// igExPlaceProbe opens the signed-out Gemini app through a socks proxy (a variable for the tests).
+var igExPlaceProbe = gemProbe
+
+type igExPlaceT struct {
+	Place, Route string
+	Refused      bool
+	At           time.Time
+}
+
+var igExPlaceMem = struct {
+	sync.Mutex
+	m    map[string]igExPlaceT
+	busy sync.Mutex // one probe at a time: one test browser
+}{m: map[string]igExPlaceT{}}
+
+// igExPlace adds to a Google reading of the users' route what the test browser is told there:
+// r.Place, or Flag "region" when the app itself refuses. A reading is reused for igExPlaceEvery
+// while the route is the same; fresh asks now. No answer (browser down, relay not reachable)
+// changes nothing: the keyless reading stands.
+func (a *App) igExPlace(ctx context.Context, srv *Server, r *igExRead, fresh bool) {
+	if r == nil || srv.IPv4 == "" || r.Code == "" || r.Code == "000" {
+		return
+	}
+	igExPlaceMem.Lock()
+	c, ok := igExPlaceMem.m[srv.ID]
+	igExPlaceMem.Unlock()
+	if !ok || fresh || c.Route != r.Route || time.Since(c.At) > igExPlaceEvery {
+		igExPlaceMem.busy.Lock()
+		pctx, cancel := context.WithTimeout(ctx, 70*time.Second)
+		v, p, err := igExPlaceProbe(pctx, fmt.Sprintf("socks5://%s:%d", srv.IPv4, gemRelayPort))
+		cancel()
+		igExPlaceMem.busy.Unlock()
+		c = igExPlaceT{Route: r.Route, At: time.Now()}
+		if err == nil {
+			c.Place = gemPlace(p)
+			// the app's own refusal (its words, or Google's 403 page); "no place after the wait"
+			// is not one: on 2026-11-14 no exit got a place for three days
+			c.Refused = c.Place == "" && v == "refused" && gemVerdict(p) == "refused"
+		}
+		igExPlaceMem.Lock()
+		igExPlaceMem.m[srv.ID] = c
+		igExPlaceMem.Unlock()
+	}
+	r.Place = c.Place
+	if c.Refused && r.Flag == "" {
+		r.Flag = "region"
+	}
 }
 
 func igExWhere(svc string, r *igExRead) string {
@@ -560,6 +675,9 @@ func igExWhere(svc string, r *igExRead) string {
 		return ""
 	}
 	if svc == "GOOGLE" {
+		if r.Place != "" {
+			return r.Place
+		}
 		if cc := igExDomCC(r.Dom); cc != "" {
 			return cc
 		}
@@ -633,6 +751,7 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 			a.igAutoLog(srv, svc, "fix", fmt.Sprintf("%s on %s: %s -> %s%s", name, igRouteWord(route), why, word, where))
 			a.igExPatchInfo(srv.ID, svc, keep, r)
 			a.push(fmt.Sprintf("🔀 %s: %s %s → %s%s (auto)", igLabel(srv), name, igRouteWord(route)+" failed ("+why+")", word, where))
+			igExFixDone(srv.ID, svc, true, time.Now())
 			return
 		}
 		if added > 0 { // the relay did not pass: take it out again
@@ -648,6 +767,7 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 		tried = append(tried, igExWord(c)+" ("+w+")")
 	}
 	// nothing passed: back where it was, and tell a person at most every 6 h
+	igExFixDone(srv.ID, svc, false, time.Now())
 	if cur := a.igInfo(ctx, srv)[strings.ToLower(svc)]; cur != route {
 		_ = a.igSvcRoute(ctx, srv, map[string]string{svc: route})
 	}
@@ -666,6 +786,9 @@ func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoS
 		time.Sleep(20 * time.Second)
 		m := a.igExRun(ctx, srv, []string{svc}, gemRelayPort)
 		if m != nil {
+			if svc == "GOOGLE" {
+				a.igExPlace(ctx, srv, m[svc], false) // asked a moment ago, in igExSet
+			}
 			v, _ = igExVerdict(svc, m[svc])
 			r = m[svc]
 		} else {

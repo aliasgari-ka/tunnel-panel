@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +247,160 @@ func TestIgExVerdictV6(t *testing.T) {
 	}
 	if v, _ := igExVerdict("GOOGLE", &igExRead{Code: "200", Dom: "com"}); v != "ok" {
 		t.Error("not on warp6: unchanged")
+	}
+}
+
+// What the browser is told decides. xe108 2026-11-17: Google on the server's own IPv6 read
+// google.com, 200, Colab 200 - "fine" - while the signed-out app said "Tehran Province, Iran" and
+// signed-in users had no Gemini. And a place in a served country passes even on a WARP that reads
+// google.com.
+func TestIgExVerdictPlace(t *testing.T) {
+	r := &igExRead{Code: "200", Dom: "com", Route: "ipv6", Home: "DE", Colab: "200"}
+	if v, _ := igExVerdict("GOOGLE", r); v != "ok" {
+		t.Fatalf("no place known: the keyless reading stands, got %q", v)
+	}
+	r.Place = "Tehran Province, Iran"
+	v, why := igExVerdict("GOOGLE", r)
+	if v != "bad" || !strings.Contains(why, "Tehran Province, Iran") {
+		t.Fatalf("placed in Iran: %s %q", v, why)
+	}
+	if w := igExWhere("GOOGLE", r); w != "Tehran Province, Iran" {
+		t.Errorf("the card must say the place, got %q", w)
+	}
+	w := &igExRead{Code: "200", Dom: "com", Route: "warp6", Home: "DE", Place: "Nuremberg, Germany"}
+	if v, _ := igExVerdict("GOOGLE", w); v != "ok" {
+		t.Errorf("a WARP the browser places in Germany passes, got %q", v)
+	}
+	w.Place = ""
+	if v, _ := igExVerdict("GOOGLE", w); v != "bad" {
+		t.Errorf("without a place the no-country rule for WARP stands, got %q", v)
+	}
+	// Google's own refusals still win over a place
+	if v, _ := igExVerdict("GOOGLE", &igExRead{Code: "403", Place: "France"}); v != "bad" {
+		t.Error("403 with a place must fail")
+	}
+	if v, _ := igExVerdict("GOOGLE", &igExRead{Code: "200", Dom: "fr", Colab: "404", Place: "France"}); v != "bad" {
+		t.Error("Colab refused with a place must fail")
+	}
+}
+
+func TestGemPlace(t *testing.T) {
+	page := func(place string) gemPage {
+		t := "Gemini\nNew chat\nImages\nSign in to save activity\nSettings\n"
+		if place != "" {
+			t += place + "\nFrom your IP address\n"
+		}
+		return gemPage{URL: gemURL, Input: true, SignIn: true, Text: t + "Sign in\nGet App\nHi, I'm Gemini."}
+	}
+	if p := gemPlace(page("Nuremberg, Germany")); p != "Nuremberg, Germany" {
+		t.Fatalf("place %q", p)
+	}
+	if gemPlace(page("")) != "" {
+		t.Fatal("no line: no place")
+	}
+	if v := gemAnonVerdict(page("London, UK")); v != "ok" {
+		t.Errorf("London: %q", v)
+	}
+	if v := gemAnonVerdict(page("Tehran Province, Iran")); v != "refused" {
+		t.Errorf("an exit placed in Iran must not pass, got %q", v)
+	}
+	if v := gemAnonVerdict(page("")); v != "" {
+		t.Errorf("no place: undecided, got %q", v)
+	}
+	if w := gemWhy(page("Tehran Province, Iran")); !strings.Contains(w, "Iran") || !strings.Contains(w, "no Gemini") {
+		t.Errorf("why %q", w)
+	}
+	for _, c := range []string{"Moscow, Russia", "Hong Kong", "Minsk, Belarus"} {
+		if !gemPlaceBad(c) {
+			t.Errorf("%s offers no Gemini", c)
+		}
+	}
+	for _, c := range []string{"France", "Istanbul, Türkiye", "Helsinki, Finland", ""} {
+		if gemPlaceBad(c) {
+			t.Errorf("%q is served", c)
+		}
+	}
+}
+
+// The browser is asked once per 30 minutes while the route stays the same, at once after a move,
+// and an answer that never comes changes nothing.
+func TestIgExPlaceCache(t *testing.T) {
+	old := igExPlaceProbe
+	defer func() { igExPlaceProbe = old }()
+	calls, place, fail := 0, "Tehran Province, Iran", false
+	igExPlaceProbe = func(ctx context.Context, proxy string) (string, gemPage, error) {
+		calls++
+		if fail {
+			return "", gemPage{}, errors.New("test browser down")
+		}
+		if proxy != "socks5://9.9.9.9:12370" {
+			t.Errorf("probed %s", proxy)
+		}
+		return "refused", gemPage{URL: gemURL, Input: true, SignIn: true, Text: "Settings\n" + place + "\nFrom your IP address\nSign in"}, nil
+	}
+	a := &App{}
+	srv := &Server{ID: "place-test", IPv4: "9.9.9.9"}
+	r := &igExRead{Code: "200", Dom: "com", Route: "ipv6"}
+	a.igExPlace(context.Background(), srv, r, false)
+	a.igExPlace(context.Background(), srv, r, false)
+	if calls != 1 || r.Place != place {
+		t.Fatalf("calls %d place %q", calls, r.Place)
+	}
+	r2 := &igExRead{Code: "200", Dom: "fr", Route: "proxy1"} // the route changed: asked again
+	place = "France"
+	a.igExPlace(context.Background(), srv, r2, false)
+	if calls != 2 || r2.Place != "France" {
+		t.Fatalf("after a route change: calls %d place %q", calls, r2.Place)
+	}
+	a.igExPlace(context.Background(), srv, r2, true) // right after a move
+	if calls != 3 {
+		t.Fatalf("fresh: calls %d", calls)
+	}
+	fail = true
+	r3 := &igExRead{Code: "200", Dom: "de", Route: "direct"}
+	a.igExPlace(context.Background(), srv, r3, false)
+	if r3.Place != "" || r3.Flag != "" {
+		t.Fatalf("no answer must change nothing: %+v", r3)
+	}
+	if v, _ := igExVerdict("GOOGLE", r3); v != "ok" {
+		t.Errorf("the keyless reading stands, got %q", v)
+	}
+	// no reading of the route at all: the browser is not asked
+	a.igExPlace(context.Background(), srv, &igExRead{Code: "000"}, true)
+	if calls != 4 {
+		t.Errorf("asked the browser for a route that gives no answer: calls %d", calls)
+	}
+}
+
+// A ladder that found nothing is not climbed again every ten minutes: each try moves the route
+// through every exit, and most moves restart the server's router.
+func TestIgExFixBackoff(t *testing.T) {
+	id, now := "fix-backoff", time.Now()
+	if ok, _ := igExFixWait(id, "GOOGLE", now); !ok {
+		t.Fatal("never tried: may try")
+	}
+	igExFixDone(id, "GOOGLE", false, now)
+	if ok, next := igExFixWait(id, "GOOGLE", now.Add(10*time.Minute)); ok || next.Sub(now) != igExBackMin {
+		t.Fatalf("after one failed try: ok %v next in %s", ok, next.Sub(now))
+	}
+	if ok, _ := igExFixWait(id, "GOOGLE", now.Add(igExBackMin)); !ok {
+		t.Fatal("after the pause: may try")
+	}
+	igExFixDone(id, "GOOGLE", false, now)
+	if _, next := igExFixWait(id, "GOOGLE", now); next.Sub(now) != 2*igExBackMin {
+		t.Fatalf("second failed try: next in %s", next.Sub(now))
+	}
+	for i := 0; i < 10; i++ {
+		igExFixDone(id, "GOOGLE", false, now)
+	}
+	if _, next := igExFixWait(id, "GOOGLE", now); next.Sub(now) != igExBackMax {
+		t.Fatalf("capped at 6 h, got %s", next.Sub(now))
+	}
+	if ok, _ := igExFixWait(id, "YTM", now); !ok {
+		t.Fatal("another service is not held")
+	}
+	igExFixDone(id, "GOOGLE", true, now)
+	if ok, _ := igExFixWait(id, "GOOGLE", now); !ok {
+		t.Fatal("an exit passed: the count starts anew")
 	}
 }
