@@ -92,6 +92,23 @@ func TestIgParseWarpsPool(t *testing.T) {
 	}
 }
 
+// The round that switches FAILOVER -> BALANCE must not trim: the need grows with the mode.
+func TestWpNoTrimInTheRoundThatChangesTheMode(t *testing.T) {
+	inf := map[string]string{"ig": "warp", "mode": "FAILOVER", "wpeak": "9099", "warps": "5"}
+	c1, s1, _, _ := wpNeed(inf, "")
+	inf["mode"] = "BALANCE"
+	c2, s2, _, _ := wpNeed(inf, "")
+	if c1+s1 != 2 || c2+s2 != 5 {
+		t.Fatalf("need: failover %d, balance %d (want 2 and 5)", c1+s1, c2+s2)
+	}
+	if !wpTrimWaits(true, 48*time.Hour) {
+		t.Fatal("trimmed in the round that changed the mode")
+	}
+	if wpTrimWaits(false, wpTrimGap+time.Minute) || !wpTrimWaits(false, wpTrimGap-time.Minute) {
+		t.Fatal("the trim gap no longer holds")
+	}
+}
+
 // WPDUMP=dir writes the two server scripts for a sandbox run (bash on Linux)
 func TestWpDumpScripts(t *testing.T) {
 	dir := os.Getenv("WPDUMP")

@@ -308,6 +308,15 @@ func (a *App) wpLoop() {
 
 func wpIsNight(h int) bool { return h >= wpNightFrom && h < wpNightTo }
 
+// wpTrimWaits: no trim in this round. The router is restarted for a trim at most every wpTrimGap,
+// and never in the round that changed the mode: the plan was made for the old mode, and on BALANCE
+// Instagram needs more WARPs than on FAILOVER (wpNeed), so the "surplus" of the old plan is what
+// the new mode needs. (Ger-hertzener, 2026-11-17 04:03: switched to BALANCE, removed 3 good
+// accounts as "not needed", and 17 min later asked the agent for the same 3 again.)
+func wpTrimWaits(modeNew bool, sinceTrim time.Duration) bool {
+	return modeNew || sinceTrim < wpTrimGap
+}
+
 // wpCheck looks at one server's WARPs and sizes them.
 func (a *App) wpCheck(ctx context.Context, srv *Server) {
 	wpMem.Lock()
@@ -414,10 +423,12 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 	// sticky balancing is not possible here: the users reach the router through x-ui's Xray (a local
 	// redirect), so the router never sees who a connection belongs to, and Xray's balancers have no hash.
 	// Changing the mode rebuilds the router (a few seconds): only at night.
+	modeNew := false
 	if !hold && used && inf["mode"] == "FAILOVER" && wpIsNight(d.Hour) {
 		if rc, _ := a.igRun(ctx, srv, []string{"set", "mode", "balance"}, "", 120, nil); rc == 0 {
 			a.igAutoLog(srv, "WARP", "info", "WARP mode: one at a time -> spread the load (users keep one exit IP)")
 			a.igForget(srv.ID)
+			modeNew = true
 		}
 	}
 
@@ -446,7 +457,7 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 	if !used {
 		np.Extra = len(d.Warps)
 	}
-	if len(trim) > 0 && now.Sub(time.Unix(pool.Trim, 0)) < wpTrimGap {
+	if len(trim) > 0 && wpTrimWaits(modeNew, now.Sub(time.Unix(pool.Trim, 0))) {
 		trim = nil
 	}
 	if len(trim) > 0 {
