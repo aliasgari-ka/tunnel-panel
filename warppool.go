@@ -22,9 +22,10 @@ package main
 // with a temporary Xray, like the agent's warp_try - connectivity, exit, Instagram's country (= the
 // music signal without a test account) - and removes what is not needed: dead accounts, accounts
 // whose exit reads a no-music country, and accounts beyond the need. Removing restarts the router
-// for a few seconds (the agent rebuilds its config), so a surplus is removed only at night (03-06
-// server time), all in one restart; when good accounts are missing, broken ones go at once so the
-// agent can make new ones. Google's own WARPs, the WARPs carrying users and accounts younger than
+// for a few seconds (the agent rebuilds its config), so a surplus is removed only in the users' quiet
+// hours (03-07 Tehran time, whatever the server's own clock says), all in one restart; when users have
+// no WARP left to ride and an account has been broken for half an hour, it goes at once so the agent
+// can make a new one. Google's own WARPs, the WARPs carrying users and accounts younger than
 // 2 h are never removed. A hand add / delete holds the trims for 24 h; "Manage by hand" stops the
 // pool for that server.
 //
@@ -52,9 +53,13 @@ const (
 	wpYoung     = 2 * time.Hour    // an account this new is never removed
 	wpConnPer   = 2500             // user connections / 5 min one WARP keeps its speed with
 	wpCarryMax  = 8
-	wpNightFrom = 3 // server hour: surplus accounts are removed from …
-	wpNightTo   = 6 // … to
+	wpNightFrom = 3 // Tehran hour (the users' clock): accounts are removed from …
+	wpNightTo   = 7 // … to: the traffic trough of every day (03:30-07:00 Tehran)
+	wpBadWait   = 30 * time.Minute // by day an account must have been broken this long before it is removed
 )
+
+// wpTehran is the users' clock (Iran has no summer time since 2022).
+var wpTehran = time.FixedZone("Tehran", 3*3600+1800)
 
 // WarpPool is the automatic WARP pool of one server (State.WarpPool).
 type WarpPool struct {
@@ -75,6 +80,8 @@ type WarpPool struct {
 	Short  bool   `json:"short,omitempty"`  // fewer good accounts than needed: the agent makes new ones
 	Wait   int    `json:"wait,omitempty"`   // seconds until the agent's next sign-up (NoExit: its 6 h pause)
 	Trim   int64  `json:"trim,omitempty"`   // last trim
+	// when each broken account was first seen broken (by account id): one bad look is not a verdict
+	BadAt map[string]int64 `json:"badAt,omitempty"`
 	At     int64  `json:"at,omitempty"`     // last look
 }
 
@@ -103,6 +110,13 @@ func (a *App) wpGet(id string) WarpPool {
 
 func (a *App) wpPut(id string, fn func(p *WarpPool)) {
 	_ = a.store.Update(func(st *State) error {
+		tw := igTwinMap(st.Servers) // one record per machine (igtwin.go)
+		if d := tw[id]; d != "" {
+			id = d
+		}
+		if len(tw) > 0 {
+			defer igTwinCopy(st)
+		}
 		if st.WarpPool == nil {
 			st.WarpPool = map[string]*WarpPool{}
 		}
@@ -169,7 +183,7 @@ func igGwList(s string) []int {
 
 // wpRank scores one account: 100 carries users, 60 works (failover spare), 50 a standby that
 // passed its test, 20 not tested yet, 15 the agent gives it a new account now, 10 being repaired,
-// below that broken (removed when good ones are missing, or at night).
+// below that broken (removed at night, or at once when users have no WARP to ride).
 func wpRank(w IgWarp, d IgWarps, bal, igOn bool, now int64) int {
 	fresh := w.TestAt > 0 && now-w.TestAt < int64(wpTestEvery/time.Second)
 	s := 0
@@ -216,10 +230,11 @@ func wpRank(w IgWarp, d IgWarps, bal, igOn bool, now int64) int {
 
 type wpPlanT struct {
 	Test   []IgWarp // standbys to test now
-	Bad    []IgWarp // broken / no-music: removed when good ones are missing (or at night)
+	Bad    []IgWarp // broken / no-music: removed at night (at once only when users have no WARP to ride)
 	Extra  []IgWarp // good ones beyond the need: removed at night
 	Good   int
 	Untest int
+	Carry  int // accounts carrying users now (rank 100)
 }
 
 // wpPlan sorts a server's accounts into keep / test / remove. keepN = the non-Google need.
@@ -252,6 +267,9 @@ func wpPlan(d IgWarps, gw []int, keepN int, bal, igOn bool, now int64) wpPlanT {
 		switch {
 		case x.s >= 50:
 			p.Good++
+			if x.s >= 100 {
+				p.Carry++
+			}
 			if x.s >= 100 || kept < keepN {
 				kept++
 			} else if !young {
@@ -274,6 +292,18 @@ func wpPlan(d IgWarps, gw []int, keepN int, bal, igOn bool, now int64) wpPlanT {
 	return p
 }
 
+// wpBadNow: may the broken accounts be removed right now? Removing one restarts the router (every
+// user of the server is cut for a few seconds) and the agent's refill restarts it again, so by day
+// that is done only when users have no WARP to ride: while enough accounts still carry them, a
+// broken standby waits for the night. (xe107, 2026-11-16: a no-music standby was removed and made
+// again every 6 h - 12:57, 13:00, 19:03, 19:06 - four restarts in the day for a spare nobody used.)
+func wpBadNow(short, night bool, noExit string, carrying, carry int) bool {
+	if !short || noExit != "" {
+		return false
+	}
+	return night || carrying < carry
+}
+
 // ---- the loop
 
 func (a *App) wpLoop() {
@@ -281,13 +311,7 @@ func (a *App) wpLoop() {
 	time.Sleep(4 * time.Minute) // after a restart: igauto and the page read the servers first
 	for {
 		var list []*Server
-		a.store.View(func(st *State) {
-			for _, x := range st.Servers {
-				if x.Igproxy {
-					list = append(list, x)
-				}
-			}
-		})
+		a.store.View(func(st *State) { list = igDrivers(st.Servers) }) // one entry per machine (igtwin.go)
 		now := time.Now()
 		for i, srv := range list {
 			wpMem.Lock()
@@ -306,7 +330,45 @@ func (a *App) wpLoop() {
 	}
 }
 
-func wpIsNight(h int) bool { return h >= wpNightFrom && h < wpNightTo }
+// wpIsNight: the users' quiet hours. The users are in Iran, so it is their clock that counts, not
+// the server's: 03-06 on a German server was 05:30-08:30 in Tehran, 03-06 on a British one
+// 06:30-09:30 - trims and mode changes cut people who were already awake (2026-11-17).
+func wpIsNight(t time.Time) bool {
+	h := t.In(wpTehran).Hour()
+	return h >= wpNightFrom && h < wpNightTo
+}
+
+// wpBadKey names an account in WarpPool.BadAt.
+func wpBadKey(w IgWarp) string {
+	if w.ID != "" && w.ID != "none" {
+		return w.ID
+	}
+	return "n" + strconv.Itoa(w.N)
+}
+
+// wpBadSeen keeps, for the accounts broken now, when each was first seen broken, and returns those
+// broken for at least wait. An account that looked broken in one look (a WARP re-handshaking, the
+// agent in the middle of a repair) is not removed on that look: xe108's only carrier was removed as
+// "not working" on 2026-11-17 while every probe of it passed, two restarts at 08:34 Tehran.
+func wpBadSeen(old map[string]int64, bad []IgWarp, now int64, wait time.Duration) (map[string]int64, []IgWarp) {
+	var seen map[string]int64
+	var ripe []IgWarp
+	for _, w := range bad {
+		k := wpBadKey(w)
+		t := old[k]
+		if t == 0 || t > now {
+			t = now
+		}
+		if seen == nil {
+			seen = map[string]int64{}
+		}
+		seen[k] = t
+		if now-t >= int64(wait/time.Second) {
+			ripe = append(ripe, w)
+		}
+	}
+	return seen, ripe
+}
 
 // wpCheck looks at one server's WARPs and sizes them.
 func (a *App) wpCheck(ctx context.Context, srv *Server) {
@@ -414,21 +476,27 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 	// sticky balancing is not possible here: the users reach the router through x-ui's Xray (a local
 	// redirect), so the router never sees who a connection belongs to, and Xray's balancers have no hash.
 	// Changing the mode rebuilds the router (a few seconds): only at night.
-	if !hold && used && inf["mode"] == "FAILOVER" && wpIsNight(d.Hour) {
+	// The need is another one in the new mode: nothing is removed in the look that changed it
+	// (Ger-hertzener 2026-11-17: 3 accounts removed by the old need, 17 minutes later 3 made again).
+	modeChanged := false
+	if !hold && used && inf["mode"] == "FAILOVER" && wpIsNight(now) {
 		if rc, _ := a.igRun(ctx, srv, []string{"set", "mode", "balance"}, "", 120, nil); rc == 0 {
 			a.igAutoLog(srv, "WARP", "info", "WARP mode: one at a time -> spread the load (users keep one exit IP)")
 			a.igForget(srv.ID)
+			modeChanged = true
 		}
 	}
 
-	// 2. what goes: broken ones at once when good ones are missing (so the agent can make new ones),
-	// the rest - and every surplus - at night, all in one router restart
+	// 2. what goes: broken ones at once when users have no WARP left to ride (so the agent can make
+	// new ones), the rest - a broken standby, every surplus - at night, all in one router restart
 	good := plan.Good
 	short := used && good < carry+spare
 	var trim []IgWarp
-	night := wpIsNight(d.Hour)
+	night := wpIsNight(now)
+	var ripe []IgWarp
+	np.BadAt, ripe = wpBadSeen(pool.BadAt, plan.Bad, now.Unix(), wpBadWait)
 	switch {
-	case hold:
+	case hold, modeChanged:
 	case !used:
 		if night {
 			for _, w := range d.Warps {
@@ -437,8 +505,10 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 				}
 			}
 		}
-	case short && np.NoExit == "":
+	case night && short && np.NoExit == "":
 		trim = plan.Bad
+	case wpBadNow(short, night, np.NoExit, plan.Carry, carry):
+		trim = ripe // by day: only what has been broken for a while
 	case night:
 		trim = append(append(trim, plan.Bad...), plan.Extra...)
 	}
@@ -489,7 +559,7 @@ func (a *App) wpCheck(ctx context.Context, srv *Server) {
 		notes = append(notes, "testing the standbys")
 	}
 	if !hold && used && np.Extra+np.Bad > 0 && len(trim) == 0 {
-		notes = append(notes, fmt.Sprintf("%d not needed - removed tonight (03-06, the router restarts for a few seconds)", np.Extra+np.Bad))
+		notes = append(notes, fmt.Sprintf("%d not needed - removed in the quiet hours (03-07 Tehran, the router restarts for a few seconds)", np.Extra+np.Bad))
 	}
 	np.Note = strings.Join(notes, " · ")
 	a.wpPut(srv.ID, func(p *WarpPool) {

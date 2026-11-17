@@ -440,13 +440,7 @@ func (a *App) igSvcLoop() {
 	time.Sleep(3 * time.Minute) // after a restart: after the page and igauto
 	for {
 		var list []*Server
-		a.store.View(func(st *State) {
-			for _, x := range st.Servers {
-				if x.Igproxy {
-					list = append(list, x)
-				}
-			}
-		})
+		a.store.View(func(st *State) { list = igDrivers(st.Servers) }) // one entry per machine (igtwin.go)
 		now := time.Now()
 		for i, srv := range list {
 			if t, ok := next[srv.ID]; ok && now.Before(t) {
