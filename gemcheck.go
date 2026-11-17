@@ -79,14 +79,47 @@ const gemPlaced = "From your IP address"
 // does (it showed within 14 s on every exit Google serves).
 const gemAnonWait = 24 * time.Second
 
+// gemPlace is where the app says Google places the IP ("Nuremberg, Germany"), "" when it does not say.
+func gemPlace(p gemPage) string {
+	ls := strings.Split(p.Text, "\n")
+	for i, l := range ls {
+		if strings.Contains(l, gemPlaced) && i > 0 {
+			return strings.TrimSpace(ls[i-1])
+		}
+	}
+	return ""
+}
+
+// gemNoGeminiPlaces: countries Google offers no Gemini in, as the app writes them. An exit placed
+// there opens the signed-out app like any other, and signed-in users get "not supported in your
+// country": xe108's own IPv6, xe107's proxy and فنلاند1's own IP all read "Tehran Province, Iran"
+// on 2026-11-17 (Google learns the country from the Iranian users behind the IP) while the plain
+// HTTP reading said google.com, 200, fine.
+var gemNoGeminiPlaces = []string{"iran", "russia", "china", "belarus", "cuba", "syria", "north korea", "hong kong"}
+
+// gemPlaceBad: Google places the exit in a country without Gemini.
+func gemPlaceBad(place string) bool {
+	low := strings.ToLower(place)
+	for _, c := range gemNoGeminiPlaces {
+		if strings.Contains(low, c) {
+			return true
+		}
+	}
+	return false
+}
+
 // gemAnonVerdict is gemVerdict for the page without an account: ok only once Google has placed
-// the IP; the app without that line stays undecided (gemProbe calls it refused after gemAnonWait).
+// the IP in a country it offers Gemini in; placed elsewhere (Iran …) is refused; the app without
+// that line stays undecided (gemProbe calls it refused after gemAnonWait).
 func gemAnonVerdict(p gemPage) string {
 	switch v := gemVerdict(p); v {
 	case "refused", "captcha":
 		return v
 	}
 	if p.Input && strings.Contains(p.Text, gemPlaced) {
+		if gemPlaceBad(gemPlace(p)) {
+			return "refused"
+		}
 		return "ok"
 	}
 	return ""
@@ -225,12 +258,13 @@ func gemCheckCmd(args []string) {
 
 // gemWhy is the short reason a page gives: the error line, or where Google places the exit.
 func gemWhy(p gemPage) string {
-	ls := strings.Split(p.Text, "\n")
-	for i, l := range ls {
-		if strings.Contains(l, "From your IP address") && i > 0 {
-			return strings.TrimSpace(ls[i-1])
+	if pl := gemPlace(p); pl != "" {
+		if gemPlaceBad(pl) {
+			return "Google places this exit in " + pl + ", where it offers no Gemini"
 		}
+		return pl
 	}
+	ls := strings.Split(p.Text, "\n")
 	low := strings.ToLower(p.Text)
 	for _, r := range gemRefusals {
 		if strings.Contains(low, r) {
