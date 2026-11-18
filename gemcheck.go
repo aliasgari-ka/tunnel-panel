@@ -49,9 +49,16 @@ const gemPageJS = `(() => { const t = (document.body && document.body.innerText)
 var gemRefusals = []string{"not supported in your country", "isn't currently supported", "isn't available in your country",
 	"not available in your country", "not available in your region", "isn't available for your account"}
 
+// gemPlain: the page's text in lower case with typographic apostrophes made plain. Gemini
+// writes "isn’t currently supported" with U+2019, which "isn't" never matched (2026-11-18:
+// the test account's own Gemini refused the country and the check said "noanswer").
+func gemPlain(s string) string {
+	return strings.NewReplacer("\u2019", "'", "\u2018", "'", "\u02bc", "'").Replace(strings.ToLower(s))
+}
+
 // gemVerdict: ok | refused | signedout | captcha | "" (not decided yet).
 func gemVerdict(p gemPage) string {
-	low := strings.ToLower(p.Text)
+	low := gemPlain(p.Text)
 	for _, r := range gemRefusals {
 		if strings.Contains(low, r) {
 			return "refused"
@@ -265,7 +272,7 @@ func gemWhy(p gemPage) string {
 		return pl
 	}
 	ls := strings.Split(p.Text, "\n")
-	low := strings.ToLower(p.Text)
+	low := gemPlain(p.Text)
 	for _, r := range gemRefusals {
 		if strings.Contains(low, r) {
 			return r

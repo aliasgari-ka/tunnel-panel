@@ -217,7 +217,7 @@ g(){ local c d fl=- i
     [ "${c:-000}" != 000 ] && break; sleep 2
   done
   d=$(grep -oE 'og[.]qtm[^"]*","[a-z.]{2,8}"' "$f" | head -1 | sed -E 's/.*"([a-z.]+)"$/\1/')
-  grep -qsi "not supported in your country\|isn.t currently supported\|not available in your country\|not available in your region" "$f" && fl=region
+  grep -qsi "not supported in your country\|isn.\{1,6\}t currently supported\|not available in your country\|not available in your region" "$f" && fl=region
   echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE) $(rt GOOGLE) $(cb)"; }
 cb(){ local c i  # Colab: only where the agent sends it on Google's route
   grep -q 'domain:research[.]google[.]com' /usr/local/bin/igproxy 2>/dev/null || { echo -; return; }
@@ -232,7 +232,7 @@ y(){ local r c d fl=- i
     [ "${c:-000}" != 000 ] && break; sleep 2
   done
   case "${r#* }" in *unavailable-in-region*|*not-available*) fl=region;; esac
-  grep -qsi "unavailable-in-region\|not available in your country\|isn.t available in your country" "$f" && fl=region
+  grep -qsi "unavailable-in-region\|not available in your country\|isn.\{1,6\}t available in your country" "$f" && fl=region
   d=$(grep -oE '"GL":"[A-Z]{2}"' "$f" | head -1 | cut -d'"' -f4)
   echo "X YTM ${c:-000} ${d:--} $fl $(v6 YTM) $(rt YTM)"; }
 `, port, port)

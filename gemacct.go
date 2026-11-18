@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,11 +62,28 @@ func gemAcctRead(ctx context.Context) (string, int, error) {
 			n++
 		}
 	}
-	if gemSignedIn(r.Cookies, time.Now()) {
+	// SID alone is not enough: Google can keep it and still want the password (gemkeep.go)
+	reauth := false
+	if pages, err := gemAccountPages(ctx, w); err == nil {
+		for _, p := range pages {
+			if gemReauthURL(p.URL) {
+				reauth = true
+			}
+		}
+	}
+	gemAcctReauth.Store(reauth)
+	if gemSignedIn(r.Cookies, time.Now()) && !reauth {
 		return "in", n, nil
 	}
 	return "out", n, nil
 }
+
+// gemAcctReauth: the last reading found a page of the account on Google's sign-in step.
+var gemAcctReauth atomic.Bool
+
+// gemReauthWhy is the cause when Google wants the password again with the session cookies kept.
+const gemReauthWhy = "Google asks for the account's password again (a page of the test browser is on Google's sign-in step) while its session cookies are still there: the session was not refreshed for days (no Google page of the account was open; the panel now keeps one open and reloads it every hour)"
+
 
 // gemAcctCause: the likeliest reason the account is signed out, from what the panel saw.
 // risk = gemHomeRecent (users' Google on the account's IP); ncookies = Google cookies left;
@@ -161,6 +179,10 @@ func (a *App) gemAcctLoop() {
 			a.push(msg)
 		}
 		gcancel()
+		// a Google page of the account open and fresh: Chrome refreshes the session through it
+		kctx, kcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, _ = gemKeep(kctx)
+		kcancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		st, n, err := gemAcctRead(ctx)
 		cancel()
@@ -175,6 +197,9 @@ func (a *App) gemAcctLoop() {
 func (a *App) gemAcctWhy(st string, n int, err error) string {
 	if err != nil || !gemAcct.wentOut(st) {
 		return ""
+	}
+	if gemAcctReauth.Load() {
+		return gemReauthWhy
 	}
 	gemAcct.mu.Lock()
 	inSince := gemAcct.Since // still the moment it was found signed in
