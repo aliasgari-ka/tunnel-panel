@@ -404,3 +404,78 @@ func TestIgExFixBackoff(t *testing.T) {
 		t.Fatal("an exit passed: the count starts anew")
 	}
 }
+
+// "No place" is a verdict while the app is known to print places. xe108 2026-11-18: its own IPv6
+// went from "Tehran Province, Iran" to no place at all; the keyless page still read google.com and
+// the ladder took Google back to that exit. When no exit anywhere gets a place (the app stopped
+// printing it on 2026-11-14), silence says nothing.
+func TestIgExNoPlaceIsRefusedWhilePlacesAreSeen(t *testing.T) {
+	old := igExPlaceProbe
+	defer func() {
+		igExPlaceProbe = old
+		igExPlaceMem.Lock()
+		igExPlaceMem.seen = time.Time{}
+		igExPlaceMem.Unlock()
+	}()
+	app := func(place string) gemPage {
+		t := "Gemini\nNew chat\nSettings\n"
+		if place != "" {
+			t += place + "\nFrom your IP address\n"
+		}
+		return gemPage{URL: gemURL, Input: true, SignIn: true, Text: t + "Sign in\nGet App"}
+	}
+	place := ""
+	igExPlaceProbe = func(ctx context.Context, proxy string) (string, gemPage, error) {
+		if place == "" {
+			return "refused", app(""), nil // the probe's own word after its wait
+		}
+		return "ok", app(place), nil
+	}
+	a := &App{}
+	igExPlaceMem.Lock()
+	igExPlaceMem.seen = time.Time{}
+	igExPlaceMem.Unlock()
+	silent := &Server{ID: "noplace-a", IPv4: "9.9.9.1"}
+	r := &igExRead{Code: "200", Dom: "com", Route: "ipv6", Home: "DE", Colab: "200"}
+	a.igExPlace(context.Background(), silent, r, true)
+	if r.NoPlace {
+		t.Fatal("no exit has shown a place yet: silence must say nothing")
+	}
+	if v, _ := igExVerdict("GOOGLE", r); v != "ok" {
+		t.Fatalf("the keyless reading stands, got %q", v)
+	}
+	// another server's exit gets a place: the app prints places these hours
+	place = "Nuremberg, Germany"
+	a.igExPlace(context.Background(), &Server{ID: "noplace-b", IPv4: "9.9.9.2"}, &igExRead{Code: "200", Dom: "de", Route: "direct"}, true)
+	place = ""
+	r = &igExRead{Code: "200", Dom: "com", Route: "ipv6", Home: "DE", Colab: "200"}
+	a.igExPlace(context.Background(), silent, r, true)
+	if !r.NoPlace {
+		t.Fatal("places are seen elsewhere: a silent exit is refused")
+	}
+	v, why := igExVerdict("GOOGLE", r)
+	if v != "bad" || !strings.Contains(why, "nowhere") {
+		t.Fatalf("verdict %s %q", v, why)
+	}
+	// the last place anywhere is too old: silence says nothing again
+	igExPlaceMem.Lock()
+	igExPlaceMem.seen = time.Now().Add(-igExPlaceTrust - time.Minute)
+	igExPlaceMem.Unlock()
+	r = &igExRead{Code: "200", Dom: "com", Route: "ipv6", Home: "DE"}
+	a.igExPlace(context.Background(), silent, r, false) // from the 30-minute memory
+	if r.NoPlace {
+		t.Fatal("no place seen for 6 h: silence must say nothing")
+	}
+	// a page that is not the app (an error page, a redirect) is not "silent"
+	igExPlaceProbe = func(ctx context.Context, proxy string) (string, gemPage, error) {
+		return "refused", gemPage{URL: "https://accounts.google.com/x", Text: "Sign in"}, nil
+	}
+	igExPlaceMem.Lock()
+	igExPlaceMem.seen = time.Now()
+	igExPlaceMem.Unlock()
+	r = &igExRead{Code: "200", Dom: "com", Route: "ipv6"}
+	a.igExPlace(context.Background(), silent, r, true)
+	if r.NoPlace {
+		t.Fatal("not the Gemini app: no verdict from it")
+	}
+}

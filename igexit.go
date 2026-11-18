@@ -33,7 +33,11 @@ package main
 // prints the place ("Tehran Province, Iran / From your IP address"). It had stopped printing it on
 // 2026-11-14 and prints it again since 2026-11-17, so the reading asks the test browser too
 // (igExPlace, at most every 30 min per server and after every move): a place decides - a country
-// without Gemini fails, any other passes; no place leaves the keyless reading as it was. On warp6 the reading also asks
+// without Gemini fails, any other passes. No place is a verdict too, while the app is known to
+// print places (one seen on some exit in the last 6 h): Google places that exit nowhere and refuses
+// Gemini to accounts there - xe108's own IPv6 went from "Tehran Province, Iran" to no place at
+// all, the keyless page still read google.com, and the ladder took Google back to it (2026-11-18).
+// Only when no exit anywhere gets a place (2026-11-14..16) does the keyless reading stand alone. On warp6 the reading also asks
 // whether IPv6 really passes through the WARPs: a WARP whose IPv6 is dead falls back to Cloudflare's
 // shared IPv4, where the keyless page reads fine but signed-in users are refused.
 // The same shared exit shows on IPv4 WARP ("warp") and on a warp6 that slips to it: Google places
@@ -113,6 +117,9 @@ type igExRead struct {
 	// Place: where the signed-out Gemini app says Google places the users' exit ("Nuremberg,
 	// Germany"; "" = the test browser gave no place). It decides when it is there.
 	Place string
+	// NoPlace: the app opened and named no place, while it does name one on other exits these
+	// hours: Google serves no Gemini to accounts on this exit.
+	NoPlace bool
 }
 
 // igExDomCC: Google's domain as a country code ("com.tr" -> TR, "co.uk" -> GB, "com" -> "").
@@ -161,6 +168,9 @@ func igExVerdict(svc string, r *igExRead) (string, string) {
 				return "bad", "Google places the users in " + r.Place + ": no Gemini there"
 			}
 			return "ok", ""
+		}
+		if r.NoPlace {
+			return "bad", "Google places the users nowhere on this exit: signed-in Gemini is refused"
 		}
 		d := strings.ToLower(r.Dom)
 		cc := igExDomCC(d)
@@ -626,13 +636,19 @@ var igExPlaceProbe = gemProbe
 
 type igExPlaceT struct {
 	Place, Route string
-	Refused      bool
+	Refused      bool // the app's own refusal (its words, Google's 403 page)
+	Silent       bool // the app opened, waited, and named no place
 	At           time.Time
 }
+
+// igExPlaceTrust: "no place" counts as a refusal only while a place was seen on some exit this
+// recently - the proof that the app prints places these hours.
+const igExPlaceTrust = 6 * time.Hour
 
 var igExPlaceMem = struct {
 	sync.Mutex
 	m    map[string]igExPlaceT
+	seen time.Time  // the last time any exit got a place
 	busy sync.Mutex // one probe at a time: one test browser
 }{m: map[string]igExPlaceT{}}
 
@@ -656,17 +672,25 @@ func (a *App) igExPlace(ctx context.Context, srv *Server, r *igExRead, fresh boo
 		c = igExPlaceT{Route: r.Route, At: time.Now()}
 		if err == nil {
 			c.Place = gemPlace(p)
-			// the app's own refusal (its words, or Google's 403 page); "no place after the wait"
-			// is not one: on 2026-11-14 no exit got a place for three days
 			c.Refused = c.Place == "" && v == "refused" && gemVerdict(p) == "refused"
+			// the app itself, open, input box there, and no place after the probe's wait
+			c.Silent = c.Place == "" && v == "refused" && !c.Refused && p.Input && strings.HasPrefix(p.URL, gemURL)
 		}
 		igExPlaceMem.Lock()
 		igExPlaceMem.m[srv.ID] = c
+		if c.Place != "" {
+			igExPlaceMem.seen = c.At
+		}
 		igExPlaceMem.Unlock()
 	}
 	r.Place = c.Place
 	if c.Refused && r.Flag == "" {
 		r.Flag = "region"
+	}
+	if c.Silent {
+		igExPlaceMem.Lock()
+		r.NoPlace = !igExPlaceMem.seen.IsZero() && time.Since(igExPlaceMem.seen) < igExPlaceTrust
+		igExPlaceMem.Unlock()
 	}
 }
 
