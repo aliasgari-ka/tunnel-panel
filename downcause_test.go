@@ -406,3 +406,29 @@ func TestDownCauseProtoFilter(t *testing.T) {
 		t.Error("espsk named proto_filter")
 	}
 }
+
+// 2026-11-14..18, England: Premium (v4) down, both servers' pings to each other lost (ICMP
+// filtered on that route), no TCP test — named "can't reach each other over IPv4 at all"
+// for days while TP, FRP and five more IPv4 paths of the same tunnel carried the users.
+func TestDownCauseNoRouteOtherPathUp(t *testing.T) {
+	lost := "PING small 100\nPING big 100\n"
+	mk := func() *dcInput {
+		in := dcSides(dcActive+lost+"FWD 1\nST LISTEN *:51079 *:*\n", dcActive+lost+"PROBE 1\n")
+		in.Method, in.Title, in.L3 = "premium", "Backhaul Premium", true
+		return in
+	}
+	// nothing else of this family works: the route may really be gone
+	dcCheck(t, mk(), "no_route", "route", "can't reach each other over IPv4")
+	// a TCP path of the same family works: the servers do reach each other
+	in := mk()
+	in.UpOther = true
+	if c := dcClassify(in).cause("x|v4", in); c.Code == "no_route" {
+		t.Errorf("other IPv4 paths work, yet no_route: %q", c.Text)
+	}
+	// so does a GRE path
+	in = mk()
+	in.UpVia = []string{"Plain GRE (v4)"}
+	if c := dcClassify(in).cause("x|v4", in); c.Code == "no_route" {
+		t.Errorf("GRE works on the route, yet no_route: %q", c.Text)
+	}
+}
