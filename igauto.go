@@ -55,6 +55,7 @@ type IgAutoSvc struct {
 	Tries int    `json:"tries,omitempty"` // failed tries of Want since the move
 	Alert int64  `json:"alert,omitempty"` // last "nothing works" alert
 	Back  int64  `json:"back,omitempty"`  // when it last went back to Want (igexit.go: older tries are forgotten after 6 h)
+	Flaps int    `json:"flaps,omitempty"` // Want failed again soon after a move back (igexit.go adopts the fallback after igExFlapMax)
 	Via   string `json:"via,omitempty"`   // Instagram: its WARPs enter Cloudflare through this server (igwarpvia.go)
 }
 

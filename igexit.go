@@ -80,7 +80,23 @@ const (
 	igExRelayMax = 3 // other servers tried as a relay per fix
 	igExUnkTimes = 3 // undecided readings in a row that count as a fail
 	igExNoRead   = 25 * time.Minute
+	// igExFlapMax: Want failed again within igExHeld of a move back this many times in a row:
+	// the exit that kept working becomes Want and the panel stops moving the users back and forth
+	// (2026-11-16..18: nl, هلند1, فنلاند1, ترکیه and xe107 went back to WARP IPv6 or a proxy and
+	// off it again within 1-3 h, every move a Gemini cut for the users)
+	igExFlapMax = 3
 )
+
+// igExStrong: a reading good enough to move the users back onto the preferred exit. For Google
+// that is a place from the test browser, or a country in Google's domain: a bare google.com
+// with no place passed the backs of 11-18 (xe108, خارج اوتباند, xe107, xe101) and the same exits
+// failed again within the hour.
+func igExStrong(svc string, r *igExRead) bool {
+	if svc != "GOOGLE" {
+		return true
+	}
+	return r != nil && (r.Place != "" || igExDomCC(r.Dom) != "")
+}
 
 // igExStarted: readings live in memory; before this much time has passed since the start the
 // card may still say "checking", after it a missing reading is shown as missing.
@@ -751,13 +767,23 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 			now := time.Now()
 			keep := strings.TrimSuffix(via, "+")
 			back := keep == want
+			adopted := false
 			a.igAutoPut(srv.ID, svc, func(s *IgAutoSvc) {
 				if s.Back > 0 && now.Sub(time.Unix(s.Back, 0)) > igExHeld {
-					s.Tries = 0
+					s.Tries, s.Flaps = 0, 0
 				}
 				s.Want = want
 				if back {
 					s.Cur, s.Why, s.Since, s.Next = "", "", 0, 0
+					return
+				}
+				if igExFlap(rec, route, now) {
+					s.Flaps++
+					s.Tries++ // the next try back waits longer
+				}
+				if s.Flaps >= igExFlapMax {
+					s.Want, s.Cur, s.Why, s.Since, s.Next, s.Tries, s.Flaps = keep, "", "", 0, 0, 0, 0
+					adopted = true
 					return
 				}
 				s.Cur, s.Why, s.Since = keep, igRouteWord(route)+": "+why, now.Unix()
@@ -773,6 +799,9 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 				word = igProxyName(a.igInfo(ctx, srv), keep, a.igServerByIP)
 			}
 			a.igAutoLog(srv, svc, "fix", fmt.Sprintf("%s on %s: %s -> %s%s", name, igRouteWord(route), why, word, where))
+			if adopted {
+				a.igAutoLog(srv, svc, "info", fmt.Sprintf("%s: %s failed again soon after each move back (%d times): %s is kept as the exit, no more moves back", name, igRouteWord(route), igExFlapMax, word))
+			}
 			a.igExPatchInfo(srv.ID, svc, keep, r)
 			a.push(fmt.Sprintf("🔀 %s: %s %s → %s%s (auto)", igLabel(srv), name, igRouteWord(route)+" failed ("+why+")", word, where))
 			igExFixDone(srv.ID, svc, true, time.Now())
@@ -802,10 +831,19 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 	}
 }
 
-// igExBack tries the preferred exit again; it is kept only when it passes twice.
+// igExFlap: the preferred exit fails within igExHeld of the last move back onto it.
+func igExFlap(rec *IgAutoSvc, route string, now time.Time) bool {
+	return rec != nil && rec.Cur == "" && rec.Back > 0 && route == rec.Want && now.Sub(time.Unix(rec.Back, 0)) <= igExHeld
+}
+
+// igExBack tries the preferred exit again; it is kept only when it passes twice, with a country.
 func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoSvc) {
 	name := igSvcName(svc)
 	v, r, err := a.igExSet(ctx, srv, svc, rec.Want)
+	weak := err == nil && v == "ok" && !igExStrong(svc, r)
+	if weak {
+		v = ""
+	}
 	if err == nil && v == "ok" {
 		time.Sleep(20 * time.Second)
 		m := a.igExRun(ctx, srv, []string{svc}, gemRelayPort)
@@ -815,6 +853,9 @@ func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoS
 			}
 			v, _ = igExVerdict(svc, m[svc])
 			r = m[svc]
+			if v == "ok" && !igExStrong(svc, r) {
+				v, weak = "", true
+			}
 		} else {
 			v = ""
 		}
@@ -839,6 +880,8 @@ func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoS
 		w := "no reading"
 		if err != nil {
 			w = clipTo(err.Error(), 80)
+		} else if weak {
+			w = "Google names no country there (" + igExWhere(svc, r) + ")"
 		} else if _, y := igExVerdict(svc, r); y != "" {
 			w = y
 		}
