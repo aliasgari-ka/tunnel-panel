@@ -479,3 +479,34 @@ func TestIgExNoPlaceIsRefusedWhilePlacesAreSeen(t *testing.T) {
 		t.Fatal("not the Gemini app: no verdict from it")
 	}
 }
+
+// A move back needs a country: google.com without a place is not enough.
+func TestIgExStrong(t *testing.T) {
+	if igExStrong("GOOGLE", &igExRead{Code: "200", Dom: "com"}) {
+		t.Fatal("bare google.com is strong")
+	}
+	if !igExStrong("GOOGLE", &igExRead{Code: "200", Dom: "de"}) || !igExStrong("GOOGLE", &igExRead{Code: "200", Dom: "com", Place: "Helsinki, Finland"}) {
+		t.Fatal("country or place not strong")
+	}
+	if !igExStrong("YTM", &igExRead{Code: "200"}) {
+		t.Fatal("YTM")
+	}
+}
+
+// Want failing within igExHeld of a move back is a flap; later, or while on a fallback, it is not.
+func TestIgExFlap(t *testing.T) {
+	now := time.Now()
+	rec := &IgAutoSvc{Want: "warp6", Back: now.Add(-time.Hour).Unix()}
+	if !igExFlap(rec, "warp6", now) {
+		t.Fatal("1 h after a back: flap")
+	}
+	if igExFlap(rec, "warp6", now.Add(igExHeld)) {
+		t.Fatal("held 6 h: no flap")
+	}
+	if igExFlap(&IgAutoSvc{Want: "warp6", Cur: "direct", Back: rec.Back}, "direct", now) {
+		t.Fatal("fallback failing: no flap")
+	}
+	if igExFlap(nil, "warp6", now) || igExFlap(&IgAutoSvc{Want: "warp6"}, "warp6", now) {
+		t.Fatal("never went back: no flap")
+	}
+}
