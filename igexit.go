@@ -130,6 +130,22 @@ func igExDomCC(d string) string {
 	return ""
 }
 
+// igExPlacedIn starts the reason of an exit that failed for where the test browser was told
+// Google places it (IgAutoSvc.Why keeps it).
+const igExPlacedIn = "Google places the users in "
+
+// igExNoPlaceYet: why an exit that left for its place is not taken back yet.
+const igExNoPlaceYet = "Google names no place for it yet; it left for its place"
+
+// igExBackNeedsPlace: the move away (why) was for the place Google gave, and the reading of the
+// preferred exit carries none. The keyless page said "google.com, 200" all the while the app said
+// Iran, so without a place it proves nothing: on 2026-11-18 خارج اوتباند's proxy went back on
+// "google.com" at 01:49 and read "Bushehr Province, Iran" again at 02:26, xe107's proxy at
+// 01:57 and 03:11 — two moves of the users each time.
+func igExBackNeedsPlace(svc, why string, r *igExRead) bool {
+	return svc == "GOOGLE" && strings.Contains(why, igExPlacedIn) && r != nil && r.Place == ""
+}
+
 // igExVerdict: "ok", "bad" or "" (no verdict: the check itself did not get through) and why.
 func igExVerdict(svc string, r *igExRead) (string, string) {
 	if r == nil {
@@ -158,7 +174,7 @@ func igExVerdict(svc string, r *igExRead) (string, string) {
 		}
 		if r.Place != "" { // what a browser is told: the truth for signed-in users
 			if gemPlaceBad(r.Place) {
-				return "bad", "Google places the users in " + r.Place + ": no Gemini there"
+				return "bad", igExPlacedIn + r.Place + ": no Gemini there"
 			}
 			return "ok", ""
 		}
@@ -782,15 +798,21 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoSvc) {
 	name := igSvcName(svc)
 	v, r, err := a.igExSet(ctx, srv, svc, rec.Want)
+	noPlace := false
 	if err == nil && v == "ok" {
 		time.Sleep(20 * time.Second)
 		m := a.igExRun(ctx, srv, []string{svc}, gemRelayPort)
 		if m != nil {
 			if svc == "GOOGLE" {
-				a.igExPlace(ctx, srv, m[svc], false) // asked a moment ago, in igExSet
+				// asked a moment ago, in igExSet; asked once more when that gave no place and
+				// the place is what this exit left for
+				a.igExPlace(ctx, srv, m[svc], igExBackNeedsPlace(svc, rec.Why, r))
 			}
 			v, _ = igExVerdict(svc, m[svc])
 			r = m[svc]
+			if v == "ok" && igExBackNeedsPlace(svc, rec.Why, r) {
+				v, noPlace = "", true
+			}
 		} else {
 			v = ""
 		}
@@ -815,6 +837,8 @@ func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoS
 		w := "no reading"
 		if err != nil {
 			w = clipTo(err.Error(), 80)
+		} else if noPlace {
+			w = igExNoPlaceYet
 		} else if _, y := igExVerdict(svc, r); y != "" {
 			w = y
 		}

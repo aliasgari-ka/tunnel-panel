@@ -322,6 +322,29 @@ func TestGemPlace(t *testing.T) {
 	}
 }
 
+// An exit that left because Google placed it in Iran is not taken back on a reading without a
+// place; one that left for anything else, or another service, is judged as before.
+func TestIgExBackNeedsPlace(t *testing.T) {
+	_, why := igExVerdict("GOOGLE", &igExRead{Code: "200", Dom: "com", Route: "proxy1", Place: "Bushehr Province, Iran"})
+	why = "proxy 1: " + why // as igExFix keeps it
+	keyless := &igExRead{Code: "200", Dom: "com", Route: "proxy1"}
+	if v, _ := igExVerdict("GOOGLE", keyless); v != "ok" {
+		t.Fatalf("the keyless reading alone passes, got %q", v)
+	}
+	if !igExBackNeedsPlace("GOOGLE", why, keyless) {
+		t.Errorf("left for its place (%q), read without one: not a pass", why)
+	}
+	if igExBackNeedsPlace("GOOGLE", why, &igExRead{Code: "200", Dom: "com", Route: "proxy1", Place: "Nuremberg, Germany"}) {
+		t.Errorf("a reading with a place decides")
+	}
+	if igExBackNeedsPlace("GOOGLE", "proxy 1: Google asks for a captcha", keyless) {
+		t.Errorf("left for a captcha: the keyless reading is enough")
+	}
+	if igExBackNeedsPlace("YTM", why, keyless) || igExBackNeedsPlace("GOOGLE", why, nil) {
+		t.Errorf("only Google readings")
+	}
+}
+
 // The browser is asked once per 30 minutes while the route stays the same, at once after a move,
 // and an answer that never comes changes nothing.
 func TestIgExPlaceCache(t *testing.T) {
