@@ -75,9 +75,70 @@ func TestIgSvcDefs(t *testing.T) {
 			t.Errorf("%s: new but no def", k)
 		}
 	}
-	s := igSvcScript([]string{"OPENAI", "NETFLIX"})
-	if !strings.Contains(s, "p OPENAI 'https://api.openai.com/v1/models' 'chatgpt.com' &") {
-		t.Error(s)
+	for k, n := range igSvcTries {
+		if d := igSvcByKey[k]; d == nil || d.Block == "" || n < 2 {
+			t.Errorf("%s: several tries need a def with a Block code", k)
+		}
+	}
+	s := igSvcScript([]string{"OPENAI", "NETFLIX", "SHAZAM"}, gemRelayPort)
+	for _, want := range []string{
+		"p OPENAI 'https://api.openai.com/v1/models' 'chatgpt.com' 1 '403' &",
+		"p NETFLIX 'https://www.netflix.com/' '' 1 '' &",
+		"p SHAZAM 'https://amp.shazam.com/' '' 6 '403' &", // asked 6 times: one 403 is the answer
+		"grep -q ':12370 '", "socks5h://127.0.0.1:12370",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("no %q in %s", want, s)
+		}
+	}
+	if own := igSvcScript([]string{"SHAZAM"}, igSvcOwnPort); !strings.Contains(own, "socks5h://127.0.0.1:12371") || strings.Contains(own, "12370") {
+		t.Error(own)
+	}
+}
+
+// Shazam: Google's front end refuses (403) a server IP it places in Iran; 404 is its API's normal
+// answer to "/". Auto starts on the server's own IP and has WARP / a proxy to move to.
+func TestIgSvcShazam(t *testing.T) {
+	d := igSvcByKey["SHAZAM"]
+	if d == nil || !igSvcNew["SHAZAM"] || !igSvcIsAuto(nil, "SHAZAM") || igSvcIsAuto(&IgAutoSvc{Pin: "warp"}, "SHAZAM") {
+		t.Fatal("SHAZAM: a new service on Auto unless pinned")
+	}
+	live, _ := igSvcParse([]string{"S SHAZAM 403 - -"})
+	if live["SHAZAM"] == nil || live["SHAZAM"].OK {
+		t.Errorf("403 = refused: %+v", live["SHAZAM"])
+	}
+	if live, _ = igSvcParse([]string{"S SHAZAM 404 - -"}); !live["SHAZAM"].OK {
+		t.Error("404 = the API answers")
+	}
+	c := igSvcCands(igSvcPref(d, &Server{Country: "DE"}), map[string]string{"warps": "2", "proxies": "1"})
+	if strings.Join(c, ",") != "direct,warp,proxy" || igSvcNext(c, "direct") != "warp" {
+		t.Errorf("exits: %v", c)
+	}
+}
+
+// an agent older than a service does not report it: Auto must not ask it for that route (the
+// refused "routeset" would stop every other service's Auto on that server)
+func TestIgSvcKnown(t *testing.T) {
+	old := map[string]string{"ig": "warp", "openai": "warp", "apple": "direct"}
+	if igSvcKnown(old, "SHAZAM") || !igSvcKnown(old, "APPLE") || !igSvcKnown(map[string]string{"shazam": "direct"}, "SHAZAM") {
+		t.Error("known")
+	}
+	if keys := igSvcCheckKeys(&Server{}, old); contains(keys, "SHAZAM") || !contains(keys, "APPLE") {
+		t.Errorf("check keys of an old agent: %v", keys)
+	}
+}
+
+// a moved service goes back to the server's own IP only when that IP answers it again
+func TestIgSvcOwnHoldsAndBack(t *testing.T) {
+	own, _ := igSvcParse([]string{"S SHAZAM 403 - -", "S X 200 - -"})
+	if !igSvcOwnHolds(own, "SHAZAM") || igSvcOwnHolds(own, "X") {
+		t.Error("held while refused, released when it answers")
+	}
+	if igSvcOwnHolds(nil, "SHAZAM") || igSvcOwnHolds(own, "REDDIT") {
+		t.Error("not asked (no own relay) = the old way: try it")
+	}
+	if igSvcBack(0) != igSvcBackMin || igSvcBack(1) != 2*igSvcBackMin || igSvcBack(9) != igSvcBackMax || igSvcBack(-1) != igSvcBackMin {
+		t.Errorf("back: %v %v %v", igSvcBack(0), igSvcBack(1), igSvcBack(9))
 	}
 }
 
