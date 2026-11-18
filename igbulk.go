@@ -300,5 +300,5 @@ func igSvcName(g string) string {
 		"OPENAI": "ChatGPT", "CLAUDE": "Claude", "COPILOT": "Copilot", "PERPLEX": "Perplexity", "GROK": "Grok", "AICODE": "AI tools",
 		"X": "X", "TIKTOK": "TikTok", "REDDIT": "Reddit", "LINKEDIN": "LinkedIn", "PINTEREST": "Pinterest", "TELEGRAM": "Telegram",
 		"WHATSAPP": "WhatsApp", "DISCORD": "Discord", "NETFLIX": "Netflix", "DISNEY": "Disney+", "PRIME": "Prime Video", "TWITCH": "Twitch",
-		"APPLE": "Apple Music · iCloud", "GAMES": "Steam · games", "DEV": "GitHub · Docker · npm"}[g]
+		"APPLE": "Apple Music · iCloud", "SHAZAM": "Shazam", "GAMES": "Steam · games", "DEV": "GitHub · Docker · npm"}[g]
 }

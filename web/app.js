@@ -3446,7 +3446,7 @@ const IG = { data: null, cur: null, tab: 'routes', sub: recall('tp-igsub') || 's
 const IGSV = { IG: 'Instagram', GOOGLE: 'Google / Gemini', YTM: 'YouTube Music', ADULT: 'Adult', SPOTIFY: 'Spotify', SCLOUD: 'SoundCloud', SNAP: 'Snapchat',
   OPENAI: 'ChatGPT', CLAUDE: 'Claude', COPILOT: 'Copilot', PERPLEX: 'Perplexity', GROK: 'Grok', AICODE: 'AI tools', X: 'X', TIKTOK: 'TikTok', REDDIT: 'Reddit', LINKEDIN: 'LinkedIn',
   PINTEREST: 'Pinterest', TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', DISCORD: 'Discord', NETFLIX: 'Netflix', DISNEY: 'Disney+', PRIME: 'Prime Video', TWITCH: 'Twitch',
-  APPLE: 'Apple Music', GAMES: 'Steam · games', DEV: 'GitHub · Docker', CUSTOM: 'My sites' };
+  APPLE: 'Apple Music', SHAZAM: 'Shazam', GAMES: 'Steam · games', DEV: 'GitHub · Docker', CUSTOM: 'My sites' };
 const IGWIDE = Object.keys(IGSV).filter(g => !['IG', 'GOOGLE', 'YTM'].includes(g)); // domain-only: no IPv6 / WARP-IPv6
 const IGST = { OK: ['healthy', 'on'], PANEL: ['x-ui panel diverts Google', 'bad'], GEMFAIL: ['Gemini failing', 'bad'], IGFAIL: ['Instagram failing', 'bad'], DOWN: ['router down', 'bad'], GUARD: ['WARP guard not running', 'bad'],
   IGIR: ['Instagram in a no-music country', 'bad'], YTMFAIL: ['YouTube Music failing', 'bad'], NOEXIT: ['no exit for Instagram', 'bad'], NOWARP: ['WARP missing', 'warn'],
@@ -4058,12 +4058,12 @@ const IGSVC = { // key: [name, monogram, colour]
   REDDIT: ['Reddit', 'R', '#ff4500'], LINKEDIN: ['LinkedIn', 'in', '#0a66c2'], PINTEREST: ['Pinterest', 'P', '#e60023'],
   TELEGRAM: ['Telegram', 'T', '#229ed9'], WHATSAPP: ['WhatsApp', 'W', '#1fa855'], DISCORD: ['Discord', 'D', '#5865f2'],
   YTM: ['YouTube Music', '♪', '#ff0033'], SPOTIFY: ['Spotify', 'S', '#1db954'], SCLOUD: ['SoundCloud', 'SC', '#ff5500'], NETFLIX: ['Netflix', 'N', '#e50914'],
-  DISNEY: ['Disney+', 'D+', '#113ccf'], PRIME: ['Prime Video', 'PV', '#00a8e1'], TWITCH: ['Twitch', 'Tw', '#9146ff'], APPLE: ['Apple Music', '♫', '#fa2d48'], GAMES: ['Steam · games', 'St', '#1b2838'],
+  DISNEY: ['Disney+', 'D+', '#113ccf'], PRIME: ['Prime Video', 'PV', '#00a8e1'], TWITCH: ['Twitch', 'Tw', '#9146ff'], APPLE: ['Apple Music', '♫', '#fa2d48'], SHAZAM: ['Shazam', 'Sz', '#0088ff'], GAMES: ['Steam · games', 'St', '#1b2838'],
   DEV: ['GitHub · Docker · npm', '{ }', '#24292f'], ADULT: [null, '18', '#8a3b5c'], CUSTOM: [null, '★', '#5357f0'] };
 const IGCATS = [['ai', 'AI', 'هوش مصنوعی', ['OPENAI', 'GOOGLE', 'CLAUDE', 'COPILOT', 'PERPLEX', 'GROK', 'AICODE']],
   ['social', 'Social', 'شبکه‌های اجتماعی', ['IG', 'X', 'TIKTOK', 'SNAP', 'REDDIT', 'LINKEDIN', 'PINTEREST']],
   ['msg', 'Messaging', 'پیام‌رسان‌ها', ['TELEGRAM', 'WHATSAPP', 'DISCORD']],
-  ['media', 'Video, music & games', 'ویدیو، موسیقی و بازی', ['YTM', 'SPOTIFY', 'SCLOUD', 'NETFLIX', 'DISNEY', 'PRIME', 'TWITCH', 'APPLE', 'GAMES']],
+  ['media', 'Video, music & games', 'ویدیو، موسیقی و بازی', ['YTM', 'SPOTIFY', 'SCLOUD', 'NETFLIX', 'DISNEY', 'PRIME', 'TWITCH', 'APPLE', 'SHAZAM', 'GAMES']],
   ['dev', 'Developers', 'برنامه‌نویسی', ['DEV']], ['adult', 'Adult', 'بزرگسالان', ['ADULT']], ['mine', 'My sites', 'سایت‌های من', ['CUSTOM']]];
 const IGSV_GUARD = ['IG', 'GOOGLE', 'YTM']; // their own guards (igauto.go, the agent's Google / Gemini watch)
 const igsvName = (g, i) => g === 'ADULT' ? L('Adult', 'بزرگسالان') : g === 'CUSTOM' ? L('My sites', 'سایت‌های من') + ` (${+((i || {}).ncustom) || 0})` : IGSVC[g][0];

@@ -65,6 +65,10 @@ var (
 		{"PRIME", "media", igAutoOwn, "https://www.primevideo.com/", "", ""},
 		{"TWITCH", "media", igAutoOwn, "https://www.twitch.tv/", "", ""},
 		{"APPLE", "media", igAutoOwn, "https://music.apple.com/", "", ""},
+		// Shazam's own API (amp / beacon / config.shazam.com) sits behind Google's front end, which
+		// answers 403 to a server IP it places in Iran - on some servers only part of the time
+		// (2026-11-18: one server always, two on 25-50 % of the requests; their WARPs were fine)
+		{"SHAZAM", "media", igAutoOwn, "https://amp.shazam.com/", "", "403"},
 		{"GAMES", "media", igAutoOwn, "https://store.steampowered.com/", "", ""},
 		// developer
 		{"DEV", "dev", igAutoOwn, "https://github.com/", "", ""},
@@ -85,7 +89,10 @@ var (
 	// the newer services: Auto unless a person pinned one exit
 	igSvcNew = map[string]bool{"OPENAI": true, "CLAUDE": true, "COPILOT": true, "PERPLEX": true, "GROK": true, "AICODE": true,
 		"X": true, "TIKTOK": true, "REDDIT": true, "LINKEDIN": true, "PINTEREST": true, "TELEGRAM": true, "WHATSAPP": true,
-		"DISCORD": true, "NETFLIX": true, "DISNEY": true, "PRIME": true, "TWITCH": true, "APPLE": true, "GAMES": true, "DEV": true}
+		"DISCORD": true, "NETFLIX": true, "DISNEY": true, "PRIME": true, "TWITCH": true, "APPLE": true, "SHAZAM": true, "GAMES": true, "DEV": true}
+	// services an exit refuses only part of the time: the check asks this many times and one
+	// refusal (a Block code) is the answer
+	igSvcTries = map[string]int{"SHAZAM": 6}
 )
 
 const (
@@ -94,7 +101,8 @@ const (
 	igSvcLiveMax  = 25 * time.Minute // an older check is not shown
 	igSvcBackMin  = 30 * time.Minute
 	igSvcBackMax  = 6 * time.Hour
-	igSvcBadTimes = 2 // failed checks in a row before Auto moves a service
+	igSvcBadTimes = 2     // failed checks in a row before Auto moves a service
+	igSvcOwnPort  = 12371 // the agent's relay of the server's own IP (RELAY_BASE)
 )
 
 // igSvcLive is the last check of one service of one server (memory only)
@@ -127,17 +135,23 @@ func igSvcIsAuto(rec *IgAutoSvc, svc string) bool {
 	return igSvcNew[svc] || rec.Auto
 }
 
-// igSvcScript: one line "S <KEY> <code> <cc> <flag>" per service, through the users' route (12370).
-func igSvcScript(keys []string) string {
+// igSvcScript: one line "S <KEY> <code> <cc> <flag>" per service, through one relay of the agent
+// (gemRelayPort = the users' route, igSvcOwnPort = the server's own IP). A service of igSvcTries
+// is asked several times: the first refusal (one of its Block codes) is its answer.
+func igSvcScript(keys []string, port int) string {
 	var b strings.Builder
-	b.WriteString(`#igsvc
+	fmt.Fprintf(&b, `#igsvc
 grep -q "^VER=" /usr/local/bin/igproxy 2>/dev/null || { echo __RC=3; exit 0; }
-ss -ltn 2>/dev/null | grep -q ':12370 ' || { echo "NORELAY"; exit 0; }
+ss -ltn 2>/dev/null | grep -q ':%d ' || { echo "NORELAY"; exit 0; }
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-X="-x socks5h://127.0.0.1:12370"
-d=$(mktemp -d)
-p(){ local k=$1 u=$2 t=$3 c r cc f=-
-  r=$(curl -s -m 12 -A "$UA" $X -o "$d/$k" -w '%{http_code} %{redirect_url}' "$u" 2>/dev/null); c=${r%% *}
+X="-x socks5h://127.0.0.1:%d"
+`, port, port)
+	b.WriteString(`d=$(mktemp -d)
+p(){ local k=$1 u=$2 t=$3 n=${4:-1} bl=$5 c r cc f=- i
+  for ((i = 0; i < n; i++)); do
+    r=$(curl -s -m 12 -A "$UA" $X -o "$d/$k" -w '%{http_code} %{redirect_url}' "$u" 2>/dev/null); c=${r%% *}
+    case "|$bl|" in *"|$c|"*) break;; esac
+  done
   grep -qs 'unsupported_country\|unavailable-in-region\|not available in your country' "$d/$k" && f=region
   case "${r#* }" in */app-unavailable-in-region*) f=region;; esac
   cc=$(sed -nE 's#.*netflix\.com/([a-z]{2})(-[a-z]{2})?/.*#\1#p' <<<"${r#* }" | tr a-z A-Z)
@@ -146,7 +160,7 @@ p(){ local k=$1 u=$2 t=$3 c r cc f=-
 `)
 	for _, k := range keys {
 		d := igSvcByKey[k]
-		fmt.Fprintf(&b, "p %s '%s' '%s' &\n", k, d.URL, d.Trace)
+		fmt.Fprintf(&b, "p %s '%s' '%s' %d '%s' &\n", k, d.URL, d.Trace, max(igSvcTries[k], 1), d.Block)
 	}
 	b.WriteString("wait; cat \"$d\"/*.r 2>/dev/null; rm -rf \"$d\"\n")
 	return b.String()
@@ -180,6 +194,29 @@ func igSvcParse(lines []string) (map[string]*igSvcLive, bool) {
 	return out, true
 }
 
+// igSvcKnown: does this server's agent know the service? (an agent older than the service does
+// not report its route, and refuses a route for it)
+func igSvcKnown(inf map[string]string, svc string) bool {
+	_, ok := inf[strings.ToLower(svc)]
+	return ok
+}
+
+// igSvcBack: how long a moved service waits before its preferred exit is tried again
+func igSvcBack(tries int) time.Duration {
+	back := igSvcBackMin << uint(min(max(tries, 0), 4))
+	if back > igSvcBackMax {
+		back = igSvcBackMax
+	}
+	return back
+}
+
+// igSvcOwnHolds: the server's own IP was asked (relay igSvcOwnPort) before a moved service goes
+// back to it, and it is still refused there: the service stays where it works.
+func igSvcOwnHolds(own map[string]*igSvcLive, svc string) bool {
+	l := own[svc]
+	return l != nil && !l.OK
+}
+
 // igSvcCheckKeys: the services checked on this server (the agent must know them)
 func igSvcCheckKeys(srv *Server, inf map[string]string) []string {
 	var keys []string
@@ -187,7 +224,7 @@ func igSvcCheckKeys(srv *Server, inf map[string]string) []string {
 		if d.URL == "" {
 			continue
 		}
-		if _, ok := inf[strings.ToLower(d.Key)]; !ok {
+		if !igSvcKnown(inf, d.Key) {
 			continue
 		}
 		// the hub's own IP is the Google test account's exit: no Google page from it (YouTube Music on direct)
@@ -225,7 +262,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 	for _, d := range igSvcStart {
 		k := d.Key
 		rec := recs[k]
-		if !igSvcIsAuto(rec, k) {
+		if !igSvcIsAuto(rec, k) || !igSvcKnown(inf, k) {
 			continue
 		}
 		cands := igSvcCands(igSvcPref(&d, srv), inf)
@@ -252,7 +289,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 	if len(keys) == 0 {
 		return false
 	}
-	rc, lines, err := a.igShell(ctx, srv, igSvcScript(keys), 60*time.Second)
+	rc, lines, err := a.igShell(ctx, srv, igSvcScript(keys, gemRelayPort), 90*time.Second)
 	if err != nil || rc != 0 {
 		return false
 	}
@@ -281,6 +318,24 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 	// 3. Auto: a failing service to the next exit; a moved one back to its preferred exit when due
 	moves, again := map[string]string{}, false
 	now := time.Now()
+	// moved services due to go back to the server's own IP: asked there first (its own relay), so
+	// the users are not sent back to an IP that still refuses them
+	var due []string
+	for _, d := range igSvcStart {
+		k, rec := d.Key, recs[d.Key]
+		if d.URL == "" || !igSvcIsAuto(rec, k) || live[k] == nil || !live[k].OK || rec == nil || rec.Cur == "" || now.Unix() < rec.Next {
+			continue
+		}
+		if cands := igSvcCands(igSvcPref(&d, srv), inf); cands[0] == "direct" && igSvcKind(inf[strings.ToLower(k)]) != "direct" {
+			due = append(due, k)
+		}
+	}
+	var own map[string]*igSvcLive
+	if len(due) > 0 {
+		if rc, lines, err := a.igShell(ctx, srv, igSvcScript(due, igSvcOwnPort), 90*time.Second); err == nil && rc == 0 {
+			own, _ = igSvcParse(lines)
+		}
+	}
 	for _, d := range igSvcStart {
 		k := d.Key
 		rec := recs[k]
@@ -309,16 +364,14 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 				if s.Want == "" {
 					s.Want = cands[0]
 				}
-				back := igSvcBackMin << uint(min(s.Tries, 4))
-				if back > igSvcBackMax {
-					back = igSvcBackMax
-				}
-				s.Cur, s.Why, s.Since, s.Next = next, why, now.Unix(), now.Add(back).Unix()
+				s.Cur, s.Why, s.Since, s.Next = next, why, now.Unix(), now.Add(igSvcBack(s.Tries)).Unix()
 			})
 			a.igAutoLog(srv, k, "fix", fmt.Sprintf("%s failed on %s (%s) → %s", igSvcName(k), igRouteWord(cur), why, igRouteWord(next)))
 			continue
 		}
-		if moved && now.Unix() >= rec.Next && cur != cands[0] {
+		if moved && now.Unix() >= rec.Next && cur != cands[0] && igSvcOwnHolds(own, k) {
+			a.igAutoPut(srv.ID, k, func(s *IgAutoSvc) { s.Tries++; s.Next = now.Add(igSvcBack(s.Tries)).Unix() })
+		} else if moved && now.Unix() >= rec.Next && cur != cands[0] {
 			moves[k] = cands[0]
 			a.igAutoPut(srv.ID, k, func(s *IgAutoSvc) { s.Cur, s.Why, s.Tries = "", "", s.Tries+1 })
 			a.igAutoLog(srv, k, "back", fmt.Sprintf("%s: trying %s again", igSvcName(k), igRouteWord(cands[0])))
