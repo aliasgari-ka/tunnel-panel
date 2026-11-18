@@ -431,4 +431,10 @@ func TestDownCauseNoRouteOtherPathUp(t *testing.T) {
 	if c := dcClassify(in).cause("x|v4", in); c.Code == "no_route" {
 		t.Errorf("GRE works on the route, yet no_route: %q", c.Text)
 	}
+	// what it is named instead when every ping through the tunnel is lost: the route
+	// drops this tunnel's own packets
+	in = mk()
+	in.UpOther = true
+	in.IR.Inner = 100
+	dcCheck(t, in, "l3_loss", "route", "the route loses most of this tunnel's")
 }
