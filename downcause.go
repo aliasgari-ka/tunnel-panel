@@ -792,7 +792,10 @@ func dcClassify(in *dcInput) *dcResult {
 				tcpDead = true
 			}
 		}
-		if s.PingSmall == 100 && (tcpDead || len(s.Reach) == 0 && other(s).PingSmall == 100) {
+		// another path of this family working now proves the servers do reach each other:
+		// the route only drops their ping (seen on England: Premium named no_route for days
+		// while TP and FRP over IPv4 carried the users)
+		if s.PingSmall == 100 && !in.UpOther && len(in.UpVia) == 0 && (tcpDead || len(s.Reach) == 0 && other(s).PingSmall == 100) {
 			return res("route", "no_route",
 				fmt.Sprintf("the two servers can't reach each other over %s at all right now (ping from %s: all lost%s)", famName(in.Family), s.Where, map[bool]string{true: ", TCP connects time out", false: ""}[tcpDead]),
 				fmt.Sprintf("دو سرور الان روی %s اصلاً به هم نمی‌رسند (پینگ از %s: همه گم شد%s)", famName(in.Family), s.WhereFa, map[bool]string{true: "، اتصال TCP تایم‌اوت می‌شود", false: ""}[tcpDead]),
