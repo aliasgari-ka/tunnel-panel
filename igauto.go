@@ -38,6 +38,7 @@ const (
 	igAutoEvery    = 10 * time.Minute // each server is checked this often (a bad one again at the next tick)
 	igAutoBackMin  = 30 * time.Minute // the route it should be on is tried again after this …
 	igAutoBackMax  = 6 * time.Hour    // … doubling up to this
+	igAutoHeld     = 6 * time.Hour    // a move back that held this long forgets the earlier flaps
 	igAutoAlertGap = 6 * time.Hour    // "nothing works" at most this often per server
 	igAutoLogMax   = 300
 )
@@ -57,6 +58,7 @@ type IgAutoSvc struct {
 	Back  int64  `json:"back,omitempty"`  // when it last went back to Want (igexit.go: older tries are forgotten after 6 h)
 	Flaps int    `json:"flaps,omitempty"` // Want failed again soon after a move back (igexit.go adopts the fallback after igExFlapMax)
 	Via   string `json:"via,omitempty"`   // Instagram: its WARPs enter Cloudflare through this server (igwarpvia.go)
+	Flaps int    `json:"flaps,omitempty"` // Instagram: moves back to Want that did not hold (the next try waits longer)
 }
 
 // IgAutoEvent is one line of the short history.
@@ -419,6 +421,7 @@ func (a *App) igAutoCheck(ctx context.Context, srv *Server) bool {
 					s.Pin = route
 				}
 				s.Want, s.Cur, s.Why, s.Tries, s.Next = route, "", "", 0, 0
+				s.Flaps, s.Back = 0, 0 // another route: its own history
 			})
 			a.igAutoLog(srv, "IG", "info", "route changed by hand to "+igRouteWord(route)+" - followed")
 		}
@@ -600,7 +603,10 @@ func (a *App) igAutoFix(ctx context.Context, srv *Server, inf map[string]string,
 				if back {
 					s.Cur, s.Why, s.Since, s.Tries, s.Next = "", "", 0, 0, 0
 				} else {
-					s.Cur, s.Why, s.Since, s.Tries, s.Next = c, why, now.Unix(), 0, now.Add(igAutoBackMin).Unix()
+					if s.Cur == "" { // leaving Want (not one backup for another)
+						s.Flaps = igAutoFlaps(s.Flaps, s.Back, now)
+					}
+					s.Cur, s.Why, s.Since, s.Tries, s.Next = c, why, now.Unix(), 0, now.Add(igAutoBackAfter(s.Flaps)).Unix()
 				}
 			})
 			a.igAutoMark(srv.ID, igProbe{Live: cc, FB: p.FB}, 0)
@@ -622,6 +628,27 @@ func (a *App) igAutoFix(ctx context.Context, srv *Server, inf map[string]string,
 		a.igAutoPut(srv.ID, "IG", func(s *IgAutoSvc) { s.Alert = time.Now().Unix() })
 		a.push(fmt.Sprintf("🛰 Instagram on %s: %s (route %s), and no WARP, proxy or own IP of the server reads a music country. Add a working proxy on the IG Routing page.", igLabel(srv), why, igRouteWord(route)))
 	}
+}
+
+// igAutoFlaps counts the moves back to the wanted route that did not hold: one more when the
+// route fails again within igAutoHeld of the last move back, none when that move held (or
+// there was none). Seen 2026-11-14 on the outbound server: Instagram read IR on WARP IPv6
+// every 1-3 h, each return 30 min later "worked", so the users were moved 8 times in 8 h.
+func igAutoFlaps(flaps int, back int64, now time.Time) int {
+	if back <= 0 || now.Sub(time.Unix(back, 0)) > igAutoHeld {
+		return 0
+	}
+	return flaps + 1
+}
+
+// igAutoBackAfter: the pause before the wanted route is tried again, after n failed tries
+// and returns that did not hold (30 min doubling to 6 h).
+func igAutoBackAfter(n int) time.Duration {
+	d := igAutoBackMin << uint(max(0, min(n, 8)))
+	if d > igAutoBackMax || d <= 0 {
+		d = igAutoBackMax
+	}
+	return d
 }
 
 func orDash(s string) string {
@@ -647,10 +674,7 @@ func (a *App) igAutoBack(ctx context.Context, srv *Server, st IgAutoSvc) {
 		return
 	}
 	retry := func(why string) {
-		d := igAutoBackMin << uint(st.Tries+1)
-		if d > igAutoBackMax || d <= 0 {
-			d = igAutoBackMax
-		}
+		d := igAutoBackAfter(st.Tries + 1 + st.Flaps)
 		a.igAutoPut(srv.ID, "IG", func(s *IgAutoSvc) { s.Tries++; s.Next = time.Now().Add(d).Unix() })
 		if st.Tries == 0 || st.Tries%4 == 3 { // not every try in the history
 			a.igAutoLog(srv, "IG", "info", fmt.Sprintf("%s still not usable (%s) - stays on %s, next try in %s", igRouteWord(want), why, igRouteWord(st.Cur), d.Round(time.Minute)))
@@ -680,7 +704,10 @@ func (a *App) igAutoBack(ctx context.Context, srv *Server, st IgAutoSvc) {
 	}
 	cc, err := a.igAutoRoute(ctx, srv, want)
 	if err == nil && cc != "" && !igNoMusic(cc) {
-		a.igAutoPut(srv.ID, "IG", func(s *IgAutoSvc) { s.Cur, s.Why, s.Since, s.Tries, s.Next = "", "", 0, 0, 0 })
+		a.igAutoPut(srv.ID, "IG", func(s *IgAutoSvc) {
+			s.Cur, s.Why, s.Since, s.Tries, s.Next = "", "", 0, 0, 0
+			s.Back = time.Now().Unix() // a new failure soon after this is a flap (igAutoFlaps)
+		})
 		a.igAutoMark(srv.ID, igProbe{Live: cc}, 0)
 		a.igAutoLog(srv, "IG", "back", fmt.Sprintf("%s works again (%s) - back from %s", igRouteWord(want), cc, igRouteWord(st.Cur)))
 		return
