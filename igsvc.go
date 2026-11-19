@@ -217,6 +217,41 @@ func igSvcOwnHolds(own map[string]*igSvcLive, svc string) bool {
 	return l != nil && !l.OK
 }
 
+// igSvcRefused: the answer is one of the service's Block codes - a refusal, not a slow or dead exit
+func igSvcRefused(svc string, l *igSvcLive) bool {
+	d := igSvcByKey[svc]
+	return d != nil && l != nil && d.Block != "" && contains(strings.Split(d.Block, "|"), l.Code)
+}
+
+// igSvcOwnAsk: the part-time services (igSvcTries) that are on the server's own IP. They are asked
+// on the own IP's relay too: on the users' route a "My sites" entry of the same domain hides a
+// refused own IP, and the two checks together miss a part-time refusal less often.
+func igSvcOwnAsk(keys []string, inf map[string]string) []string {
+	var out []string
+	for _, k := range keys {
+		if igSvcTries[k] > 0 && igSvcKind(inf[strings.ToLower(k)]) == "direct" {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// igSvcOwnMerge: a refusal seen on the own IP is the service's answer, whatever the users' route said
+func igSvcOwnMerge(live, own map[string]*igSvcLive) {
+	for k, l := range own {
+		if igSvcRefused(k, l) && live[k] != nil && live[k].OK {
+			live[k] = l
+		}
+	}
+}
+
+// igSvcMoveNow: a failed check moves the service - after igSvcBadTimes failures in a row, or at
+// once when a part-time service was refused (it was asked several times; waiting for a second
+// refusal in a row would leave it on an IP that refuses some of the users)
+func igSvcMoveNow(svc string, l *igSvcLive, bad int) bool {
+	return bad >= igSvcBadTimes || (igSvcTries[svc] > 0 && igSvcRefused(svc, l))
+}
+
 // igSvcCheckKeys: the services checked on this server (the agent must know them)
 func igSvcCheckKeys(srv *Server, inf map[string]string) []string {
 	var keys []string
@@ -265,7 +300,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if !igSvcIsAuto(rec, k) || !igSvcKnown(inf, k) {
 			continue
 		}
-		cands := igSvcCands(igSvcPref(&d, srv), inf)
+		cands := igSvcCands(igSvcPref(&d, srv, inf), inf)
 		want := cands[0]
 		if rec != nil && rec.Cur != "" && contains(cands, rec.Cur) {
 			want = rec.Cur
@@ -297,6 +332,13 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 	if !relay {
 		return false
 	}
+	if ask := igSvcOwnAsk(keys, inf); len(ask) > 0 {
+		if rc, lines, err := a.igShell(ctx, srv, igSvcScript(ask, igSvcOwnPort), 90*time.Second); err == nil && rc == 0 {
+			if own, ok := igSvcParse(lines); ok {
+				igSvcOwnMerge(live, own)
+			}
+		}
+	}
 	igSvcMem.Lock()
 	m := igSvcMem.live[srv.ID]
 	if m == nil {
@@ -326,7 +368,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if d.URL == "" || !igSvcIsAuto(rec, k) || live[k] == nil || !live[k].OK || rec == nil || rec.Cur == "" || now.Unix() < rec.Next {
 			continue
 		}
-		if cands := igSvcCands(igSvcPref(&d, srv), inf); cands[0] == "direct" && igSvcKind(inf[strings.ToLower(k)]) != "direct" {
+		if cands := igSvcCands(igSvcPref(&d, srv, inf), inf); cands[0] == "direct" && igSvcKind(inf[strings.ToLower(k)]) != "direct" {
 			due = append(due, k)
 		}
 	}
@@ -342,11 +384,11 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if !igSvcIsAuto(rec, k) || live[k] == nil {
 			continue
 		}
-		cands := igSvcCands(igSvcPref(&d, srv), inf)
+		cands := igSvcCands(igSvcPref(&d, srv, inf), inf)
 		cur := igSvcKind(inf[strings.ToLower(k)])
 		moved := rec != nil && rec.Cur != ""
 		if !live[k].OK {
-			if bad[k] < igSvcBadTimes {
+			if !igSvcMoveNow(k, live[k], bad[k]) {
 				again = true
 				continue
 			}
@@ -396,8 +438,16 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 // igSvcPref: the service's exits in order of preference on this server. Adult sites on a server
 // in a country that blocks them go WARP first (then a proxy, the own IP last): they are not
 // checked, so Auto would otherwise leave them on the blocked own IP for good.
-func igSvcPref(d *igSvcDef, srv *Server) []string {
+//
+// Shazam goes WARP first on a server whose own IP Google does not take (Google is off that IP):
+// its API is behind Google's front end and follows the same judgement. On such an IP the plain
+// API answers, so no check sees it, but the app is sent to unsupported.shazam.com and stays shut
+// (seen 2026-11-19 on the hub's route).
+func igSvcPref(d *igSvcDef, srv *Server, inf map[string]string) []string {
 	if d.Key == "ADULT" && srv != nil && igAdultBlocked[strings.ToUpper(strings.TrimSpace(srv.Country))] {
+		return igAutoAI
+	}
+	if g := inf["google"]; d.Key == "SHAZAM" && g != "" && g != "direct" {
 		return igAutoAI
 	}
 	return d.Auto
