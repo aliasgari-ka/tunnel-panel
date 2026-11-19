@@ -3089,7 +3089,7 @@ function bnPaint() {
   const order = (a, b) => BN_RANK[a.s.kind] - BN_RANK[b.s.kind] || (b.s.gain - a.s.gain) || a.p.label.localeCompare(b.p.label);
   // routes users are on first; the ones no tunnel runs on (measured only) folded below
   const main = shown.filter(x => x.s.users.size || x.s.running).sort(order), rest = shown.filter(x => !main.includes(x)).sort(order);
-  const head = `<div class="bn-or bn-oh"><span>Route</span><span>Users are on</span><span>★ Best now</span><span>Measured</span><span>Next step</span><span></span></div>`;
+  const head = `<div class="bn-or bn-oh"><span>Route</span><span>Users are on</span><span>Best measured</span><span>Next step</span><span></span></div>`;
   const rows = (xs) => xs.map(x => { try { return bnRow(x.p, f, x.s); } catch (e) { console.error(e); return `<div class="bn-or"><span data-notr>${esc(x.p.label)}</span><span class="faint">couldn't be drawn: ${esc(e.message)}</span></div>`; } }).join('');
   const restOpen = BN.restOpen || !main.length || rest.some(x => BN.open.has(x.p.k + '|' + f));
   list.innerHTML = (main.length ? `<div class="card bn-ot">${head}${rows(main)}</div>` : '')
@@ -3111,7 +3111,7 @@ function bnTop(all, routes) {
   const tip = hrs ? `only the methods running on each route, at most ${st.autoMB || 3} MB each way per method; every method once in ${(st.fullEvery || 7) * hrs} h` : 'routes are measured only when you run the benchmark';
   box.innerHTML = `<div class="card bn-top">
     <div class="seg sm" id="bnfam">${fams.map(([f, n]) => `<button data-f="${f}" class="${f === BN.fam ? 'on' : ''}">${famName(f)} <small>${n}</small></button>`).join('')}</div>
-    <div class="bn-cs">${chip('good', '✓', '1 on the best', '# on the best')}${chip('better', '★', '1 has a faster method', '# have a faster method')}${chip('fail', '✕', '1 failed', '# failed')}${chip('old', '⏱', '1 to measure', '# to measure')}</div>
+    <div class="bn-cs">${chip('good', '✓', '1 on the best', '# on the best')}${chip('better', '▲', '1 has a faster method', '# have a faster method')}${chip('fail', '✕', '1 failed', '# failed')}${chip('old', '⏱', '1 to measure', '# to measure')}</div>
     <span class="bn-sp1"></span>
     <div class="bn-au" title="${esc(tip)}"><span>${hrs ? `🤖 Automatic every ${hrs} h` : '🤖 Automatic benchmark is off'}</span>${hrs && due ? `<small class="faint">${due.next <= now ? 'a route is due now' : 'next ' + bnIn(due.next)}</small>` : ''}
       ${isAdmin() ? `<form class="bn-edit" id="bnaf"><label><span>every</span><input name="hours" class="mono" inputmode="numeric" value="${esc(st.set || '')}" placeholder="24" aria-label="hours"><span>h</span></label><button class="btn sm">Save</button></form>` : ''}</div></div>`;
@@ -3120,50 +3120,58 @@ function bnTop(all, routes) {
   const fm = $('#bnaf', box);
   if (fm) fm.onsubmit = oneAtATime(fm, async () => { try { await api('/bench/auto', { hours: fm.hours.value.trim() }); toast('Saved'); if (STATE.settings) STATE.settings.autoBench = fm.hours.value.trim(); bnLoad(); } catch (e) { alertModal('Automatic benchmark', e.message); } });
 }
-// one route on one line; open, its whole comparison right under it
+// one route on one line; open, its whole comparison right under it. The line reads the same way in
+// both languages: the route, what users are on and how fast, the best measured, then the one
+// verdict with its one action and the age of the measurement under it. Names and numbers are each
+// isolated (bdi / dir=ltr), so a Persian name next to a Latin one never reorders the arrow or flags.
 function bnRow(p, f, s) {
   const k = p.k + '|' + f, open = BN.open.has(k), busy = !!BN.job && BN.running;
   const fl = (id, d) => { const s2 = id ? serverById(id) : null; return s2 && s2.country ? flag(s2.country) : d; };
   const on = p.tunnels.filter(t => t.active);
-  const tn = p.tunnels.length ? `<small class="bn-tns"><span class="led${on.length ? ' on' : ''}"></span><span data-notr>${p.tunnels.map(t => esc(t.name)).join(', ')}</span></small>` : '<small class="faint">no tunnel</small>';
-  const nums = (x) => `<span class="bn-nm"><b>↓ ${bnMb(x.downMbps || 0)}</b> <span class="faint">↑ ${bnMb(x.upMbps || 0)}</span></span>`;
-  const lat = (x) => `<small class="faint">${(x.rttMs || 0).toFixed(0)} ms${x.lossKnown ? ` · <span class="${x.lossPct >= 5 ? 'bn-bad' : ''}">${x.lossPct.toFixed(0)}% loss</span>` : ''}</small>`;
+  const tn = p.tunnels.length ? `<small class="bn-tns"><span class="led${on.length ? ' on' : ''}"></span><bdi data-notr>${p.tunnels.map(t => esc(t.name)).join(', ')}</bdi></small>` : '<small class="faint">no tunnel</small>';
+  const meth = (id) => `<b><bdi data-notr>${esc(methodTitle(id))}</bdi></b>`;
+  // "↓ 44 ↑ 72 Mbps · 46 ms": always left to right, the unit on it; packet loss only when there is some
+  const nums = (x) => `<span class="bn-ln" title="↓ download (foreign → Iran), ↑ upload (Iran → foreign)"><span class="bn-nm" dir="ltr" data-notr><b>↓ ${bnMb(x.downMbps || 0)}</b> <span class="faint">↑ ${bnMb(x.upMbps || 0)}</span> <small>Mbps</small></span><span class="bn-ms" dir="ltr" data-notr>${(x.rttMs || 0).toFixed(0)} ms</span>${x.lossKnown && x.lossPct >= 0.5 ? `<span class="bn-ls${x.lossPct >= 5 ? ' bn-bad' : ''}">${x.lossPct.toFixed(0)}% loss</span>` : ''}</span>`;
   // who is on what
   let usersCell;
   if (s.users.size) {
     const um = [...s.users], more = um.length > 1 ? ` <small class="faint">+${um.length - 1}</small>` : '';
     const x = s.uRes, mid = x ? x.method : um[0];
-    usersCell = `<div class="bn-oc"><span class="bn-mt">👥 <b>${esc(methodTitle(mid))}</b>${more}</span>${s.uOk ? `<span>${nums(s.uOk)} ${lat(s.uOk)}</span>` : x && !x.skipped ? `<button class="bn-why bn-bad" data-err="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>` : s.run ? '<small class="faint">not measured in this run</small>' : ''}</div>`;
+    usersCell = `<span class="bn-mt">${meth(mid)}${more}</span>${s.uOk ? nums(s.uOk) : x && !x.skipped ? `<button class="bn-why bn-bad" data-err="${esc(x.error || 'failed')}">✕ ${esc(shortErr(x.error))}</button>` : s.run ? '<small class="faint">not measured in this run</small>' : ''}`;
   } else {
     const other = f === 'v4' ? 'v6' : 'v4';
     usersCell = bnUse(p, other).users.size ? `<small class="faint">users are on ${famName(other)}</small>` : '<small class="faint">—</small>';
   }
-  const bestCell = s.best ? `<div class="bn-oc"><span class="bn-mt"><span class="bn-star">★</span> <b>${esc(methodTitle(s.best.method))}</b></span><span>${nums(s.best)} ${lat(s.best)}</span></div>`
+  // the best measured (the run's first: its ranking, not only ↓): not said twice when the users are already on it
+  const same = !!(s.best && s.uOk && s.best.method === s.uOk.method);
+  const bestCell = s.best ? (same ? '<small class="faint">the same method</small>' : `<span class="bn-mt">${meth(s.best.method)}</span>${nums(s.best)}`)
     : s.run && !s.run.live ? '<small class="bn-bad">no method worked</small>' : '<small class="faint">—</small>';
-  // when
-  let when;
-  if (s.running) {
-    const pr = BN.prog && BN.prog.n ? `${BN.prog.i}/${BN.prog.n}` : '';
-    when = `<span class="pill acc">measuring${pr ? ' ' + pr : '…'}</span>`;
-  } else if (!s.run) when = '<span class="pill off">never</span>';
-  else when = `<span class="pill ${s.age > 7 * 86400 ? 'bad' : s.stale ? 'warn' : 'on'}" title="${esc(new Date(s.run.at * 1000).toLocaleString())}">${bnAge(s.run.at)}</span>`;
-  // the one next step
+  // when it was measured: one small line under the verdict
+  let when = '';
+  if (s.running) when = '<small class="faint">results come in as each method finishes</small>';
+  else if (s.run && s.kind !== 'old') when = `<small class="bn-ag ${s.stale ? 'bn-old2' : 'faint'}" title="${esc(new Date(s.run.at * 1000).toLocaleString())}">measured ${bnAge(s.run.at)}</small>`;
+  // the one verdict and the one next step
   const runBtn = (pri) => `<button class="btn sm${pri ? ' pri' : ''}" data-run="${f}"${busy ? ' disabled title="one benchmark at a time — wait for the running one"' : ''}>▶ Run</button>`;
-  const applyBtn = (pri) => s.best && p.tunnels.length ? `<button class="btn sm${pri ? ' pri' : ''}" data-apply="${esc(s.best.method)}" data-fam="${f}" title="Switch one of this route's tunnels to ${esc(methodTitle(s.best.method))}">Apply ★</button>` : '';
+  const applyBtn = (pri) => s.best && p.tunnels.length ? `<button class="btn sm${pri ? ' pri' : ''}" data-apply="${esc(s.best.method)}" data-fam="${f}" title="Switch one of this route's tunnels to ${esc(methodTitle(s.best.method))}">Apply</button>` : '';
+  const say = (cls, txt) => `<span class="bn-vd ${cls}">${txt}</span>`, acts = (h2) => h2 ? `<span class="bn-bt">${h2}</span>` : '';
+  const pr = BN.prog && BN.prog.n ? `${BN.prog.i}/${BN.prog.n}` : '';
   const next = {
-    live: '<small class="faint">results come in as each method finishes</small>',
-    none: `<small class="faint">not measured yet</small>${runBtn(true)}`,
-    fail: `${s.fail && (!s.run || s.fail.at > s.run.at) ? `<button class="bn-why bn-bad" data-err="${esc(s.fail.error)}">✕ ${esc(shortErr(s.fail.error))}</button>` : '<small class="bn-bad">✕ nothing worked</small>'}${runBtn(true)}`,
-    bad: `<small class="bn-bad">users' method failed</small>${applyBtn(true)}${runBtn(false)}`,
-    unmeasured: `<small class="bn-old2">users' method not measured</small>${runBtn(true)}${applyBtn(false)}`,
-    better: `<small class="bn-up">★ ${Math.round(s.gain * 100)}% faster ↓</small>${applyBtn(true)}`,
-    old: `<small class="bn-old2">⏱ measure again</small>${runBtn(true)}`,
-    good: `<small class="bn-ok">✓ on the best</small>`,
-    idle: !s.run || s.stale || !s.ok.length ? runBtn(false) : '',
+    live: `<span class="pill acc">measuring${pr ? ' ' + pr : '…'}</span>`,
+    none: say('bn-old2', 'not measured yet') + acts(runBtn(true)),
+    fail: (s.fail && (!s.run || s.fail.at > s.run.at) ? `<button class="bn-why bn-bad" data-err="${esc(s.fail.error)}">✕ ${esc(shortErr(s.fail.error))}</button>` : say('bn-bad', '✕ nothing worked')) + acts(runBtn(true)),
+    bad: say('bn-bad', "users' method failed") + acts(applyBtn(true) + runBtn(false)),
+    unmeasured: say('bn-old2', "users' method not measured") + acts(runBtn(true) + applyBtn(false)),
+    better: say('bn-up', `${Math.round(s.gain * 100)}% faster`) + acts(applyBtn(true)),
+    old: say('bn-old2', `measured ${s.run ? bnAge(s.run.at) : ''}`) + acts(runBtn(true)), // the age is the verdict here
+    good: say('bn-ok', same ? '✓ on the best' : '✓ close to the best'),
+    idle: !s.run || s.stale || !s.ok.length ? acts(runBtn(false)) : '',
   }[s.kind];
+  const end = (id, d, host) => `<span class="bn-ep">${fl(id, d)}${srvNm(id, host)}</span>`;
   return `<div class="bn-or k-${s.kind}${open ? ' open' : ''}" data-k="${esc(p.k)}" data-f="${f}" data-row tabindex="0" role="button" aria-expanded="${open}">
-      <div class="bn-rt"><b>${fl(p.iran, flag('IR'))} ${srvNm(p.iran)} <span class="faint">→</span> ${fl(p.foreign, p.foreign ? '🌍' : '🖥')} ${srvNm(p.foreign, 'this panel host')}</b>${tn}</div>
-      ${usersCell}${bestCell}<div class="bn-ow">${when}</div><div class="bn-nx">${next}</div><span class="bn-cv">▾</span></div>`
+      <div class="bn-rt"><b class="bn-pair">${end(p.iran, flag('IR'))}<span class="bn-ar faint">→</span>${end(p.foreign, p.foreign ? '🌍' : '🖥', 'this panel host')}</b>${tn}</div>
+      <div class="bn-oc bn-us"><span class="bn-lb">Users are on</span>${usersCell}</div>
+      <div class="bn-oc bn-be"><span class="bn-lb">Best measured</span>${bestCell}</div>
+      <div class="bn-nx"><div class="bn-nxm">${next}</div>${when}</div><span class="bn-cv">▾</span></div>`
     + (open ? `<div class="bn-ox" data-k="${esc(p.k)}" data-f="${f}">${bnFamSection(p, f).outerHTML}<div class="bn-pl" data-plan="${esc(k)}"></div></div>` : '');
 }
 // what "Every method" would measure on an open route, and what stays out and why (/bench/plan)
