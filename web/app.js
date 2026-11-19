@@ -2852,8 +2852,25 @@ function tunnelModal(t) {
   $('#cancel', m).onclick = () => m.remove();
   // which methods hot standby keeps running on this pair of servers: the Routes page's switches
   // for the pair (off = left out), chosen here before the first Start
-  let skipAll = null, pathsKey = '';
+  let skipAll = null, pathsKey = '', benchHist = [];
   const hasFam = (id, f) => { const s = id ? serverById(id) : null; const st = STATE.settings; return f === 'v4' ? !!(s ? s.ipv4 : st.localIPv4 || true) : !!(s ? s.ipv6 : st.localIPv6); };
+  // one family's methods as rows, in the order of this route's newest benchmark: the ones that worked
+  // first with their rank and numbers, then the ones that failed (with why) or were not measured
+  const pickFam = (p, f, ms, off, head) => {
+    const runs = benchHist.filter(r => r.iranId === p.iran && (r.foreignId || '') === p.foreign && r.family === f), run = runs[0]; // newest first
+    // each method's newest result: the newest run's, else (a run of only some methods) an earlier run's
+    const last = (id) => { for (const r of runs) { const x = (r.results || []).find(y => y.method === id && !y.skipped); if (x) return { x, at: x.at || r.at }; } return null; };
+    const got = ms.map(x => ({ m: x, r: last(x.id) }));
+    const ranked = got.filter(g => g.r && g.r.x.ok).sort((a, b) => (b.r.x.score || 0) - (a.r.x.score || 0));
+    const failed = got.filter(g => g.r && !g.r.x.ok), never = got.filter(g => !g.r);
+    const box = (m) => `<input type="checkbox" data-path="${esc(m.id)}|${f}"${off.includes(m.id + '|' + f) ? '' : ' checked'}>`;
+    const name = (m) => `<span class="mp-n"><bdi data-notr>${esc(m.title)}</bdi>${head ? '' : ` <small class="faint">${famName(f)}</small>`}</span>`;
+    const older = (g) => run.at - g.r.at > 300 ? `<small class="bn-old" title="the newest run didn't measure it: its result is from an earlier run">measured ${bnAge(g.r.at)}</small>` : '';
+    return `<div class="mp-f">${head || run ? `<div class="mp-h">${head ? `<b>${famName(f)}</b>` : ''}${run ? `<small class="faint">measured ${bnAge(run.at)}</small>${ranked.length ? '<small class="faint">best first</small>' : ''}` : '<small class="faint">not measured yet</small>'}</div>` : ''}
+      ${ranked.map((g, i) => `<label class="mp-r">${box(g.m)}<span class="mp-rk">${i + 1}</span>${name(g.m)}<span class="mp-v">${bnNums(g.r.x)}${older(g)}</span></label>`).join('')}
+      ${failed.length ? `<div class="mp-sub faint">Failed on this route</div>${failed.map(g => `<label class="mp-r mp-x">${box(g.m)}<span class="mp-rk">✕</span>${name(g.m)}<span class="mp-v"><span class="bn-bad" title="${esc(g.r.x.error || 'failed')}">${esc(shortErr(g.r.x.error))}</span>${older(g)}</span></label>`).join('')}` : ''}
+      ${never.length ? `${run ? '<div class="mp-sub faint">Not measured on this route</div>' : ''}<div class="mp-g">${never.map(g => `<label class="mp-r mp-x">${box(g.m)}${name(g.m)}</label>`).join('')}</div>` : ''}</div>`;
+  };
   const pair = () => ({ iran: $('[name=serverId]', m).value, foreign: $('[name=foreignId]', m).value || '' });
   const paintPaths = () => {
     const box = $('#tPaths', m);
@@ -2875,13 +2892,15 @@ function tunnelModal(t) {
     box.innerHTML = `<details open><summary class="muted" style="font-size:13px;cursor:pointer">Tunnels to build: <b data-pn>${on}</b> of ${cells.length} <span class="faint">— only the checked ones are installed and started on the servers, your pick (not the benchmark's); the method you Start with always runs</span></summary>
       <div style="margin-top:8px;padding:10px 12px;background:var(--panel-2);border-radius:10px">
         <div class="actions" style="margin-bottom:6px"><button type="button" class="btn sm ghost" data-pall="1">All</button><button type="button" class="btn sm ghost" data-pall="0">None</button></div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 12px;font-size:13px">${ms.map(x => fams.filter(f => x.families.includes(f)).map(f => `<label class="row"><input type="checkbox" data-path="${esc(x.id)}|${f}"${off.includes(x.id + '|' + f) ? '' : ' checked'}> ${esc(x.title)} <span class="faint">${famName(f)}</span></label>`).join('')).join('')}</div>
+        ${fams.map(f => pickFam(p, f, ms.filter(x => x.families.includes(f)), off, fams.length > 1)).join('')}
         <div class="faint" style="font-size:12px;margin-top:6px">Saved for this pair of servers (the Routes page shows the same switches).</div></div></details>`;
     const count = () => { $('[data-pn]', box).textContent = $$('[data-path]', box).filter(c => c.checked).length; };
     $$('[data-path]', box).forEach(c => c.onchange = count);
     $$('[data-pall]', box).forEach(b => b.onclick = () => { $$('[data-path]', box).forEach(c => c.checked = b.dataset.pall === '1'); count(); });
   };
   api('/routes/skip').then(r => { skipAll = r || {}; paintPaths(); }).catch(() => {});
+  // the route's last benchmark orders the list (best first, with its numbers); without it the list is as before
+  api('/bench/history').then(r => { benchHist = r || []; paintPaths(); }).catch(() => {});
   // one switch: on = hot standby (every path running, users moved within seconds; new tunnels also
   // move to a clearly faster path), off = the plain failover after 5 min down
   // two texts (the Persian page translates each whole)
@@ -2959,6 +2978,8 @@ const bnMb = (v) => v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(0) : v > 0 ? v
 // measured there, nothing is deployed), less spoof (never measured); the dialogs ask the server (/bench/plan) for the exact list
 const bnAll = (fam) => STATE.methods.filter(m => m.id !== 'spoof' && m.families.includes(fam));
 const bnCostAll = (n, maxMB) => `${n} methods · ≤ ${n * 2 * maxMB} MB · about ${Math.max(1, Math.round(n * 1.5))} min`;
+// a method's measured numbers, "↓ 44 ↑ 72 Mbps · 46 ms": always left to right, the unit on it; packet loss only when there is some
+const bnNums = (x) => `<span class="bn-ln" title="↓ download (foreign → Iran), ↑ upload (Iran → foreign)"><span class="bn-nm" dir="ltr" data-notr><b>↓ ${bnMb(x.downMbps || 0)}</b> <span class="faint">↑ ${bnMb(x.upMbps || 0)}</span> <small>Mbps</small></span><span class="bn-ms" dir="ltr" data-notr>${(x.rttMs || 0).toFixed(0)} ms</span>${x.lossKnown && x.lossPct >= 0.5 ? `<span class="bn-ls${x.lossPct >= 5 ? ' bn-bad' : ''}">${x.lossPct.toFixed(0)}% loss</span>` : ''}</span>`;
 function bnSpark(pts) {
   if (pts.length < 2) return '';
   const vs = pts.map(p => p.v), mx = Math.max(...vs, 1), w = 64, hh = 18;
@@ -3130,8 +3151,7 @@ function bnRow(p, f, s) {
   const on = p.tunnels.filter(t => t.active);
   const tn = p.tunnels.length ? `<small class="bn-tns"><span class="led${on.length ? ' on' : ''}"></span><bdi data-notr>${p.tunnels.map(t => esc(t.name)).join(', ')}</bdi></small>` : '<small class="faint">no tunnel</small>';
   const meth = (id) => `<b><bdi data-notr>${esc(methodTitle(id))}</bdi></b>`;
-  // "↓ 44 ↑ 72 Mbps · 46 ms": always left to right, the unit on it; packet loss only when there is some
-  const nums = (x) => `<span class="bn-ln" title="↓ download (foreign → Iran), ↑ upload (Iran → foreign)"><span class="bn-nm" dir="ltr" data-notr><b>↓ ${bnMb(x.downMbps || 0)}</b> <span class="faint">↑ ${bnMb(x.upMbps || 0)}</span> <small>Mbps</small></span><span class="bn-ms" dir="ltr" data-notr>${(x.rttMs || 0).toFixed(0)} ms</span>${x.lossKnown && x.lossPct >= 0.5 ? `<span class="bn-ls${x.lossPct >= 5 ? ' bn-bad' : ''}">${x.lossPct.toFixed(0)}% loss</span>` : ''}</span>`;
+  const nums = bnNums;
   // who is on what
   let usersCell;
   if (s.users.size) {
