@@ -463,7 +463,7 @@ const (
 
 // hsSwitcher is the switcher's loop (bash, on the Iran server); settings come from conf.
 const hsSwitcher = `#!/bin/bash
-# tp-switcher 15
+# tp-switcher 16
 # Hot-standby switcher (mode file: auto | manual). Checks every path end to end and keeps
 # the users' ports on the best working one. Events go to events.log (epoch kind from to reason).
 # A new path list (conf, targets, keys) is taken on SIGHUP, without a restart: what is known
@@ -526,9 +526,25 @@ clean() { [ ${ql[$1]:-0} -lt ${LOSSBAD:-50} ]; }
 # again at once: without this, two paths of similar worth swapped every 30-60 min all night
 # (seen live: xe108 BackPack v4 <-> Direct v6). It is skipped unless the current path degrades.
 recentleft() { [ -n "${leftat[$1]}" ] && [ $((now - ${leftat[$1]})) -lt ${NOBACK:-21600} ]; }
+# slow: a path measured here in the last SLOWFOR s whose best speed is under a quarter of the
+# best any path of this tunnel measured. The slow methods answer pings first, so by cost alone
+# they were taken before the fast ones (seen live on تانل xe100-xe101, 2026-11-18: the users
+# went round two ~5 Mbit/s paths for 10 h, 35 drops, while TP Tunnel measured 180). A path
+# never measured isn't slow; one whose test passed no data is.
+known() { [ -n "${spat[$1]}" ] && [ $((now - ${spat[$1]})) -lt ${SLOWFOR:-86400} ]; }
+topsp() { local k m=0; for ((k=0; k<N; k++)); do known $k && [ ${spb[$k]:-0} -gt $m ] && m=${spb[$k]}; done; echo $m; }
+slow() { known $1 && [ $(( ${spb[$1]:-0} * 4 )) -lt $(topsp) ]; }
+# backto: after an outage of path <k>, should the users go back to it? go — unless it is slow
+# and the path they are on now isn't: stay. wait: this one hasn't been measured yet (it is,
+# within seconds: see the speed test below).
+backto() {
+  slow $1 || { echo go; return; }
+  known $active || { echo wait; return; }
+  if slow $active; then echo go; else echo stay; fi
+}
 # pick: where users go when theirs is down — a path that hasn't been dropping (stable: up as
 # long as its recent drops ask) before one merely up for STEADY s, before one that just came
-# up; then the least lossy and fastest (cost). Seen live on تانل ایران به هلند 1: BackPack
+# up; then one not known to be slow; then the least lossy and quickest to answer (cost). Seen live on تانل ایران به هلند 1: BackPack
 # blipped, the users went to Paqet (lowest ping) which kept dropping on that route, and every
 # blip became a ~2 min outage while Direct v6 and GRE stayed up the whole time.
 pick() {
@@ -537,6 +553,7 @@ pick() {
     [ "${ok[$k]}" = 1 ] || continue
     s=0; [ $((now - ${since[$k]:-$now})) -ge ${STEADY:-30} ] && s=1
     stable $k && s=2
+    s=$((s * 2)); slow $k || s=$((s + 1))
     if [ $b -lt 0 ] || [ $s -gt $bs ] || { [ $s = $bs ] && [ $(cost $k) -lt $(cost $b) ]; }; then b=$k; bs=$s; fi
   done
   echo $b
@@ -719,7 +736,11 @@ while true; do
         [ $k != $P0 ] && stable $k && clean $k && budget && { planned $k "$(backmsg $k)"; break; }
       done
     fi
-  elif [ "${ok[$active]}" = 1 ] && [ $failfrom -ge 0 ] && [ $failfrom != $active ] && stable $failfrom && clean $failfrom && budget; then
+  elif [ "${ok[$active]}" = 1 ] && [ $failfrom -ge 0 ] && [ $failfrom != $active ] && stable $failfrom && clean $failfrom && [ "$(backto $failfrom)" = stay ]; then
+    # the path the outage moved them off is a slow one, this one isn't: they stay
+    ev keep "$active" "$active" "path $failfrom works again, but it measured $(mb ${spb[$failfrom]:-0}) Mbit/s and this one $(mb ${spb[$active]:-0}) — staying"
+    failfrom=-1
+  elif [ "${ok[$active]}" = 1 ] && [ $failfrom -ge 0 ] && [ $failfrom != $active ] && stable $failfrom && clean $failfrom && [ "$(backto $failfrom)" = go ] && budget; then
     # auto: an outage moved the users, auto mode didn't choose it — back to the path they were
     # on once it is stable and clean again. NOBACK and the comparisons don't apply: they keep
     # auto mode from undoing its own choices. Without this the users stayed on a slower path
@@ -787,15 +808,18 @@ while true; do
     verifyat=0
     [ $active = $vto ] && [ "${ok[$vfrom]}" = 1 ] && measure verify $vto "" $vto
   elif [ "${ok[$active]}" = 1 ] && [ ! -f cmp.run ] && [ $((n % 5)) = 0 ]; then
-    a=$active; why=""; better=0
+    a=$active; why=""; better=0; fast=-1; fs=0
     [ ${ql[$a]:-0} -ge $LOSSBAD ] && why="loss $(pc ${ql[$a]})%"
     if [ -n "${sp[$a]}" ] && [ -n "${spb[$a]}" ] && [ $((sp[$a] * 2)) -lt ${spb[$a]} ]; then why="${why:+$why, }speed $(mb ${sp[$a]}) of $(mb ${spb[$a]}) Mbit/s"
     elif [ -n "${sp[$a]}" ] && [ ${sp[$a]} -lt $SPMIN ]; then why="${why:+$why, }speed $(mb ${sp[$a]}) Mbit/s"; fi
     list=""
     for ((k=0; k<N; k++)); do
       [ $k != $a ] && stable $k || continue
-      list="$list$(cost $k) $k"$'\n'
+      sl=0; slow $k && sl=1
+      list="$list$sl $(cost $k) $k"$'\n'
+      known $k && [ $sl = 0 ] && [ ${spb[$k]:-0} -gt $fs ] && { fast=$k; fs=${spb[$k]}; }
       recentleft $k && continue # a path just left doesn't start a comparison by looking cheaper
+      [ $sl = 1 ] && ! slow $a && continue # nor does a slow one by answering pings sooner
       [ $(( $(cost $k) * 10 )) -lt $(( $(cost $a) * 7 )) ] && better=1
       [ $k = $P0 ] && [ $(( $(cost $k) * 10 )) -le $(( $(cost $a) * 11 )) ] && better=1
     done
@@ -805,7 +829,11 @@ while true; do
     # much worse loss than at the last "none better": compare again without waiting
     worse=0; [ ${ql[$a]:-0} -ge $((LOSSBAD * 3)) ] && [ ${ql[$a]:-0} -ge $((cmploss * 2)) ] && worse=1
     if [ -n "$list" ] && { [ -n "$why" ] || [ $better = 1 ]; } && { [ $now -ge $cmpat ] || [ $worse = 1 ]; } && [ $now -ge $hold ]; then
-      measure cmp $a "$why" $a $(printf '%s' "$list" | sort -n | head -2 | cut -d' ' -f2) # the 2 likeliest: each one measured is traffic
+      # the 2 likeliest (not slow before slow, then by cost) and the fastest one known, if it
+      # isn't one of them: each one measured is traffic
+      cl=$(printf '%s' "$list" | sort -n -k1,1 -k2,2 | head -2 | cut -d' ' -f3)
+      [ $fast -ge 0 ] && ! grep -qx "$fast" <<< "$cl" && cl="$cl $fast"
+      measure cmp $a "$why" $a $cl
     elif [ $((now - ${spat[$a]:-0})) -ge $SPEVERY ]; then
       measure speed $a "" $a
     fi
