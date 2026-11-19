@@ -18,8 +18,7 @@ import (
 	"time"
 )
 
-const igHealthScript = `#ighealth
-R=/run/igproxy D=/etc/igproxy
+const igHealthScript = "#ighealth\n" + dnsExitProbe + `R=/run/igproxy D=/etc/igproxy
 grep -q "^VER=" /usr/local/bin/igproxy 2>/dev/null || { echo __RC=3; exit 0; }
 now=$(date +%s); d=$(mktemp -d)
 ex(){ # ex <key> <standby reason> <curl args> : one Cloudflare trace through that exit
@@ -44,6 +43,7 @@ if ss -ltn 2>/dev/null | grep -q ':12370 '; then
   sv IG https://i.instagram.com/ > "$d/s1" &
   sv GOOGLE https://www.google.com/generate_204 > "$d/s2" &
   sv GEMINI https://gemini.google.com/app > "$d/s3" &
+  dnx > "$d/s9" &
 else printf 'S\tRELAY\tnone\n' > "$d/s0"; fi
 wait; cat "$d"/* 2>/dev/null; rm -rf "$d"
 for f in gem igp; do [ -s "$R/${f}_state" ] && read -r a b _ < "$R/${f}_state" && printf 'A\t%s\t%s\t%s\n' "$f" "$a" "$((now - ${b:-$now}))"; done
@@ -61,6 +61,7 @@ type IgHCheck struct {
 	IP   string `json:"ip,omitempty"`
 	Loc  string `json:"loc,omitempty"`
 	Why  string `json:"why,omitempty"`
+	Mine bool   `json:"mine,omitempty"` // DNS: the panel's resolver entry is on the server
 }
 
 // IgHealth is one server's "Run checks".
@@ -142,7 +143,10 @@ func igParseHealth(lines []string) IgHealth {
 			}
 		}
 	}
-	order := map[string]int{"IG": 0, "GOOGLE": 1, "GEMINI": 2, "RELAY": 3}
+	if d, ok := dnsExitParse(lines); ok {
+		r.Svcs = append(r.Svcs, dnsExitCheck(d))
+	}
+	order := map[string]int{"IG": 0, "GOOGLE": 1, "GEMINI": 2, "RELAY": 3, "DNS": 4}
 	sort.SliceStable(r.Svcs, func(i, j int) bool { return order[r.Svcs[i].K] < order[r.Svcs[j].K] })
 	sort.SliceStable(r.Exits, func(i, j int) bool { return igHRank(r.Exits[i].K) < igHRank(r.Exits[j].K) })
 	return r
