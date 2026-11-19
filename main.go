@@ -154,6 +154,7 @@ func main() {
 	go gemFwd.serve()
 	go app.gemLoop()
 	go app.gemOneLoop()
+	go app.dnsExitLoop()
 	go app.gemAcctLoop()
 	go gemWatchLoop()
 	app.usage = loadUsage()

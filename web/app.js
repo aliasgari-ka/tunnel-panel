@@ -4373,6 +4373,12 @@ const igtLoc = (loc, ip) => loc || ip ? `<span class="mono" title="${esc(ip || '
 function igtSvc(i, s) {
   const via = (g) => `<span class="chip">${esc(igViaW(i[g], i))}</span>`;
   if (s.k === 'RELAY') return igtRow('warn', 'Services through the users\' route', '', '', esc(s.why), `<button class="btn sm" data-igdo="deploy">Update agent</button>`);
+  if (s.k === 'DNS') {
+    // where a DNS-leak test places the server's resolver, next to the exit IP's country
+    const det = `<span>Exit IP: <b>${esc(s.ip || '?')}</b></span><span>DNS: <b>${esc(s.loc || '?')}</b></span>`;
+    const btn = s.warn ? '<button class="btn sm" data-igdns="fix">Use public DNS</button>' : s.mine ? moreMenu([{ label: 'Put the old DNS back', attr: 'data-igdns="undo"' }]) : '';
+    return igtRow(s.warn ? 'warn' : 'ok', 'DNS (leak test)', '', det, esc(s.why || ''), btn);
+  }
   const g = s.k === 'IG' ? 'ig' : 'google', name = { IG: 'Instagram', GOOGLE: 'Google', GEMINI: 'Gemini' }[s.k] || s.k;
   const cc = s.k === 'IG' ? i.igcc : i.gcc;
   const det = [igtMs(s.ms), s.loc ? `<span>Gemini: <b>${esc(s.loc)}</b> <span class="faint">(browser check)</span></span>` : igSet(cc) && cc !== 'PROXY' ? `<span>${s.k === 'IG' ? 'Instagram' : 'Google'} sees <b class="mono">${esc(cc)}</b></span>` : ''].join('');
@@ -4426,6 +4432,23 @@ function igtHealthDraw() {
     <h4 class="igt-h">Exits</h4><div class="wlist g2">${h.exits.map(e => igtExit(i, e, spd, id)).join('')}</div>
     ${h.err ? `<div class="mwarn" style="margin-top:8px">${esc(h.err)}</div>` : ''}`;
   $$('[data-sp1]', box).forEach(b => b.onclick = () => igtHeavy('speedtest', b.dataset.sp1));
+  $$('[data-igdns]', box).forEach(b => b.onclick = () => igtDns(b.dataset.igdns === 'undo'));
+}
+// the DNS line's fix: the server resolves at 1.1.1.1 / 8.8.8.8 (they answer from the nearest site); undo puts the old setting back
+async function igtDns(undo) {
+  if (IGT.busy || !IG.cur) return;
+  const id = IG.cur.id;
+  if (!confirm(undo ? L(`Put the old DNS setting back on ${IG.cur.name}?`, `تنظیم قبلی DNS روی ${IG.cur.name} برگردد؟`)
+    : L(`Set the DNS of ${IG.cur.name} to the public resolvers 1.1.1.1 and 8.8.8.8? They answer from the nearest site, so a DNS-leak test shows the exit's country. The old setting is kept and can be put back; the router is not restarted.`,
+      `DNS سرور ${IG.cur.name} روی DNSهای عمومی 1.1.1.1 و 8.8.8.8 تنظیم شود؟ این‌ها از نزدیک‌ترین نقطه جواب می‌دهند و تست نشت DNS کشور خروجی را نشان می‌دهد. تنظیم قبلی نگه داشته می‌شود و قابل برگشت است؛ روتر ری‌استارت نمی‌شود.`))) return;
+  IGT.busy = Date.now(); IGT.err = ''; igtHealthDraw();
+  try {
+    const r = await api('/igproxy/dns', undo ? { id, undo: true } : { id, fix: true });
+    if (IGT.srv === id && IGT.h) IGT.h.svcs = IGT.h.svcs.filter(x => x.k !== 'DNS').concat([r.check]);
+    toast(undo ? 'The old DNS setting is back' : r.verdict === 'bad' ? 'Set, but the resolver still reads another country' : 'DNS is now in the exit\'s country');
+  } catch (e) { if (IGT.srv === id) IGT.err = e.message; }
+  IGT.busy = 0;
+  if (IG.cur && IG.cur.id === id && IG.tab === 'tools') igtHealthDraw();
 }
 async function igtRunChecks() {
   if (IGT.busy || !IG.cur) return;
