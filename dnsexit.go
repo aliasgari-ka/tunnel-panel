@@ -56,7 +56,7 @@ fi
 if systemctl is-active -q systemd-resolved 2>/dev/null && grep -q '^nameserver 127\.0\.0\.53' /etc/resolv.conf; then
   mkdir -p ${F%/*}
   printf '%s\n' '# tunnel-panel: resolvers that answer from the nearest site, so DNS is seen in the exit'"'"'s country' \
-    '# undo: rm this file; systemctl restart systemd-resolved' '[Resolve]' 'DNS=' 'DNS=1.1.1.1 8.8.8.8 1.0.0.1 2606:4700:4700::1111' > $F
+    '# undo: rm this file; systemctl restart systemd-resolved' '[Resolve]' 'DNS=' 'DNS=1.1.1.1 8.8.8.8 1.0.0.1 2606:4700:4700::1111' 'Domains=~.' > $F # ~. : before the link's (DHCP) resolvers too
   systemctl restart systemd-resolved; sleep 1
   chk || { rm -f $F; systemctl restart systemd-resolved; echo __RC=4; exit 0; }
 else
