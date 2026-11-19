@@ -3741,18 +3741,22 @@ function igWhyWord(w) {
   const m = /^Instagram sees ([A-Z]{2})$/.exec(w); if (m) return L('Instagram saw ', 'Instagram دید: ') + igCCName(m[1]);
   return w;
 }
-// igexit.go's reason ("WARP IPv6: Gemini not offered in RU") in the page's language
-function igExWhy(w) {
+// igexit.go's reason ("WARP IPv6: Gemini not offered in RU") in the page's language;
+// bare = without the exit's name in front
+function igExWhy(w, bare) {
   w = String(w || '');
   const k = w.indexOf(': '), r = k > 0 ? w.slice(0, k) : '', why = k > 0 ? w.slice(k + 2) : w;
   const rw = { 'own IP': L('own IP', 'IP خود سرور'), 'proxies': L('outbounds', 'خروجی‌ها') }[r] || r.replace(/^proxy (\d+)$/, L('outbound $1', 'خروجی $1'));
   let m, t = why;
   if ((m = /^Gemini not offered in ([A-Z]{2})$/.exec(why))) t = L('Gemini not offered in ' + igCCName(m[1]), 'در ' + igCCName(m[1]) + ' Gemini ارائه نمی‌شود');
+  else if ((m = /^Google places the users in (.+): no Gemini there$/.exec(why)))
+    t = L(`Google places the users in ${m[1]}: no Gemini there`, `گوگل کاربران را در ${m[1]} می‌بیند: آنجا Gemini نیست`);
   else if ((m = /^Google places this WARP in no country \((google\.[a-z.]+)\), not ([A-Z]{2}): signed-in Gemini is refused$/.exec(why)))
     t = L(`Google places this WARP in no country (${m[1]}), not ${igCCName(m[2])}: signed-in Gemini is refused`, `گوگل این WARP را در هیچ کشوری نمی‌گذارد (${m[1]})، نه ${igCCName(m[2])}: Gemini با حساب واردشده رد می‌شود`);
   else t = ({ 'Gemini not offered there': L('Gemini not offered there', 'Gemini آنجا ارائه نمی‌شود'),
     'Google refuses the IP (403)': L('Google refuses the IP (403)', 'گوگل این IP را رد می‌کند (403)'),
     'Google asks for a captcha': L('Google asks for a captcha', 'گوگل کپچا می‌خواهد'),
+    'Google places the users nowhere on this exit: signed-in Gemini is refused': L('Google placed the users nowhere there: signed-in Gemini was refused', 'گوگل آنجا برای کاربران مکانی نمی‌داد: Gemini با حساب واردشده رد می‌شد'),
     'YouTube Music not offered there': L('YouTube Music not offered there', 'YouTube Music آنجا ارائه نمی‌شود'),
     'YouTube refuses the IP (403)': L('YouTube refuses the IP (403)', 'یوتیوب این IP را رد می‌کند (403)'),
     'Google Colab refuses the IP (403)': L('Google Colab refuses the IP (403)', 'Google Colab این IP را رد می‌کند (403)'),
@@ -3762,7 +3766,7 @@ function igExWhy(w) {
     'not read for 25 min': L('not read for 25 min', '۲۵ دقیقه خوانده نشده'),
     'Google answered without saying where it places this exit': L('Google answered without saying where it places this exit', 'گوگل جواب داد ولی نگفت این خروجی را کجا می‌گذارد'),
     'WARP IPv6 passes no IPv6': L('WARP IPv6 passes no IPv6 (users get the shared Cloudflare IPv4)', 'IPv6 از WARP رد نمی‌شود (کاربران IPv4 مشترک Cloudflare را می‌گیرند)') })[why] || igWhyWord(why);
-  return (rw ? rw + ': ' : '') + t;
+  return (rw && !bare ? rw + ': ' : '') + t;
 }
 // the auto-picked exit of Google / YouTube Music (igexit.go), or ''
 function igExLine(s, g) {
@@ -3771,7 +3775,9 @@ function igExLine(s, g) {
   const i = s.info || {}, next = ex.next ? Math.max(0, Math.round((ex.next * 1000 - Date.now()) / 60000)) : 0;
   const t = L(`picked by the panel while ${igExitWord(ex.want, i)} fails; ${igExitWord(ex.want, i)} is tried again` + (next ? ` in ${next} min` : ' soon'),
     `پنل این را انتخاب کرد چون ${igExitWord(ex.want, i)} کار نمی‌کند؛ ${igExitWord(ex.want, i)} دوباره امتحان می‌شود` + (next ? ` (${next} دقیقه دیگر)` : ''));
-  return `<span title="${esc(t)}">${L('auto:', 'خودکار:')} <bdi><b>${esc(igExitWord(ex.cur, i))}</b></bdi>${ex.where ? ` · <bdi class="igl-cc">${esc(/^[A-Z]{2}$/.test(ex.where) ? igCCName(ex.where) : ex.where)}</bdi>` : ''} <span class="igl-why">— <bdi>${esc(igExWhy(ex.why))}</bdi></span></span>`;
+  // the line says what is true now (works, on which exit, where Google places it); the reason is
+  // why the preferred exit was left, and reads as the past, not as an error of the exit in use
+  return `<span title="${esc(t)}">${L('works on', 'کار می‌کند، روی')} <bdi><b>${esc(igExitWord(ex.cur, i))}</b></bdi>${ex.where ? ` · <bdi class="igl-cc">${esc(/^[A-Z]{2}$/.test(ex.where) ? igCCName(ex.where) : ex.where)}</bdi>` : ''} <span class="igl-why">— ${L('moved by the panel, because', 'پنل خودش جابه‌جا کرد، چون')} <bdi>${esc(igExitWord(ex.want, i))}</bdi> ${L('failed:', 'رد شد:')} <bdi>${esc(igExWhy(ex.why, true))}</bdi></span></span>`;
 }
 // the panel's own last reading of the users' route says bad (igexit.go; also on a pinned exit), or ''
 function igExBad(s, g) {
@@ -3818,7 +3824,7 @@ function igLine(s, g) {
     const shown = cc ? where(cc) : d ? `<b class="igl-cc">google.${esc(d)}</b> ` : '';
     const ax = igExLine(s, g);
     if (i.gem === 'FAIL') { lvl = 'bad'; mark = '✗'; body = `${L("Gemini doesn't open", 'Gemini باز نمی‌شود')} ${via(eff)}`; }
-    else if (ax && !IG_GBAD.includes(d)) { lvl = 'warn'; mark = '⚠'; body = ax; }
+    else if (ax && !IG_GBAD.includes(d)) { lvl = 'warn'; mark = '✓'; body = ax; }
     else if (igExBad(s, g)) { lvl = 'bad'; mark = '✗'; body = `${shown}${igExBad(s, g)} ${via(route)}`; }
     else if (igExNone(s, g)) { lvl = 'warn'; mark = '⚠'; body = `${shown}${via(route)} ${igExNone(s, g)}`; }
     else if (IG_GBAD.includes(d)) { lvl = 'bad'; mark = '✗'; body = `${shown}${L('— Gemini is not offered there', '— Gemini آنجا ارائه نمی‌شود')} ${via(eff)}`; }
@@ -3826,7 +3832,7 @@ function igLine(s, g) {
     else body = `${shown}${via(route)}`;
   } else {
     const ax = igExLine(s, g);
-    if (ax) { lvl = 'warn'; mark = '⚠'; body = ax; }
+    if (ax) { lvl = 'warn'; mark = '✓'; body = ax; }
     else if (igExBad(s, g)) { lvl = 'bad'; mark = '✗'; body = `${igExBad(s, g)} ${via(route)}`; }
     else if (igExNone(s, g)) { lvl = 'warn'; mark = '⚠'; body = `${via(route)} ${igExNone(s, g)}`; }
     else if (missing) { lvl = 'warn'; mark = '⚠'; body = `${L('WARP missing →', 'WARP نیست ←')} <b>${esc(igExitWord(eff, i))}</b>`; }
