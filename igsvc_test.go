@@ -142,6 +142,36 @@ func TestIgSvcOwnHoldsAndBack(t *testing.T) {
 	}
 }
 
+// A part-time service on the own IP is asked on the own IP's relay too; a refusal there is its
+// answer (a "My sites" entry hid it on the users' route) and moves it at once.
+func TestIgSvcOwnAsk(t *testing.T) {
+	keys := []string{"X", "SHAZAM", "APPLE"}
+	if a := igSvcOwnAsk(keys, map[string]string{"shazam": "direct", "x": "direct", "apple": "direct"}); strings.Join(a, ",") != "SHAZAM" {
+		t.Fatalf("on the own IP: %v", a)
+	}
+	if a := igSvcOwnAsk(keys, map[string]string{"shazam": "warp6", "x": "direct"}); len(a) != 0 {
+		t.Fatalf("moved already: %v", a)
+	}
+	live, _ := igSvcParse([]string{"S SHAZAM 404 - -", "S X 200 - -"})
+	own, _ := igSvcParse([]string{"S SHAZAM 403 - -", "S X 403 - -"})
+	igSvcOwnMerge(live, own)
+	if live["SHAZAM"].OK || live["SHAZAM"].Code != "403" || !live["X"].OK {
+		t.Fatalf("refused on the own IP: %+v %+v", live["SHAZAM"], live["X"])
+	}
+	live, _ = igSvcParse([]string{"S SHAZAM 404 - -"})
+	slow, _ := igSvcParse([]string{"S SHAZAM 000 - -"})
+	igSvcOwnMerge(live, slow)
+	if !live["SHAZAM"].OK {
+		t.Fatal("a dead own relay is not a refusal")
+	}
+	if !igSvcMoveNow("SHAZAM", own["SHAZAM"], 1) || igSvcMoveNow("SHAZAM", slow["SHAZAM"], 1) || !igSvcMoveNow("SHAZAM", slow["SHAZAM"], igSvcBadTimes) {
+		t.Error("Shazam: a refusal moves at once, a timeout after igSvcBadTimes")
+	}
+	if igSvcMoveNow("X", own["X"], 1) || !igSvcMoveNow("X", own["X"], igSvcBadTimes) {
+		t.Error("other services: after igSvcBadTimes failures in a row, as before")
+	}
+}
+
 // Adult sites: WARP first on a server in a country that blocks them, own IP first elsewhere.
 func TestIgSvcPrefAdult(t *testing.T) {
 	d := igSvcByKey["ADULT"]
