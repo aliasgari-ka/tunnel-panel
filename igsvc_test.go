@@ -110,7 +110,7 @@ func TestIgSvcShazam(t *testing.T) {
 	if live, _ = igSvcParse([]string{"S SHAZAM 404 - -"}); !live["SHAZAM"].OK {
 		t.Error("404 = the API answers")
 	}
-	c := igSvcCands(igSvcPref(d, &Server{Country: "DE"}), map[string]string{"warps": "2", "proxies": "1"})
+	c := igSvcCands(igSvcPref(d, &Server{Country: "DE"}, nil), map[string]string{"warps": "2", "proxies": "1"})
 	if strings.Join(c, ",") != "direct,warp,proxy" || igSvcNext(c, "direct") != "warp" {
 		t.Errorf("exits: %v", c)
 	}
@@ -172,23 +172,41 @@ func TestIgSvcOwnAsk(t *testing.T) {
 	}
 }
 
+// Shazam follows Google's judgement of the server's IP: WARP first where Google is off the own IP.
+func TestIgSvcPrefShazam(t *testing.T) {
+	d := igSvcByKey["SHAZAM"]
+	for g, want := range map[string]string{"direct": "direct,warp,proxy", "": "direct,warp,proxy", "warp6": "warp,proxy,direct", "ipv6": "warp,proxy,direct", "proxy2": "warp,proxy,direct"} {
+		inf := map[string]string{"google": g, "warps": "2", "proxies": "1"}
+		if c := igSvcCands(igSvcPref(d, &Server{Country: "DE"}, inf), inf); strings.Join(c, ",") != want {
+			t.Errorf("google=%q: %v, want %s", g, c, want)
+		}
+	}
+	inf := map[string]string{"google": "ipv6", "warps": "0", "proxies": "0"}
+	if c := igSvcCands(igSvcPref(d, nil, inf), inf); strings.Join(c, ",") != "direct" {
+		t.Errorf("no WARP and no proxy: %v", c)
+	}
+	if c := igSvcPref(igSvcByKey["APPLE"], nil, map[string]string{"google": "warp6"}); c[0] != "direct" {
+		t.Errorf("only Shazam: %v", c)
+	}
+}
+
 // Adult sites: WARP first on a server in a country that blocks them, own IP first elsewhere.
 func TestIgSvcPrefAdult(t *testing.T) {
 	d := igSvcByKey["ADULT"]
 	inf := map[string]string{"warps": "2", "proxies": "1"}
-	if c := igSvcCands(igSvcPref(d, &Server{Country: "TR"}), inf); strings.Join(c, ",") != "warp,proxy,direct" {
+	if c := igSvcCands(igSvcPref(d, &Server{Country: "TR"}, nil), inf); strings.Join(c, ",") != "warp,proxy,direct" {
 		t.Fatalf("TR: %v", c)
 	}
-	if c := igSvcCands(igSvcPref(d, &Server{Country: "tr "}), map[string]string{"warps": "0", "proxies": "0"}); strings.Join(c, ",") != "direct" {
+	if c := igSvcCands(igSvcPref(d, &Server{Country: "tr "}, nil), map[string]string{"warps": "0", "proxies": "0"}); strings.Join(c, ",") != "direct" {
 		t.Fatalf("TR without WARP or proxy: %v", c)
 	}
-	if c := igSvcCands(igSvcPref(d, &Server{Country: "DE"}), inf); c[0] != "direct" {
+	if c := igSvcCands(igSvcPref(d, &Server{Country: "DE"}, nil), inf); c[0] != "direct" {
 		t.Fatalf("DE: %v", c)
 	}
-	if c := igSvcCands(igSvcPref(igSvcByKey["X"], &Server{Country: "TR"}), inf); c[0] != "direct" {
+	if c := igSvcCands(igSvcPref(igSvcByKey["X"], &Server{Country: "TR"}, nil), inf); c[0] != "direct" {
 		t.Fatalf("another service in TR: %v", c)
 	}
-	if c := igSvcPref(d, nil); strings.Join(c, ",") != strings.Join(igAutoOwn, ",") {
+	if c := igSvcPref(d, nil, nil); strings.Join(c, ",") != strings.Join(igAutoOwn, ",") {
 		t.Fatalf("no server: %v", c)
 	}
 }

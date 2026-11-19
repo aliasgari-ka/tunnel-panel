@@ -300,7 +300,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if !igSvcIsAuto(rec, k) || !igSvcKnown(inf, k) {
 			continue
 		}
-		cands := igSvcCands(igSvcPref(&d, srv), inf)
+		cands := igSvcCands(igSvcPref(&d, srv, inf), inf)
 		want := cands[0]
 		if rec != nil && rec.Cur != "" && contains(cands, rec.Cur) {
 			want = rec.Cur
@@ -368,7 +368,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if d.URL == "" || !igSvcIsAuto(rec, k) || live[k] == nil || !live[k].OK || rec == nil || rec.Cur == "" || now.Unix() < rec.Next {
 			continue
 		}
-		if cands := igSvcCands(igSvcPref(&d, srv), inf); cands[0] == "direct" && igSvcKind(inf[strings.ToLower(k)]) != "direct" {
+		if cands := igSvcCands(igSvcPref(&d, srv, inf), inf); cands[0] == "direct" && igSvcKind(inf[strings.ToLower(k)]) != "direct" {
 			due = append(due, k)
 		}
 	}
@@ -384,7 +384,7 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 		if !igSvcIsAuto(rec, k) || live[k] == nil {
 			continue
 		}
-		cands := igSvcCands(igSvcPref(&d, srv), inf)
+		cands := igSvcCands(igSvcPref(&d, srv, inf), inf)
 		cur := igSvcKind(inf[strings.ToLower(k)])
 		moved := rec != nil && rec.Cur != ""
 		if !live[k].OK {
@@ -438,8 +438,16 @@ func (a *App) igSvcCheck(ctx context.Context, srv *Server) bool {
 // igSvcPref: the service's exits in order of preference on this server. Adult sites on a server
 // in a country that blocks them go WARP first (then a proxy, the own IP last): they are not
 // checked, so Auto would otherwise leave them on the blocked own IP for good.
-func igSvcPref(d *igSvcDef, srv *Server) []string {
+//
+// Shazam goes WARP first on a server whose own IP Google does not take (Google is off that IP):
+// its API is behind Google's front end and follows the same judgement. On such an IP the plain
+// API answers, so no check sees it, but the app is sent to unsupported.shazam.com and stays shut
+// (seen 2026-11-19 on the hub's route).
+func igSvcPref(d *igSvcDef, srv *Server, inf map[string]string) []string {
 	if d.Key == "ADULT" && srv != nil && igAdultBlocked[strings.ToUpper(strings.TrimSpace(srv.Country))] {
+		return igAutoAI
+	}
+	if g := inf["google"]; d.Key == "SHAZAM" && g != "" && g != "direct" {
 		return igAutoAI
 	}
 	return d.Auto
