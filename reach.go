@@ -188,7 +188,10 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 			cached := reachCache.m[key]
 			reachCache.Unlock()
 			if sh, ok := cached.(*SSHHost); ok {
-				if _, err := sh.client(); err == nil {
+				// asked only whether it still answers — client() on one that doesn't dialled
+				// the same address anew right here (15 s + a 20 s handshake, deaf to ctx),
+				// and a check ran out of time before the path that works was tried
+				if sh.answers(10 * time.Second) {
 					return sh, c.path
 				}
 				dropKey(key)
@@ -213,7 +216,7 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 	}
 	var lastErr, firstErr error
 	tried := 0
-	for _, c := range cands {
+	for i, c := range cands {
 		if err := ctx.Err(); err != nil { // the caller gave up (a status page, the bot): stop trying
 			if lastErr != nil {
 				return nil, "", fmt.Errorf("%w (then gave up: %v)", lastErr, err)
@@ -224,7 +227,17 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		logf("trying %s", c.path)
 		sh := newSSHHost(a.store, srv, c.dial)
 		sh.v6 = c.v6
-		if err := clientCtx(ctx, sh); err != nil {
+		// a path with others after it gets half of the time that is left, no more: a direct
+		// address that accepts and then says nothing (ir-xe101-100's IPv4, 2026-11-20) took
+		// a health check's whole 40 s, IPv6 was never tried and the tunnels were reported
+		// "Iran server unreachable" while the server answered over IPv6
+		dctx, dcancel, share := dialShare(ctx, len(cands)-i-1, time.Now())
+		err := clientCtx(dctx, sh)
+		dcancel()
+		if err != nil && share > 0 && ctx.Err() == nil && dctx.Err() != nil {
+			err = fmt.Errorf("no answer in %s", share.Round(time.Second))
+		}
+		if err != nil {
 			lastErr = fmt.Errorf("%s: %w", c.path, err)
 			if firstErr == nil {
 				firstErr = lastErr
@@ -265,6 +278,21 @@ func (a *App) sshReach(ctx context.Context, srv *Server, logf func(string, ...an
 		lastErr = fmt.Errorf("%v%s%w", firstErr, mid, lastErr)
 	}
 	return nil, "", lastErr
+}
+
+// dialShare bounds one path's connect when the caller has a deadline and after paths are
+// still to be tried: half of the time left. share is 0 when ctx is used as it is.
+func dialShare(ctx context.Context, after int, now time.Time) (context.Context, context.CancelFunc, time.Duration) {
+	dl, ok := ctx.Deadline()
+	if !ok || after <= 0 {
+		return ctx, func() {}, 0
+	}
+	share := dl.Sub(now) / 2
+	if share <= 0 {
+		return ctx, func() {}, 0
+	}
+	dctx, cancel := context.WithTimeout(ctx, share)
+	return dctx, cancel, share
 }
 
 // clientCtx connects sh but gives up when ctx ends (a connect + handshake can take 35 s);
@@ -476,12 +504,23 @@ func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 // So every betterPathEvery the panel tries the better paths in the background and, when
 // one connects, uses it from then on; the fallback connection is closed a minute later
 // (scripts running on it can finish).
+//
+// A better path that does not last (an IPv4 address that flaps: it connects, the working
+// IPv6 connection is retired, IPv4 dies again — 22 times in 5 hours on ir-xe101-100) is tried
+// later and later: the wait doubles each time the panel is on the fallback again within
+// betterPathHeld of going back, up to betterPathMax, and starts over once a return lasts.
 var betterPath = struct {
 	sync.Mutex
 	last map[string]time.Time
-}{last: map[string]time.Time{}}
+	back map[string]time.Time     // when the panel last went back to a better path
+	wait map[string]time.Duration // between tries (absent: betterPathEvery)
+}{last: map[string]time.Time{}, back: map[string]time.Time{}, wait: map[string]time.Duration{}}
 
-const betterPathEvery = 2 * time.Minute
+const (
+	betterPathEvery = 2 * time.Minute
+	betterPathMax   = 30 * time.Minute
+	betterPathHeld  = 15 * time.Minute
+)
 
 // betterPathWanted: path is a fallback worth leaving (not the preferred direct / proxy path).
 func betterPathWanted(path string) bool {
@@ -492,11 +531,34 @@ func betterPathWanted(path string) bool {
 func betterPathDue(serverID string, now time.Time) bool {
 	betterPath.Lock()
 	defer betterPath.Unlock()
-	if t, ok := betterPath.last[serverID]; ok && now.Sub(t) < betterPathEvery {
+	every := betterPath.wait[serverID]
+	if every == 0 {
+		every = betterPathEvery
+	}
+	// asked only while on a fallback: after a return, this is the return having ended
+	if b, ok := betterPath.back[serverID]; ok {
+		delete(betterPath.back, serverID)
+		if now.Sub(b) < betterPathHeld {
+			if every *= 2; every > betterPathMax {
+				every = betterPathMax
+			}
+		} else {
+			every = betterPathEvery
+		}
+		betterPath.wait[serverID] = every
+	}
+	if t, ok := betterPath.last[serverID]; ok && now.Sub(t) < every {
 		return false
 	}
 	betterPath.last[serverID] = now
 	return true
+}
+
+// betterPathBack notes that the panel went back to a better path of the server just now.
+func betterPathBack(serverID string, now time.Time) {
+	betterPath.Lock()
+	betterPath.back[serverID] = now
+	betterPath.Unlock()
 }
 
 // maybeBetterPath starts a background try of srv's better paths when it is on a fallback.
@@ -544,6 +606,7 @@ func (a *App) tryBetterPath(srv *Server, cur string) {
 		reachCache.m[key] = sh
 		reachCache.Unlock()
 		retireKey(srv.ID + "|" + cur)
+		betterPathBack(srv.ID, time.Now())
 		a.recordPath(srv, c.path)
 		log.Printf("ssh %s: back on %s (was %s)", srv.Name, c.path, cur)
 		return

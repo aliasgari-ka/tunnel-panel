@@ -295,7 +295,11 @@ func (h *SSHHost) client() (*ssh.Client, error) {
 // alive reports whether the connection already open to the server answers a keepalive
 // within a few seconds. It never connects: a closed or unanswering one is simply "no"
 // (client() reconnects on the next use).
-func (h *SSHHost) alive() bool {
+func (h *SSHHost) alive() bool { return h.answers(sshTimeout) }
+
+// answers is alive with the wait given: a connection in use over a slow path is allowed
+// longer than the server monitor's probe.
+func (h *SSHHost) answers(wait time.Duration) bool {
 	h.mu.Lock()
 	cli := h.cli
 	h.mu.Unlock()
@@ -310,7 +314,7 @@ func (h *SSHHost) alive() bool {
 	select {
 	case ok := <-done:
 		return ok
-	case <-time.After(sshTimeout):
+	case <-time.After(wait):
 		return false
 	}
 }
