@@ -405,6 +405,34 @@ func TestIgExFixBackoff(t *testing.T) {
 	}
 }
 
+// A relay that failed for a server's users is left out for igExHeld, for that server and that
+// service only. xe107-germany 2026-11-20/21: the same relay was added, tried and removed seven
+// times in a day.
+func TestIgExRelayFailMemory(t *testing.T) {
+	id, ip, now := "relay-mem", "192.0.2.10", time.Now()
+	if igExRelayBad(id, "GOOGLE", ip, now) {
+		t.Fatal("never tried: not left out")
+	}
+	igExRelayFailed(id, "GOOGLE", ip, now)
+	if !igExRelayBad(id, "GOOGLE", ip, now.Add(igExHeld-time.Minute)) {
+		t.Fatal("failed a while ago: left out")
+	}
+	if igExRelayBad(id, "GOOGLE", ip, now.Add(igExHeld)) {
+		t.Fatal("after igExHeld: tried again")
+	}
+	if igExRelayBad(id, "YTM", ip, now) || igExRelayBad("other", "GOOGLE", ip, now) || igExRelayBad(id, "GOOGLE", "192.0.2.11", now) {
+		t.Fatal("another service, server or relay is not left out")
+	}
+	// old notes are dropped when a new one comes in
+	igExRelayFailed("relay-mem-2", "GOOGLE", ip, now.Add(igExHeld))
+	igExRelayMem.Lock()
+	_, kept := igExRelayMem.bad[igExRelayKey(id, "GOOGLE", ip)]
+	igExRelayMem.Unlock()
+	if kept {
+		t.Fatal("a note older than igExHeld is kept")
+	}
+}
+
 // "No place" is a verdict while the app is known to print places. xe108 2026-11-18: its own IPv6
 // went from "Tehran Province, Iran" to no place at all; the keyless page still read google.com and
 // the ladder took Google back to that exit. When no exit anywhere gets a place (the app stopped
