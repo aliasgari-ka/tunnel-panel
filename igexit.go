@@ -756,8 +756,9 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 		}
 		via := c
 		var added int
+		var donor string
 		if c == "relay" {
-			via, added = a.igExRelay(ctx, srv, svc)
+			via, added, donor = a.igExRelay(ctx, srv, svc)
 			if via == "" {
 				continue
 			}
@@ -810,6 +811,9 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 		if added > 0 { // the relay did not pass: take it out again
 			a.igRun(ctx, srv, []string{"proxy", "del", strconv.Itoa(added)}, "", 120, nil)
 			a.igForget(srv.ID)
+		}
+		if donor != "" && err == nil && v == "bad" { // a verdict, not a reading that did not get through
+			igExRelayFailed(srv.ID, svc, donor, time.Now())
 		}
 		w := "no reading"
 		if err != nil {
@@ -889,9 +893,41 @@ func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoS
 	}
 }
 
+// A relay that passed on the other server's own reading and then failed for this server's users
+// is not tried again for igExHeld: every try adds a proxy, moves the route onto it and takes the
+// proxy out again (xe107-germany 2026-11-20/21: خارج اوتباند's own IP was "added as proxy 4" seven
+// times in a day, and failed the same way each time).
+var igExRelayMem = struct {
+	sync.Mutex
+	bad map[string]time.Time
+}{bad: map[string]time.Time{}}
+
+func igExRelayKey(id, svc, ip string) string { return id + "|" + svc + "|" + ip }
+
+// igExRelayFailed notes that the relay through ip did not pass svc for server id.
+func igExRelayFailed(id, svc, ip string, now time.Time) {
+	igExRelayMem.Lock()
+	defer igExRelayMem.Unlock()
+	for k, t := range igExRelayMem.bad { // old notes go
+		if now.Sub(t) >= igExHeld {
+			delete(igExRelayMem.bad, k)
+		}
+	}
+	igExRelayMem.bad[igExRelayKey(id, svc, ip)] = now
+}
+
+// igExRelayBad: the relay through ip failed svc for server id less than igExHeld ago.
+func igExRelayBad(id, svc, ip string, now time.Time) bool {
+	igExRelayMem.Lock()
+	defer igExRelayMem.Unlock()
+	t, ok := igExRelayMem.bad[igExRelayKey(id, svc, ip)]
+	return ok && now.Sub(t) < igExHeld
+}
+
 // igExRelay finds another of our servers (same owner, never the panel host) whose own IP passes
-// svc, and makes it a proxy of srv. It returns that route ("proxyN") and N when it was added now.
-func (a *App) igExRelay(ctx context.Context, srv *Server, svc string) (string, int) {
+// svc, and makes it a proxy of srv. It returns that route ("proxyN"), N when it was added now,
+// and the other server's IP. A relay that failed here a while ago is left out (igExRelayBad).
+func (a *App) igExRelay(ctx context.Context, srv *Server, svc string) (string, int, string) {
 	hub := gemHomeHost()
 	var donors []*Server
 	a.store.View(func(st *State) {
@@ -923,6 +959,9 @@ func (a *App) igExRelay(ctx context.Context, srv *Server, svc string) (string, i
 			continue
 		}
 		seen[d.IPv4] = true
+		if igExRelayBad(srv.ID, svc, d.IPv4, time.Now()) {
+			continue
+		}
 		m := a.igExRun(ctx, d, []string{svc}, gemRelayPort+1)
 		if m == nil {
 			continue
@@ -934,7 +973,7 @@ func (a *App) igExRelay(ctx context.Context, srv *Server, svc string) (string, i
 		inf := a.igInfo(ctx, srv)
 		for n, r := range igRelays(inf) {
 			if r[0] == d.IPv4 && r[1] == strconv.Itoa(gemRelayPort+1) {
-				return "proxy" + strconv.Itoa(n), 0 // already one of its proxies
+				return "proxy" + strconv.Itoa(n), 0, d.IPv4 // already one of its proxies
 			}
 		}
 		line := fmt.Sprintf("socks5 %s %d - -\n", d.IPv4, gemRelayPort+1)
@@ -947,9 +986,9 @@ func (a *App) igExRelay(ctx context.Context, srv *Server, svc string) (string, i
 		}
 		n, _ := strconv.Atoi(mm[1])
 		a.igAutoLog(srv, svc, "info", fmt.Sprintf("%s passes on %s's own IP: added it as proxy %d (relay)", igSvcName(svc), d.Name, n))
-		return "proxy" + mm[1], n
+		return "proxy" + mm[1], n, d.IPv4
 	}
-	return "", 0
+	return "", 0, ""
 }
 
 // igExPatchInfo: the page's cached info follows a move at once.
