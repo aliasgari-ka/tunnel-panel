@@ -977,8 +977,9 @@ type igExView struct {
 	Want  string `json:"want,omitempty"` // the preferred exit
 	Cur   string `json:"cur,omitempty"`  // the exit the panel picked while Want fails
 	Why   string `json:"why,omitempty"`
-	Next  int64  `json:"next,omitempty"` // when Want is tried again
-	OK    string `json:"ok,omitempty"`   // the last reading: ok | bad
+	Since int64  `json:"since,omitempty"` // when the panel moved it to Cur
+	Next  int64  `json:"next,omitempty"`  // when Want is tried again
+	OK    string `json:"ok,omitempty"`    // the last reading: ok | bad
 	Bad   string `json:"bad,omitempty"`  // why it read bad
 	Where string `json:"where,omitempty"`
 	At    int64  `json:"at,omitempty"`
@@ -996,7 +997,7 @@ func (a *App) igExViewOf(id string, recs map[string]*IgAutoSvc) map[string]igExV
 			case rec.Pin != "":
 				v.Mode = "pin"
 			default:
-				v.Want, v.Cur, v.Why, v.Next = rec.Want, rec.Cur, rec.Why, rec.Next
+				v.Want, v.Cur, v.Why, v.Since, v.Next = rec.Want, rec.Cur, rec.Why, rec.Since, rec.Next
 			}
 		}
 		igExMem.Lock()
