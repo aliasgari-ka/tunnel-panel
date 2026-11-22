@@ -20,7 +20,7 @@
   --bg:#f4f5f8; --panel:#ffffff; --panel-2:#f1f3f7; --line:#e1e5ec;
   --fg:#181b22; --muted:#4f5766; --faint:#646c7b;
   --accent:#5357f0; --accent-def:#5357f0; --accent-fg:#ffffff; --accent-soft:#ecebfe;
-  --good:#0f7a4f; --good-soft:#dcf5ea; --warn:#8f5d10; --crit:#c9303f; --crit-soft:#fbe4e7;
+  --good:#0f7a4f; --good-soft:#dcf5ea; --warn:#8f5d10; --crit:#c9303f; --crit-soft:#fbe4e7; --info:#1f6fc4;
   --shadow:0 1px 2px rgba(20,30,60,.05),0 4px 14px rgba(20,30,60,.05);
   --shadow-up:0 2px 4px rgba(20,30,60,.06),0 12px 28px rgba(40,50,120,.12);
   --scrim:rgba(15,18,26,.45);
@@ -30,7 +30,7 @@
   --bg:#000000; --panel:#0f0f11; --panel-2:#18181b; --line:#27272c;
   --fg:#ededf0; --muted:#a6a6b0; --faint:#80808b;
   --accent:#8f8cff; --accent-def:#8f8cff; --accent-fg:#0c0f1a; --accent-soft:#1f1e3a;
-  --good:#3dd68c; --good-soft:#0c2a1d; --warn:#f2b55c; --crit:#ff7a86; --crit-soft:#361519;
+  --good:#3dd68c; --good-soft:#0c2a1d; --warn:#f2b55c; --crit:#ff7a86; --crit-soft:#361519; --info:#5fb0ff;
   --shadow:0 1px 2px rgba(0,0,0,.6),0 6px 18px rgba(0,0,0,.4); --shadow-up:0 4px 10px rgba(0,0,0,.6),0 16px 36px rgba(0,0,0,.6);
   --scrim:rgba(0,0,0,.6);
   color-scheme:dark;
@@ -39,7 +39,7 @@
   --bg:#000000; --panel:#0f0f11; --panel-2:#18181b; --line:#27272c;
   --fg:#ededf0; --muted:#a6a6b0; --faint:#80808b;
   --accent:#8f8cff; --accent-def:#8f8cff; --accent-fg:#0c0f1a; --accent-soft:#1f1e3a;
-  --good:#3dd68c; --good-soft:#0c2a1d; --warn:#f2b55c; --crit:#ff7a86; --crit-soft:#361519;
+  --good:#3dd68c; --good-soft:#0c2a1d; --warn:#f2b55c; --crit:#ff7a86; --crit-soft:#361519; --info:#5fb0ff;
   --shadow:0 1px 2px rgba(0,0,0,.6),0 6px 18px rgba(0,0,0,.4); --shadow-up:0 4px 10px rgba(0,0,0,.6),0 16px 36px rgba(0,0,0,.6);
   --scrim:rgba(0,0,0,.6);
   color-scheme:dark;
@@ -48,7 +48,7 @@
   --bg:#1d1f22; --panel:#26282c; --panel-2:#2f3236; --line:#3b3e44;
   --fg:#eceef1; --muted:#b4b8c0; --faint:#90959e;
   --accent:#a3a0ff; --accent-def:#a3a0ff; --accent-fg:#14152a; --accent-soft:#36355a;
-  --good:#4ad89a; --good-soft:#1d3a2e; --warn:#f4bd6a; --crit:#ff8a94; --crit-soft:#4a272c;
+  --good:#4ad89a; --good-soft:#1d3a2e; --warn:#f4bd6a; --crit:#ff8a94; --crit-soft:#4a272c; --info:#7cbcff;
   --shadow:0 1px 2px rgba(0,0,0,.35),0 6px 18px rgba(0,0,0,.22); --shadow-up:0 4px 10px rgba(0,0,0,.4),0 16px 36px rgba(0,0,0,.4);
   --scrim:rgba(0,0,0,.5);
   color-scheme:dark;
@@ -932,16 +932,19 @@ details.igs-card[open]>summary{border-bottom:1px solid var(--line)}
 /* one plain line per service (cards and the server's status card) */
 .igp .igls{display:flex;flex-direction:column;gap:5px;margin-top:2px}
 .igp .igls-d{margin-top:14px;gap:7px}
-.igp .igl{display:flex;align-items:center;flex-wrap:wrap;gap:3px 7px;font-size:13.5px;line-height:1.45;padding:6px 9px;border-radius:9px;background:var(--panel-2);min-width:0;border-inline-start:3px solid var(--good)}
-.igp .igls-d .igl{font-size:14px;padding:8px 10px}
-.igp .igl.warn{border-inline-start-color:var(--warn);background:color-mix(in srgb,var(--warn) 9%,var(--panel-2))}
-.igp .igl.bad{border-inline-start-color:var(--crit);background:var(--crit-soft)}
-.igp .igl-m{font-weight:800;color:var(--good);flex:none;width:1em;text-align:center}
-.igp .igl.warn .igl-m{color:var(--warn)}.igp .igl.bad .igl-m{color:var(--crit)}
+.igp .igl{display:flex;align-items:center;flex-wrap:wrap;gap:2px 8px;font-size:13.5px;line-height:1.45;padding:7px 10px;border-radius:9px;background:var(--panel-2);min-width:0;border-inline-start:3px solid var(--c,var(--good));--c:var(--good)}
+.igp .igls-d .igl{font-size:14px;padding:9px 11px}
+.igp .igl.auto{--c:var(--info)}
+.igp .igl.warn{--c:var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--panel-2))}
+.igp .igl.bad{--c:var(--crit);background:var(--crit-soft)}
+.igp .igl.wait{--c:var(--line)}.igp .igl.wait .igl-m{color:var(--faint)}
+.igp .igl-m{font-weight:800;color:var(--c);flex:none;width:1em;text-align:center}
 .igp .igl-n{font-weight:650;flex:none}
-.igp .igl-b{flex:1 1 160px;min-width:0;color:var(--muted);overflow-wrap:anywhere}
-.igp .igl-b b{color:var(--fg);font-weight:650}.igp .igl.bad .igl-cc{color:var(--crit)}
-.igp .igl-why{color:var(--muted)}
+.igp .igl-b{flex:1 1 140px;min-width:0;color:var(--muted);overflow-wrap:anywhere}
+.igp .igl-b b{color:var(--fg);font-weight:650}.igp .igl-cc{color:var(--fg);font-weight:650}.igp .igl.bad .igl-cc{color:var(--crit)}
+.igp .igl-sub{flex:1 0 100%;padding-inline-start:calc(1em + 8px);font-size:12px;line-height:1.5;color:var(--faint);overflow-wrap:anywhere}
+.igp .igl.auto .igl-sub{color:color-mix(in srgb,var(--info) 70%,var(--muted))}.igp .igl.bad .igl-sub{color:var(--crit)}.igp .igl.warn .igl-sub{color:var(--warn)}
+.igp .igls-d .igl-sub{font-size:12.5px}
 .igp .igl .chip{font-size:11px;padding:1px 7px}
 .igp .igl-menu{margin-inline-start:auto;flex:none}
 .igp .igl-menu .pop{max-height:60vh;overflow:auto}
@@ -954,7 +957,7 @@ details.igs-card[open]>summary{border-bottom:1px solid var(--line)}
 .igp .igah-l{display:flex;flex-direction:column;gap:3px;margin-top:6px;font-size:12.5px}
 .igp .igah-r{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.igp .igah-r span:last-child{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
 .igp .igah-r.fail{color:var(--crit)}.igp .igah-r.fix{color:var(--fg)}
-@media (max-width:640px){.igp .igl{font-size:13px}.igp .igl-b{flex-basis:100%;order:3}.igp .igl .chip{order:2}}
+@media (max-width:640px){.igp .igl{font-size:13px}.igp .igl-b{flex-basis:100%;order:3;padding-inline-start:calc(1em + 8px)}.igp .igl .chip{order:2}.igp .igl-sub{order:4}.igp .igl-menu{order:2}}
 .igp .igst-more{margin-top:12px}
 .igp .igst-more>summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--muted);padding:2px 0}
 .igp .igst-more>summary::-webkit-details-marker{display:none}
@@ -1517,6 +1520,24 @@ input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus
 .rp-auto{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);display:grid;gap:8px}
 .rp-auto .f{display:grid;gap:4px;font-size:13px}.rp-last{font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 @media (max-width:640px){.rp-i{grid-template-columns:20px minmax(0,1fr)}.rp-c{grid-column:2;justify-content:flex-start}.rp-foot .actions .grow{display:none}.rp-foot .actions .btn{flex:1 1 0;white-space:nowrap;justify-content:center;padding-inline:10px}}
+
+/* IG Routing: one colour per meaning (igLook in app.js) — green works, blue changed by the panel
+   (nothing to do), orange needs the admin, red down for users */
+.igp .pill.auto{background:color-mix(in srgb,var(--info) 15%,transparent);color:var(--info)}
+.igp .igstat{display:flex;align-items:center;gap:8px;margin-top:-4px;padding:6px 10px;border-radius:8px;font-size:12.5px;font-weight:650;line-height:1.35;color:var(--c);background:color-mix(in srgb,var(--c) 12%,transparent);--c:var(--good)}
+.igp .igstat i{width:8px;height:8px;border-radius:50%;flex:none;background:var(--c)}
+.igp .igstat.auto{--c:var(--info)}.igp .igstat.warn{--c:var(--warn)}.igp .igstat.bad{--c:var(--crit)}.igp .igstat.wait,.igp .igstat.off{--c:var(--muted)}
+.igp .igcard{border-inline-start:3px solid var(--line)}
+.igp .igcard.ok{border-inline-start-color:var(--good)}.igp .igcard.auto{border-inline-start-color:var(--info)}
+.igp .igcard.warn{border-inline-start-color:var(--warn)}.igp .igcard.bad{border-inline-start-color:var(--crit)}
+.igp .iglegend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:-2px 0 12px;font-size:12px;color:var(--muted)}
+.igp .iglegend span{display:inline-flex;align-items:center;gap:6px}
+.igp .iglegend i{width:9px;height:9px;border-radius:50%;flex:none;background:var(--c)}
+.igp .iglegend .ok{--c:var(--good)}.igp .iglegend .auto{--c:var(--info)}.igp .iglegend .warn{--c:var(--warn)}.igp .iglegend .bad{--c:var(--crit)}
+.igp .igst.auto{--st:var(--info)}.igp .igst.off{--st:var(--faint)}
+.igp .igst-p.auto{--c:var(--info);background:color-mix(in srgb,var(--info) 11%,transparent);color:var(--info)}
+.igp .igd.auto{background:var(--info)}
+.igp .igsum-note{border-inline-start-color:var(--info)}
 </style>
 </head>
 <body></body>
