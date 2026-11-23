@@ -388,6 +388,58 @@ type igExLive struct {
 	// through all the exits, and most moves restart the server's router (its users are cut)
 	FixFails int
 	FixNext  time.Time
+	// StrayNext: the next time a server found on its failing preferred exit may be put back on the
+	// exit the panel had picked (igExStray); a restore that did not pass waits igExBackMin
+	StrayNext time.Time
+}
+
+// igExStray: the record says the users are on Cur (picked by the panel because Want fails), but
+// the server routes the service through Want. A try back that could not return, an agent update
+// or a change on the server in the same minute leave it so; usa-kharej sat on WARP IPv6 on
+// 2026-11-23 03:03 with proxy 7 (France, passing) in its record, and the ladder that ran from
+// there found nothing and left it there.
+func igExStray(rec *IgAutoSvc, route string) bool {
+	return rec != nil && rec.Cur != "" && rec.Cur != rec.Want && route == rec.Want
+}
+
+// igExStrayMay: may the restore be tried now? It notes the try (the next one waits igExBackMin).
+func igExStrayMay(id, svc string, now time.Time) bool {
+	igExMem.Lock()
+	defer igExMem.Unlock()
+	m := igExMem.live[id]
+	if m == nil {
+		m = map[string]*igExLive{}
+		igExMem.live[id] = m
+	}
+	l := m[svc]
+	if l == nil {
+		l = &igExLive{}
+		m[svc] = l
+	}
+	if now.Before(l.StrayNext) {
+		return false
+	}
+	l.StrayNext = now.Add(igExBackMin)
+	return true
+}
+
+// igExFixReset forgets the ladder's back-off: the route was changed by a person or by the server,
+// so what failed before says nothing about the exits to try from here.
+func igExFixReset(id, svc string) {
+	igExMem.Lock()
+	defer igExMem.Unlock()
+	if l := igExMem.live[id][svc]; l != nil {
+		l.FixFails, l.FixNext, l.StrayNext = 0, time.Time{}, time.Time{}
+	}
+}
+
+// igExFixing: a bad reading that the panel is still dealing with by itself - the ladder has not
+// been climbed yet, or its back-off is over. False = it found nothing: a person is needed.
+func igExFixing(id, svc string, now time.Time) bool {
+	igExMem.Lock()
+	defer igExMem.Unlock()
+	l := igExMem.live[id][svc]
+	return l != nil && l.OK == "bad" && !now.Before(l.FixNext) && l.FixFails == 0
 }
 
 // igExFixWait: may the ladder be tried now? ok=false -> not before the returned time.
@@ -578,10 +630,12 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 			a.igAutoPut(srv.ID, k, func(s *IgAutoSvc) { s.Want, s.Cur, s.Why, s.Tries, s.Next = route, "", "", 0, 0 })
 			a.igAutoLog(srv, k, "info", fmt.Sprintf("%s: route changed outside the panel to %s - followed", igSvcName(k), igRouteWord(route)))
 			rec = nil
+			igExFixReset(srv.ID, k)
 		}
 		if rec == nil || rec.Cur == "" {
 			if rec == nil || rec.Want != route {
 				a.igAutoPut(srv.ID, k, func(s *IgAutoSvc) { s.Want = route })
+				igExFixReset(srv.ID, k) // a new exit to start from: the old back-off does not apply
 			}
 		}
 		r := read[k]
@@ -598,6 +652,11 @@ func (a *App) igExCheck(ctx context.Context, srv *Server) bool {
 		case "bad":
 			if bad < igExBadTimes {
 				again = true
+				continue
+			}
+			// left on the failing preferred exit although the panel had picked another: back on
+			// that one first (one move), before any ladder and whatever the ladder's back-off says
+			if igExStray(rec, route) && igExStrayMay(srv.ID, k, now) && a.igExRestore(ctx, srv, k, *rec, why) {
 				continue
 			}
 			if ok, _ := igExFixWait(srv.ID, k, now); !ok {
@@ -752,6 +811,18 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 	var tried []string
 	for _, c := range igExLadder(svc, srv, inf, route) {
 		if ctx.Err() != nil {
+			// out of time in the middle of the ladder: the route is on the last step tried, which
+			// did not pass. Left there, the next check took it for a route someone chose and made
+			// it the preferred exit (xe108, 2026-11-23 02:46: own IP -> WARP, Gemini refused ~40 min)
+			rctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			if cur := a.igInfo(rctx, srv)[strings.ToLower(svc)]; cur != route {
+				if e := a.igSvcRoute(rctx, srv, map[string]string{svc: route}); e != nil {
+					a.igAutoLog(srv, svc, "info", fmt.Sprintf("%s: the ladder ran out of time on %s and could not go back to %s (%s)", name, igRouteWord(cur), igRouteWord(route), clipTo(e.Error(), 80)))
+					return
+				}
+			}
+			a.igAutoLog(srv, svc, "info", fmt.Sprintf("%s: the ladder ran out of time after %s - back on %s, the next check goes on", name, strings.Join(tried, ", "), igRouteWord(route)))
 			return
 		}
 		via := c
@@ -822,13 +893,34 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 	// nothing passed: back where it was, and tell a person at most every 6 h
 	igExFixDone(srv.ID, svc, false, time.Now())
 	if cur := a.igInfo(ctx, srv)[strings.ToLower(svc)]; cur != route {
-		_ = a.igSvcRoute(ctx, srv, map[string]string{svc: route})
+		if e := a.igSvcRoute(ctx, srv, map[string]string{svc: route}); e != nil {
+			time.Sleep(igExSettle)
+			_ = a.igSvcRoute(ctx, srv, map[string]string{svc: route})
+		}
 	}
 	a.igAutoLog(srv, svc, "fail", fmt.Sprintf("%s on %s: %s; nothing else passed: %s", name, igRouteWord(route), why, strings.Join(tried, ", ")))
 	if rec == nil || time.Since(time.Unix(rec.Alert, 0)) > igAutoAlertGap {
 		a.igAutoPut(srv.ID, svc, func(s *IgAutoSvc) { s.Alert = time.Now().Unix() })
 		a.push(fmt.Sprintf("🔀⚠️ %s: %s fails on %s (%s) and no other exit passes — add an outbound on the IG Routing page.", igLabel(srv), name, igRouteWord(route), why))
 	}
+}
+
+// igExRestore puts a stray service (igExStray) back on the exit the panel had picked; true = it
+// passes there again.
+func (a *App) igExRestore(ctx context.Context, srv *Server, svc string, rec IgAutoSvc, why string) bool {
+	v, r, err := a.igExSet(ctx, srv, svc, rec.Cur)
+	if err != nil || v != "ok" {
+		return false
+	}
+	igExMark(srv.ID, svc, r, "ok", "")
+	a.igExPatchInfo(srv.ID, svc, rec.Cur, r)
+	where := igExWhere(svc, r)
+	if where != "" {
+		where = ", " + where
+	}
+	a.igAutoLog(srv, svc, "fix", fmt.Sprintf("%s was left on %s (%s) - back on %s%s", igSvcName(svc), igRouteWord(rec.Want), why, igRouteWord(rec.Cur), where))
+	igExFixDone(srv.ID, svc, true, time.Now())
+	return true
 }
 
 // igExFlap: the preferred exit fails within igExHeld of the last move back onto it.
@@ -873,7 +965,12 @@ func (a *App) igExBack(ctx context.Context, srv *Server, svc string, rec IgAutoS
 		a.push(fmt.Sprintf("🔀 %s: %s back on %s%s (it passes again; was on %s)", igLabel(srv), name, igRouteWord(rec.Want), where, igRouteWord(rec.Cur)))
 		return
 	}
-	_ = a.igSvcRoute(ctx, srv, map[string]string{svc: rec.Cur})
+	if e := a.igSvcRoute(ctx, srv, map[string]string{svc: rec.Cur}); e != nil { // must not stay on the failing exit
+		time.Sleep(igExSettle)
+		if e = a.igSvcRoute(ctx, srv, map[string]string{svc: rec.Cur}); e != nil {
+			a.igAutoLog(srv, svc, "info", fmt.Sprintf("%s: could not go back to %s after the try on %s (%s) - the next check puts it back", name, igRouteWord(rec.Cur), igRouteWord(rec.Want), clipTo(e.Error(), 80)))
+		}
+	}
 	d := igExBackAfter(rec.Tries + 1)
 	a.igAutoPut(srv.ID, svc, func(s *IgAutoSvc) { s.Tries++; s.Next = time.Now().Add(d).Unix() })
 	if rec.Tries == 0 || rec.Tries%4 == 3 {
@@ -983,6 +1080,9 @@ type igExView struct {
 	Bad   string `json:"bad,omitempty"`  // why it read bad
 	Where string `json:"where,omitempty"`
 	At    int64  `json:"at,omitempty"`
+	// Fixing: it reads bad and the panel is still trying the other exits by itself (nothing to do
+	// for a person yet); false on a bad reading = no exit passed
+	Fixing bool `json:"fixing,omitempty"`
 }
 
 func (a *App) igExViewOf(id string, recs map[string]*IgAutoSvc) map[string]igExView {
@@ -1014,6 +1114,7 @@ func (a *App) igExViewOf(id string, recs map[string]*IgAutoSvc) map[string]igExV
 			}
 		}
 		igExMem.Unlock()
+		v.Fixing = v.Mode == "auto" && v.OK == "bad" && igExFixing(id, k, time.Now())
 		out[k] = v
 	}
 	return out

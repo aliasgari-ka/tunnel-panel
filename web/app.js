@@ -3878,6 +3878,11 @@ function igLook(s) {
   }
   if (i.paused === 'YES') return R('off', 'Paused by hand', 'به‌دست متوقف شده');
   const ls = igSvcLines(s), names = (lvl) => IG_SVCNAME.filter((_, k) => ls[k][0] === lvl).join(', ');
+  // a bad Google / YouTube Music line the panel is still trying the other exits for is not a job for a person yet
+  const exs = (s.auto && s.auto.ex) || {}, gk = ['IG', 'GOOGLE', 'YTM'];
+  const badK = gk.filter((_, k) => ls[k][0] === 'bad');
+  if (badK.length && badK.every(g => exs[g] && exs[g].fixing))
+    return R('wait', `Fixing by itself — ${names('bad')} failed on its exit, the panel is trying the others`, `خودش در حال درست کردن — ${names('bad')} روی خروجی‌اش رد شد، پنل خروجی‌های دیگر را امتحان می‌کند`);
   if (names('bad')) return R('bad', `Needs you — ${names('bad')} down for users`, `نیاز به شما — ${names('bad')} برای کاربران قطع است`);
   if (igBad(i.state)) return R('bad', 'Needs you — ' + (IGST[i.state] || [i.state])[0], 'نیاز به شما — ' + (IGST[i.state] || [i.state])[0]);
   if (names('warn')) return need(names('warn') + " can't be checked", 'بررسی ' + names('warn') + ' ممکن نیست');
