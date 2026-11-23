@@ -481,6 +481,57 @@ func TestIgExNoPlaceIsRefusedWhilePlacesAreSeen(t *testing.T) {
 }
 
 // A move back needs a country: google.com without a place is not enough.
+func TestIgExStray(t *testing.T) {
+	rec := &IgAutoSvc{Want: "warp6", Cur: "proxy7"}
+	if !igExStray(rec, "warp6") {
+		t.Error("the server is on the failing preferred exit while the record says proxy 7: stray")
+	}
+	if igExStray(rec, "proxy7") || igExStray(rec, "direct") {
+		t.Error("on the picked exit, or on a route someone else chose: not stray")
+	}
+	if igExStray(&IgAutoSvc{Want: "warp6"}, "warp6") || igExStray(nil, "warp6") {
+		t.Error("nothing was picked: not stray")
+	}
+	id := "t-stray"
+	now := time.Now()
+	if !igExStrayMay(id, "GOOGLE", now) {
+		t.Error("the first restore may run")
+	}
+	if igExStrayMay(id, "GOOGLE", now.Add(10*time.Minute)) {
+		t.Error("a second restore 10 min later must wait: every try moves the route")
+	}
+	if !igExStrayMay(id, "GOOGLE", now.Add(igExBackMin+time.Minute)) {
+		t.Error("after the wait it may run again")
+	}
+}
+
+func TestIgExFixResetAndFixing(t *testing.T) {
+	id := "t-reset"
+	now := time.Now()
+	igExMarkV(id, "GOOGLE", &igExRead{}, "bad", "x")
+	if !igExFixing(id, "GOOGLE", now) {
+		t.Error("a bad reading before any ladder: the panel is still on it")
+	}
+	igExFixDone(id, "GOOGLE", false, now) // the ladder found nothing
+	if ok, _ := igExFixWait(id, "GOOGLE", now.Add(time.Minute)); ok {
+		t.Fatal("the ladder must wait after it found nothing")
+	}
+	if igExFixing(id, "GOOGLE", now.Add(time.Minute)) {
+		t.Error("the ladder found nothing: a person is needed, not 'fixing'")
+	}
+	igExFixReset(id, "GOOGLE") // someone changed the route
+	if ok, _ := igExFixWait(id, "GOOGLE", now.Add(time.Minute)); !ok {
+		t.Error("after a route change the old back-off must not hold the ladder")
+	}
+	if !igExFixing(id, "GOOGLE", now.Add(time.Minute)) {
+		t.Error("after the reset the panel is on it again")
+	}
+	igExMarkV(id, "GOOGLE", &igExRead{}, "ok", "")
+	if igExFixing(id, "GOOGLE", now) {
+		t.Error("a good reading is not 'fixing'")
+	}
+}
+
 func TestIgExStrong(t *testing.T) {
 	if igExStrong("GOOGLE", &igExRead{Code: "200", Dom: "com"}) {
 		t.Fatal("bare google.com is strong")
