@@ -811,6 +811,18 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 	var tried []string
 	for _, c := range igExLadder(svc, srv, inf, route) {
 		if ctx.Err() != nil {
+			// out of time in the middle of the ladder: the route is on the last step tried, which
+			// did not pass. Left there, the next check took it for a route someone chose and made
+			// it the preferred exit (xe108, 2026-11-23 02:46: own IP -> WARP, Gemini refused ~40 min)
+			rctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			if cur := a.igInfo(rctx, srv)[strings.ToLower(svc)]; cur != route {
+				if e := a.igSvcRoute(rctx, srv, map[string]string{svc: route}); e != nil {
+					a.igAutoLog(srv, svc, "info", fmt.Sprintf("%s: the ladder ran out of time on %s and could not go back to %s (%s)", name, igRouteWord(cur), igRouteWord(route), clipTo(e.Error(), 80)))
+					return
+				}
+			}
+			a.igAutoLog(srv, svc, "info", fmt.Sprintf("%s: the ladder ran out of time after %s - back on %s, the next check goes on", name, strings.Join(tried, ", "), igRouteWord(route)))
 			return
 		}
 		via := c
@@ -881,7 +893,10 @@ func (a *App) igExFix(ctx context.Context, srv *Server, svc, route, why string) 
 	// nothing passed: back where it was, and tell a person at most every 6 h
 	igExFixDone(srv.ID, svc, false, time.Now())
 	if cur := a.igInfo(ctx, srv)[strings.ToLower(svc)]; cur != route {
-		_ = a.igSvcRoute(ctx, srv, map[string]string{svc: route})
+		if e := a.igSvcRoute(ctx, srv, map[string]string{svc: route}); e != nil {
+			time.Sleep(igExSettle)
+			_ = a.igSvcRoute(ctx, srv, map[string]string{svc: route})
+		}
 	}
 	a.igAutoLog(srv, svc, "fail", fmt.Sprintf("%s on %s: %s; nothing else passed: %s", name, igRouteWord(route), why, strings.Join(tried, ", ")))
 	if rec == nil || time.Since(time.Unix(rec.Alert, 0)) > igAutoAlertGap {
