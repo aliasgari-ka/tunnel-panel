@@ -8,13 +8,16 @@ import (
 // An open bridge follows the bind asked last: a public one asked again as localhost-only
 // is closed and opened anew on 127.0.0.1, and the old one's Close leaves the new one alone.
 func TestBridgeBindFollowsRequest(t *testing.T) {
+	old := bridgePublicBind
+	bridgePublicBind = "127.0.0.2" // a second loopback address: no port opened to the network
+	defer func() { bridgePublicBind = old }()
 	a := &App{}
 	srv := &Server{ID: "bridge-test"}
 	pub, err := a.OpenBridge(srv, true, time.Minute)
 	if err != nil {
-		t.Skip("cannot listen on 0.0.0.0:", err)
+		t.Skip("cannot listen on 127.0.0.2:", err)
 	}
-	if pub.Bind != "0.0.0.0" {
+	if pub.Bind != bridgePublicBind {
 		t.Fatalf("bind %s", pub.Bind)
 	}
 	loc, err := a.OpenBridge(srv, false, time.Minute)
