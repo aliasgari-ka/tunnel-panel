@@ -29,6 +29,10 @@ type bridgeMgr struct {
 
 var bridges = &bridgeMgr{m: map[string]*Bridge{}}
 
+// bridgePublicBind is where a public bridge listens; tests point it at a loopback
+// address so running them never opens a port to the network.
+var bridgePublicBind = "0.0.0.0"
+
 // OpenBridge starts (or refreshes) a bridge to a server's sshd. bindPublic controls
 // whether it listens on all interfaces (reachable from outside) or just localhost.
 func (a *App) OpenBridge(srv *Server, bindPublic bool, ttl time.Duration) (*Bridge, error) {
@@ -36,7 +40,7 @@ func (a *App) OpenBridge(srv *Server, bindPublic bool, ttl time.Duration) (*Brid
 	defer bridges.mu.Unlock()
 	bind := "127.0.0.1"
 	if bindPublic {
-		bind = "0.0.0.0"
+		bind = bridgePublicBind
 	}
 	if b := bridges.m[srv.ID]; b != nil {
 		if b.Bind == bind {
