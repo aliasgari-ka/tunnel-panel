@@ -116,12 +116,24 @@ func tcpUp(addr string, tries int, pause time.Duration) (bool, time.Time) {
 }
 
 func (a *App) addOutage(o Outage) {
+	a.addOutageIf(o, nil)
+}
+
+// addOutageIf logs o only when ok (nil = always) says so in the same store update, and
+// reports whether it did.
+func (a *App) addOutageIf(o Outage, ok func(st *State) bool) bool {
+	added := false
 	_ = a.store.Update(func(st *State) error {
+		if ok != nil && !ok(st) {
+			return nil
+		}
+		added = true
 		var cut int64
 		st.Outages, cut = trimOutagesCut(append(st.Outages, o))
 		st.OutagesFrom = max(st.OutagesFrom, cut)
 		return nil
 	})
+	return added
 }
 
 // familyOutage: one address family's SSH down while the other answers — the server is up.
@@ -234,6 +246,16 @@ func (a *App) forgetServerMon(id string) {
 		}
 		return nil
 	})
+}
+
+// serverIn: the state still has a server of this id.
+func serverIn(st *State, id string) bool {
+	for _, s := range st.Servers {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // serverReachable is the monitor's last word on a server (true when not checked yet).
@@ -385,9 +407,22 @@ func (a *App) transition(m *serverMon, id, kind, name string, down bool, at time
 		s.since, s.outageID = at, newID()
 		oid := s.outageID
 		m.mu.Unlock()
-		a.addOutage(Outage{ID: oid, Kind: kind, Target: id, Name: name, Start: at.Unix(), Reason: reason})
-		icon := map[string]string{"server": "🔴 Server unreachable", "panel": "⚠ Panel host offline", "ssh-v4": "🟠 SSH over IPv4 down", "ssh-v6": "🟠 SSH over IPv6 down"}[kind]
 		srvID, _, _ := strings.Cut(id, "/")
+		// a server deleted while its check was under way (a round takes up to ~13 s) is not
+		// logged as down: forgetServerMon had already ended its outages, and nothing would
+		// ever end this one — one stayed open 3 days, until the next restart, after its alert
+		o := Outage{ID: oid, Kind: kind, Target: id, Name: name, Start: at.Unix(), Reason: reason}
+		if kind == "panel" {
+			a.addOutage(o)
+		} else if !a.addOutageIf(o, func(st *State) bool { return serverIn(st, srvID) }) {
+			m.mu.Lock()
+			if m.state[id] == s {
+				delete(m.state, id)
+			}
+			m.mu.Unlock()
+			return
+		}
+		icon := map[string]string{"server": "🔴 Server unreachable", "panel": "⚠ Panel host offline", "ssh-v4": "🟠 SSH over IPv4 down", "ssh-v6": "🟠 SSH over IPv6 down"}[kind]
 		a.pushServer(srvID, fmt.Sprintf("%s: %s\nsince %s (Tehran)\n%s", icon, name, clock(at), reason))
 		return
 	}
