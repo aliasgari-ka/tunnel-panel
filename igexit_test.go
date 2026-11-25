@@ -123,6 +123,7 @@ func TestIgExYtmRegionPage(t *testing.T) {
 	// fake curl: with the consent cookie it writes $PAGE and says 200, without it only the redirect
 	fake := `#!/bin/bash
 o=; ck=; while [ $# -gt 0 ]; do case "$1" in -o) o=$2; shift;; -b) ck=$2; shift;; esac; shift; done
+if [ -n "$NFILE" ]; then echo x >> "$NFILE"; [ "$(wc -l < "$NFILE")" = 3 ] && PAGE=$PAGE.bad; fi
 if [ "$ck" = "SOCS=CAI" ]; then cat "$PAGE" > "$o"; echo -n "200 "
 else : > "$o"; echo -n "302 https://consent.youtube.com/m?continue=https%3A%2F%2Fmusic.youtube.com%2F&gl=DE"; fi
 `
@@ -132,6 +133,9 @@ else : > "$o"; echo -n "302 https://consent.youtube.com/m?continue=https%3A%2F%2
 	run := func(page string) string {
 		pf := filepath.Join(dir, "page.html")
 		if err := os.WriteFile(pf, []byte(page), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(pf+".bad", []byte("YouTube Music is not available in your area"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		sh := "UA=x; X=; f=$(mktemp); v6(){ echo -; }; rt(){ echo ipv6; }\n" + yfn + "\ny; rm -f \"$f\"\n"
@@ -153,6 +157,16 @@ else : > "$o"; echo -n "302 https://consent.youtube.com/m?continue=https%3A%2F%2
 	} else if lvl, _ := igExVerdict("YTM", r); lvl != "bad" {
 		t.Errorf("judged %q for the region page", lvl)
 	}
+	// one WARP of a round-robin route refused: the 3rd of 4 reads gets the region page
+	if err := os.WriteFile(filepath.Join(dir, "n"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NFILE", filepath.Join(dir, "n"))
+	mixed := run(`<script>ytcfg.set({"GL":"DE"})</script>`)
+	if m, _ := igExParse([]string{mixed}); m["YTM"].Flag != "region" {
+		t.Errorf("one refused read in four must fail the exit: %q", mixed)
+	}
+	t.Setenv("NFILE", "")
 	good := run(`<script>ytcfg.set({"INNERTUBE_CONTEXT_GL":"DE","GL":"DE"})</script>`)
 	m, _ = igExParse([]string{good})
 	if r := m["YTM"]; r.Flag == "region" || r.Dom != "DE" {

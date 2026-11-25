@@ -249,16 +249,21 @@ cb(){ local c i  # Colab: only where the agent sends it on Google's route
     [ "${c:-000}" != 000 ] && break; sleep 2
   done
   echo "${c:-000}"; }
-y(){ local r c d fl=- i
+y(){ local r c d g fl=- i k
   # SOCS: consent already answered, so Google serves the page itself (xe107, 2026-11-25: the
-  # consent redirect said gl=DE while the page behind it was "not available in your area")
-  for i in 1 2; do
-    r=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -b 'SOCS=CAI' -o "$f" -w '%%{http_code} %%{redirect_url}' https://music.youtube.com/ 2>/dev/null); c=${r%%%% *}
-    [ "${c:-000}" != 000 ] && break; sleep 2
+  # consent redirect said gl=DE while the page behind it was "not available in your area").
+  # Read 4 times: a WARP route spreads connections over its WARPs (round robin), and one WARP
+  # that falls back to its refused IPv4 cut a quarter of the users while one read passed.
+  for k in 1 2 3 4; do
+    for i in 1 2; do
+      r=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -b 'SOCS=CAI' -o "$f" -w '%%{http_code} %%{redirect_url}' https://music.youtube.com/ 2>/dev/null); c=${r%%%% *}
+      [ "${c:-000}" != 000 ] && break; sleep 2
+    done
+    case "${r#* }" in *unavailable-in-region*|*not-available*) fl=region;; esac
+    grep -qsi "unavailable-in-region\|not available in your \(country\|area\|region\)\|isn.\{1,6\}t available in your \(country\|area\|region\)" "$f" && fl=region
+    g=$(grep -oE '"GL":"[A-Z]{2}"' "$f" | head -1 | cut -d'"' -f4); [ -n "$g" ] && d=$g
+    [ "$fl" = region ] || [ "${c:-000}" = 000 ] || [ "$c" = 403 ] && break
   done
-  case "${r#* }" in *unavailable-in-region*|*not-available*) fl=region;; esac
-  grep -qsi "unavailable-in-region\|not available in your \(country\|area\|region\)\|isn.\{1,6\}t available in your \(country\|area\|region\)" "$f" && fl=region
-  d=$(grep -oE '"GL":"[A-Z]{2}"' "$f" | head -1 | cut -d'"' -f4)
   echo "X YTM ${c:-000} ${d:--} $fl $(v6 YTM) $(rt YTM)"; }
 `, port, port)
 	if port == gemRelayPort {
