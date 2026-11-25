@@ -5,7 +5,8 @@ package main
 // Each server's users' route (the agent's relay 12370: the rules the users get) is read every
 // 10 minutes: for Gemini the country Google places it in (the keyless app's OneGoogle domain,
 // og.qtm) and whether Google answers at all (403 = this IP is refused); for YouTube Music the
-// "not available in your region" page. When the service's current exit fails twice in a row,
+// "not available in your area" page (asked with a consent cookie: without one every EU exit only
+// gets a redirect to consent.youtube.com, which says nothing about the region). When the service's current exit fails twice in a row,
 // the panel tries the other exits of the server in a fixed order and keeps the first one that
 // passes the same check on the users' route:
 //
@@ -249,12 +250,14 @@ cb(){ local c i  # Colab: only where the agent sends it on Google's route
   done
   echo "${c:-000}"; }
 y(){ local r c d fl=- i
+  # SOCS: consent already answered, so Google serves the page itself (xe107, 2026-11-25: the
+  # consent redirect said gl=DE while the page behind it was "not available in your area")
   for i in 1 2; do
-    r=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -o "$f" -w '%%{http_code} %%{redirect_url}' https://music.youtube.com/ 2>/dev/null); c=${r%%%% *}
+    r=$(curl -s -m 15 -A "$UA" $X -H 'Accept-Language: en-US,en;q=0.9' -b 'SOCS=CAI' -o "$f" -w '%%{http_code} %%{redirect_url}' https://music.youtube.com/ 2>/dev/null); c=${r%%%% *}
     [ "${c:-000}" != 000 ] && break; sleep 2
   done
   case "${r#* }" in *unavailable-in-region*|*not-available*) fl=region;; esac
-  grep -qsi "unavailable-in-region\|not available in your country\|isn.\{1,6\}t available in your country" "$f" && fl=region
+  grep -qsi "unavailable-in-region\|not available in your \(country\|area\|region\)\|isn.\{1,6\}t available in your \(country\|area\|region\)" "$f" && fl=region
   d=$(grep -oE '"GL":"[A-Z]{2}"' "$f" | head -1 | cut -d'"' -f4)
   echo "X YTM ${c:-000} ${d:--} $fl $(v6 YTM) $(rt YTM)"; }
 `, port, port)

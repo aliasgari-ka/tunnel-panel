@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -99,6 +102,63 @@ func TestIgExLadder(t *testing.T) {
 func TestIgExBackAfter(t *testing.T) {
 	if igExBackAfter(0) != 30*time.Minute || igExBackAfter(1) != time.Hour || igExBackAfter(3) != 4*time.Hour || igExBackAfter(4) != 6*time.Hour || igExBackAfter(50) != 6*time.Hour {
 		t.Error("back-off is 30 min doubling to 6 h")
+	}
+}
+
+// The YouTube Music read runs the script's y() against a fake curl: the page behind the consent
+// redirect is what counts (xe107, 2026-11-25: without the consent cookie the check saw only the
+// redirect "gl=DE" and passed an exit where users got "not available in your area").
+func TestIgExYtmRegionPage(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash")
+	}
+	s := igExScript([]string{"YTM"}, 12370)
+	i := strings.Index(s, "y(){")
+	j := strings.Index(s[i:], "$(rt YTM)\"; }")
+	if i < 0 || j < 0 {
+		t.Fatal("no y() in the script")
+	}
+	yfn := s[i : i+j+len("$(rt YTM)\"; }")]
+	dir := t.TempDir()
+	// fake curl: with the consent cookie it writes $PAGE and says 200, without it only the redirect
+	fake := `#!/bin/bash
+o=; ck=; while [ $# -gt 0 ]; do case "$1" in -o) o=$2; shift;; -b) ck=$2; shift;; esac; shift; done
+if [ "$ck" = "SOCS=CAI" ]; then cat "$PAGE" > "$o"; echo -n "200 "
+else : > "$o"; echo -n "302 https://consent.youtube.com/m?continue=https%3A%2F%2Fmusic.youtube.com%2F&gl=DE"; fi
+`
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(page string) string {
+		pf := filepath.Join(dir, "page.html")
+		if err := os.WriteFile(pf, []byte(page), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sh := "UA=x; X=; f=$(mktemp); v6(){ echo -; }; rt(){ echo ipv6; }\n" + yfn + "\ny; rm -f \"$f\"\n"
+		cmd := exec.Command("bash", "-c", sh)
+		cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "PAGE="+pf)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("y(): %v %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	bad := run(`<html><head><title>YouTube Music is not available in your area</title></head></html>`)
+	m, ok := igExParse([]string{bad})
+	if !ok {
+		t.Fatalf("not parsed: %q", bad)
+	}
+	if r := m["YTM"]; r.Flag != "region" {
+		t.Fatalf("the 'not available in your area' page must be flagged: %q", bad)
+	} else if lvl, _ := igExVerdict("YTM", r); lvl != "bad" {
+		t.Errorf("judged %q for the region page", lvl)
+	}
+	good := run(`<script>ytcfg.set({"INNERTUBE_CONTEXT_GL":"DE","GL":"DE"})</script>`)
+	m, _ = igExParse([]string{good})
+	if r := m["YTM"]; r.Flag == "region" || r.Dom != "DE" {
+		t.Errorf("a served page: %q", good)
+	} else if lvl, _ := igExVerdict("YTM", r); lvl != "ok" {
+		t.Errorf("judged %q for a served page", lvl)
 	}
 }
 
