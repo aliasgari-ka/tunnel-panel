@@ -1471,14 +1471,23 @@ func (s *Server2) tunnelDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server2) tunnelApply(w http.ResponseWriter, r *http.Request) {
-	var in struct{ ID, Method, Family string }
+	var in struct {
+		ID, Method, Family string
+		Standby            bool // start it as one more hot-standby path; the users stay where they are
+	}
 	_ = readJSON(r, &in)
 	t := s.app.store.Tunnel(in.ID)
 	if t == nil {
 		httpErr(w, 404, "tunnel not found")
 		return
 	}
-	j, err := s.app.ApplyRoute(t, in.Method, in.Family)
+	var j *Job
+	var err error
+	if in.Standby {
+		j, err = s.app.AddStandby(t, in.Method, in.Family)
+	} else {
+		j, err = s.app.ApplyRoute(t, in.Method, in.Family)
+	}
 	if err != nil {
 		code := 400
 		if strings.Contains(err.Error(), "still running") {

@@ -581,6 +581,7 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 	if err := a.deploy(ctx, j, "IR", irHost, bt, irP); err != nil {
 		return fmt.Errorf("Iran deploy: %w", err)
 	}
+	deployed := time.Now()
 	d := deriveFor(bt, a.store.Server(bt.ServerID), a.store.Server(bt.ForeignID), a.settings())
 	l3 := r.Kind == "l3"
 	// L3: talk to the foreign tunnel IP directly. Forwarders: Iran's forwarded port.
@@ -629,6 +630,13 @@ func (a *App) benchOne(ctx context.Context, j *Job, bt *Tunnel, m *Method, irHos
 			if perr == nil {
 				r.LossPct, r.LossKnown = loss, true
 			}
+		}
+	}
+	if w := time.Duration(m.Warmup)*time.Second - time.Since(deployed); w > 0 {
+		j.log("   %s needs %d s after its start before its traffic counts — waiting %.0f s more", m.Title, m.Warmup, w.Seconds())
+		select {
+		case <-ctx.Done():
+		case <-time.After(w):
 		}
 	}
 	limit := ""
