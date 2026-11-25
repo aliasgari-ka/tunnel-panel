@@ -27,6 +27,12 @@ func init() {
 
 const backpack2Bin = "/usr/local/bin/backpack2"
 
+// bp2PckV1Note: v2 will not touch PCK firewall rules while a BackPack of before v2 holds a
+// packet socket on the server (it cannot tell whose rules they are), and then refuses to
+// start: "pck: another process may still own this tunnel's firewall rules" (seen live on
+// every server that runs a v1 PCK standby path).
+const bp2PckV1Note = "Does not start on a server where a BackPack v1 PCK path runs (PCK + KCP/FEC, turbo, or L3 over pck / sni): remove those paths from the tunnels of both servers first."
+
 // BackPack v2 is pinned like v1, with the archive checksums of the release itself
 // (SHA256SUMS of v2.0.0, whose signature verifies with the key v1.8.5 was signed with).
 const backpack2Version = "v2.0.0"
@@ -128,7 +134,7 @@ var methodBackpack2RPck = &Method{
 	ID:       "bp2_rpck",
 	OptIn:    true,
 	Title:    "BackPack v2 TCP + PCK (reverse)",
-	Desc:     "BackPack v2.0.0 reverse tunnel over pck: KCP with error correction inside TCP-looking raw packets, with v2's window control and pacing (v1 filled the path's queue). Made for lossy paths. IPv4 only. Iran listens, foreign dials.",
+	Desc:     "BackPack v2.0.0 reverse tunnel over pck: KCP with error correction inside TCP-looking raw packets, with v2's window control and pacing (v1 filled the path's queue). Made for lossy paths. IPv4 only. Iran listens, foreign dials. " + bp2PckV1Note,
 	Families: []string{"v4"},
 	Encrypt:  "token",
 	Fields: []Field{
@@ -139,6 +145,18 @@ var methodBackpack2RPck = &Method{
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		return bp2ReverseBuild(c, "pck")
 	},
+}
+
+// bp2TunnelPort is the Iran tunnel port of a v2 reverse tunnel. pck gets the slot's second
+// port: BackPack reserves a pck tunnel port with a plain TCP bind, which fails for a minute
+// while connections of a TCP tunnel that just ran on that port are in TIME_WAIT — and the
+// benchmark runs its methods one after another on the slot's first port (seen live: BackPack
+// v2 reverse, then TCP + PCK: "tunnel port 0.0.0.0:41000: something else is listening").
+func bp2TunnelPort(opt, tr string, base int) string {
+	if tr == "pck" {
+		base++
+	}
+	return portOr(opt, base)
 }
 
 func bp2ReverseBuild(c *buildCtx, tr string) (ir, kh SidePlan, err error) {
@@ -152,7 +170,7 @@ func bp2ReverseBuild(c *buildCtx, tr string) (ir, kh SidePlan, err error) {
 	if err != nil {
 		return ir, kh, err
 	}
-	tp := portOr(c.Opt("tunnel_port"), c.D.BasePort)
+	tp := bp2TunnelPort(c.Opt("tunnel_port"), tr, c.D.BasePort)
 	tok := c.T.secret("bp2-token")
 	// peer_auth: both ends are v2, so the handshake of before v2.0.0 (the token in the
 	// clear) is refused from the first connection, not only after the first good one
@@ -190,7 +208,7 @@ var methodBackpack2Pck = &Method{
 	ID:       "bp2_pck",
 	OptIn:    true,
 	Title:    "BackPack v2 PCK direct (KCP)",
-	Desc:     "BackPack v2.0.0 direct PCK: a port forwarder over KCP inside crafted TCP segments (a port of paqet, with a window control of its own). Iran dials the foreign server, so Iran needs no open inbound port. Encrypted with the token. IPv4 only; carries ports, nothing routed.",
+	Desc:     "BackPack v2.0.0 direct PCK: a port forwarder over KCP inside crafted TCP segments (a port of paqet, with a window control of its own). Iran dials the foreign server, so Iran needs no open inbound port. Encrypted with the token. IPv4 only; carries ports, nothing routed. " + bp2PckV1Note,
 	Families: []string{"v4"},
 	Encrypt:  "KCP (AES, token)",
 	Fields: []Field{
@@ -198,6 +216,7 @@ var methodBackpack2Pck = &Method{
 		{Key: "preset", Label: "Preset", Type: "select", Default: "turbo", Options: []string{"balance", "turbo", "aggressive"},
 			Help: "balance = 1 KCP session, turbo = 2 (default), aggressive = 4 with larger windows (long, lossy routes; slower than turbo on a clean one)"},
 		{Key: "conns", Label: "KCP sessions", Type: "number", Default: "", Help: "blank = the preset's; 1-16, each its own TCP-looking flow"},
+		{Key: "kcp_mtu", Label: "KCP packet size", Type: "number", Default: "1250", Help: "bytes of one KCP packet (52 more on the wire), 576-1400; BackPack's own 1350 is lost without a word on a path that carries under 1402 bytes"},
 		{Key: "accept_udp", Label: "Forward UDP too", Type: "bool", Default: "false", Help: "needed for UDP services (Hysteria, WireGuard, QUIC)"},
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
@@ -216,6 +235,16 @@ var methodBackpack2Pck = &Method{
 			}
 			conns = fmt.Sprintf("pck_conns = %d\n", n)
 		}
+		// BackPack's default of 1350 is 1402 bytes on the wire, never fragmented: on a path
+		// that carries less every full segment is lost in silence. 1250 is what its reverse
+		// presets use, and the one size that carried data on iran-107 → xe107-germany (50-85
+		// Mbit/s; 1350 and 1150 lost their sessions there, so the size is not the whole story
+		// on a route that cuts raw-TCP flows). Both ends get the same size.
+		mtu, merr := strconv.Atoi(strings.TrimSpace(c.Opt("kcp_mtu")))
+		if merr != nil || mtu < 576 || mtu > 1400 {
+			return ir, kh, fmt.Errorf("KCP packet size must be a number from 576 to 1400, not %q", c.Opt("kcp_mtu"))
+		}
+		conns += fmt.Sprintf("pck_kcp_mtu = %d\n", mtu)
 		port := portOr(c.Opt("port"), c.D.BasePort)
 		tok := c.T.secret("bp2-pck-token")
 		// here the preset is read by its name: direct PCK takes its sessions, KCP mode and

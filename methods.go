@@ -392,8 +392,12 @@ func buildPlansRedirect(m *Method, t *Tunnel, srv, fsrv *Server, set Settings, r
 // tunnelListenPort is the port each side listens on for the tunnel itself ("" = none).
 func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) (ir, kh string) {
 	switch m.ID {
-	case "backhaul", "bp_reverse", "bp_multi", "bp_pckfec", "bp_pckturbo", "bp2_reverse", "bp2_rpck", "premium1":
+	case "backhaul", "bp_reverse", "bp_multi", "bp_pckfec", "bp_pckturbo", "premium1":
 		return portOr(get("tunnel_port"), d.BasePort), ""
+	case "bp2_reverse":
+		return bp2TunnelPort(get("tunnel_port"), get("transport"), d.BasePort), ""
+	case "bp2_rpck":
+		return bp2TunnelPort(get("tunnel_port"), "pck", d.BasePort), ""
 	case "frp":
 		return portOr(get("bind_port"), d.BasePort), ""
 	case "tpk", "tpk_rev": // Iran listens, the foreign server dials it

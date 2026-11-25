@@ -108,6 +108,26 @@ func TestBackpack2ReversePck(t *testing.T) {
 		"kcp_acknodelay = true", "kcp_sndwnd = 1024", "kcp_rcvwnd = 1024", "kcp_datashards = 10", "kcp_parityshards = 3"}
 	mustHave(t, "Iran", s, append(kcp, `bind_addr = "0.0.0.0:28402"`, "mux_con = 8")...)
 	mustHave(t, "foreign", c, append(kcp, `remote_addr = "192.0.2.10:28402"`, "connection_pool = 16")...)
+	// no port given: pck takes the slot's second port, never the one a TCP tunnel just left
+	tn.Options = nil
+	srv, fsrv := &Server{ID: "ir", IPv4: "192.0.2.10"}, &Server{ID: "kh", IPv4: "198.51.100.20", Role: "foreign"}
+	d := deriveFor(tn, srv, fsrv, Settings{})
+	want := portOr("", d.BasePort+1)
+	s, c = bp2Confs(t, methodBackpack2RPck, tn)
+	mustHave(t, "Iran auto port", s, `bind_addr = "0.0.0.0:`+want+`"`)
+	mustHave(t, "foreign auto port", c, `remote_addr = "192.0.2.10:`+want+`"`)
+	get, _ := resolveOptions(methodBackpack2RPck, nil)
+	if irL, khL := tunnelListenPort(methodBackpack2RPck, tn, get, d); irL != want || khL != "" {
+		t.Errorf("the firewall must open the port the tunnel uses: iran %q foreign %q, want %q", irL, khL, want)
+	}
+	get, _ = resolveOptions(methodBackpack2Reverse, map[string]string{"transport": "pck"})
+	if irL, _ := tunnelListenPort(methodBackpack2Reverse, tn, get, d); irL != want {
+		t.Errorf("bp2_reverse over pck listens on %q, want %q", irL, want)
+	}
+	get, _ = resolveOptions(methodBackpack2Reverse, nil)
+	if irL, _ := tunnelListenPort(methodBackpack2Reverse, tn, get, d); irL != portOr("", d.BasePort) {
+		t.Errorf("bp2_reverse over stealth listens on %q, want the slot's first port", irL)
+	}
 	if inList(methodBackpack2RPck.Families, "v6") {
 		t.Error("pck is IPv4-only")
 	}
@@ -137,6 +157,13 @@ func TestBackpack2DirectPck(t *testing.T) {
 	mustHave(t, "Iran", s, "[l3]", `mode = "dial"`, `addr = "198.51.100.20:28403"`, `token = "`+tok+`"`, `carrier = "pck"`, `preset = "turbo"`,
 		"pck_conns = 4", "accept_udp = true", `ports = ["2053", "8443=443", "`)
 	mustHave(t, "foreign", c, "[l3]", `mode = "listen"`, `addr = "0.0.0.0:28403"`, `token = "`+tok+`"`, `carrier = "pck"`, `preset = "turbo"`, "pck_conns = 4")
+	// 1250 on both ends unless asked otherwise: BackPack's 1350 dies in silence on a path under 1402
+	mustHave(t, "Iran", s, "pck_kcp_mtu = 1250")
+	mustHave(t, "foreign", c, "pck_kcp_mtu = 1250")
+	tn.Options["bp2_pck"]["kcp_mtu"] = "1150"
+	s, c = bp2Confs(t, methodBackpack2Pck, tn)
+	mustHave(t, "Iran", s, "pck_kcp_mtu = 1150")
+	mustHave(t, "foreign", c, "pck_kcp_mtu = 1150")
 	if strings.Contains(c, "ports") || strings.Contains(s+c, "local_ip") || strings.Contains(s+c, "iface") {
 		t.Errorf("direct PCK has no TUN and the foreign side forwards nothing itself:\n%s\n%s", s, c)
 	}
@@ -154,7 +181,7 @@ func TestBackpack2DirectPck(t *testing.T) {
 	if s, _ = bp2Confs(t, methodBackpack2Pck, tn); strings.Contains(s, "pck_conns") {
 		t.Errorf("blank sessions must leave the preset's:\n%s", s)
 	}
-	for _, bad := range []map[string]string{{"conns": "0"}, {"conns": "17"}, {"conns": "x"}, {"preset": "throughput"}} {
+	for _, bad := range []map[string]string{{"conns": "0"}, {"conns": "17"}, {"conns": "x"}, {"preset": "throughput"}, {"kcp_mtu": "1500"}, {"kcp_mtu": "100"}, {"kcp_mtu": "big"}} {
 		tn.Options["bp2_pck"] = bad
 		if _, _, err := buildPlans(methodBackpack2Pck, tn, srv, fsrv, Settings{}); err == nil {
 			t.Errorf("%v must be refused", bad)
