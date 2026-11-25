@@ -18,6 +18,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -25,21 +26,30 @@ import (
 
 const (
 	gemFwdAddr = "127.0.0.1:9278" // the test browser's proxy (reached over gb-tunnel -R)
-	// where the test account lives, always: the panel host's own IP (its relay). Google serves
-	// Gemini to the account there, and no user's Google leaves from it, so Google has no reason to
-	// turn against it (the browser host's own IP, the home before, came to be refused: every user
-	// of that server went to Google from it)
-	gemHome = "152.53.86.103:12371"
+	// where the test account lives, always: this panel's own SOCKS (gemOwn), which goes out from
+	// the account's own IPv6 address on the panel host (gemhomev6.go) and from nowhere else.
+	// Until 2026-11-25 it was the host's IPv4 (relay 12371); Google then stopped placing that IPv4
+	// in any country (keyless Gemini "google.com", signed-in "Gemini isn't currently supported in
+	// your country"), while the host's IPv6 /64 still read Germany.
+	gemHome = "127.0.0.1:9279"
+	// gemHomeV4Relay: the host's own IPv4 (its agent relay): only for non-Google sites without
+	// IPv6, and for the whole browser on a host without IPv6.
+	gemHomeV4Relay = "152.53.86.103:12371"
 )
 
 type gemFwdT struct {
-	up string // socks exit "ip:port" (gemHome; a test sets another)
+	addr string        // where it listens
+	up   string        // socks exit "ip:port" (a test sets another)
+	src  func() net.IP // gemOwn: dial straight from this IPv6 (nil / nil IP = through up)
 }
 
-var gemFwd = &gemFwdT{up: gemHome}
+var gemFwd = &gemFwdT{addr: gemFwdAddr, up: gemHome}
+
+// gemOwn is the account's exit: straight out from its IPv6, the IPv4 relay only as gemOwnVia says.
+var gemOwn = &gemFwdT{addr: gemHome, up: gemHomeV4Relay, src: gemHomeV6}
 
 func (f *gemFwdT) serve() {
-	l, err := net.Listen("tcp", gemFwdAddr)
+	l, err := net.Listen("tcp", f.addr)
 	if err != nil {
 		fmt.Println("Google test browser proxy:", err)
 		return
@@ -102,17 +112,10 @@ func (f *gemFwdT) handle(c net.Conn) {
 	}
 	target := net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(b[:2]))))
 
-	d, _ := proxy.SOCKS5("tcp", f.up, nil, &net.Dialer{Timeout: 15 * time.Second})
 	// the whole dial under one deadline: the dialer's timeout covers only the TCP connect, and
 	// an exit that accepts but never answers the SOCKS handshake held this forever
 	ctx, cancel := context.WithTimeout(context.Background(), gemDialTimeout)
-	var u net.Conn
-	var err error
-	if cd, ok := d.(proxy.ContextDialer); ok {
-		u, err = cd.DialContext(ctx, "tcp", target)
-	} else {
-		u, err = d.Dial("tcp", target)
-	}
+	u, err := f.dial(ctx, host, target)
 	cancel()
 	if err != nil {
 		c.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
@@ -125,4 +128,51 @@ func (f *gemFwdT) handle(c net.Conn) {
 	go func() { io.Copy(u, c); done <- struct{}{} }()
 	go func() { io.Copy(c, u); done <- struct{}{} }()
 	<-done
+}
+
+// dial: through the socks exit, or (gemOwn) straight from the account's IPv6.
+func (f *gemFwdT) dial(ctx context.Context, host, target string) (net.Conn, error) {
+	var src net.IP
+	if f.src != nil {
+		src = f.src()
+	}
+	if src != nil {
+		has6 := false
+		if ip := net.ParseIP(host); ip != nil {
+			has6 = ip.To4() == nil
+		} else if ips, err := net.DefaultResolver.LookupIP(ctx, "ip6", host); err == nil && len(ips) > 0 {
+			has6 = true
+		}
+		switch gemOwnVia(host, has6) {
+		case "v6":
+			d := &net.Dialer{Timeout: 15 * time.Second, LocalAddr: &net.TCPAddr{IP: src}, Control: gemMarkCtl}
+			return d.DialContext(ctx, "tcp6", target)
+		case "no":
+			return nil, fmt.Errorf("%s: no IPv6, and Google never sees the account on the IPv4", host)
+		}
+	}
+	d, _ := proxy.SOCKS5("tcp", f.up, nil, &net.Dialer{Timeout: 15 * time.Second})
+	if cd, ok := d.(proxy.ContextDialer); ok {
+		return cd.DialContext(ctx, "tcp", target)
+	}
+	return d.Dial("tcp", target)
+}
+
+// gemOwnVia: how the account's exit reaches host. "v6" = from the account's IPv6; "v4" = a site
+// without IPv6 through the host's IPv4 (no Google site ever: Google does not place that IPv4);
+// "no" = refused (a Google name without IPv6, or an IPv4 address).
+func gemOwnVia(host string, has6 bool) string {
+	if has6 {
+		return "v6"
+	}
+	if net.ParseIP(host) != nil {
+		return "no"
+	}
+	h := "." + strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, k := range []string{".google.", "google", "gstatic", "youtube", "ytimg", "ggpht", "gvt1", "gvt2", "gvt3", "doubleclick", "recaptcha", "goo.gl", "app-measurement", "googlevideo"} {
+		if strings.Contains(h, k) {
+			return "no"
+		}
+	}
+	return "v4"
 }

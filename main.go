@@ -151,6 +151,8 @@ func main() {
 	go app.igAgentAutoLoop()
 	go app.igSubLoop()
 	go app.aiDailyLoop()
+	gemHomeV6Ensure()
+	go gemOwn.serve()
 	go gemFwd.serve()
 	go app.gemLoop()
 	go app.gemOneLoop()

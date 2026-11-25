@@ -33,7 +33,7 @@ func TestGemAcctNote(t *testing.T) {
 	if m := g.note("in", "", nil, t0); m != "" {
 		t.Fatalf("first in: %q", m)
 	}
-	if m := g.note("out", "", nil, t0.Add(time.Minute)); !strings.Contains(m, "signed out") || !strings.Contains(m, gemHome) {
+	if m := g.note("out", "", nil, t0.Add(time.Minute)); !strings.Contains(m, "signed out") || !strings.Contains(m, gemHomeDesc()) {
 		t.Fatalf("going out: %q", m)
 	}
 	if m := g.note("out", "", nil, t0.Add(time.Hour)); m != "" {
@@ -48,7 +48,7 @@ func TestGemAcctNote(t *testing.T) {
 	if m := g.note("in", "", nil, t0.Add(26*time.Hour)); !strings.Contains(m, "signed in again") {
 		t.Fatalf("back in: %q", m)
 	}
-	if s := g.snapshot(); s["state"] != "in" || s["exit"] != gemHome {
+	if s := g.snapshot(); s["state"] != "in" || s["exit"] != gemHomeDesc() {
 		t.Fatalf("snapshot %v", s)
 	}
 }
