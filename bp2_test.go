@@ -157,6 +157,16 @@ func TestBackpack2DirectPck(t *testing.T) {
 	mustHave(t, "Iran", s, "[l3]", `mode = "dial"`, `addr = "198.51.100.20:28403"`, `token = "`+tok+`"`, `carrier = "pck"`, `preset = "turbo"`,
 		"pck_conns = 4", "accept_udp = true", `ports = ["2053", "8443=443", "`)
 	mustHave(t, "foreign", c, "[l3]", `mode = "listen"`, `addr = "0.0.0.0:28403"`, `token = "`+tok+`"`, `carrier = "pck"`, `preset = "turbo"`, "pck_conns = 4")
+	// 1250 on both ends unless asked otherwise: BackPack's 1350 dies in silence on a path under 1402
+	mustHave(t, "Iran", s, "pck_kcp_mtu = 1250")
+	mustHave(t, "foreign", c, "pck_kcp_mtu = 1250")
+	tn.Options["bp2_pck"]["kcp_mtu"] = "1150"
+	s, c = bp2Confs(t, methodBackpack2Pck, tn)
+	mustHave(t, "Iran", s, "pck_kcp_mtu = 1150")
+	mustHave(t, "foreign", c, "pck_kcp_mtu = 1150")
+	if alts := methodBackpack2Pck.Alts("v4"); len(alts) == 0 || alts[0]["kcp_mtu"] != "1150" {
+		t.Errorf("the benchmark must try smaller packets: %v", alts)
+	}
 	if strings.Contains(c, "ports") || strings.Contains(s+c, "local_ip") || strings.Contains(s+c, "iface") {
 		t.Errorf("direct PCK has no TUN and the foreign side forwards nothing itself:\n%s\n%s", s, c)
 	}
@@ -174,7 +184,7 @@ func TestBackpack2DirectPck(t *testing.T) {
 	if s, _ = bp2Confs(t, methodBackpack2Pck, tn); strings.Contains(s, "pck_conns") {
 		t.Errorf("blank sessions must leave the preset's:\n%s", s)
 	}
-	for _, bad := range []map[string]string{{"conns": "0"}, {"conns": "17"}, {"conns": "x"}, {"preset": "throughput"}} {
+	for _, bad := range []map[string]string{{"conns": "0"}, {"conns": "17"}, {"conns": "x"}, {"preset": "throughput"}, {"kcp_mtu": "1500"}, {"kcp_mtu": "100"}, {"kcp_mtu": "big"}} {
 		tn.Options["bp2_pck"] = bad
 		if _, _, err := buildPlans(methodBackpack2Pck, tn, srv, fsrv, Settings{}); err == nil {
 			t.Errorf("%v must be refused", bad)
