@@ -43,9 +43,11 @@ func gemHomeSafeVia(s *Server) string {
 	return "warp6"
 }
 
-// gemHomeHost is the IP the test account lives on.
+// gemHomeHost is the IPv4 of the server the test account lives on (the panel host). The account
+// itself goes out from that server's own IPv6 address (gemhomev6.go); the guard below still keeps
+// the server's users' Google off its IPv4, which Google judges the server by as well.
 func gemHomeHost() string {
-	h, _, _ := net.SplitHostPort(gemHome)
+	h, _, _ := net.SplitHostPort(gemHomeV4Relay)
 	return h
 }
 

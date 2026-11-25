@@ -154,7 +154,7 @@ func (g *gemAcctT) note(state, cause string, err error, now time.Time) string {
 		if g.Cause != "" {
 			why = "\nWhy: " + g.Cause + "."
 		}
-		return "🔑 The Google test account is signed out of the test browser." + why + "\nThe signed-in Gemini check is blind until you log in again: IG Routing → 🔑 Google test account. It goes out through " + gemHome + " (the panel host's own IP, Germany)."
+		return "🔑 The Google test account is signed out of the test browser." + why + "\nThe signed-in Gemini check is blind until you log in again: IG Routing → 🔑 Google test account. It goes out through " + gemHomeDesc() + "."
 	case state == "in" && prev == "out":
 		g.told = time.Time{}
 		return "🔑 The Google test account is signed in again."
@@ -165,7 +165,7 @@ func (g *gemAcctT) note(state, cause string, err error, now time.Time) string {
 func (g *gemAcctT) snapshot() map[string]any {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return map[string]any{"state": g.State, "since": g.Since, "checked": g.Checked, "err": g.Err, "exit": gemHome, "cause": g.Cause, "watch": gemWatchState()}
+	return map[string]any{"state": g.State, "since": g.Since, "checked": g.Checked, "err": g.Err, "exit": gemHomeDesc(), "cause": g.Cause, "watch": gemWatchState()}
 }
 
 const gemAcctTick = 10 * time.Minute
@@ -179,6 +179,7 @@ func (a *App) gemAcctLoop() {
 			a.push(msg)
 		}
 		gcancel()
+		gemHomeV6Ensure() // the account's own IPv6 address on the host (gone after a reboot)
 		// a Google page of the account open and fresh: Chrome refreshes the session through it
 		kctx, kcancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, _ = gemKeep(kctx)
