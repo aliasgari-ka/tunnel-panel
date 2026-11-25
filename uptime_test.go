@@ -34,6 +34,21 @@ func TestUptimeOutageResets(t *testing.T) {
 	}
 }
 
+// D7: the minutes down in 7 days together (the Tunnels list says "2 outages · 14m in all"),
+// an outage that began before the 7 days counted only from where they start.
+func TestUptimeD7(t *testing.T) {
+	outs := []Outage{
+		{Kind: "tunnel", Target: "t1", Start: tnow - 8*day, End: tnow - 7*day + 600}, // 600 s inside
+		{Kind: "tunnel", Target: "t1", Start: tnow - day, End: tnow - day + 240},
+	}
+	if v := uptimeOf(outs, "tunnel", "t1", tnow-30*day, tnow); v.D7 != 840 || v.N7 != 2 {
+		t.Fatalf("%+v", v)
+	}
+	if v := uptimeOf(nil, "tunnel", "t1", tnow-30*day, tnow); v.D7 != 0 {
+		t.Fatalf("%+v", v)
+	}
+}
+
 // A hot-standby tunnel whose users were moved between paths has no outage in the log (the
 // health check asks the switcher about the users' path, and two failed checks a minute apart
 // make an outage): its uptime runs on. Other tunnels' and server outages don't touch it, nor

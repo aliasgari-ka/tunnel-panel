@@ -1160,6 +1160,11 @@ type hsView struct {
 	Why     []string `json:"why"`
 	// Clock: the switcher's own clock when this was read (Changed is on it)
 	Clock int64 `json:"clock,omitempty"`
+	// Sw24: how many times the users were moved to another path in the last 24 h (events.log,
+	// which keeps its last 300 lines; -1 = not read yet); SwFail24: of those, how many because
+	// the path they were on failed (not auto mode's "better path" or the move back)
+	Sw24     int `json:"sw24"`
+	SwFail24 int `json:"swFail24"`
 	// Cause: what the cause finder proved about each down path (downcause.go); filled in a
 	// copy for the page, never in the cached view
 	Cause []*DownCause `json:"cause,omitempty"`
@@ -1181,6 +1186,7 @@ echo "M $(cat mode 2>/dev/null || echo manual)"
 echo "C $(date +%%s)"
 sed 's/^/S /' status 2>/dev/null
 awk -v s=%d '$1 > s' events.log 2>/dev/null | sed 's/^/E /' | tail -n 50
+awk -v d=$(( $(date +%%s) - 86400 )) '$1 > d && $2 == "switch" && $3 != "-1" { n++; if ($0 !~ / auto: / && $0 !~ /worked for /) f++ } END { print "X", n+0, f+0 }' events.log 2>/dev/null
 systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 %s`, dir, after, unitName(hsUnitTunnel(t)), hsWhyScript(t, good)), nil)
 	if err != nil && !strings.Contains(out, "A ") {
@@ -1193,7 +1199,7 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 			good = a.hsOrderByKeys(t, good, f[1:])
 		}
 	}
-	v := &hsView{Active: -1, Read: time.Now().Unix()}
+	v := &hsView{Active: -1, Read: time.Now().Unix(), Sw24: -1, SwFail24: -1}
 	for _, p := range good {
 		v.Paths = append(v.Paths, p.label())
 	}
@@ -1254,6 +1260,11 @@ systemctl is-active %s >/dev/null 2>&1 && echo "U active" || echo "U down"
 			events = append(events, strings.Join(f[1:], " "))
 		case "U":
 			unit = f[1]
+		case "X": // switches in the last 24 h: all, and those away from a failed path
+			if len(f) > 2 {
+				v.Sw24, _ = strconv.Atoi(f[1])
+				v.SwFail24, _ = strconv.Atoi(f[2])
+			}
 		case "W":
 			if k, err := strconv.Atoi(f[1]); err == nil && k >= 0 && k < len(v.Why) && len(f) > 2 {
 				v.Why[k] = hsWhyTextAt(f[2], f[3:], time.Now())

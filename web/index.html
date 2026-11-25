@@ -1140,6 +1140,15 @@ details.tshape>.ff{margin-top:10px;padding:12px;background:var(--panel-2);border
 .upl .ok,.upbox .ok{color:var(--good)}.upl .warn,.upbox .warn{color:var(--warn)}.upl .bad,.upbox .bad,.sdown .bad{color:var(--crit)}
 .upl span{white-space:nowrap}
 .srow .sinfo small.upl.down{color:var(--crit);font-weight:600}
+/* the tunnel list's row (tunInfo / tunStat): status in words, route, the users' method, lately */
+.srow .tinfo{display:flex;flex-direction:column;gap:1px;min-width:0}
+.srow .tinfo small{white-space:normal;overflow:visible;text-overflow:clip}
+.srow .tinfo .tmeth{color:var(--muted);font-weight:600}.srow .tinfo .tmeth.bk,.srow .tinfo .tbk{color:var(--accent)}
+.srow .tinfo small.twrap{display:flex;flex-wrap:wrap;gap:0 9px}.srow .tinfo .thsc{white-space:nowrap}.srow .tinfo .thsc.warn{color:var(--warn)}
+.srow .tinfo .tlate{font-variant-numeric:tabular-nums;margin-top:1px}.srow .tinfo .tlate span{white-space:nowrap}
+.tlate .ok{color:var(--good)}.tlate .warn{color:var(--warn)}.tlate .bad{color:var(--crit);font-weight:600}.tlate .faint{color:var(--faint)}
+.srow .tstw{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:650}
+.tstw.on{color:var(--good)}.tstw.bad{color:var(--crit)}.tstw.off{color:var(--faint)}
 .upbox{margin:10px 0 4px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;font-size:13px}
 .upbox.down{border-color:var(--crit);background:var(--crit-soft)}
 .uph{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}.uph .upp{display:flex;gap:10px;margin-inline-start:auto;font-size:12px;font-variant-numeric:tabular-nums}
