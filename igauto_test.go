@@ -3,6 +3,7 @@ package main
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 // Ger-hertzener (2026-11-13): IG=warp6, 0 WARPs, 0 proxies, Instagram sees IR — the card said "healthy".
@@ -92,5 +93,32 @@ func TestIgWarpMissing(t *testing.T) {
 	}
 	if igWarpMissing(map[string]string{"ig": "warp6", "warps": "3"}) != "" {
 		t.Fatal("has WARPs")
+	}
+}
+
+// Outbound server (2026-11-14): Instagram read IR on WARP IPv6 every 1-3 h and every return
+// after 30 min "worked" - a return that does not hold makes the next one wait longer.
+func TestIgAutoFlaps(t *testing.T) {
+	now := time.Unix(1794700000, 0)
+	if n := igAutoFlaps(0, 0, now); n != 0 {
+		t.Errorf("first failure: %d flaps, want 0", n)
+	}
+	if n := igAutoFlaps(0, now.Add(-90*time.Minute).Unix(), now); n != 1 {
+		t.Errorf("failed 90 min after the return: %d flaps, want 1", n)
+	}
+	if n := igAutoFlaps(2, now.Add(-5*time.Hour).Unix(), now); n != 3 {
+		t.Errorf("third return did not hold: %d flaps, want 3", n)
+	}
+	if n := igAutoFlaps(3, now.Add(-7*time.Hour).Unix(), now); n != 0 {
+		t.Errorf("the return held 7 h: %d flaps, want 0", n)
+	}
+	want := []time.Duration{30 * time.Minute, time.Hour, 2 * time.Hour, 4 * time.Hour, 6 * time.Hour, 6 * time.Hour}
+	for i, w := range want {
+		if d := igAutoBackAfter(i); d != w {
+			t.Errorf("back after %d: %s, want %s", i, d, w)
+		}
+	}
+	if igAutoBackAfter(-1) != 30*time.Minute || igAutoBackAfter(500) != 6*time.Hour {
+		t.Error("back-off stays between 30 min and 6 h")
 	}
 }
