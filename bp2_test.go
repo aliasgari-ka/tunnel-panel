@@ -164,9 +164,6 @@ func TestBackpack2DirectPck(t *testing.T) {
 	s, c = bp2Confs(t, methodBackpack2Pck, tn)
 	mustHave(t, "Iran", s, "pck_kcp_mtu = 1150")
 	mustHave(t, "foreign", c, "pck_kcp_mtu = 1150")
-	if alts := methodBackpack2Pck.Alts("v4"); len(alts) == 0 || alts[0]["kcp_mtu"] != "1150" {
-		t.Errorf("the benchmark must try smaller packets: %v", alts)
-	}
 	if strings.Contains(c, "ports") || strings.Contains(s+c, "local_ip") || strings.Contains(s+c, "iface") {
 		t.Errorf("direct PCK has no TUN and the foreign side forwards nothing itself:\n%s\n%s", s, c)
 	}

@@ -216,12 +216,8 @@ var methodBackpack2Pck = &Method{
 		{Key: "preset", Label: "Preset", Type: "select", Default: "turbo", Options: []string{"balance", "turbo", "aggressive"},
 			Help: "balance = 1 KCP session, turbo = 2 (default), aggressive = 4 with larger windows (long, lossy routes; slower than turbo on a clean one)"},
 		{Key: "conns", Label: "KCP sessions", Type: "number", Default: "", Help: "blank = the preset's; 1-16, each its own TCP-looking flow"},
-		{Key: "kcp_mtu", Label: "KCP packet size", Type: "number", Default: "1250", Help: "bytes of one KCP packet (52 more on the wire); BackPack's own 1350 is lost without a word on a path under 1402 bytes — lower it when small packets pass but no data does"},
+		{Key: "kcp_mtu", Label: "KCP packet size", Type: "number", Default: "1250", Help: "bytes of one KCP packet (52 more on the wire), 576-1400; BackPack's own 1350 is lost without a word on a path that carries under 1402 bytes"},
 		{Key: "accept_udp", Label: "Forward UDP too", Type: "bool", Default: "false", Help: "needed for UDP services (Hysteria, WireGuard, QUIC)"},
-	},
-	// a path that carries even less than 1250 + 52 bytes: the benchmark tries smaller packets
-	Alts: func(string) []map[string]string {
-		return []map[string]string{{"kcp_mtu": "1150"}, {"kcp_mtu": "1000"}}
 	},
 	Build: func(c *buildCtx) (ir, kh SidePlan, err error) {
 		if c.T.Family == "v6" {
@@ -240,9 +236,10 @@ var methodBackpack2Pck = &Method{
 			conns = fmt.Sprintf("pck_conns = %d\n", n)
 		}
 		// BackPack's default of 1350 is 1402 bytes on the wire, never fragmented: on a path
-		// that carries less every full segment is lost in silence — the sessions answer small
-		// packets and are then "lost" (seen live on iran-107 → xe107-germany: nothing at
-		// 1350, 50-85 Mbit/s at 1250). Both ends get the same size.
+		// that carries less every full segment is lost in silence. 1250 is what its reverse
+		// presets use, and the one size that carried data on iran-107 → xe107-germany (50-85
+		// Mbit/s; 1350 and 1150 lost their sessions there, so the size is not the whole story
+		// on a route that cuts raw-TCP flows). Both ends get the same size.
 		mtu, merr := strconv.Atoi(strings.TrimSpace(c.Opt("kcp_mtu")))
 		if merr != nil || mtu < 576 || mtu > 1400 {
 			return ir, kh, fmt.Errorf("KCP packet size must be a number from 576 to 1400, not %q", c.Opt("kcp_mtu"))
