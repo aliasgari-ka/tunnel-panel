@@ -1034,7 +1034,7 @@ async function trafficTick() {
   const sd = $('[data-sum-dn]'), su = $('[data-sum-up]');
   if (sd) sd.textContent = fmtRate(sum[0]);
   if (su) su.textContent = fmtRate(sum[1]);
-  $$('[data-lr]').forEach(el => { const x = tun[el.dataset.lr]; el.textContent = x && !x.error && (x.down || x.up) ? `↓${fmtRate(x.down)}` : ''; });
+  $$('[data-lr]').forEach(el => { const x = tun[el.dataset.lr]; const v = x && !x.error && (x.down || x.up) ? `${L('users now', 'کاربران الان')} <bdi dir="ltr">↓ ${fmtRate(x.down)}</bdi>` : ''; if (el.dataset.was !== v) { el.dataset.was = v; el.innerHTML = v; } });
   $$('[data-traf]').forEach(el => {
     const id = el.dataset.traf, s = tun[id], sp = speed[id];
     const rd = $('[data-rd]', el), ru = $('[data-ru]', el), src = $('[data-src]', el), tot = $('[data-tot]', el);
@@ -1561,6 +1561,57 @@ function upLine(u, short) {
   const pcts = short ? '' : pc(u.a7, L('7d', '7 روز')) + (u.a24 >= 0 && u.a24 < 99.995 ? pc(u.a24, L('24h', '24 ساعت')) : '');
   return `<small class="upl" data-notr title="${esc(tip + L(` · last 24 h ${upPct(Math.max(0, u.a24))}, 7 days ${upPct(Math.max(0, u.a7))}`, ` · 24 ساعت اخیر ${upPct(Math.max(0, u.a24))}، 7 روز ${upPct(Math.max(0, u.a7))}`))}">${L('up', 'روشن')} ${upFor(u)}${pcts}</small>`;
 }
+// The tunnel list's row, in plain words: is it working for the users now (tunStat), where
+// it goes and on which method the users are, how it went lately — outages in 7 days from the
+// outage log, and hot standby's path switches in 24 h, which a 100% hides (tunInfo).
+const tunOn = (t) => { // the path the users are on: the switcher's pick, else the tunnel's own
+  const hs = t.active && t.hotStandby ? t.hs : null, k = hs ? hs.active : -1;
+  const lab = hs && k >= 0 && hs.paths && hs.paths[k] ? hs.paths[k].replace(/ \(v[46]\)$/, '') : methodTitle(t.active || t.selected) || '—';
+  const own = !hs || k < 0 || !hs.keys || hs.keys[k] === `${t.active}|${t.family}`;
+  return { lab, backup: !!t.active && (!!t.failover || !own) };
+};
+function tunStat(t) {
+  const u = t.up, down = t.active && ((u && u.down) || t._down || t.health);
+  const [cls, word, tip] = !t.active ? ['off', L('Stopped', 'خاموش'), L('Stopped — it carries no users', 'خاموش — کاربری از آن رد نمی‌شود')]
+    : down ? ['bad', L('Down', 'قطع'), (t.health || (u && u.down ? L('No path works for the users', 'هیچ مسیری برای کاربران کار نمی‌کند') : L('The tunnel link is down', 'لینک تانل قطع است')))]
+    : ['on', L('Working', 'وصل'), L('Users get through now', 'کاربران الان وصل‌اند')];
+  return `<span class="tstw ${cls}" title="${esc(tip)}"><span class="led ${cls}"></span>${word}</span>`;
+}
+function tunInfo(t) {
+  const on = tunOn(t), hs = t.active && t.hotStandby ? t.hs : null;
+  const route = `<small>${L('to', 'به')} ${srvNm(t.foreignId, L('this panel host', 'همین سرور پنل'))}</small>`;
+  const nOk = hs && hs.ok ? hs.ok.filter(Boolean).length : 0, nAll = hs && hs.ok ? hs.ok.length : 0;
+  const hsChip = hs && nAll ? `<span class="thsc${nOk < 2 ? ' warn' : ''}" title="${esc(L(`Hot standby: ${nAll} paths kept running, ${nOk} working now. If the users' path fails they are moved to a working one within seconds.`, `آماده‌به‌کار: ${nAll} مسیر روشن نگه داشته می‌شود، ${nOk} مسیر الان سالم است. اگر مسیر کاربران خراب شود، در چند ثانیه به مسیر سالم منتقل می‌شوند.`))}">⚡ <bdi>${nOk}/${nAll}</bdi> ${L('paths ready', 'مسیر آماده')}</span>` : '';
+  const via = `<small class="twrap"><span>${L('on', 'روی')} <bdi dir="ltr" class="tmeth${on.backup ? ' bk' : ''}">${esc(on.lab)}</bdi>${on.backup ? ` <span class="tbk" title="${esc(L("The users are on a backup path, not the tunnel's own method", 'کاربران روی مسیر پشتیبان هستند، نه روش اصلی تانل'))}">🔁 ${L('backup', 'پشتیبان')}</span>` : ''}</span>${hsChip}</small>`;
+  return route + via + (t.active ? tunLately(t, hs) : '');
+}
+function tunLately(t, hs) {
+  const u = t.up, bits = [];
+  if (u && u.down) {
+    bits.push(`<span class="bad" title="${esc(L('Down since ', 'قطع از ') + upWhen(u.since, u.now) + L(' (Tehran)', ' (تهران)'))}">${L(`Users cut off for ${upDur(u.now - u.since)}`, `کاربران ${upDur(u.now - u.since)} است قطع‌اند`)}</span>`);
+  } else if (u && u.a7 >= 0) {
+    const days = Math.min(7, Math.max(1, Math.floor((u.now - u.from) / 86400)));
+    const inD = days >= 7 ? L('in 7 days', 'در 7 روز اخیر') : L(`in ${days} day(s)`, `در ${days} روز اخیر`);
+    const d7 = u.d7 != null ? u.d7 : (100 - u.a7) / 100 * days * 86400;
+    const tip = L(`An outage = no path worked for the users (the panel's outage log). Working ${upPct(Math.max(0, u.a24))} of the last 24 h, ${upPct(u.a7)} of 7 days. Slow but working periods are not outages.`, `قطعی یعنی هیچ مسیری برای کاربران کار نکرد (لاگ قطعی پنل). ${upPct(Math.max(0, u.a24))} از 24 ساعت اخیر و ${upPct(u.a7)} از 7 روز وصل بوده. زمان‌های کند ولی وصل، قطعی حساب نمی‌شوند.`)
+      + (u.since ? L(` Last outage ended ${upWhen(u.since, u.now)} (Tehran), ${upDur(u.now - u.since)} ago.`, ` آخرین قطعی ${upWhen(u.since, u.now)} (تهران) تمام شد، ${upDur(u.now - u.since)} پیش.`) : '');
+    bits.push(!u.n7 ? `<span class="ok" title="${esc(tip)}">✓ ${L('No outage', 'بدون قطعی')} ${inD}</span>`
+      : `<span class="warn" title="${esc(tip)}">${L(`${u.n7} outage(s) ${inD} · ${upDur(d7)} in all`, `${u.n7} قطعی ${inD} · جمعاً ${upDur(d7)}`)}</span>`);
+  }
+  if (hs && hs.sw24 >= 0) {
+    const n = hs.sw24, f = Math.max(0, hs.swFail24 || 0);
+    const tip = L(`The users were moved to another path ${n} time(s) in the last 24 h${n ? ` — ${f} because their path failed` : ''}. A move after a failure can cut open connections for a moment: many of them feel like drops to the users, even with no outage.`,
+      `کاربران در 24 ساعت اخیر ${n} بار به مسیر دیگری منتقل شدند${n ? ` — ${f} بار چون مسیرشان خراب شد` : ''}. انتقال بعد از خرابی ممکن است اتصال‌های باز را لحظه‌ای قطع کند؛ اگر زیاد باشد کاربران آن را قطعی حس می‌کنند، حتی بدون قطعی.`);
+    bits.push(`<span class="${f >= 3 ? 'warn' : n ? '' : 'faint'}" title="${esc(tip)}">${n ? L(`${n} path switch(es) in 24 h`, `${n} بار تعویض مسیر در 24 ساعت`) : L('no path switch in 24 h', 'بدون تعویض مسیر در 24 ساعت')}</span>`);
+  }
+  return bits.length ? `<small class="tlate twrap">${bits.join('')}</small>` : '';
+}
+// repaints a row's words (status, path, the lately line) — only what changed
+function tRowPaint(t) {
+  for (const [sel, html] of [[`[data-tinfo="${t.id}"]`, tunInfo(t)], [`[data-tst="${t.id}"]`, tunStat(t)]]) {
+    const el = $(sel); if (el && el.dataset.was !== html) { el.dataset.was = html; el.innerHTML = html; }
+  }
+}
 const upWhy = (o) => o.why === 'reboot' ? L('the server rebooted', 'سرور ریبوت شد')
   : o.why === 'network' ? L(`${o.others} other server(s) dropped at the same time — network / provider`, `هم‌زمان ${o.others} سرور دیگر هم قطع شد — شبکه / دیتاسنتر`)
   : (o.end && o.end - o.start < 60) ? L('short network drop', 'قطعی کوتاه شبکه')
@@ -1985,8 +2036,8 @@ function viewTunnels(w) {
     const fl = (id, d) => { const s = id ? serverById(id) : null; return s && s.country ? flag(s.country) : d; };
     const row = (t) => `<button class="srow" data-pick="${t.id}">
       <span class="sflag">${fl(t.foreignId, t.foreignId ? '🌍' : '🖥')}</span>
-      <span class="sinfo"><b data-notr>${esc(t.name)}</b><small>→ ${srvNm(t.foreignId, 'panel host')} · ${esc(methodTitle(t.active || t.selected) || '—')}</small>${upLine(t.up)}</span>
-      <span class="smeta"><span class="sbadges">${t.hotStandby ? '<span class="sbadge hs" title="hot standby">⚡</span>' : ''}<span class="sbadge fo" data-tfo="${t.id}" title="on a backup path"${t.failover ? '' : ' hidden'}>🔁</span><span class="led ${t.active ? (t._down || t.health ? 'bad' : 'on') : 'off'}" data-tled="${t.id}" title="${t.active ? 'running' : 'stopped'}"></span></span><small class="faint mono" data-lr="${t.id}"></small></span></button>`;
+      <span class="sinfo"><b data-notr>${esc(t.name)}</b><span class="tinfo" data-tinfo="${t.id}" data-notr>${tunInfo(t)}</span></span>
+      <span class="smeta"><span data-tst="${t.id}" data-notr>${tunStat(t)}</span><small class="faint mono" data-lr="${t.id}" data-notr title="${esc(L("What the users download through it now, all together (counted on the Iran server) — live traffic, not the tunnel's top speed", 'دانلود همه کاربران از این تانل در همین لحظه (شمارش روی سرور ایران) — ترافیک زنده، نه حداکثر سرعت تانل'))}"></small></span></button>`;
     const split = h(`<div class="srvsplit usplit">
       <aside class="card srvlist">
         <input class="sq" type="search" data-q placeholder="🔍 Search name, server, port, method…" value="${esc(STATE.tunSearch || '')}">
@@ -2638,7 +2689,7 @@ function paintDown(t, card, why) {
     if (bar) { if (why) bar.innerHTML = `⚠ ${esc(why)} <a href="#" data-dg>Diagnose</a>`; else bar.remove(); }
     const dg = $('[data-dg]', card); if (dg) dg.onclick = (e) => { e.preventDefault(); tunnelJob(t, '/tunnels/diagnose', 'Diagnose'); };
     t._down = !!why;
-    const led = $(`[data-tled="${t.id}"]`); if (led) led.className = 'led ' + (why ? 'bad' : 'on');
+    tRowPaint(t);
     const n = STATE.tunnels.filter(x => x._down && shownOwner(x.owner)).length, el = $('[data-sum-down]');
     if (el) { el.textContent = n ? `· ${n} down` : ''; }
 }
@@ -2661,16 +2712,16 @@ function healthWatch() {
         // started or stopped elsewhere (another browser, the bot, a job whose log was closed): the
         // card is drawn again — running and stopped cards differ in more than the chips
         if ((t.active || '') !== (n.active || '')) {
-          Object.assign(t, { active: n.active, paths: n.paths, hs: n.hs, failover: n.failover, health: n.health, clash: n.clash });
+          Object.assign(t, { active: n.active, paths: n.paths, hs: n.hs, failover: n.failover, health: n.health, clash: n.clash, up: n.up });
           if (!t.active) t._down = false;
           const nc = tunnelCard(t);
           nc.classList.toggle('sel', card.classList.contains('sel'));
           card.replaceWith(nc);
-          const led = $(`[data-tled="${n.id}"]`); if (led) { led.className = 'led ' + (t.active ? (t.health ? 'bad' : 'on') : 'off'); led.title = t.active ? 'running' : 'stopped'; }
+          tRowPaint(t);
           moved = true;
           return;
         }
-        Object.assign(t, { hs: n.hs, failover: n.failover, health: n.health, clash: n.clash });
+        Object.assign(t, { hs: n.hs, failover: n.failover, health: n.health, clash: n.clash, up: n.up });
         const m = $('.tc-m', card);
         if (m) {
           const mainFail = t.hotStandby && t.active ? (t.paths || []).find(p => p.method === t.active && p.family === t.family && p.failed) : null;
@@ -2681,7 +2732,7 @@ function healthWatch() {
         }
         const hl = $('[data-hsl]', card), rows = hl && hsRows(t);
         if (rows && hl.dataset.was !== rows && !$('details.more[open]', hl) && !$('.hsset', hl)) { hl.dataset.was = rows; hl.innerHTML = rows; hsWire(t, hl); }
-        const fo = $(`[data-tfo="${n.id}"]`); if (fo) fo.hidden = !t.failover;
+        tRowPaint(t);
       });
       if (moved) { // the counts that follow which tunnels run
         const mine = STATE.tunnels.filter(x => shownOwner(x.owner)), cu = $('[data-cu]');

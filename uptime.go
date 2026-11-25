@@ -32,6 +32,7 @@ type UptimeView struct {
 	A24    float64    `json:"a24"`             // % of the last 24 h it was up (-1 = no history yet)
 	A7     float64    `json:"a7"`              // and of the last 7 days
 	N7     int        `json:"n7"`              // outages in the last 7 days
+	D7     int64      `json:"d7"`              // seconds down in the last 7 days (all of them together)
 	Recent []UpOutage `json:"recent,omitempty"`
 	Boot   int64      `json:"boot,omitempty"` // servers: when the machine last booted (resource reads)
 }
@@ -110,9 +111,13 @@ func uptimeOf(outs []Outage, kind, target string, from, now int64) *UptimeView {
 		}
 	}
 	v.A24, v.A7 = avail(sp, day, from, now), avail(sp, 7*day, from, now)
+	lo := max(now-7*day, from)
 	for _, s := range sp {
 		if s[1] > now-7*day {
 			v.N7++
+		}
+		if a, b := max(s[0], lo), min(s[1], now); b > a {
+			v.D7 += b - a
 		}
 	}
 	return v
