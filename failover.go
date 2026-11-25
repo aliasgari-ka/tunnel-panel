@@ -334,6 +334,36 @@ func (a *App) ApplyRoute(t *Tunnel, mid, fam string) (*Job, error) {
 	return a.applyRoute(t, mid, fam, false)
 }
 
+// AddStandby starts one more hot-standby path on a tunnel that runs and moves nobody: the
+// users stay on their path, the pin and the mode stay as they are. Apply moves the users to
+// the path it adds, which is wrong for a path that is only wanted as a spare — and for a
+// method that needs time after its start (Method.Warmup) it would hang their connections.
+func (a *App) AddStandby(t *Tunnel, mid, fam string) (*Job, error) {
+	m := methodByID[mid]
+	if m == nil {
+		return nil, fmt.Errorf("unknown method")
+	}
+	var up, running bool
+	a.store.View(func(*State) {
+		if fam == "" {
+			fam = t.Family
+		}
+		up = t.HotStandby && t.Active != "" && len(t.Paths) > 0
+		running = up && hsIndex(t, mid, fam) >= 0
+	})
+	if !up {
+		return nil, fmt.Errorf("the tunnel runs no hot-standby paths — apply a method first")
+	}
+	if running {
+		return nil, fmt.Errorf("%s (%s) already runs as a hot-standby path", m.Title, fam)
+	}
+	if !a.hsCandidateBase(t, m, fam) {
+		return nil, fmt.Errorf("%s (%s) cannot run as a hot-standby path on this route", m.Title, fam)
+	}
+	a.hsUnremove(t, mid, fam) // picked by hand: wanted again if it was removed from the card
+	return a.hsAddJob(t, mid, fam, true)
+}
+
 // applyRoute is ApplyRoute; keep: an automatic one (a resume), see apply.
 func (a *App) applyRoute(t *Tunnel, mid, fam string, keep bool) (*Job, error) {
 	m := methodByID[mid]
@@ -372,7 +402,7 @@ func (a *App) applyRoute(t *Tunnel, mid, fam string, keep bool) (*Job, error) {
 	// on for the route since): start that one path and move the users there. Rebuilding the
 	// tunnel for it restarted every path and cut all users.
 	if up && !running && (mid != prev || fam != old) && a.hsCandidateBase(t, m, fam) {
-		return a.hsAddJob(t, mid, fam) // asked for by hand: also where auto mode leaves it out for its cost
+		return a.hsAddJob(t, mid, fam, false) // asked for by hand: also where auto mode leaves it out for its cost
 	}
 	if err := a.switchFamily(t, m, fam); err != nil {
 		return nil, err

@@ -133,6 +133,10 @@ var methodBackpack2Reverse = &Method{
 var methodBackpack2RPck = &Method{
 	ID:       "bp2_rpck",
 	OptIn:    true,
+	// seen live on Turkey and Finland: in about half of the fresh starts some pool sessions
+	// pass nothing from Iran for the first 25-30 s (an upload hangs, a download stops at its
+	// first 256 KB) until BackPack drops them; from 45 s on every transfer passed
+	Warmup:   45,
 	Title:    "BackPack v2 TCP + PCK (reverse)",
 	Desc:     "BackPack v2.0.0 reverse tunnel over pck: KCP with error correction inside TCP-looking raw packets, with v2's window control and pacing (v1 filled the path's queue). Made for lossy paths. IPv4 only. Iran listens, foreign dials. " + bp2PckV1Note,
 	Families: []string{"v4"},

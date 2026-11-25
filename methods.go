@@ -178,6 +178,10 @@ type Method struct {
 	// tunnel of the route runs it. For a method added next to an older one (BackPack v2 beside
 	// v1): a release must not start it on every server of every user.
 	OptIn bool `json:"optIn,omitempty"`
+	// Warmup: seconds after its units start before the method's traffic can be trusted.
+	// The benchmark waits that long before it measures, and Apply before it moves the
+	// users to a path it just started.
+	Warmup int `json:"warmup,omitempty"`
 }
 
 // altLabel names an alternative option set for logs and titles ("carrier sni").

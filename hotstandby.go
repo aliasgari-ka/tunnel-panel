@@ -1658,7 +1658,8 @@ func (a *App) hsSwitchJob(t *Tunnel, mid, fam string) (*Job, error) {
 
 // hsAddJob is Apply for a path the route allows but that doesn't run: only that path is
 // (re)deployed, then the users move to it like hsSwitchJob — the other paths keep running.
-func (a *App) hsAddJob(t *Tunnel, mid, fam string) (*Job, error) {
+// standby: the path is only started and the users stay where they are (AddStandby).
+func (a *App) hsAddJob(t *Tunnel, mid, fam string, standby bool) (*Job, error) {
 	j, err := a.jobs.start(t.ID, "switch")
 	if err != nil {
 		return nil, err
@@ -1689,6 +1690,19 @@ func (a *App) hsAddJob(t *Tunnel, mid, fam string) (*Job, error) {
 			j.log("ERROR: %s could not start (see above) — the users stay where they are", p.label())
 			j.finish("error")
 			return
+		}
+		if standby {
+			j.log("DONE — %s runs as a hot-standby path; the users stay on their path", p.label())
+			j.finish("ok")
+			return
+		}
+		if m := methodByID[mid]; m != nil && m.Warmup > 0 {
+			// a path that takes users in its first seconds would hang their connections
+			j.log("%s needs %d s after its start before it carries traffic well — waiting before the users move", p.label(), m.Warmup)
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Duration(m.Warmup) * time.Second):
+			}
 		}
 		msg, err := a.hsPinTo(ctx, t, mid+"|"+fam)
 		if err != nil {
