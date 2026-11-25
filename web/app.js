@@ -3856,7 +3856,14 @@ function igLine(s, g) {
   }
   // not measured by the panel on the users' route yet: no check mark (the agent's own word is not proof)
   if (lvl === 'ok' && igNotRead(s, g)) { wait = true; sub = sub || L('checking…', 'در حال بررسی…'); }
-  const mark = wait ? '…' : { ok: '✓', auto: '✓', warn: '!', bad: '✕' }[lvl];
+  // Gemini: the panel's test opens the app without an account (the test account never leaves its
+  // own IP), and Google can still refuse signed-in users there - so no plain check mark: "≈"
+  const unproven = g === 'GOOGLE' && !wait && (lvl === 'ok' || lvl === 'auto');
+  if (unproven) {
+    const n = L('opens without an account here; with an account not proven', 'بدون حساب اینجا باز می‌شود؛ با حساب ثابت نشده');
+    sub = sub ? sub + ' · ' + n : n;
+  }
+  const mark = wait ? '…' : unproven ? '≈' : { ok: '✓', auto: '✓', warn: '!', bad: '✕' }[lvl];
   return [lvl, `<div class="igl ${lvl}${wait ? ' wait' : ''}"><span class="igl-m">${mark}</span><span class="igl-n">${name}</span><span class="igl-b">${body}</span>${tags}${sub ? `<span class="igl-sub">${sub}</span>` : ''}</div>`];
 }
 const igSvcLines = (s) => ['IG', 'GOOGLE', 'YTM'].map(g => igLine(s, g));
