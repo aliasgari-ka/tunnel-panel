@@ -190,15 +190,31 @@ func (a *App) standbyTrimOne(t *Tunnel) []string {
 	var done []string
 	if ir, _, err := a.reach(ctx, srv, nil); err == nil {
 		d, uses := standbyTrimHostUse(ctx, ir, units)
-		done = append(done, d...)
+		done = append(done, trimLabel("IR", keyOf, d)...)
 		a.noteIdleUse(t, keyOf, uses, true)
 	}
 	if kh, _, err := a.foreignHost(ctx, t, nil); err == nil {
 		d, uses := standbyTrimHostUse(ctx, kh, units)
-		done = append(done, d...)
+		done = append(done, trimLabel("KH", keyOf, d)...)
 		a.noteIdleUse(t, keyOf, uses, false)
 	}
 	return done
+}
+
+// trimLabel says on which server and for which path each "<unit>: <why>" restart was: both
+// sides of a path run a unit of the same name, so without it the report read
+// "tp-..x21.service: held 591 MB; tp-..x21.service: held 599 MB".
+func trimLabel(side string, keyOf map[string]string, done []string) []string {
+	out := make([]string, 0, len(done))
+	for _, d := range done {
+		unit, why, _ := strings.Cut(d, ": ")
+		if key := keyOf[unit]; key != "" {
+			out = append(out, fmt.Sprintf("%s %s (%s): %s", side, key, unit, why))
+		} else {
+			out = append(out, side+" "+d)
+		}
+	}
+	return out
 }
 
 // idleCPU is what one standby path's cores burned while the users were elsewhere: % of one

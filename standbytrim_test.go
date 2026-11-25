@@ -128,3 +128,15 @@ func TestLeanScriptsParse(t *testing.T) {
 		t.Error("leanHost lost a guard")
 	}
 }
+
+func TestTrimLabel(t *testing.T) {
+	keyOf := map[string]string{"tp-2b5ax21.service": "premium1|v4"}
+	got := trimLabel("KH", keyOf, []string{"tp-2b5ax21.service: held 599 MB with no traffic", "tp-other.service: held 400 MB with no traffic"})
+	want := []string{"KH premium1|v4 (tp-2b5ax21.service): held 599 MB with no traffic", "KH tp-other.service: held 400 MB with no traffic"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if len(trimLabel("IR", keyOf, nil)) != 0 {
+		t.Error("nothing restarted must say nothing")
+	}
+}
