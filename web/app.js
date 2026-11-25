@@ -1034,7 +1034,7 @@ async function trafficTick() {
   const sd = $('[data-sum-dn]'), su = $('[data-sum-up]');
   if (sd) sd.textContent = fmtRate(sum[0]);
   if (su) su.textContent = fmtRate(sum[1]);
-  $$('[data-lr]').forEach(el => { const x = tun[el.dataset.lr]; el.textContent = x && !x.error && (x.down || x.up) ? `↓ ${fmtRate(x.down)} ${L('now', 'الان')}` : ''; });
+  $$('[data-lr]').forEach(el => { const x = tun[el.dataset.lr]; const v = x && !x.error && (x.down || x.up) ? `${L('users now', 'کاربران الان')} <bdi dir="ltr">↓ ${fmtRate(x.down)}</bdi>` : ''; if (el.dataset.was !== v) { el.dataset.was = v; el.innerHTML = v; } });
   $$('[data-traf]').forEach(el => {
     const id = el.dataset.traf, s = tun[id], sp = speed[id];
     const rd = $('[data-rd]', el), ru = $('[data-ru]', el), src = $('[data-src]', el), tot = $('[data-tot]', el);
@@ -1596,7 +1596,7 @@ function tunLately(t, hs) {
     const tip = L(`An outage = no path worked for the users (the panel's outage log). Working ${upPct(Math.max(0, u.a24))} of the last 24 h, ${upPct(u.a7)} of 7 days. Slow but working periods are not outages.`, `قطعی یعنی هیچ مسیری برای کاربران کار نکرد (لاگ قطعی پنل). ${upPct(Math.max(0, u.a24))} از 24 ساعت اخیر و ${upPct(u.a7)} از 7 روز وصل بوده. زمان‌های کند ولی وصل، قطعی حساب نمی‌شوند.`)
       + (u.since ? L(` Last outage ended ${upWhen(u.since, u.now)} (Tehran), ${upDur(u.now - u.since)} ago.`, ` آخرین قطعی ${upWhen(u.since, u.now)} (تهران) تمام شد، ${upDur(u.now - u.since)} پیش.`) : '');
     bits.push(!u.n7 ? `<span class="ok" title="${esc(tip)}">✓ ${L('No outage', 'بدون قطعی')} ${inD}</span>`
-      : `<span class="${upCls(u.a7) === 'ok' ? 'warn' : upCls(u.a7)}" title="${esc(tip)}">${L(`${u.n7} outage(s) ${inD} · ${upDur(d7)} in all`, `${u.n7} قطعی ${inD} · جمعاً ${upDur(d7)}`)}</span>`);
+      : `<span class="warn" title="${esc(tip)}">${L(`${u.n7} outage(s) ${inD} · ${upDur(d7)} in all`, `${u.n7} قطعی ${inD} · جمعاً ${upDur(d7)}`)}</span>`);
   }
   if (hs && hs.sw24 >= 0) {
     const n = hs.sw24, f = Math.max(0, hs.swFail24 || 0);
