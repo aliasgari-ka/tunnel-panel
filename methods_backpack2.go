@@ -106,6 +106,7 @@ var bp2PresetField = Field{Key: "preset", Label: "Preset", Type: "select", Defau
 
 var methodBackpack2Reverse = &Method{
 	ID:       "bp2_reverse",
+	OptIn:    true,
 	Title:    "BackPack v2 reverse",
 	Desc:     "BackPack v2.0.0 reverse tunnel (its own binary, beside v1). Both ends prove the token (v1 sent it as it is on the plain transports), a larger pool on tcp/ws, and kcp / pck / xdi no longer fill the path's queue. Iran listens, foreign dials.",
 	Families: []string{"v4", "v6"},
@@ -125,6 +126,7 @@ var methodBackpack2Reverse = &Method{
 // to the v1 PCK recipes: it is the transport v2 changed most (window control, pacing).
 var methodBackpack2RPck = &Method{
 	ID:       "bp2_rpck",
+	OptIn:    true,
 	Title:    "BackPack v2 TCP + PCK (reverse)",
 	Desc:     "BackPack v2.0.0 reverse tunnel over pck: KCP with error correction inside TCP-looking raw packets, with v2's window control and pacing (v1 filled the path's queue). Made for lossy paths. IPv4 only. Iran listens, foreign dials.",
 	Families: []string{"v4"},
@@ -186,6 +188,7 @@ dial_timeout = 10
 
 var methodBackpack2Pck = &Method{
 	ID:       "bp2_pck",
+	OptIn:    true,
 	Title:    "BackPack v2 PCK direct (KCP)",
 	Desc:     "BackPack v2.0.0 direct PCK: a port forwarder over KCP inside crafted TCP segments (a port of paqet, with a window control of its own). Iran dials the foreign server, so Iran needs no open inbound port. Encrypted with the token. IPv4 only; carries ports, nothing routed.",
 	Families: []string{"v4"},

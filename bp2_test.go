@@ -180,3 +180,61 @@ func TestBackpack2LeavesV1Alone(t *testing.T) {
 		t.Error("the bot has no name for a v2 method")
 	}
 }
+
+// A release must not start v2 anywhere by itself: no standby path of a tunnel until someone
+// picks it there; once picked it is kept like any other path (plans and Repair leave it in).
+func TestBackpack2IsOptIn(t *testing.T) {
+	a, st := hsRemoveFixture(t)
+	tun := st.Tunnel("aaaaaaaaaaaa")
+	ids := []string{"bp2_reverse", "bp2_rpck", "bp2_pck"}
+	for _, id := range ids {
+		m := methodByID[id]
+		if !m.OptIn {
+			t.Fatalf("%s must be opt-in", id)
+		}
+		if a.hsCandidate(tun, m, "v4") {
+			t.Errorf("%s became a standby path by itself", id)
+		}
+		if !a.hsCandidateBase(tun, m, "v4") {
+			t.Errorf("%s can't be picked by hand", id)
+		}
+	}
+	for _, p := range a.hsPlan(tun, "gre", "v4") {
+		if contains(ids, p.Method) {
+			t.Errorf("a plan took %s up by itself", p.Method)
+		}
+	}
+	_, add := a.hsPathDiff(tun)
+	for _, p := range add {
+		if contains(ids, p.Method) {
+			t.Errorf("Repair would add %s by itself", p.Method)
+		}
+	}
+	for _, m := range methods {
+		if m.OptIn != contains(ids, m.ID) {
+			t.Errorf("%s: opt-in=%v — only the v2 methods are", m.ID, m.OptIn)
+		}
+	}
+
+	// picked by hand: it is a path of the tunnel now and stays one
+	_ = st.Update(func(*State) error {
+		tun.Paths = append(tun.Paths, HSPath{Method: "bp2_reverse", Family: "v4", Index: 201})
+		return nil
+	})
+	if !a.hsCandidate(tun, methodByID["bp2_reverse"], "v4") || a.hsCandidate(tun, methodByID["bp2_pck"], "v4") {
+		t.Fatal("a picked v2 path must stay a candidate, and only that one")
+	}
+	kept := false
+	for _, p := range a.hsPlan(tun, "gre", "v4") {
+		kept = kept || (p.Method == "bp2_reverse" && p.Family == "v4" && p.Index == 201)
+	}
+	if !kept {
+		t.Error("a plan dropped the picked v2 path (or its index)")
+	}
+	drop, _ := a.hsPathDiff(tun)
+	for _, p := range drop {
+		if p.Method == "bp2_reverse" {
+			t.Error("Repair would drop the picked v2 path")
+		}
+	}
+}

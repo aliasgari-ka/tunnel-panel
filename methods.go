@@ -173,6 +173,11 @@ type Method struct {
 	// different carrier gets through. The benchmark finds the one that works; apply and hot
 	// standby then use it (see routeOpts).
 	Alts func(family string) []map[string]string `json:"-"`
+	// OptIn: the panel never takes this method up by itself — it is no standby path of a
+	// tunnel until someone picks it there, and the automatic benchmark leaves it out until a
+	// tunnel of the route runs it. For a method added next to an older one (BackPack v2 beside
+	// v1): a release must not start it on every server of every user.
+	OptIn bool `json:"optIn,omitempty"`
 }
 
 // altLabel names an alternative option set for logs and titles ("carrier sni").
