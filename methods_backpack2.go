@@ -141,6 +141,18 @@ var methodBackpack2RPck = &Method{
 	},
 }
 
+// bp2TunnelPort is the Iran tunnel port of a v2 reverse tunnel. pck gets the slot's second
+// port: BackPack reserves a pck tunnel port with a plain TCP bind, which fails for a minute
+// while connections of a TCP tunnel that just ran on that port are in TIME_WAIT — and the
+// benchmark runs its methods one after another on the slot's first port (seen live: BackPack
+// v2 reverse, then TCP + PCK: "tunnel port 0.0.0.0:41000: something else is listening").
+func bp2TunnelPort(opt, tr string, base int) string {
+	if tr == "pck" {
+		base++
+	}
+	return portOr(opt, base)
+}
+
 func bp2ReverseBuild(c *buildCtx, tr string) (ir, kh SidePlan, err error) {
 	if !inList(bp2ReverseTransports, tr) {
 		return ir, kh, fmt.Errorf("unknown BackPack v2 transport %q", tr)
@@ -152,7 +164,7 @@ func bp2ReverseBuild(c *buildCtx, tr string) (ir, kh SidePlan, err error) {
 	if err != nil {
 		return ir, kh, err
 	}
-	tp := portOr(c.Opt("tunnel_port"), c.D.BasePort)
+	tp := bp2TunnelPort(c.Opt("tunnel_port"), tr, c.D.BasePort)
 	tok := c.T.secret("bp2-token")
 	// peer_auth: both ends are v2, so the handshake of before v2.0.0 (the token in the
 	// clear) is refused from the first connection, not only after the first good one

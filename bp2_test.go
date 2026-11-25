@@ -108,6 +108,26 @@ func TestBackpack2ReversePck(t *testing.T) {
 		"kcp_acknodelay = true", "kcp_sndwnd = 1024", "kcp_rcvwnd = 1024", "kcp_datashards = 10", "kcp_parityshards = 3"}
 	mustHave(t, "Iran", s, append(kcp, `bind_addr = "0.0.0.0:28402"`, "mux_con = 8")...)
 	mustHave(t, "foreign", c, append(kcp, `remote_addr = "192.0.2.10:28402"`, "connection_pool = 16")...)
+	// no port given: pck takes the slot's second port, never the one a TCP tunnel just left
+	tn.Options = nil
+	srv, fsrv := &Server{ID: "ir", IPv4: "192.0.2.10"}, &Server{ID: "kh", IPv4: "198.51.100.20", Role: "foreign"}
+	d := deriveFor(tn, srv, fsrv, Settings{})
+	want := portOr("", d.BasePort+1)
+	s, c = bp2Confs(t, methodBackpack2RPck, tn)
+	mustHave(t, "Iran auto port", s, `bind_addr = "0.0.0.0:`+want+`"`)
+	mustHave(t, "foreign auto port", c, `remote_addr = "192.0.2.10:`+want+`"`)
+	get, _ := resolveOptions(methodBackpack2RPck, nil)
+	if irL, khL := tunnelListenPort(methodBackpack2RPck, tn, get, d); irL != want || khL != "" {
+		t.Errorf("the firewall must open the port the tunnel uses: iran %q foreign %q, want %q", irL, khL, want)
+	}
+	get, _ = resolveOptions(methodBackpack2Reverse, map[string]string{"transport": "pck"})
+	if irL, _ := tunnelListenPort(methodBackpack2Reverse, tn, get, d); irL != want {
+		t.Errorf("bp2_reverse over pck listens on %q, want %q", irL, want)
+	}
+	get, _ = resolveOptions(methodBackpack2Reverse, nil)
+	if irL, _ := tunnelListenPort(methodBackpack2Reverse, tn, get, d); irL != portOr("", d.BasePort) {
+		t.Errorf("bp2_reverse over stealth listens on %q, want the slot's first port", irL)
+	}
 	if inList(methodBackpack2RPck.Families, "v6") {
 		t.Error("pck is IPv4-only")
 	}
