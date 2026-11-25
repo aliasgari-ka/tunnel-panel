@@ -75,12 +75,21 @@ func TestBenchPlanEveryMethod(t *testing.T) {
 	if planHas(q, "gre") || planWhy(q, "gre") != benchRouteOff || len(q.Off) != 0 {
 		t.Errorf("without all: gre measured=%v why=%q off=%v", planHas(q, "gre"), planWhy(q, "gre"), q.Off)
 	}
-	if len(q.Methods) != len(p.Methods)-3 {
-		t.Errorf("without all: %d methods, want %d", len(q.Methods), len(p.Methods)-3)
+	optIn := 0 // methods the automatic run never takes up by itself (BackPack v2)
+	for _, m := range methods {
+		if m.OptIn && supportsFamily(m, "v4") {
+			optIn++
+			if planHas(q, m.ID) || planWhy(q, m.ID) != benchOptIn || !planHas(p, m.ID) {
+				t.Errorf("%s: opt-in, so only in a run of every method (auto=%v why=%q every=%v)", m.ID, planHas(q, m.ID), planWhy(q, m.ID), planHas(p, m.ID))
+			}
+		}
+	}
+	if optIn != 3 || len(q.Methods) != len(p.Methods)-3-optIn {
+		t.Errorf("without all: %d methods, want %d (%d opt-in)", len(q.Methods), len(p.Methods)-3-optIn, optIn)
 	}
 	// another route's choices don't count
-	if o := benchPlanLocked(st, "ir", "kh2", "v4", false); len(o.Methods) != len(p.Methods) {
-		t.Errorf("another route: %d methods, want %d", len(o.Methods), len(p.Methods))
+	if o := benchPlanLocked(st, "ir", "kh2", "v4", false); len(o.Methods) != len(p.Methods)-optIn {
+		t.Errorf("another route: %d methods, want %d", len(o.Methods), len(p.Methods)-optIn)
 	}
 	// v6: the IPv4-only methods are out with a reason
 	v6 := benchPlanLocked(st, "ir", "kh", "v6", true)

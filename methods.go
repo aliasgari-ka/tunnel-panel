@@ -173,6 +173,11 @@ type Method struct {
 	// different carrier gets through. The benchmark finds the one that works; apply and hot
 	// standby then use it (see routeOpts).
 	Alts func(family string) []map[string]string `json:"-"`
+	// OptIn: the panel never takes this method up by itself — it is no standby path of a
+	// tunnel until someone picks it there, and the automatic benchmark leaves it out until a
+	// tunnel of the route runs it. For a method added next to an older one (BackPack v2 beside
+	// v1): a release must not start it on every server of every user.
+	OptIn bool `json:"optIn,omitempty"`
 }
 
 // altLabel names an alternative option set for logs and titles ("carrier sni").
@@ -249,6 +254,7 @@ var methodByID = map[string]*Method{}
 var methodGroups = map[string]string{
 	"backhaul": "Backhaul", "premium": "Backhaul", "premium1": "Backhaul",
 	"bp_reverse": "BackPack", "bp_l3": "BackPack", "bp_multi": "BackPack", "bp_pckfec": "BackPack", "bp_pckturbo": "BackPack",
+	"bp2_reverse": "BackPack", "bp2_rpck": "BackPack", "bp2_pck": "BackPack",
 	"gre": groupKernel, "direct6": groupKernel, "ipsec6": groupKernel, "espsk": groupKernel, "wg": groupKernel,
 	"frp": "Other", "golden": "Other", "icmp": "Other", "paqet": "Other", "spoof": "Other",
 	"tpk": "TP", "tpk_rev": "TP",
@@ -386,7 +392,7 @@ func buildPlansRedirect(m *Method, t *Tunnel, srv, fsrv *Server, set Settings, r
 // tunnelListenPort is the port each side listens on for the tunnel itself ("" = none).
 func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) (ir, kh string) {
 	switch m.ID {
-	case "backhaul", "bp_reverse", "bp_multi", "bp_pckfec", "bp_pckturbo", "premium1":
+	case "backhaul", "bp_reverse", "bp_multi", "bp_pckfec", "bp_pckturbo", "bp2_reverse", "bp2_rpck", "premium1":
 		return portOr(get("tunnel_port"), d.BasePort), ""
 	case "frp":
 		return portOr(get("bind_port"), d.BasePort), ""
@@ -396,6 +402,8 @@ func tunnelListenPort(m *Method, t *Tunnel, get func(string) string, d derived) 
 		if get("mode") != "ipx" {
 			return portOr(get("port"), d.BasePort), ""
 		}
+	case "bp2_pck": // Iran dials; the foreign side takes the segments on this port
+		return "", portOr(get("port"), d.BasePort)
 	case "bp_l3":
 		p := portOr(get("port"), d.BasePort)
 		if get("dialer") == "foreign" {

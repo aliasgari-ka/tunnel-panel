@@ -172,6 +172,9 @@ func (a *App) hsCandidate(t *Tunnel, m *Method, f string) bool {
 			have[p.Method+"|"+p.Family] = true
 		}
 	})
+	if m.OptIn && !have[m.ID+"|"+f] {
+		return false // picked by hand only (ApplyRoute adds it), then kept like any other path
+	}
 	return a.hsLeaveOutForCost(t, m, f, have) == ""
 }
 

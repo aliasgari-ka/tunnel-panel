@@ -60,6 +60,10 @@ func benchPlanLocked(st *State, iran, foreign, fam string, all bool) BenchPlan {
 			p.Left = append(p.Left, BenchLeft{m.ID, m.Title, why})
 			continue
 		}
+		if m.OptIn && !all {
+			p.Left = append(p.Left, BenchLeft{m.ID, m.Title, benchOptIn})
+			continue
+		}
 		if skip[m.ID+"|"+fam] {
 			if !all {
 				p.Left = append(p.Left, BenchLeft{m.ID, m.Title, benchRouteOff})
@@ -89,6 +93,9 @@ func (s *Server2) benchPlanAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, s.app.benchPlan(q.Get("iran"), q.Get("foreign"), q.Get("family"), true))
 }
+
+// benchOptIn is the reason an opt-in method (Method.OptIn) has in a plan without all.
+const benchOptIn = "measured only when picked: \"Every method\", or a tunnel of the route that runs it"
 
 // benchRouteOff is the reason a method left out on the route has in a plan without all.
 const benchRouteOff = "left out on this route (Routes page)"
