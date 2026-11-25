@@ -127,6 +127,11 @@ type igExRead struct {
 	// server's own country (from the panel)
 	Route string
 	Home  string
+	// Exit: the WARP the agent sends Google through when it was read ("3"; "" = not on a WARP or
+	// an older agent). The agent moves Google between its own WARPs by itself, and the test
+	// browser's place of one WARP says nothing about another: on هلند1 (2026-11-25) WARP 3 and 5
+	// read "Germany" and WARP 4 no place at all, all three on the same route "warp6".
+	Exit string
 	// Colab: Google Colab's http code on the same route ("" = not read: an agent whose Google
 	// list does not carry Colab)
 	Colab string
@@ -234,7 +239,8 @@ g(){ local c d fl=- i
   done
   d=$(grep -oE 'og[.]qtm[^"]*","[a-z.]{2,8}"' "$f" | head -1 | sed -E 's/.*"([a-z.]+)"$/\1/')
   grep -qsi "not supported in your country\|isn.\{1,6\}t currently supported\|not available in your country\|not available in your region" "$f" && fl=region
-  echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE) $(rt GOOGLE) $(cb)"; }
+  echo "X GOOGLE ${c:-000} ${d:--} $fl $(v6 GOOGLE) $(rt GOOGLE) $(cb) $(ga)"; }
+ga(){ local x; x=$(cat /run/igproxy/gwarp_active 2>/dev/null); echo "${x:--}"; }  # Google's WARP now
 cb(){ local c i  # Colab: only where the agent sends it on Google's route
   grep -q 'domain:research[.]google[.]com' /usr/local/bin/igproxy 2>/dev/null || { echo -; return; }
   for i in 1 2; do
@@ -321,6 +327,9 @@ func igExParse(lines []string) (map[string]*igExRead, bool) {
 		}
 		if len(f) > 7 && f[7] != "-" && f[7] != "000" {
 			r.Colab = f[7]
+		}
+		if len(f) > 8 && f[8] != "-" && igIsWarp(r.Route) {
+			r.Exit = f[8]
 		}
 		out[f[1]] = r
 	}
@@ -711,6 +720,7 @@ var igExPlaceProbe = gemProbe
 
 type igExPlaceT struct {
 	Place, Route string
+	Exit         string // the agent's Google WARP when the place was read
 	Refused      bool // the app's own refusal (its words, Google's 403 page)
 	Silent       bool // the app opened, waited, and named no place
 	At           time.Time
@@ -738,13 +748,13 @@ func (a *App) igExPlace(ctx context.Context, srv *Server, r *igExRead, fresh boo
 	igExPlaceMem.Lock()
 	c, ok := igExPlaceMem.m[srv.ID]
 	igExPlaceMem.Unlock()
-	if !ok || fresh || c.Route != r.Route || time.Since(c.At) > igExPlaceEvery {
+	if !ok || fresh || c.Route != r.Route || c.Exit != r.Exit || time.Since(c.At) > igExPlaceEvery {
 		igExPlaceMem.busy.Lock()
 		pctx, cancel := context.WithTimeout(ctx, 70*time.Second)
 		v, p, err := igExPlaceProbe(pctx, fmt.Sprintf("socks5://%s:%d", srv.IPv4, gemRelayPort))
 		cancel()
 		igExPlaceMem.busy.Unlock()
-		c = igExPlaceT{Route: r.Route, At: time.Now()}
+		c = igExPlaceT{Route: r.Route, Exit: r.Exit, At: time.Now()}
 		if err == nil {
 			c.Place = gemPlace(p)
 			c.Refused = c.Place == "" && v == "refused" && gemVerdict(p) == "refused"

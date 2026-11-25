@@ -372,6 +372,50 @@ func TestIgExPlaceCache(t *testing.T) {
 	}
 }
 
+// The agent moves Google between its own WARPs on the same route: a place read on one WARP is
+// not reused for another (هلند1, 2026-11-25: WARP 3 "Germany", WARP 4 no place, both warp6).
+func TestIgExPlacePerWarp(t *testing.T) {
+	old := igExPlaceProbe
+	defer func() { igExPlaceProbe = old }()
+	calls, place := 0, "Nuremberg, Germany"
+	igExPlaceProbe = func(ctx context.Context, proxy string) (string, gemPage, error) {
+		calls++
+		return "ok", gemPage{URL: gemURL, Input: true, SignIn: true, Text: "Settings\n" + place + "\nFrom your IP address\nSign in"}, nil
+	}
+	a := &App{}
+	srv := &Server{ID: "place-warp", IPv4: "9.9.9.8"}
+	a.igExPlace(context.Background(), srv, &igExRead{Code: "200", Dom: "com", Route: "warp6", Exit: "3"}, false)
+	place = ""
+	r := &igExRead{Code: "200", Dom: "com", Route: "warp6", Exit: "4"}
+	a.igExPlace(context.Background(), srv, r, false)
+	if calls != 2 {
+		t.Fatalf("another WARP on the same route must be asked again: calls %d", calls)
+	}
+	if r.Place != "" {
+		t.Errorf("WARP 4 got WARP 3's place %q", r.Place)
+	}
+	a.igExPlace(context.Background(), srv, &igExRead{Code: "200", Dom: "com", Route: "warp6", Exit: "4"}, false)
+	if calls != 2 {
+		t.Errorf("the same WARP within 30 min is not asked again: calls %d", calls)
+	}
+}
+
+func TestIgExParseExit(t *testing.T) {
+	m, ok := igExParse([]string{"X GOOGLE 200 com - ok warp6 - 3", "X YTM 200 de - - ipv6 - -", "X GOOGLE2 200 com - - direct - 5"})
+	if !ok {
+		t.Fatal("not parsed")
+	}
+	if m["GOOGLE"].Exit != "3" {
+		t.Errorf("Google's WARP: %q", m["GOOGLE"].Exit)
+	}
+	if m["YTM"].Exit != "" || m["GOOGLE2"].Exit != "" {
+		t.Error("no WARP number off a WARP route")
+	}
+	if m2, _ := igExParse([]string{"X GOOGLE 200 com - ok warp6 -"}); m2["GOOGLE"].Exit != "" {
+		t.Error("an older agent line without the field")
+	}
+}
+
 // A ladder that found nothing is not climbed again every ten minutes: each try moves the route
 // through every exit, and most moves restart the server's router.
 func TestIgExFixBackoff(t *testing.T) {
