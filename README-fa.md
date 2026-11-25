@@ -71,6 +71,9 @@ systemd می‌سازد و آدرس پنل را چاپ می‌کند. اولین
 |---|---|---|---|
 | **BackPack reverse** | v4/v6 | stealth (Noise)/TLS/توکن | ایران listen، خارج dial. ۱۲ ترنسپورت از جمله `stealth`، `quic`، `wssmux` |
 | **BackPack L3 (TUN)** | v4/v6 | Noise AEAD | این بار ایران به خارج وصل می‌شود؛ وقتی ایران پورت ورودی باز ندارد |
+| **BackPack v2 reverse** | v4/v6 | stealth (Noise)/TLS/توکن | نسخهٔ ۲ بک‌پک با فایل اجرایی جدا کنار نسخهٔ ۱؛ دو طرف توکن را اثبات می‌کنند، کنترل پنجره روی `kcp`/`pck`/`xdi` |
+| **BackPack v2 TCP + PCK (reverse)** | v4 | توکن | نسخهٔ ۲ روی `pck` (KCP و FEC در بسته‌های شبیه TCP) با کنترل پنجره |
+| **BackPack v2 PCK direct (KCP)** | v4 | KCP (AES، توکن) | PCK مستقیم نسخهٔ ۲: فوروارد پورت روی KCP؛ ایران به خارج وصل می‌شود |
 | **Backhaul reverse** | v4/v6 | توکن/wss | tcp، tcpmux، ws، wss، wsmux، wssmux، udp |
 | **FRP reverse** | v4/v6 | توکن (+TLS) | tcp، websocket، quic، kcp |
 | **Backhaul Premium** | v4 | AEAD (ipx)/TLS | `tun` با کپسوله‌سازی `ipx` (icmp/ipip/udp/tcp/gre/bip) و `anytls`. فقط amd64 |

@@ -67,6 +67,9 @@ public ports from Iran to the foreign side, and can reach Iran even when its SSH
 |---|---|---|---|
 | **BackPack reverse** | v4/v6 | stealth (Noise) / TLS / token | 12 transports incl. `stealth`, `quic`, `wssmux` |
 | **BackPack L3 (TUN)** | v4/v6 | Noise AEAD | Iran dials out — use when Iran has no open inbound port |
+| **BackPack v2 reverse** | v4/v6 | stealth (Noise) / TLS / token | BackPack v2.0.0 on its own binary beside v1: both ends prove the token, window control on `kcp` / `pck` / `xdi` |
+| **BackPack v2 TCP + PCK (reverse)** | v4 | token | v2 reverse over `pck` (KCP + FEC in TCP-looking packets) with pacing and window control |
+| **BackPack v2 PCK direct (KCP)** | v4 | KCP (AES, token) | v2 direct PCK: a KCP port forwarder in crafted TCP segments; Iran dials out |
 | **Backhaul reverse** | v4/v6 | token / wss | tcp, tcpmux, ws, wss, wsmux, wssmux, udp |
 | **FRP reverse** | v4/v6 | token (+TLS) | tcp, websocket, quic, kcp |
 | **Backhaul Premium** | v4 | AEAD (ipx) / TLS | `tun` + `ipx` raw carrier (icmp/ipip/udp/tcp/gre/bip), `anytls`. amd64, upload the core |
