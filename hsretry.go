@@ -11,9 +11,30 @@ import (
 // England and the outbound tunnel, both fine again the next day). So the monitor tries a
 // failed path again every hsRetryEvery while the tunnel is healthy: only that path is
 // deployed, the others and their users are left alone (hsUpdatePathsRun with retry).
-const hsRetryEvery = time.Hour
+//
+// A path that keeps failing waits longer each time (1 h, 2 h, 4 h … hsRetryMax): on a route
+// that never passes it (seen live: the outbound tunnel, whose provider drops everything but
+// GRE/ESP — 5 paths) the hourly retry was a 10-minute job on the busiest tunnel every hour,
+// each one dialling Iran on 33 ports per path from the foreign server.
+const (
+	hsRetryEvery = time.Hour
+	hsRetryMax   = 12 * time.Hour
+)
 
-// hsRetryDue lists the failed paths of t whose last try is older than hsRetryEvery (a path
+// hsRetryWait is how long a path that failed n times in a row waits for its next try (a
+// path from before the count has n = 0 and waits hsRetryEvery, like after its first failure).
+func hsRetryWait(n int) time.Duration {
+	w := hsRetryEvery
+	for ; n > 1 && w < hsRetryMax; n-- {
+		w *= 2
+	}
+	if w > hsRetryMax {
+		w = hsRetryMax
+	}
+	return w
+}
+
+// hsRetryDue lists the failed paths of t whose last try is older than their wait (a path
 // from before the stamp counts as old) and that the route still allows.
 func (a *App) hsRetryDue(t *Tunnel, now time.Time) []HSPath {
 	var old []HSPath
@@ -22,7 +43,7 @@ func (a *App) hsRetryDue(t *Tunnel, now time.Time) []HSPath {
 			return
 		}
 		for _, p := range t.Paths {
-			if p.Failed != "" && now.Unix()-p.FailedAt >= int64(hsRetryEvery/time.Second) {
+			if p.Failed != "" && now.Unix()-p.FailedAt >= int64(hsRetryWait(p.FailedN)/time.Second) {
 				old = append(old, p)
 			}
 		}
@@ -49,7 +70,7 @@ func (a *App) hsRetryFailed(t *Tunnel) (*Job, error) {
 	}
 	var add []HSPath
 	for _, p := range old {
-		add = append(add, HSPath{Method: p.Method, Family: p.Family})
+		add = append(add, HSPath{Method: p.Method, Family: p.Family, FailedN: p.FailedN})
 	}
 	go func() {
 		defer a.jobs.done(j)

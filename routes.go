@@ -416,9 +416,11 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 		if err != nil {
 			j.log("  ✕ left out: %v", err)
 			p.Failed, p.FailedAt = err.Error(), time.Now().Unix()
+			p.FailedN++ // a retry carries the count of the tries before it (hsRetryFailed)
 			_, _ = ir.Run(ctx, teardownScript(pt), nil)
 			_, _ = kh.Run(ctx, teardownScript(pt), nil)
 		} else {
+			p.FailedN = 0
 			j.log("  ✓ up")
 		}
 		added = append(added, p)
@@ -451,7 +453,13 @@ func (a *App) hsUpdatePathsRun(ctx context.Context, j *Job, t *Tunnel, drop, add
 			return nil
 		})
 		if retry {
-			j.log("DONE — still not possible on this route; tried again in %s", hsRetryEvery)
+			next := hsRetryMax
+			for _, p := range added {
+				if w := hsRetryWait(p.FailedN); w < next {
+					next = w
+				}
+			}
+			j.log("DONE — still not possible on this route; tried again in %s (the wait doubles with every failed try, up to %s)", next, hsRetryMax)
 			return nil
 		}
 		j.log("DONE — no new path came up; %d paths running, the switcher left as it was", len(good))
