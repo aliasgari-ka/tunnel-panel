@@ -50,6 +50,8 @@ type HSPath struct {
 	// when it failed: the monitor tries it again every hsRetryEvery (a reverse method
 	// refused by a passing filter stayed "failed" for good — seen live: England, outbound)
 	FailedAt int64 `json:"failedAt,omitempty"`
+	// how many tries in a row failed: each one doubles the wait before the next (hsRetryWait)
+	FailedN int `json:"failedN,omitempty"`
 }
 
 func (p HSPath) label() string { return methodTitle(p.Method) + " (" + p.Family + ")" }
@@ -1085,11 +1087,12 @@ func (a *App) applyHot(ctx context.Context, j *Job, t *Tunnel, m *Method, srv *S
 		if err != nil {
 			j.log("  ✕ left out: %v", err)
 			p.Failed, p.FailedAt = err.Error(), time.Now().Unix()
+			p.FailedN++
 			_, _ = irHost.Run(ctx, teardownScript(pt), nil)
 			_, _ = khHost.Run(ctx, teardownScript(pt), nil)
 		} else {
 			j.log("  ✓ %s is up", p.label())
-			p.Failed = ""
+			p.Failed, p.FailedN = "", 0
 			good = append(good, p)
 		}
 		kept = append(kept, p)

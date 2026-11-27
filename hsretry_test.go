@@ -150,3 +150,40 @@ func TestHSRetryLeavesSwitcherAndPaths(t *testing.T) {
 		}
 	})
 }
+
+// A path that keeps failing waits longer before each try: 1 h, 2 h, 4 h, 8 h, then 12 h.
+// Before this the outbound tunnel's five impossible paths were tried every hour for good.
+func TestHSRetryBackoff(t *testing.T) {
+	for n, want := range map[int]time.Duration{0: time.Hour, 1: time.Hour, 2: 2 * time.Hour, 3: 4 * time.Hour, 4: 8 * time.Hour, 5: 12 * time.Hour, 50: 12 * time.Hour} {
+		if got := hsRetryWait(n); got != want {
+			t.Errorf("hsRetryWait(%d) = %s, want %s", n, got, want)
+		}
+	}
+	dataDir = t.TempDir()
+	st, _ := LoadStore(dataDir)
+	now := time.Now()
+	ago := func(d time.Duration) int64 { return now.Add(-d).Unix() }
+	_ = st.Update(func(s *State) error {
+		s.Servers = []*Server{
+			{ID: "ir1", Name: "ir", IPv4: "192.0.2.1"},
+			{ID: "kh1", Name: "out", IPv4: "198.51.100.1", Role: "foreign"},
+		}
+		s.Tunnels = []*Tunnel{{ID: "aaaaaaaaaaaa", Name: "out", ServerID: "ir1", ForeignID: "kh1", Family: "v4", Ports: "443", Index: 1,
+			Active: "gre", HotStandby: true, Paths: []HSPath{
+				{Method: "gre", Family: "v4", Index: 1},
+				{Method: "bp_reverse", Family: "v4", Index: 2, Failed: "x", FailedAt: ago(90 * time.Minute), FailedN: 1}, // 1 h passed
+				{Method: "frp", Family: "v4", Index: 3, Failed: "x", FailedAt: ago(90 * time.Minute), FailedN: 2},        // waits 2 h
+				{Method: "tpk", Family: "v4", Index: 4, Failed: "x", FailedAt: ago(11 * time.Hour), FailedN: 9},          // waits 12 h
+				{Method: "bp_multi", Family: "v4", Index: 5, Failed: "x", FailedAt: ago(13 * time.Hour), FailedN: 9},     // 12 h passed
+			}}}
+		return nil
+	})
+	a := &App{store: st, jobs: newJobs(), hsViews: map[string]*hsView{}}
+	got := map[string]bool{}
+	for _, p := range a.hsRetryDue(st.Tunnel("aaaaaaaaaaaa"), now) {
+		got[p.String()] = true
+	}
+	if len(got) != 2 || !got["bp_reverse|v4"] || !got["bp_multi|v4"] {
+		t.Fatalf("due = %v, want bp_reverse|v4 and bp_multi|v4 only", got)
+	}
+}
